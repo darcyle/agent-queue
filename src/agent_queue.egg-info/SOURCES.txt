@@ -1,9 +1,0 @@
-pyproject.toml
-src/__init__.py
-src/main.py
-src/agent_queue.egg-info/PKG-INFO
-src/agent_queue.egg-info/SOURCES.txt
-src/agent_queue.egg-info/dependency_links.txt
-src/agent_queue.egg-info/entry_points.txt
-src/agent_queue.egg-info/requires.txt
-src/agent_queue.egg-info/top_level.txt

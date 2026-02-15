@@ -1,2 +1,0 @@
-[console_scripts]
-agent-queue = src.main:main
