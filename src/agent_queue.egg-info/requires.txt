@@ -1,0 +1,9 @@
+aiosqlite>=0.20.0
+discord.py>=2.3.0
+claude-agent-sdk>=0.1.30
+pyyaml>=6.0
+
+[dev]
+pytest>=8.0
+pytest-asyncio>=0.23
+ruff>=0.4.0
