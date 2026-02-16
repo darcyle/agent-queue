@@ -45,6 +45,36 @@ class Orchestrator:
         """Set a callback for posting full summaries to the control channel."""
         self._control_notify = callback
 
+    async def stop_task(self, task_id: str) -> str | None:
+        """Stop an in-progress task. Returns None on success, error string on failure."""
+        task = await self.db.get_task(task_id)
+        if not task:
+            return f"Task '{task_id}' not found"
+        if task.status != TaskStatus.IN_PROGRESS:
+            return f"Task is not in progress (status: {task.status.value})"
+
+        # Find and stop the adapter
+        agent_id = task.assigned_agent_id
+        if agent_id and agent_id in self._adapters:
+            adapter = self._adapters[agent_id]
+            try:
+                await adapter.stop()
+            except Exception as e:
+                print(f"Error stopping adapter for agent {agent_id}: {e}")
+
+        # Reset task and agent state
+        await self.db.update_task(task_id, status=TaskStatus.BLOCKED.value,
+                                  assigned_agent_id=None)
+        if agent_id:
+            await self.db.update_agent(agent_id, state=AgentState.IDLE,
+                                       current_task_id=None)
+            self._adapters.pop(agent_id, None)
+
+        await self._notify_channel(
+            f"**Task Stopped:** `{task_id}` — {task.title}"
+        )
+        return None
+
     async def _notify_channel(self, message: str) -> None:
         """Send a notification if a callback is set."""
         if self._notify:

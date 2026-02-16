@@ -223,6 +223,17 @@ TOOLS = [
         },
     },
     {
+        "name": "stop_task",
+        "description": "Stop a task that is currently in progress. Cancels the agent working on it and marks the task as BLOCKED.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID to stop"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
         "name": "restart_task",
         "description": "Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.",
         "input_schema": {
@@ -1092,12 +1103,18 @@ class AgentQueueBot(commands.Bot):
                 await db.update_task(input_data["task_id"], **updates)
                 return {"updated": input_data["task_id"], "fields": list(updates.keys())}
 
+            elif name == "stop_task":
+                error = await self.orchestrator.stop_task(input_data["task_id"])
+                if error:
+                    return {"error": error}
+                return {"stopped": input_data["task_id"]}
+
             elif name == "restart_task":
                 task = await db.get_task(input_data["task_id"])
                 if not task:
                     return {"error": f"Task '{input_data['task_id']}' not found"}
                 if task.status == TaskStatus.IN_PROGRESS:
-                    return {"error": "Task is currently in progress. Stop the agent first."}
+                    return {"error": "Task is currently in progress. Stop it first."}
                 await db.update_task(
                     input_data["task_id"],
                     status=TaskStatus.READY.value,
@@ -1115,7 +1132,9 @@ class AgentQueueBot(commands.Bot):
                 if not task:
                     return {"error": f"Task '{input_data['task_id']}' not found"}
                 if task.status == TaskStatus.IN_PROGRESS:
-                    return {"error": "Task is currently in progress. Stop the agent first."}
+                    error = await self.orchestrator.stop_task(input_data["task_id"])
+                    if error:
+                        return {"error": f"Could not stop task before deleting: {error}"}
                 await db.delete_task(input_data["task_id"])
                 return {"deleted": input_data["task_id"], "title": task.title}
 
