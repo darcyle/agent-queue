@@ -67,7 +67,37 @@ def prompt_secret(label: str, existing: str = "") -> str:
         masked = existing[:4] + "..." + existing[-4:] if len(existing) > 12 else "****"
         value = input(f"  {label} [{masked}]: ").strip()
         return value if value else existing
-    return getpass.getpass(f"  {label}: ").strip()
+    return getpass.getpass(f"  {label} (input is hidden): ").strip()
+
+
+def _save_env_value(key: str, value: str):
+    """Incrementally save a key=value pair to ~/.agent-queue/.env.
+
+    Updates existing keys in place, appends new ones.
+    Skips saving if value is empty.
+    """
+    if not value:
+        return
+
+    config_dir = Path(os.path.expanduser("~/.agent-queue"))
+    config_dir.mkdir(parents=True, exist_ok=True)
+    env_path = config_dir / ".env"
+
+    lines: list[str] = []
+    found = False
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            if line.startswith(f"{key}="):
+                lines.append(f"{key}={value}")
+                found = True
+            else:
+                lines.append(line)
+
+    if not found:
+        lines.append(f"{key}={value}")
+
+    env_path.write_text("\n".join(lines) + "\n")
+    os.chmod(env_path, 0o600)
 
 
 # ── Load existing config ────────────────────────────────────────────────────
@@ -139,17 +169,43 @@ def _load_existing_config() -> dict:
 
 
 def step_directories(existing: dict) -> tuple[str, str]:
-    step_header(1, "Workspace & Database")
-
     yaml_cfg = existing.get("_yaml", {})
-    default_workspace = yaml_cfg.get("workspace_dir", os.path.expanduser("~/agent-queue-workspaces"))
-    default_db = yaml_cfg.get("database_path", os.path.expanduser("~/.agent-queue/agent-queue.db"))
+    default_workspace = (
+        existing.get("WORKSPACE_DIR")
+        or yaml_cfg.get("workspace_dir")
+        or os.path.expanduser("~/agent-queue-workspaces")
+    )
+    default_db = (
+        existing.get("DATABASE_PATH")
+        or yaml_cfg.get("database_path")
+        or os.path.expanduser("~/.agent-queue/agent-queue.db")
+    )
+
+    # Skip step if values are saved, or if defaults already exist on disk
+    has_workspace = existing.get("WORKSPACE_DIR") or yaml_cfg.get("workspace_dir")
+    has_db = existing.get("DATABASE_PATH") or yaml_cfg.get("database_path")
+    defaults_exist = (
+        os.path.isdir(os.path.expanduser(default_workspace))
+        and os.path.isdir(os.path.dirname(os.path.expanduser(default_db)))
+    )
+    if (has_workspace and has_db) or defaults_exist:
+        workspace = os.path.expanduser(default_workspace)
+        db_path = os.path.expanduser(default_db)
+        for d in [workspace, os.path.dirname(db_path)]:
+            os.makedirs(d, exist_ok=True)
+        success(f"Workspace: {workspace}")
+        success(f"Database: {db_path}")
+        return workspace, db_path
+
+    step_header(1, "Workspace & Database")
 
     workspace = prompt("Workspace directory", default_workspace)
     workspace = os.path.expanduser(workspace)
+    _save_env_value("WORKSPACE_DIR", workspace)
 
     db_path = prompt("Database path", default_db)
     db_path = os.path.expanduser(db_path)
+    _save_env_value("DATABASE_PATH", db_path)
 
     for d in [workspace, os.path.dirname(db_path)]:
         os.makedirs(d, exist_ok=True)
@@ -162,13 +218,19 @@ def step_directories(existing: dict) -> tuple[str, str]:
 
 
 def step_discord(existing: dict) -> dict:
-    step_header(2, "Discord Bot")
-
     yaml_cfg = existing.get("_yaml", {})
     discord_cfg = yaml_cfg.get("discord", {})
     existing_channels = discord_cfg.get("channels", {})
 
-    print(f"""  To create a Discord bot:
+    existing_token = existing.get("DISCORD_BOT_TOKEN", "")
+    existing_guild = discord_cfg.get("guild_id", "") or existing.get("DISCORD_GUILD_ID", "")
+
+    # Collect token if not saved
+    if existing_token:
+        bot_token = existing_token
+    else:
+        step_header(2, "Discord Bot")
+        print(f"""  To create a Discord bot:
   1. Go to {BOLD}https://discord.com/developers/applications{RESET}
   2. Click {BOLD}New Application{RESET}, give it a name, and create it
   3. Go to the {BOLD}Bot{RESET} tab and click {BOLD}Reset Token{RESET} to get your bot token
@@ -178,24 +240,26 @@ def step_discord(existing: dict) -> dict:
      - Bot Permissions: {BOLD}Send Messages{RESET}, {BOLD}Read Message History{RESET}, {BOLD}Use Slash Commands{RESET}
   6. Copy the generated URL, open it in your browser, and add the bot to your server
 """)
+        bot_token = prompt_secret("Bot token")
+        if not bot_token:
+            error("Bot token is required")
+            sys.exit(1)
+        _save_env_value("DISCORD_BOT_TOKEN", bot_token)
 
-    existing_token = existing.get("DISCORD_BOT_TOKEN", "")
-    bot_token = prompt_secret("Bot token", existing_token)
-    if not bot_token:
-        error("Bot token is required")
-        sys.exit(1)
-
-    print(f"""
+    # Collect guild ID if not saved
+    if existing_guild:
+        guild_id = existing_guild
+    else:
+        print(f"""
   To find your Guild (server) ID:
   1. Open Discord Settings > {BOLD}Advanced{RESET} > enable {BOLD}Developer Mode{RESET}
   2. Right-click your server name and click {BOLD}Copy Server ID{RESET}
 """)
-
-    existing_guild = discord_cfg.get("guild_id", "")
-    guild_id = prompt("Guild ID", existing_guild)
-    if not guild_id:
-        error("Guild ID is required")
-        sys.exit(1)
+        guild_id = prompt("Guild ID")
+        if not guild_id:
+            error("Guild ID is required")
+            sys.exit(1)
+        _save_env_value("DISCORD_GUILD_ID", guild_id)
 
     # Channel names (before connectivity test)
     channels = {
@@ -203,33 +267,43 @@ def step_discord(existing: dict) -> dict:
         "notifications": existing_channels.get("notifications", "notifications"),
         "agent_questions": existing_channels.get("agent_questions", "agent-questions"),
     }
-    if prompt_yes_no("Customize channel names?", default=False):
-        channels["control"] = prompt("Control channel", channels["control"])
-        channels["notifications"] = prompt("Notifications channel", channels["notifications"])
-        channels["agent_questions"] = prompt(
-            "Agent questions channel", channels["agent_questions"]
-        )
 
     # Test connectivity with retry loop (including channel verification)
     print()
     info("Testing Discord connectivity...")
     discord_ok = False
     while True:
-        discord_ok = _test_discord(bot_token, guild_id, channels)
+        discord_ok, missing_channels = _test_discord(bot_token, guild_id, channels)
         if discord_ok:
             break
-        print()
-        warn("Discord connection failed. Debugging tips:")
-        info("  - Verify the bot token is correct (reset it at discord.com/developers)")
-        info("  - Check that the bot has been invited to the server")
-        info("  - Ensure Message Content Intent is enabled under Privileged Gateway Intents")
-        info(f"  - Confirm guild ID {guild_id} matches your server")
-        info("  - Check that these channels exist in your server:")
-        for name, chan in channels.items():
-            info(f"      #{chan}  ({name})")
-        print()
-        if not prompt_yes_no("Retry Discord connection?", default=True):
-            break
+
+        if missing_channels:
+            # Bot connected fine, just channels are wrong — offer to customize
+            print()
+            warn("Bot connected successfully, but some channels weren't found.")
+            info("Either create them in Discord, or update the names here.")
+            print()
+            if prompt_yes_no("Update channel names?", default=True):
+                channels["control"] = prompt("Control channel", channels["control"])
+                channels["notifications"] = prompt("Notifications channel", channels["notifications"])
+                channels["agent_questions"] = prompt(
+                    "Agent questions channel", channels["agent_questions"]
+                )
+                info("Re-testing with updated channels...")
+                continue
+            elif not prompt_yes_no("Retry with current channel names?", default=True):
+                break
+        else:
+            # Connection-level failure
+            print()
+            warn("Discord connection failed. Debugging tips:")
+            info("  - Verify the bot token is correct (reset it at discord.com/developers)")
+            info("  - Check that the bot has been invited to the server")
+            info("  - Ensure Message Content Intent is enabled under Privileged Gateway Intents")
+            info(f"  - Confirm guild ID {guild_id} matches your server")
+            print()
+            if not prompt_yes_no("Retry Discord connection?", default=True):
+                break
 
     # Authorized users
     authorized_users: list[str] = []
@@ -250,12 +324,17 @@ def step_discord(existing: dict) -> dict:
     }
 
 
-def _test_discord(token: str, guild_id: str, channels: dict | None = None) -> bool:
-    """Test Discord bot connectivity and verify channels exist in the guild."""
+def _test_discord(
+    token: str, guild_id: str, channels: dict | None = None
+) -> tuple[bool, list[str]]:
+    """Test Discord bot connectivity and verify channels exist in the guild.
+
+    Returns (success, missing_channel_names).
+    """
     try:
         import discord
 
-        result: dict = {"ok": False, "missing_channels": []}
+        result: dict = {"ok": False, "connected": False, "missing_channels": []}
 
         async def _check():
             intents = discord.Intents.default()
@@ -267,6 +346,7 @@ def _test_discord(token: str, guild_id: str, channels: dict | None = None) -> bo
                 guild = client.get_guild(int(guild_id))
                 if guild:
                     success(f"Connected to Discord — guild: {guild.name}")
+                    result["connected"] = True
                     result["ok"] = True
 
                     # Verify channels exist
@@ -280,7 +360,6 @@ def _test_discord(token: str, guild_id: str, channels: dict | None = None) -> bo
                             result["ok"] = False
                             for missing in result["missing_channels"]:
                                 error(f"Channel not found: #{missing}")
-                            warn("Create these channels in your Discord server or update the names")
                         else:
                             success("All configured channels found")
                 else:
@@ -294,14 +373,24 @@ def _test_discord(token: str, guild_id: str, channels: dict | None = None) -> bo
                 error("Discord connection timed out")
             except discord.LoginFailure:
                 error("Invalid bot token")
+            except discord.PrivilegedIntentsRequired:
+                error("Privileged intents not enabled")
+                print()
+                warn("You need to enable Message Content Intent in the Discord Developer Portal:")
+                info(f"  1. Go to {BOLD}https://discord.com/developers/applications/{RESET}")
+                info(f"  2. Select your bot application")
+                info(f"  3. Go to the {BOLD}Bot{RESET} tab")
+                info(f"  4. Scroll to {BOLD}Privileged Gateway Intents{RESET}")
+                info(f"  5. Enable {BOLD}Message Content Intent{RESET}")
+                info(f"  6. Click {BOLD}Save Changes{RESET}")
             except Exception as e:
                 error(f"Discord error: {e}")
 
         asyncio.run(_check())
-        return result["ok"]
+        return result["ok"], result["missing_channels"]
     except ImportError:
         warn("discord.py not installed — skipping connectivity test")
-        return False
+        return False, []
 
 
 # ── Step 3: Agent Configuration ──────────────────────────────────────────────
@@ -321,64 +410,51 @@ def step_agents(existing: dict) -> dict:
 
     agents: dict = {"claude": None}
 
-    # Claude setup — check for existing key in environment or .env
+    # Claude setup — try SDK auto-detection first (supports Vertex AI, Bedrock, direct API)
     api_key = os.environ.get("ANTHROPIC_API_KEY", "") or existing.get("ANTHROPIC_API_KEY", "")
     from_env = bool(os.environ.get("ANTHROPIC_API_KEY"))
     claude_ok = False
+    sdk_backend = None
 
-    if api_key:
-        # Test connectivity immediately if key is already available
-        print()
-        info("Testing Claude API connectivity with existing key...")
-        claude_ok = _test_claude(api_key)
+    # Step 1: Try the SDK with whatever credentials are already configured
+    print()
+    info("Testing Claude SDK connectivity...")
+    claude_ok, sdk_backend = _test_claude_sdk(api_key if api_key else None)
 
-        if claude_ok:
-            success("Using existing API key")
-        else:
-            # Retry loop for existing key failure
-            while True:
-                print()
-                warn("Claude API connection failed. Debugging tips:")
-                info("  - Verify the API key is valid at console.anthropic.com")
-                info("  - Check your account has available credits")
-                info("  - Ensure no network/proxy issues")
-                print()
-                if not prompt_yes_no("Retry Claude API connection?", default=True):
-                    break
-                claude_ok = _test_claude(api_key)
-                if claude_ok:
-                    break
-
-            if not claude_ok:
-                warn("Existing key failed — enter a new key or press Enter to continue anyway")
-                new_key = prompt_secret("Anthropic API key")
-                if new_key:
-                    api_key = new_key
-                    from_env = False
-                    info("Testing new key...")
-                    claude_ok = _test_claude(api_key)
+    if claude_ok:
+        success(f"Using {sdk_backend}")
     else:
-        warn("ANTHROPIC_API_KEY not set in environment")
-        api_key = prompt_secret("Anthropic API key")
+        # Step 2: If no key and SDK didn't work, prompt for one
         if not api_key:
-            error("API key is required for Claude agents")
-            sys.exit(1)
-        from_env = False
+            print()
+            info("No existing credentials detected.")
+            info("You can provide an Anthropic API key, or press Enter to skip")
+            info("if you plan to configure Vertex AI or Bedrock credentials later.")
+            api_key = prompt_secret("Anthropic API key (optional)")
 
-        # Test with retry loop
-        print()
-        info("Testing Claude API connectivity...")
-        claude_ok = _test_claude(api_key)
-        while not claude_ok:
+            if api_key:
+                from_env = False
+                _save_env_value("ANTHROPIC_API_KEY", api_key)
+                info("Testing with provided key...")
+                claude_ok, sdk_backend = _test_claude_sdk(api_key)
+
+        # Step 3: Retry loop on failure
+        while not claude_ok and api_key:
             print()
             warn("Claude API connection failed. Debugging tips:")
-            info("  - Verify the API key is valid at console.anthropic.com")
-            info("  - Check your account has available credits")
+            info("  - For direct API: verify key at console.anthropic.com")
+            info("  - For Vertex AI: check gcloud auth and GOOGLE_CLOUD_PROJECT")
+            info("  - For Bedrock: check AWS credentials and region")
             info("  - Ensure no network/proxy issues")
             print()
             if not prompt_yes_no("Retry Claude API connection?", default=True):
                 break
-            claude_ok = _test_claude(api_key)
+            claude_ok, sdk_backend = _test_claude_sdk(api_key)
+
+    # Test claude-agent-sdk separately
+    print()
+    info("Testing claude-agent-sdk...")
+    agent_sdk_ok = _test_claude_agent_sdk()
 
     default_model = yaml_cfg.get("model", "claude-sonnet-4-20250514")
     model = prompt("Model", default_model)
@@ -387,33 +463,119 @@ def step_agents(existing: dict) -> dict:
         "api_key": api_key,
         "model": model,
         "connected": claude_ok,
+        "agent_sdk_ok": agent_sdk_ok,
         "from_env": from_env,
+        "backend": sdk_backend,
     }
 
     return agents
 
 
-def _test_claude(api_key: str) -> bool:
-    """Test Claude API connectivity with a minimal request."""
+def _test_claude_sdk(api_key: str | None = None) -> tuple[bool, str | None]:
+    """Test Claude SDK connectivity, trying multiple backends.
+
+    Tries in order: direct API (if key available), Vertex AI, Bedrock.
+    Returns (success, backend_name).
+    """
     try:
         import anthropic
-
-        client = anthropic.Anthropic(api_key=api_key)
-        resp = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=16,
-            messages=[{"role": "user", "content": "Say ok"}],
-        )
-        if resp.content:
-            success("Claude API connected successfully")
-            return True
-        error("Claude API returned empty response")
-        return False
     except ImportError:
         warn("anthropic SDK not installed — skipping connectivity test")
+        return False, None
+
+    base_test_kwargs = {
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "Say ok"}],
+    }
+
+    errors: list[str] = []
+
+    # Try direct API if key is available
+    if api_key:
+        try:
+            client = anthropic.Anthropic(api_key=api_key)
+            resp = client.messages.create(model="claude-sonnet-4-20250514", **base_test_kwargs)
+            if resp.content:
+                success("Claude API connected successfully (direct API)")
+                return True, "direct API"
+        except Exception as e:
+            errors.append(f"Direct API: {e}")
+
+    # Try Vertex AI
+    try:
+        from anthropic import AnthropicVertex
+
+        project_id = (
+            os.environ.get("GOOGLE_CLOUD_PROJECT")
+            or os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
+        )
+        region = (
+            os.environ.get("GOOGLE_CLOUD_LOCATION")
+            or os.environ.get("CLOUD_ML_REGION")
+            or "us-east5"
+        )
+        if project_id:
+            # Vertex AI uses @ format for model versions
+            vertex_model = "claude-sonnet-4@20250514"
+            info(f"Trying Vertex AI (project: {project_id}, region: {region})...")
+            client = AnthropicVertex(project_id=project_id, region=region)
+            resp = client.messages.create(model=vertex_model, **base_test_kwargs)
+            if resp.content:
+                success(f"Claude API connected successfully (Vertex AI, project: {project_id})")
+                return True, f"Vertex AI ({project_id})"
+        else:
+            errors.append("Vertex AI: GOOGLE_CLOUD_PROJECT / ANTHROPIC_VERTEX_PROJECT_ID not set")
+    except ImportError:
+        pass
+    except Exception as e:
+        errors.append(f"Vertex AI: {e}")
+
+    # Try Bedrock
+    try:
+        from anthropic import AnthropicBedrock
+
+        if os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"):
+            info("Trying AWS Bedrock...")
+            client = AnthropicBedrock()
+            resp = client.messages.create(**test_kwargs)
+            if resp.content:
+                success("Claude API connected successfully (AWS Bedrock)")
+                return True, "AWS Bedrock"
+        else:
+            errors.append("Bedrock: AWS_REGION not set")
+    except ImportError:
+        pass
+    except Exception as e:
+        errors.append(f"Bedrock: {e}")
+
+    # Show what was tried and why it failed
+    if errors:
+        for err in errors:
+            info(f"  {err}")
+
+    error("Could not connect to Claude API via any backend")
+    return False, None
+
+
+def _test_claude_agent_sdk() -> bool:
+    """Test that the claude-agent-sdk is installed and can initialize."""
+    try:
+        from claude_agent_sdk import query, ClaudeAgentOptions
+
+        # Verify we can construct options (doesn't make a network call)
+        # Don't specify model — let the SDK use its default, which respects
+        # CLAUDE_CODE_USE_VERTEX and other env-based configuration.
+        ClaudeAgentOptions(
+            allowed_tools=["Read"],
+        )
+        success("claude-agent-sdk installed and importable")
+        return True
+    except ImportError:
+        error("claude-agent-sdk not installed")
+        info("  Install with: pip install 'claude-agent-sdk>=0.1.30'")
         return False
     except Exception as e:
-        error(f"Claude API error: {e}")
+        error(f"claude-agent-sdk error: {e}")
         return False
 
 
@@ -594,9 +756,15 @@ def step_test_connectivity(discord_cfg: dict, agents_cfg: dict):
 
     claude_cfg = agents_cfg.get("claude")
     if claude_cfg and claude_cfg.get("connected"):
-        success("Claude API: connected")
+        backend = claude_cfg.get("backend", "unknown")
+        success(f"Claude API: connected ({backend})")
     elif claude_cfg:
         error("Claude API: not verified")
+
+    if claude_cfg and claude_cfg.get("agent_sdk_ok"):
+        success("claude-agent-sdk: installed")
+    elif claude_cfg:
+        error("claude-agent-sdk: not installed")
 
 
 # ── Step 7: Launch Daemon ─────────────────────────────────────────────────────
@@ -605,23 +773,31 @@ def step_test_connectivity(discord_cfg: dict, agents_cfg: dict):
 def step_launch(config_path: Path):
     step_header(7, "Launch Daemon")
 
+    log_dir = Path(os.path.expanduser("~/.agent-queue"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "daemon.log"
+
     cmd = f"agent-queue {config_path}"
 
     if prompt_yes_no("Start the daemon now?", default=False):
         print()
         info(f"Starting: {cmd}")
+        info(f"Log file: {log_path}")
+        log_file = open(log_path, "a")
         proc = subprocess.Popen(
             ["agent-queue", str(config_path)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=log_file,
             start_new_session=True,
         )
         success(f"Daemon started (PID {proc.pid})")
         info(f"Stop with: kill {proc.pid}")
+        info(f"View logs: tail -f {log_path}")
     else:
         print()
         info("To start later, run:")
         print(f"    {BOLD}{cmd}{RESET}")
+        info(f"Logs will be written to: {log_path}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

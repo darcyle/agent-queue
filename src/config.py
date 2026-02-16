@@ -83,9 +83,27 @@ def _process_values(obj):
     return obj
 
 
+def _load_env_file(config_path: str) -> None:
+    """Load .env file from the same directory as the config file."""
+    env_path = os.path.join(os.path.dirname(config_path), ".env")
+    if not os.path.exists(env_path):
+        return
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, value = line.partition("=")
+                key, value = key.strip(), value.strip()
+                # Don't override existing env vars
+                if key and key not in os.environ:
+                    os.environ[key] = value
+
+
 def load_config(path: str) -> AppConfig:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Config file not found: {path}")
+
+    _load_env_file(path)
 
     with open(path) as f:
         raw = yaml.safe_load(f) or {}
