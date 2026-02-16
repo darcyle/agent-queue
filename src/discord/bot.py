@@ -1366,6 +1366,76 @@ class AgentQueueBot(commands.Bot):
                         "total": sum(r["total"] for r in rows),
                     }
 
+            elif name == "list_notes":
+                project = await db.get_project(input_data["project_id"])
+                if not project:
+                    return {"error": f"Project '{input_data['project_id']}' not found"}
+                workspace = project.workspace_path or os.path.join(
+                    self.config.workspace_dir, input_data["project_id"]
+                )
+                notes_dir = os.path.join(workspace, "notes")
+                if not os.path.isdir(notes_dir):
+                    return {"project_id": input_data["project_id"], "notes": []}
+                notes = []
+                for fname in sorted(os.listdir(notes_dir)):
+                    if not fname.endswith(".md"):
+                        continue
+                    fpath = os.path.join(notes_dir, fname)
+                    stat = os.stat(fpath)
+                    # Try to extract title from first heading
+                    title = fname[:-3].replace("-", " ").title()
+                    try:
+                        with open(fpath, "r") as f:
+                            first_line = f.readline().strip()
+                        if first_line.startswith("# "):
+                            title = first_line[2:].strip()
+                    except Exception:
+                        pass
+                    notes.append({
+                        "name": fname,
+                        "title": title,
+                        "size_bytes": stat.st_size,
+                        "modified": stat.st_mtime,
+                        "path": fpath,
+                    })
+                return {"project_id": input_data["project_id"], "notes": notes}
+
+            elif name == "write_note":
+                project = await db.get_project(input_data["project_id"])
+                if not project:
+                    return {"error": f"Project '{input_data['project_id']}' not found"}
+                workspace = project.workspace_path or os.path.join(
+                    self.config.workspace_dir, input_data["project_id"]
+                )
+                notes_dir = os.path.join(workspace, "notes")
+                os.makedirs(notes_dir, exist_ok=True)
+                slug = self.orchestrator.git.slugify(input_data["title"])
+                if not slug:
+                    return {"error": "Title produces an empty filename"}
+                fpath = os.path.join(notes_dir, f"{slug}.md")
+                existed = os.path.isfile(fpath)
+                with open(fpath, "w") as f:
+                    f.write(input_data["content"])
+                return {
+                    "path": fpath,
+                    "title": input_data["title"],
+                    "status": "updated" if existed else "created",
+                }
+
+            elif name == "delete_note":
+                project = await db.get_project(input_data["project_id"])
+                if not project:
+                    return {"error": f"Project '{input_data['project_id']}' not found"}
+                workspace = project.workspace_path or os.path.join(
+                    self.config.workspace_dir, input_data["project_id"]
+                )
+                slug = self.orchestrator.git.slugify(input_data["title"])
+                fpath = os.path.join(workspace, "notes", f"{slug}.md")
+                if not os.path.isfile(fpath):
+                    return {"error": f"Note '{input_data['title']}' not found"}
+                os.remove(fpath)
+                return {"deleted": fpath, "title": input_data["title"]}
+
             else:
                 return {"error": f"Unknown tool: {name}"}
 
