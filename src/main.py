@@ -14,7 +14,8 @@ from src.orchestrator import Orchestrator
 DEFAULT_CONFIG_PATH = os.path.expanduser("~/.agent-queue/config.yaml")
 
 
-async def run(config_path: str) -> None:
+async def run(config_path: str) -> bool:
+    """Run the daemon. Returns True if a restart was requested."""
     config = load_config(config_path)
 
     # Ensure database directory exists
@@ -60,15 +61,21 @@ async def run(config_path: str) -> None:
         await shutdown_event.wait()
     finally:
         # Shut down bot and orchestrator
+        restart = bot._restart_requested
         await bot.close()
         bot_task.cancel()
         scheduler_task.cancel()
         await orch.shutdown()
 
+    return restart
+
 
 def main():
     config_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_CONFIG_PATH
-    asyncio.run(run(config_path))
+    restart = asyncio.run(run(config_path))
+    if restart:
+        print("Restart requested — exec'ing new process...")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 if __name__ == "__main__":

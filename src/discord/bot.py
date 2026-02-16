@@ -515,6 +515,7 @@ class AgentQueueBot(commands.Bot):
         self._processed_messages: set[int] = set()
         self._channel_summaries: dict[int, tuple[int, str]] = {}  # channel_id -> (up_to_message_id, summary)
         self._channel_locks: dict[int, asyncio.Lock] = {}  # prevent concurrent LLM calls per channel
+        self._restart_requested = False
 
     async def setup_hook(self) -> None:
         from src.discord.commands import setup_commands

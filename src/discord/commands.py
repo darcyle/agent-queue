@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import signal
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -122,3 +125,9 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         await bot.orchestrator.db.update_project(project_id, status=ProjectStatus.ACTIVE)
         await interaction.response.send_message(f"Project **{project.name}** resumed.")
+
+    @bot.tree.command(name="restart", description="Restart the agent-queue daemon")
+    async def restart_command(interaction: discord.Interaction):
+        await interaction.response.send_message("Restarting agent-queue...")
+        bot._restart_requested = True
+        os.kill(os.getpid(), signal.SIGTERM)
