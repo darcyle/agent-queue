@@ -69,6 +69,20 @@ TOOLS = [
         },
     },
     {
+        "name": "edit_project",
+        "description": "Edit a project's name, credit weight, or max concurrent agents.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "name": {"type": "string", "description": "New project name (optional)"},
+                "credit_weight": {"type": "number", "description": "New scheduling weight (optional)"},
+                "max_concurrent_agents": {"type": "integer", "description": "New max concurrent agents (optional)"},
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
         "name": "list_tasks",
         "description": "List tasks, optionally filtered by project or status.",
         "input_schema": {
@@ -968,6 +982,23 @@ class AgentQueueBot(commands.Bot):
                     return {"error": f"Project '{pid}' not found"}
                 await db.update_project(pid, status=ProjectStatus.ACTIVE)
                 return {"resumed": pid}
+
+            elif name == "edit_project":
+                pid = input_data["project_id"]
+                project = await db.get_project(pid)
+                if not project:
+                    return {"error": f"Project '{pid}' not found"}
+                updates = {}
+                if "name" in input_data:
+                    updates["name"] = input_data["name"]
+                if "credit_weight" in input_data:
+                    updates["credit_weight"] = input_data["credit_weight"]
+                if "max_concurrent_agents" in input_data:
+                    updates["max_concurrent_agents"] = input_data["max_concurrent_agents"]
+                if not updates:
+                    return {"error": "No fields to update. Provide name, credit_weight, or max_concurrent_agents."}
+                await db.update_project(pid, **updates)
+                return {"updated": pid, "fields": list(updates.keys())}
 
             elif name == "list_tasks":
                 kwargs = {}
