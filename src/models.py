@@ -61,11 +61,19 @@ class VerificationType(Enum):
     HUMAN = "human"
 
 
+class RepoSourceType(Enum):
+    CLONE = "clone"
+    LINK = "link"
+    INIT = "init"
+
+
 @dataclass
 class RepoConfig:
     id: str
     project_id: str
-    url: str
+    source_type: RepoSourceType
+    url: str = ""
+    source_path: str = ""
     default_branch: str = "main"
     checkout_base_path: str = ""
 
@@ -79,6 +87,7 @@ class Project:
     status: ProjectStatus = ProjectStatus.ACTIVE
     total_tokens_used: int = 0
     budget_limit: int | None = None
+    workspace_path: str | None = None
 
 
 @dataclass

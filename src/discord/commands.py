@@ -12,18 +12,45 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(name="status", description="Show system status overview")
     async def status_command(interaction: discord.Interaction):
-        projects = await bot.orchestrator.db.list_projects()
-        agents = await bot.orchestrator.db.list_agents()
-        tasks = await bot.orchestrator.db.list_tasks()
+        db = bot.orchestrator.db
+        projects = await db.list_projects()
+        agents = await db.list_agents()
+        tasks = await db.list_tasks()
 
         active_tasks = [t for t in tasks if t.status == TaskStatus.IN_PROGRESS]
         ready_tasks = [t for t in tasks if t.status == TaskStatus.READY]
+        paused_tasks = [t for t in tasks if t.status == TaskStatus.PAUSED]
 
         lines = [
+            "## System Status",
             f"**Projects:** {len(projects)}",
-            f"**Agents:** {len(agents)}",
-            f"**Tasks:** {len(tasks)} total, {len(active_tasks)} active, {len(ready_tasks)} ready",
+            f"**Tasks:** {len(tasks)} total — "
+            f"{len(active_tasks)} active, {len(ready_tasks)} ready, {len(paused_tasks)} paused",
+            "",
         ]
+
+        # Agent details
+        if agents:
+            lines.append("**Agents:**")
+            for a in agents:
+                if a.current_task_id:
+                    task = await db.get_task(a.current_task_id)
+                    task_desc = f"working on `{task.id}` — {task.title}" if task else f"task `{a.current_task_id}`"
+                    lines.append(f"• **{a.name}** ({a.state.value}) → {task_desc}")
+                else:
+                    lines.append(f"• **{a.name}** ({a.state.value})")
+        else:
+            lines.append("**Agents:** none registered")
+
+        # Ready tasks waiting for an agent
+        if ready_tasks:
+            lines.append("")
+            lines.append(f"**Queued ({len(ready_tasks)}):**")
+            for t in ready_tasks[:5]:
+                lines.append(f"• `{t.id}` {t.title}")
+            if len(ready_tasks) > 5:
+                lines.append(f"_...and {len(ready_tasks) - 5} more_")
+
         await interaction.response.send_message("\n".join(lines))
 
     @bot.tree.command(name="projects", description="List all projects")

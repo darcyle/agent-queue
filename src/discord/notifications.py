@@ -10,9 +10,9 @@ def format_task_completed(task: Task, agent: Agent, output: AgentOutput) -> str:
         f"Tokens used: {output.tokens_used:,}",
     ]
     if output.summary:
-        lines.append(f"Summary: {output.summary[:200]}")
+        lines.append(f"Summary: {output.summary}")
     if output.files_changed:
-        lines.append(f"Files changed: {', '.join(output.files_changed[:10])}")
+        lines.append(f"Files changed: {', '.join(output.files_changed)}")
     return "\n".join(lines)
 
 
@@ -23,7 +23,7 @@ def format_task_failed(task: Task, agent: Agent, output: AgentOutput) -> str:
         f"Retry: {task.retry_count}/{task.max_retries}",
     ]
     if output.error_message:
-        lines.append(f"Error: {output.error_message[:200]}")
+        lines.append(f"Error: {output.error_message}")
     return "\n".join(lines)
 
 
