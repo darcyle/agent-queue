@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from typing import Callable, Awaitable
@@ -34,6 +35,7 @@ class Orchestrator:
         self.git = GitManager()
         self._adapter_factory = adapter_factory
         self._adapters: dict[str, object] = {}  # agent_id -> adapter
+        self._running_tasks: dict[str, asyncio.Task] = {}  # task_id -> asyncio.Task
         self._notify: NotifyCallback | None = None
         self._control_notify: NotifyCallback | None = None
 
@@ -130,31 +132,44 @@ class Orchestrator:
             # 3. Schedule
             actions = await self._schedule()
 
-            # 4. Execute assigned tasks
+            # 4. Launch assigned tasks as background coroutines
+            # Clean up completed background tasks
+            done = [tid for tid, t in self._running_tasks.items() if t.done()]
+            for tid in done:
+                self._running_tasks.pop(tid)
+
             for action in actions:
-                try:
-                    await self._execute_task(action)
-                except Exception as e:
-                    print(f"Error executing task {action.task_id}: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    # Try to reset the task/agent so they're not stuck
-                    try:
-                        await self.db.update_task(
-                            action.task_id, status=TaskStatus.READY.value,
-                            assigned_agent_id=None)
-                        await self.db.update_agent(
-                            action.agent_id, state=AgentState.IDLE,
-                            current_task_id=None)
-                    except Exception:
-                        pass
-                    await self._notify_channel(
-                        f"**Error executing task** `{action.task_id}`: {e}"
-                    )
+                if action.task_id in self._running_tasks:
+                    continue  # Already running
+                bg = asyncio.create_task(self._execute_task_safe(action))
+                self._running_tasks[action.task_id] = bg
         except Exception as e:
             print(f"Scheduler cycle error: {e}")
             import traceback
             traceback.print_exc()
+
+    async def _execute_task_safe(self, action: AssignAction) -> None:
+        """Wrapper around _execute_task that catches exceptions."""
+        try:
+            await self._execute_task(action)
+        except Exception as e:
+            print(f"Error executing task {action.task_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            try:
+                await self.db.update_task(
+                    action.task_id, status=TaskStatus.READY.value,
+                    assigned_agent_id=None)
+                await self.db.update_agent(
+                    action.agent_id, state=AgentState.IDLE,
+                    current_task_id=None)
+            except Exception:
+                pass
+            await self._notify_channel(
+                f"**Error executing task** `{action.task_id}`: {e}"
+            )
+        finally:
+            self._running_tasks.pop(action.task_id, None)
 
     async def _resume_paused_tasks(self) -> None:
         paused = await self.db.list_tasks(status=TaskStatus.PAUSED)
