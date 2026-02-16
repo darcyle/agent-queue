@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import json
 import time
 import uuid
 
 import aiosqlite
 
 from src.models import (
-    Agent, AgentState, Project, ProjectStatus, Task, TaskStatus,
-    VerificationType,
+    Agent, AgentState, Project, ProjectStatus, RepoConfig, RepoSourceType,
+    Task, TaskStatus, VerificationType,
 )
 
 SCHEMA = """
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS projects (
     status TEXT NOT NULL DEFAULT 'ACTIVE',
     total_tokens_used INTEGER NOT NULL DEFAULT 0,
     budget_limit INTEGER,
+    workspace_path TEXT,
     created_at REAL NOT NULL
 );
 
@@ -121,6 +123,18 @@ CREATE TABLE IF NOT EXISTS rate_limits (
     window_start REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS task_results (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    agent_id TEXT NOT NULL REFERENCES agents(id),
+    result TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    files_changed TEXT NOT NULL DEFAULT '[]',
+    error_message TEXT,
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS system_config (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -139,6 +153,16 @@ class Database:
         await self._db.executescript(SCHEMA)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
+        # Migrations for existing databases
+        for migration in [
+            "ALTER TABLE projects ADD COLUMN workspace_path TEXT",
+            "ALTER TABLE repos ADD COLUMN source_type TEXT NOT NULL DEFAULT 'clone'",
+            "ALTER TABLE repos ADD COLUMN source_path TEXT NOT NULL DEFAULT ''",
+        ]:
+            try:
+                await self._db.execute(migration)
+            except Exception:
+                pass  # Column already exists
         await self._db.commit()
 
     async def close(self) -> None:
@@ -150,11 +174,12 @@ class Database:
     async def create_project(self, project: Project) -> None:
         await self._db.execute(
             "INSERT INTO projects (id, name, credit_weight, max_concurrent_agents, "
-            "status, total_tokens_used, budget_limit, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "status, total_tokens_used, budget_limit, workspace_path, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (project.id, project.name, project.credit_weight,
              project.max_concurrent_agents, project.status.value,
-             project.total_tokens_used, project.budget_limit, time.time()),
+             project.total_tokens_used, project.budget_limit,
+             project.workspace_path, time.time()),
         )
         await self._db.commit()
 
@@ -202,6 +227,53 @@ class Database:
             status=ProjectStatus(row["status"]),
             total_tokens_used=row["total_tokens_used"],
             budget_limit=row["budget_limit"],
+            workspace_path=row["workspace_path"] if "workspace_path" in row.keys() else None,
+        )
+
+    # --- Repos ---
+
+    async def create_repo(self, repo: RepoConfig) -> None:
+        await self._db.execute(
+            "INSERT INTO repos (id, project_id, url, default_branch, "
+            "checkout_base_path, source_type, source_path) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (repo.id, repo.project_id, repo.url, repo.default_branch,
+             repo.checkout_base_path, repo.source_type.value, repo.source_path),
+        )
+        await self._db.commit()
+
+    async def get_repo(self, repo_id: str) -> RepoConfig | None:
+        cursor = await self._db.execute(
+            "SELECT * FROM repos WHERE id = ?", (repo_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_repo(row)
+
+    async def list_repos(self, project_id: str | None = None) -> list[RepoConfig]:
+        if project_id:
+            cursor = await self._db.execute(
+                "SELECT * FROM repos WHERE project_id = ?", (project_id,)
+            )
+        else:
+            cursor = await self._db.execute("SELECT * FROM repos")
+        rows = await cursor.fetchall()
+        return [self._row_to_repo(r) for r in rows]
+
+    async def delete_repo(self, repo_id: str) -> None:
+        await self._db.execute("DELETE FROM repos WHERE id = ?", (repo_id,))
+        await self._db.commit()
+
+    def _row_to_repo(self, row) -> RepoConfig:
+        return RepoConfig(
+            id=row["id"],
+            project_id=row["project_id"],
+            source_type=RepoSourceType(row["source_type"]) if row["source_type"] else RepoSourceType.CLONE,
+            url=row["url"],
+            source_path=row["source_path"] if "source_path" in row.keys() else "",
+            default_branch=row["default_branch"],
+            checkout_base_path=row["checkout_base_path"],
         )
 
     # --- Tasks ---
@@ -266,6 +338,14 @@ class Database:
         await self._db.execute(
             f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", vals
         )
+        await self._db.commit()
+
+    async def delete_task(self, task_id: str) -> None:
+        await self._db.execute("DELETE FROM task_dependencies WHERE task_id = ? OR depends_on_task_id = ?", [task_id, task_id])
+        await self._db.execute("DELETE FROM task_criteria WHERE task_id = ?", [task_id])
+        await self._db.execute("DELETE FROM task_context WHERE task_id = ?", [task_id])
+        await self._db.execute("DELETE FROM task_tools WHERE task_id = ?", [task_id])
+        await self._db.execute("DELETE FROM tasks WHERE id = ?", [task_id])
         await self._db.commit()
 
     async def get_subtasks(self, parent_task_id: str) -> list[Task]:
@@ -422,6 +502,81 @@ class Database:
             )
         row = await cursor.fetchone()
         return row["total"]
+
+    # --- Task Results ---
+
+    async def save_task_result(
+        self, task_id: str, agent_id: str, output
+    ) -> None:
+        """Persist an AgentOutput to the task_results table."""
+        await self._db.execute(
+            "INSERT INTO task_results (id, task_id, agent_id, result, summary, "
+            "files_changed, error_message, tokens_used, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), task_id, agent_id, output.result.value,
+             output.summary, json.dumps(output.files_changed),
+             output.error_message, output.tokens_used, time.time()),
+        )
+        await self._db.commit()
+
+    async def get_task_result(self, task_id: str) -> dict | None:
+        """Return the most recent result for a task."""
+        cursor = await self._db.execute(
+            "SELECT * FROM task_results WHERE task_id = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (task_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_task_result(row)
+
+    async def get_task_results(self, task_id: str) -> list[dict]:
+        """Return all results for a task (retry history)."""
+        cursor = await self._db.execute(
+            "SELECT * FROM task_results WHERE task_id = ? ORDER BY created_at ASC",
+            (task_id,),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_task_result(r) for r in rows]
+
+    def _row_to_task_result(self, row) -> dict:
+        return {
+            "id": row["id"],
+            "task_id": row["task_id"],
+            "agent_id": row["agent_id"],
+            "result": row["result"],
+            "summary": row["summary"],
+            "files_changed": json.loads(row["files_changed"]),
+            "error_message": row["error_message"],
+            "tokens_used": row["tokens_used"],
+            "created_at": row["created_at"],
+        }
+
+    # --- Delete Project (cascading) ---
+
+    async def delete_project(self, project_id: str) -> None:
+        """Delete a project and all associated data (tasks, repos, results, ledger)."""
+        # Get all task IDs for this project
+        cursor = await self._db.execute(
+            "SELECT id FROM tasks WHERE project_id = ?", (project_id,)
+        )
+        task_rows = await cursor.fetchall()
+        task_ids = [r["id"] for r in task_rows]
+
+        for tid in task_ids:
+            await self._db.execute("DELETE FROM task_results WHERE task_id = ?", (tid,))
+            await self._db.execute("DELETE FROM task_dependencies WHERE task_id = ? OR depends_on_task_id = ?", (tid, tid))
+            await self._db.execute("DELETE FROM task_criteria WHERE task_id = ?", (tid,))
+            await self._db.execute("DELETE FROM task_context WHERE task_id = ?", (tid,))
+            await self._db.execute("DELETE FROM task_tools WHERE task_id = ?", (tid,))
+
+        await self._db.execute("DELETE FROM token_ledger WHERE project_id = ?", (project_id,))
+        await self._db.execute("DELETE FROM tasks WHERE project_id = ?", (project_id,))
+        await self._db.execute("DELETE FROM repos WHERE project_id = ?", (project_id,))
+        await self._db.execute("DELETE FROM events WHERE project_id = ?", (project_id,))
+        await self._db.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        await self._db.commit()
 
     # --- Events ---
 

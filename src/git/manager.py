@@ -65,6 +65,32 @@ class GitManager:
             self._run(["merge", "--abort"], cwd=checkout_path)
             return False
 
+    def create_worktree(self, source_path: str, worktree_path: str, branch: str) -> None:
+        """Create a git worktree for agent isolation on linked repos."""
+        os.makedirs(os.path.dirname(worktree_path), exist_ok=True)
+        self._run(["worktree", "add", "-b", branch, worktree_path], cwd=source_path)
+
+    def remove_worktree(self, source_path: str, worktree_path: str) -> None:
+        """Remove a git worktree."""
+        try:
+            self._run(["worktree", "remove", worktree_path], cwd=source_path)
+        except GitError:
+            # Force remove if normal remove fails
+            self._run(["worktree", "remove", "--force", worktree_path], cwd=source_path)
+
+    def init_repo(self, path: str) -> None:
+        """Initialize a new git repo with an empty initial commit."""
+        os.makedirs(path, exist_ok=True)
+        self._run(["init"], cwd=path)
+        self._run(["commit", "--allow-empty", "-m", "Initial commit"], cwd=path)
+
+    def get_diff(self, checkout_path: str, base_branch: str = "main") -> str:
+        """Return the full diff against base branch."""
+        try:
+            return self._run(["diff", base_branch], cwd=checkout_path)
+        except GitError:
+            return ""
+
     def get_changed_files(self, checkout_path: str, base_branch: str = "main") -> list[str]:
         try:
             output = self._run(
