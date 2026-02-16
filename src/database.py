@@ -341,6 +341,8 @@ class Database:
         await self._db.commit()
 
     async def delete_task(self, task_id: str) -> None:
+        await self._db.execute("DELETE FROM task_results WHERE task_id = ?", [task_id])
+        await self._db.execute("DELETE FROM token_ledger WHERE task_id = ?", [task_id])
         await self._db.execute("DELETE FROM task_dependencies WHERE task_id = ? OR depends_on_task_id = ?", [task_id, task_id])
         await self._db.execute("DELETE FROM task_criteria WHERE task_id = ?", [task_id])
         await self._db.execute("DELETE FROM task_context WHERE task_id = ?", [task_id])
