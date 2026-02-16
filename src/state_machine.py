@@ -33,3 +33,43 @@ def task_transition(current: TaskStatus, event: TaskEvent) -> TaskStatus:
     if key not in VALID_TASK_TRANSITIONS:
         raise InvalidTransition(current, event)
     return VALID_TASK_TRANSITIONS[key]
+
+
+class CyclicDependencyError(Exception):
+    def __init__(self, cycle: list[str] | None = None):
+        msg = "Cyclic dependency detected"
+        if cycle:
+            msg += f": {' -> '.join(cycle)}"
+        super().__init__(msg)
+
+
+def validate_dag(deps: dict[str, set[str]]) -> None:
+    """Validate that the dependency graph is a DAG (no cycles). Uses DFS."""
+    WHITE, GRAY, BLACK = 0, 1, 2
+    all_nodes = set(deps.keys())
+    for targets in deps.values():
+        all_nodes.update(targets)
+
+    color: dict[str, int] = {n: WHITE for n in all_nodes}
+
+    def dfs(node: str) -> None:
+        color[node] = GRAY
+        for dep in deps.get(node, set()):
+            if color[dep] == GRAY:
+                raise CyclicDependencyError([node, dep])
+            if color[dep] == WHITE:
+                dfs(dep)
+        color[node] = BLACK
+
+    for node in all_nodes:
+        if color[node] == WHITE:
+            dfs(node)
+
+
+def validate_dag_with_new_edge(
+    deps: dict[str, set[str]], task_id: str, depends_on: str
+) -> None:
+    """Validate that adding a new edge doesn't create a cycle."""
+    new_deps = {k: set(v) for k, v in deps.items()}
+    new_deps.setdefault(task_id, set()).add(depends_on)
+    validate_dag(new_deps)

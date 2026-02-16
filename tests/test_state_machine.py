@@ -70,3 +70,50 @@ class TestTransitionTableCompleteness:
         """PAUSED must always have a path back to READY (deadlock prevention)."""
         result = task_transition(TaskStatus.PAUSED, TaskEvent.RESUME_TIMER)
         assert result == TaskStatus.READY
+
+
+from src.state_machine import validate_dag, validate_dag_with_new_edge, CyclicDependencyError
+
+
+class TestDAGValidation:
+    def test_no_dependencies(self):
+        deps = {}
+        validate_dag(deps)  # should not raise
+
+    def test_linear_chain(self):
+        deps = {"t-2": {"t-1"}, "t-3": {"t-2"}}
+        validate_dag(deps)  # should not raise
+
+    def test_diamond_dependency(self):
+        deps = {"t-3": {"t-1", "t-2"}, "t-4": {"t-3"}}
+        validate_dag(deps)  # should not raise
+
+    def test_self_dependency_rejected(self):
+        deps = {"t-1": {"t-1"}}
+        with pytest.raises(CyclicDependencyError):
+            validate_dag(deps)
+
+    def test_two_node_cycle_rejected(self):
+        deps = {"t-1": {"t-2"}, "t-2": {"t-1"}}
+        with pytest.raises(CyclicDependencyError):
+            validate_dag(deps)
+
+    def test_three_node_cycle_rejected(self):
+        deps = {"t-1": {"t-2"}, "t-2": {"t-3"}, "t-3": {"t-1"}}
+        with pytest.raises(CyclicDependencyError):
+            validate_dag(deps)
+
+    def test_cycle_in_larger_graph_rejected(self):
+        deps = {
+            "t-2": {"t-4"},
+            "t-3": {"t-2"},
+            "t-4": {"t-3"},
+        }
+        with pytest.raises(CyclicDependencyError):
+            validate_dag(deps)
+
+    def test_add_dependency_validates(self):
+        """Adding a dependency that would create a cycle is rejected."""
+        existing = {"t-2": {"t-1"}, "t-3": {"t-2"}}
+        with pytest.raises(CyclicDependencyError):
+            validate_dag_with_new_edge(existing, "t-1", depends_on="t-3")
