@@ -347,6 +347,42 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "list_notes",
+        "description": "List all notes for a project. Notes are markdown documents stored in the project workspace.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "write_note",
+        "description": "Create or overwrite a project note. Use to create new notes or to save edits (read with read_file first, modify, then write back).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "title": {"type": "string", "description": "Note title (used as filename)"},
+                "content": {"type": "string", "description": "Full markdown content"},
+            },
+            "required": ["project_id", "title", "content"],
+        },
+    },
+    {
+        "name": "delete_note",
+        "description": "Delete a project note.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "title": {"type": "string", "description": "Note title (as used when creating it)"},
+            },
+            "required": ["project_id", "title"],
+        },
+    },
 ]
 
 SYSTEM_PROMPT_TEMPLATE = """\
