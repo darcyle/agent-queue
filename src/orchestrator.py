@@ -394,10 +394,18 @@ class Orchestrator:
         thread_send: NotifyCallback | None = None
         if self._create_thread:
             try:
-                thread_name = f"{task.id} — {task.title}"[:100]
+                thread_name = f"{task.id} | {task.title}"[:100]
                 thread_send = await self._create_thread(thread_name, start_msg)
+                if thread_send:
+                    print(f"Created thread for task {task.id}")
+                else:
+                    print(f"Thread creation returned None for task {task.id}")
             except Exception as e:
+                import traceback
                 print(f"Failed to create thread for task {task.id}: {e}")
+                traceback.print_exc()
+        else:
+            print(f"No thread callback set for task {task.id}")
 
         adapter = self._adapter_factory.create("claude")
         self._adapters[action.agent_id] = adapter

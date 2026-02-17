@@ -654,14 +654,17 @@ class AgentQueueBot(commands.Bot):
     async def _create_task_thread(self, thread_name: str, initial_message: str):
         """Create a Discord thread for streaming agent output. Returns a send callback."""
         if not self._notifications_channel:
+            print("Cannot create thread: no notifications channel")
             return None
 
+        print(f"Creating thread: {thread_name}")
         # Create the thread with an initial message
         msg = await self._notifications_channel.send(
             f"**Agent working:** {thread_name}"
         )
         thread = await msg.create_thread(name=thread_name)
         await thread.send(initial_message)
+        print(f"Thread created: {thread.id}")
 
         async def send_to_thread(text: str) -> None:
             try:
