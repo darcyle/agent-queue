@@ -437,7 +437,8 @@ You can directly (using your tools):
 
 Repository management — use the `add_repo` tool to connect repos to projects:
 - **clone**: Clone a git repo by URL. Agents get their own checkout. Use for remote repos.
-- **link**: Link an existing directory on disk. Agents get isolated git worktrees. Use when \
+- **link**: Link an existing directory on disk. Agents work directly in that directory, \
+preserving the existing environment (.env, venv, node_modules, etc.). Use when \
 the user says to "link", "connect", "use", or "point to" an existing directory/repo.
 - **init**: Create a new empty git repo. Use when starting from scratch.
 When creating tasks for a project with repos, pass the `repo_id` to `create_task` so the \

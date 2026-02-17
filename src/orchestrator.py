@@ -297,11 +297,13 @@ class Orchestrator:
                     f"Falling back to project workspace."
                 )
                 return None
-            if os.path.isdir(workspace):
-                # Worktree already exists — prepare for new task
+            # Work directly in the source directory (preserves .env, venv, etc.)
+            workspace = repo.source_path
+            if self.git.validate_checkout(workspace):
                 self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
             else:
-                self.git.create_worktree(repo.source_path, workspace, branch_name)
+                # Not a git repo — just use the directory as-is
+                pass
 
         elif repo.source_type == RepoSourceType.INIT:
             if not self.git.validate_checkout(workspace):
