@@ -34,6 +34,16 @@ class GitManager:
         except GitError:
             return False
 
+    def _is_worktree(self, checkout_path: str) -> bool:
+        """Check if the given path is a git worktree (not the main working tree)."""
+        try:
+            # In a worktree, git-dir points to .git/worktrees/<name>
+            # In a normal repo, git-dir is just .git
+            git_dir = self._run(["rev-parse", "--git-dir"], cwd=checkout_path)
+            return "worktrees" in git_dir
+        except GitError:
+            return False
+
     def create_branch(self, checkout_path: str, branch_name: str) -> None:
         self._run(["checkout", "-b", branch_name], cwd=checkout_path)
 
@@ -41,13 +51,28 @@ class GitManager:
         self, checkout_path: str, branch_name: str,
         default_branch: str = "main",
     ) -> None:
+        # Check if this is a worktree
+        is_worktree = self._is_worktree(checkout_path)
+
         self._run(["fetch", "origin"], cwd=checkout_path)
-        self._run(["checkout", default_branch], cwd=checkout_path)
-        try:
-            self._run(["pull", "origin", default_branch], cwd=checkout_path)
-        except GitError:
-            pass  # may fail if no upstream tracking
-        self._run(["checkout", "-b", branch_name], cwd=checkout_path)
+
+        if is_worktree:
+            # In a worktree, we can't checkout the default branch if it's already
+            # checked out in the source repo. Instead, fetch updates and create
+            # the new branch directly from the remote default branch.
+            try:
+                self._run(["checkout", "-b", branch_name, f"origin/{default_branch}"], cwd=checkout_path)
+            except GitError:
+                # If branch creation fails, try to just switch to existing branch
+                self._run(["checkout", branch_name], cwd=checkout_path)
+        else:
+            # Normal checkout flow: update default branch then create task branch
+            self._run(["checkout", default_branch], cwd=checkout_path)
+            try:
+                self._run(["pull", "origin", default_branch], cwd=checkout_path)
+            except GitError:
+                pass  # may fail if no upstream tracking
+            self._run(["checkout", "-b", branch_name], cwd=checkout_path)
 
     def push_branch(self, checkout_path: str, branch_name: str) -> None:
         self._run(["push", "origin", branch_name], cwd=checkout_path)

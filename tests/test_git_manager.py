@@ -58,3 +58,42 @@ class TestGitManager:
         mgr = GitManager()
         assert mgr.slugify("Implement OAuth Login!") == "implement-oauth-login"
         assert mgr.slugify("fix  multiple   spaces") == "fix-multiple-spaces"
+
+    def test_is_worktree(self, git_repo, tmp_path):
+        """Test worktree detection."""
+        mgr = GitManager()
+        # Regular clone should not be detected as worktree
+        assert not mgr._is_worktree(git_repo["clone"])
+
+        # Create a worktree
+        worktree_path = str(tmp_path / "worktree-test")
+        mgr.create_worktree(git_repo["clone"], worktree_path, "wt-branch")
+
+        # Worktree should be detected as worktree
+        assert mgr._is_worktree(worktree_path)
+
+    def test_prepare_for_task_worktree(self, git_repo, tmp_path):
+        """Test prepare_for_task works correctly in worktree context."""
+        mgr = GitManager()
+
+        # Create a worktree
+        worktree_path = str(tmp_path / "worktree-task")
+        mgr.create_worktree(git_repo["clone"], worktree_path, "initial-branch")
+
+        # Verify the worktree was created and is on the initial branch
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=worktree_path, capture_output=True, text=True,
+        )
+        assert result.stdout.strip() == "initial-branch"
+
+        # Now prepare for a new task - this should not fail even though
+        # 'main' is checked out in the source repo
+        mgr.prepare_for_task(worktree_path, "task-2/another-feature")
+
+        # Verify we're now on the new task branch
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=worktree_path, capture_output=True, text=True,
+        )
+        assert result.stdout.strip() == "task-2/another-feature"
