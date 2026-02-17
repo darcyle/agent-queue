@@ -6,6 +6,16 @@ from dataclasses import dataclass, field
 from src.adapters.base import AgentAdapter, MessageCallback
 from src.models import AgentOutput, AgentResult, TaskContext
 
+# Import SDK types for isinstance checks (lazy, set in wait())
+_sdk_types_loaded = False
+_AssistantMessage = None
+_ResultMessage = None
+_UserMessage = None
+_TextBlock = None
+_ThinkingBlock = None
+_ToolUseBlock = None
+_ToolResultBlock = None
+
 
 @dataclass
 class ClaudeAdapterConfig:
@@ -35,6 +45,20 @@ class ClaudeAdapter(AgentAdapter):
                 os.environ.pop(var, None)
 
             from claude_agent_sdk import query, ClaudeAgentOptions
+            from claude_agent_sdk.types import (
+                AssistantMessage, ResultMessage, UserMessage,
+                TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock,
+            )
+            global _sdk_types_loaded, _AssistantMessage, _ResultMessage, _UserMessage
+            global _TextBlock, _ThinkingBlock, _ToolUseBlock, _ToolResultBlock
+            _AssistantMessage = AssistantMessage
+            _ResultMessage = ResultMessage
+            _UserMessage = UserMessage
+            _TextBlock = TextBlock
+            _ThinkingBlock = ThinkingBlock
+            _ToolUseBlock = ToolUseBlock
+            _ToolResultBlock = ToolResultBlock
+            _sdk_types_loaded = True
 
             options = ClaudeAgentOptions(
                 allowed_tools=self._config.allowed_tools,
@@ -84,8 +108,14 @@ class ClaudeAdapter(AgentAdapter):
                         # Debug: log unhandled message structure
                         print(f"Claude adapter: unhandled message: {repr(message)[:300]}")
 
-                # Capture result
-                if hasattr(message, "result"):
+                # Capture result and token usage from ResultMessage
+                if isinstance(message, ResultMessage):
+                    if message.result:
+                        summary_parts.append(str(message.result))
+                    usage = getattr(message, "usage", None)
+                    if usage and isinstance(usage, dict):
+                        tokens_used = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+                elif hasattr(message, "result") and message.result:
                     summary_parts.append(str(message.result))
 
             print(f"Claude adapter: query completed, {len(summary_parts)} result parts")
@@ -125,47 +155,75 @@ class ClaudeAdapter(AgentAdapter):
 
     def _extract_message_text(self, message) -> str | None:
         """Extract a human-readable string from a claude_agent_sdk message."""
-        msg_type = getattr(message, "type", None)
-        if not msg_type:
+        if not _sdk_types_loaded:
             return None
 
-        # Assistant messages with content blocks
-        if msg_type == "assistant":
+        # AssistantMessage — Claude's response with content blocks
+        if isinstance(message, _AssistantMessage):
             content = getattr(message, "content", None)
             if not content:
                 return None
             parts = []
             for block in content:
-                block_type = getattr(block, "type", None)
-                if block_type == "text":
+                if isinstance(block, _ThinkingBlock):
+                    thinking = getattr(block, "thinking", "")
+                    if thinking:
+                        # Truncate long thinking blocks
+                        preview = thinking[:500]
+                        if len(thinking) > 500:
+                            preview += "..."
+                        parts.append(f"*thinking:* {preview}")
+                elif isinstance(block, _TextBlock):
                     text = getattr(block, "text", "")
                     if text:
                         parts.append(text)
-                elif block_type == "tool_use":
+                elif isinstance(block, _ToolUseBlock):
                     name = getattr(block, "name", "unknown")
                     inp = getattr(block, "input", {})
-                    # Show command for Bash, path for Read/Write/Edit
                     detail = ""
                     if name == "Bash" and isinstance(inp, dict):
-                        detail = f": `{inp.get('command', '')[:100]}`"
-                    elif name in ("Read", "Write", "Edit") and isinstance(inp, dict):
-                        path = inp.get("file_path", inp.get("path", ""))
+                        cmd = inp.get("command", "")[:100]
+                        detail = f": `{cmd}`" if cmd else ""
+                    elif name in ("Read", "Write", "Edit", "Glob", "Grep") and isinstance(inp, dict):
+                        path = inp.get("file_path", inp.get("path", inp.get("pattern", "")))
                         detail = f": `{path}`" if path else ""
                     parts.append(f"**[{name}{detail}]**")
+                elif isinstance(block, _ToolResultBlock):
+                    content_val = getattr(block, "content", None)
+                    is_error = getattr(block, "is_error", False)
+                    if content_val and isinstance(content_val, str):
+                        prefix = "**Error:**" if is_error else ""
+                        preview = content_val[:300]
+                        if len(content_val) > 300:
+                            preview += "..."
+                        parts.append(f"{prefix}```\n{preview}\n```")
             return "\n".join(parts) if parts else None
 
-        # Tool result messages
-        if msg_type == "tool_result":
-            content = getattr(message, "content", None)
-            if content and isinstance(content, str) and len(content) < 500:
-                return f"```\n{content}\n```"
+        # UserMessage — tool results flowing back
+        if isinstance(message, _UserMessage):
+            result = getattr(message, "tool_use_result", None)
+            if result and isinstance(result, dict):
+                content_val = result.get("content", "")
+                if content_val and isinstance(content_val, str) and len(content_val) < 300:
+                    return f"```\n{content_val}\n```"
             return None
 
-        # Result / completion message
-        if msg_type == "result":
+        # ResultMessage — final completion
+        if isinstance(message, _ResultMessage):
             result = getattr(message, "result", None)
+            cost = getattr(message, "total_cost_usd", None)
+            usage = getattr(message, "usage", None)
+            parts = []
             if result:
-                return f"**Result:** {result}"
+                parts.append(f"**Result:** {result}")
+            if cost is not None:
+                parts.append(f"Cost: ${cost:.4f}")
+            if usage and isinstance(usage, dict):
+                input_t = usage.get("input_tokens", 0)
+                output_t = usage.get("output_tokens", 0)
+                if input_t or output_t:
+                    parts.append(f"Tokens: {input_t:,} in / {output_t:,} out")
+            return "\n".join(parts) if parts else None
 
         return None
 
