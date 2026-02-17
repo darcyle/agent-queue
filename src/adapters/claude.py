@@ -122,24 +122,47 @@ class ClaudeAdapter(AgentAdapter):
 
     def _extract_message_text(self, message) -> str | None:
         """Extract a human-readable string from a claude_agent_sdk message."""
-        # Assistant text content
-        if hasattr(message, "type"):
-            msg_type = message.type
+        msg_type = getattr(message, "type", None)
+        if not msg_type:
+            return None
 
-            # Assistant messages with text content
-            if msg_type == "assistant" and hasattr(message, "content"):
-                parts = []
-                for block in message.content:
-                    if hasattr(block, "type"):
-                        if block.type == "text" and hasattr(block, "text"):
-                            parts.append(block.text)
-                        elif block.type == "tool_use" and hasattr(block, "name"):
-                            parts.append(f"[using tool: {block.name}]")
-                return "\n".join(parts) if parts else None
+        # Assistant messages with content blocks
+        if msg_type == "assistant":
+            content = getattr(message, "content", None)
+            if not content:
+                return None
+            parts = []
+            for block in content:
+                block_type = getattr(block, "type", None)
+                if block_type == "text":
+                    text = getattr(block, "text", "")
+                    if text:
+                        parts.append(text)
+                elif block_type == "tool_use":
+                    name = getattr(block, "name", "unknown")
+                    inp = getattr(block, "input", {})
+                    # Show command for Bash, path for Read/Write/Edit
+                    detail = ""
+                    if name == "Bash" and isinstance(inp, dict):
+                        detail = f": `{inp.get('command', '')[:100]}`"
+                    elif name in ("Read", "Write", "Edit") and isinstance(inp, dict):
+                        path = inp.get("file_path", inp.get("path", ""))
+                        detail = f": `{path}`" if path else ""
+                    parts.append(f"**[{name}{detail}]**")
+            return "\n".join(parts) if parts else None
 
-            # Result message
-            if msg_type == "result" and hasattr(message, "result"):
-                return f"**Result:** {message.result}"
+        # Tool result messages
+        if msg_type == "tool_result":
+            content = getattr(message, "content", None)
+            if content and isinstance(content, str) and len(content) < 500:
+                return f"```\n{content}\n```"
+            return None
+
+        # Result / completion message
+        if msg_type == "result":
+            result = getattr(message, "result", None)
+            if result:
+                return f"**Result:** {result}"
 
         return None
 
