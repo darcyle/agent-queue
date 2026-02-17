@@ -445,8 +445,16 @@ Repository management — use the `add_repo` tool to connect repos to projects:
 preserving the existing environment (.env, venv, node_modules, etc.). Use when \
 the user says to "link", "connect", "use", or "point to" an existing directory/repo.
 - **init**: Create a new empty git repo. Use when starting from scratch.
-When creating tasks for a project with repos, pass the `repo_id` to `create_task` so the \
-agent gets an isolated workspace with its own branch.
+
+Agent workspaces — agents can be assigned a repo as their permanent workspace:
+- Use `create_agent` with `repo_id` to assign a linked repo to an agent.
+- When a task doesn't specify a repo_id, the agent uses its assigned repo automatically.
+- For parallel work, link multiple checkouts of the same project as separate repos, then \
+assign each agent to its own checkout. Each agent works in a fully-configured directory \
+with its own .env, packages, etc.
+- Example setup: link ~/project as "checkout-1", link ~/project-2 as "checkout-2", \
+create Agent-1 with repo checkout-1, create Agent-2 with repo checkout-2.
+- When creating tasks, you don't need to specify repo_id — each agent uses its assigned workspace.
 
 Notes management — use notes to build up project knowledge:
 - Use `list_notes` to see what notes exist for a project
