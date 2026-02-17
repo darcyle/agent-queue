@@ -80,6 +80,9 @@ class ClaudeAdapter(AgentAdapter):
                     text = self._extract_message_text(message)
                     if text:
                         await on_message(text)
+                    else:
+                        # Debug: log unhandled message structure
+                        print(f"Claude adapter: unhandled message: {repr(message)[:300]}")
 
                 # Capture result
                 if hasattr(message, "result"):
