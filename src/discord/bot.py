@@ -566,6 +566,10 @@ class AgentQueueBot(commands.Bot):
                 else:
                     print(f"Warning: control channel '{control_name}' not found")
 
+                # Wire up thread creation for task streaming
+                if self._notifications_channel:
+                    self.orchestrator.set_create_thread_callback(self._create_task_thread)
+
         # Initialize LLM client
         try:
             self._llm_client, self._llm_model = _create_llm_client()
@@ -646,6 +650,26 @@ class AgentQueueBot(commands.Bot):
         """Send a message to the control channel."""
         if self._control_channel:
             await self._send_long_message(self._control_channel, text)
+
+    async def _create_task_thread(self, thread_name: str, initial_message: str):
+        """Create a Discord thread for streaming agent output. Returns a send callback."""
+        if not self._notifications_channel:
+            return None
+
+        # Create the thread with an initial message
+        msg = await self._notifications_channel.send(
+            f"**Agent working:** {thread_name}"
+        )
+        thread = await msg.create_thread(name=thread_name)
+        await thread.send(initial_message)
+
+        async def send_to_thread(text: str) -> None:
+            try:
+                await self._send_long_message(thread, text)
+            except Exception as e:
+                print(f"Thread send error: {e}")
+
+        return send_to_thread
 
     async def _validate_path(self, path: str) -> str | None:
         """Validate that a path resolves within workspace_dir or a registered repo source_path.

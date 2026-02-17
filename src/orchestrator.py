@@ -23,6 +23,10 @@ from src.tokens.budget import BudgetManager
 # Callback that sends a formatted string to a Discord channel
 NotifyCallback = Callable[[str], Awaitable[None]]
 
+# Callback that creates a thread and returns a send function for that thread
+# Args: (thread_name, initial_message) -> callback to send messages to the thread
+CreateThreadCallback = Callable[[str, str], Awaitable[NotifyCallback | None]]
+
 
 class Orchestrator:
     def __init__(self, config: AppConfig, adapter_factory=None):
@@ -38,6 +42,7 @@ class Orchestrator:
         self._running_tasks: dict[str, asyncio.Task] = {}  # task_id -> asyncio.Task
         self._notify: NotifyCallback | None = None
         self._control_notify: NotifyCallback | None = None
+        self._create_thread: CreateThreadCallback | None = None
 
     def set_notify_callback(self, callback: NotifyCallback) -> None:
         """Set a callback for sending notifications (e.g. to Discord)."""
@@ -46,6 +51,10 @@ class Orchestrator:
     def set_control_callback(self, callback: NotifyCallback) -> None:
         """Set a callback for posting full summaries to the control channel."""
         self._control_notify = callback
+
+    def set_create_thread_callback(self, callback: CreateThreadCallback) -> None:
+        """Set a callback for creating per-task threads."""
+        self._create_thread = callback
 
     async def stop_task(self, task_id: str) -> str | None:
         """Stop an in-progress task. Returns None on success, error string on failure."""
@@ -374,11 +383,21 @@ class Orchestrator:
         agent = await self.db.get_agent(action.agent_id)
 
         # Notify that work is starting
-        await self._notify_channel(
+        start_msg = (
             f"**Task Started:** `{task.id}` — {task.title}\n"
             f"Agent: {agent.name}"
             + (f"\nBranch: `{task.branch_name}`" if task.branch_name else "")
         )
+        await self._notify_channel(start_msg)
+
+        # Create a thread for streaming agent output
+        thread_send: NotifyCallback | None = None
+        if self._create_thread:
+            try:
+                thread_name = f"{task.id} — {task.title}"[:100]
+                thread_send = await self._create_thread(thread_name, start_msg)
+            except Exception as e:
+                print(f"Failed to create thread for task {task.id}: {e}")
 
         adapter = self._adapter_factory.create("claude")
         self._adapters[action.agent_id] = adapter
@@ -399,12 +418,23 @@ class Orchestrator:
         )
         await adapter.start(ctx)
 
-        # Build a message callback that prefixes agent output with task info
+        # Stream agent messages to the task thread (or fall back to notifications)
         async def forward_agent_message(text: str) -> None:
-            header = f"`{task.id}` | **{agent.name}**\n"
-            await self._notify_channel(header + text)
+            if thread_send:
+                await thread_send(text)
+            else:
+                header = f"`{task.id}` | **{agent.name}**\n"
+                await self._notify_channel(header + text)
 
         output = await adapter.wait(on_message=forward_agent_message)
+
+        # Post completion summary to the thread
+        if thread_send:
+            status = "Completed" if output.result == AgentResult.COMPLETED else output.result.value
+            summary = f"**{status}** — Tokens: {output.tokens_used:,}"
+            if output.error_message:
+                summary += f"\nError: {output.error_message}"
+            await thread_send(summary)
 
         # Record tokens
         if output.tokens_used > 0:
