@@ -527,6 +527,7 @@ class AgentQueueBot(commands.Bot):
         self._channel_summaries: dict[int, tuple[int, str]] = {}  # channel_id -> (up_to_message_id, summary)
         self._channel_locks: dict[int, asyncio.Lock] = {}  # prevent concurrent LLM calls per channel
         self._restart_requested = False
+        self._boot_time: float | None = None
 
     async def setup_hook(self) -> None:
         from src.discord.commands import setup_commands
@@ -538,6 +539,7 @@ class AgentQueueBot(commands.Bot):
 
     async def on_ready(self) -> None:
         print(f"Discord bot connected as {self.user} (guild: {self.config.discord.guild_id})")
+        self._boot_time = discord.utils.utcnow().timestamp()
 
         # Cache channels
         if self.config.discord.guild_id:
@@ -675,6 +677,10 @@ class AgentQueueBot(commands.Bot):
         # Keep the set from growing unbounded
         if len(self._processed_messages) > 200:
             self._processed_messages = set(list(self._processed_messages)[-100:])
+
+        # Skip messages created before the bot started (prevents reprocessing after restart)
+        if self._boot_time and message.created_at.timestamp() < self._boot_time:
+            return
 
         # Only respond in the control channel, or when mentioned
         is_control = (
