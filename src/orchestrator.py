@@ -460,6 +460,13 @@ class Orchestrator:
         # Re-fetch task in case retry_count changed
         task = await self.db.get_task(action.task_id)
 
+        # Helper: post to thread if available, otherwise to notifications
+        async def _post(msg: str) -> None:
+            if thread_send:
+                await thread_send(msg)
+            else:
+                await self._notify_channel(msg)
+
         # Handle result
         if output.result == AgentResult.COMPLETED:
             await self.db.update_task(action.task_id,
@@ -475,12 +482,10 @@ class Orchestrator:
             try:
                 await self._complete_workspace(task, agent)
             except Exception as e:
-                await self._notify_channel(
+                await _post(
                     f"**Post-completion git error** for task `{task.id}`: {e}"
                 )
-            await self._notify_channel(
-                format_task_completed(task, agent, output)
-            )
+            await _post(format_task_completed(task, agent, output))
             # Post full summary to control channel
             ctrl_lines = [
                 f"**Task Completed:** `{task.id}` — {task.title}",
@@ -498,15 +503,13 @@ class Orchestrator:
                 await self.db.update_task(action.task_id,
                                           status=TaskStatus.BLOCKED.value,
                                           retry_count=new_retry)
-                await self._notify_channel(format_task_blocked(task))
+                await _post(format_task_blocked(task))
             else:
                 await self.db.update_task(action.task_id,
                                           status=TaskStatus.READY.value,
                                           retry_count=new_retry,
                                           assigned_agent_id=None)
-                await self._notify_channel(
-                    format_task_failed(task, agent, output)
-                )
+                await _post(format_task_failed(task, agent, output))
             # Post failure details to control channel
             ctrl_lines = [
                 f"**Task Failed:** `{task.id}` — {task.title}",
@@ -532,7 +535,7 @@ class Orchestrator:
                 resume_after=time.time() + retry_secs,
             )
             reason = "rate limit" if output.result == AgentResult.PAUSED_RATE_LIMIT else "token exhaustion"
-            await self._notify_channel(
+            await _post(
                 f"**Task Paused:** `{task.id}` — {task.title}\n"
                 f"Reason: {reason}. Will retry in {retry_secs}s."
             )
