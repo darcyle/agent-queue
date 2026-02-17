@@ -149,9 +149,29 @@ class Orchestrator:
             traceback.print_exc()
 
     async def _execute_task_safe(self, action: AssignAction) -> None:
-        """Wrapper around _execute_task that catches exceptions."""
+        """Wrapper around _execute_task that catches exceptions and enforces timeout."""
+        timeout = self.config.agents_config.stuck_timeout_seconds
         try:
-            await self._execute_task(action)
+            await asyncio.wait_for(self._execute_task(action), timeout=timeout)
+        except asyncio.TimeoutError:
+            print(f"Task {action.task_id} timed out after {timeout}s")
+            # Stop the adapter if it's still running
+            if action.agent_id in self._adapters:
+                try:
+                    await self._adapters[action.agent_id].stop()
+                except Exception:
+                    pass
+            await self.db.update_task(
+                action.task_id, status=TaskStatus.BLOCKED.value,
+                assigned_agent_id=None)
+            await self.db.update_agent(
+                action.agent_id, state=AgentState.IDLE,
+                current_task_id=None)
+            self._adapters.pop(action.agent_id, None)
+            await self._notify_channel(
+                f"**Task Timed Out:** `{action.task_id}` — exceeded {timeout}s. Marked as BLOCKED."
+            )
+            return
         except Exception as e:
             print(f"Error executing task {action.task_id}: {e}")
             import traceback
