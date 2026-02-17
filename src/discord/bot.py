@@ -202,6 +202,19 @@ TOOLS = [
         },
     },
     {
+        "name": "set_active_project",
+        "description": "Set or clear the active project. When set, all commands default to this project without needing to specify project_id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to set as active, or empty/null to clear",
+                },
+            },
+        },
+    },
+    {
         "name": "get_task",
         "description": "Get full details of a specific task including its description.",
         "input_schema": {
@@ -541,6 +554,7 @@ class AgentQueueBot(commands.Bot):
         self._channel_locks: dict[int, asyncio.Lock] = {}  # prevent concurrent LLM calls per channel
         self._restart_requested = False
         self._boot_time: float | None = None
+        self._active_project_id: str | None = None
 
     async def setup_hook(self) -> None:
         from src.discord.commands import setup_commands
@@ -686,6 +700,17 @@ class AgentQueueBot(commands.Bot):
                 print(f"Thread send error: {e}")
 
         return send_to_thread
+
+    def _build_system_prompt(self) -> str:
+        prompt = SYSTEM_PROMPT_TEMPLATE.format(workspace_dir=self.config.workspace_dir)
+        if self._active_project_id:
+            prompt += (
+                f"\n\nACTIVE PROJECT: `{self._active_project_id}`. "
+                f"Use this as the default project_id for all tools unless the user "
+                f"explicitly specifies a different project. When creating tasks, "
+                f"listing notes, or any project-scoped operation, use this project."
+            )
+        return prompt
 
     async def _validate_path(self, path: str) -> str | None:
         """Validate that a path resolves within workspace_dir or a registered repo source_path.
@@ -894,7 +919,7 @@ class AgentQueueBot(commands.Bot):
             resp = self._llm_client.messages.create(
                 model=self._llm_model,
                 max_tokens=1024,
-                system=SYSTEM_PROMPT_TEMPLATE.format(workspace_dir=self.config.workspace_dir),
+                system=self._build_system_prompt(),
                 tools=TOOLS,
                 messages=messages,
             )
@@ -1217,6 +1242,18 @@ class AgentQueueBot(commands.Bot):
                 if repo_id:
                     result["repo_id"] = repo_id
                 return result
+
+            elif name == "set_active_project":
+                pid = input_data.get("project_id")
+                if pid:
+                    project = await db.get_project(pid)
+                    if not project:
+                        return {"error": f"Project '{pid}' not found"}
+                    self._active_project_id = pid
+                    return {"active_project": pid, "name": project.name}
+                else:
+                    self._active_project_id = None
+                    return {"active_project": None, "message": "Active project cleared"}
 
             elif name == "add_repo":
                 project_id = input_data["project_id"]
