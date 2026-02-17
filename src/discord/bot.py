@@ -183,7 +183,7 @@ TOOLS = [
     },
     {
         "name": "create_agent",
-        "description": "Register a new agent that can work on tasks.",
+        "description": "Register a new agent that can work on tasks. Optionally assign a repo so the agent works in that directory.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -192,6 +192,10 @@ TOOLS = [
                     "type": "string",
                     "description": "Agent type (claude, codex, cursor, aider)",
                     "default": "claude",
+                },
+                "repo_id": {
+                    "type": "string",
+                    "description": "Repo ID to assign as this agent's workspace (optional)",
                 },
             },
             "required": ["name"],
@@ -1189,13 +1193,22 @@ class AgentQueueBot(commands.Bot):
 
             elif name == "create_agent":
                 agent_id = input_data["name"].lower().replace(" ", "-")
+                repo_id = input_data.get("repo_id")
+                if repo_id:
+                    repo = await db.get_repo(repo_id)
+                    if not repo:
+                        return {"error": f"Repo '{repo_id}' not found"}
                 agent = Agent(
                     id=agent_id,
                     name=input_data["name"],
                     agent_type=input_data.get("agent_type", "claude"),
+                    repo_id=repo_id,
                 )
                 await db.create_agent(agent)
-                return {"created": agent_id, "name": agent.name}
+                result = {"created": agent_id, "name": agent.name}
+                if repo_id:
+                    result["repo_id"] = repo_id
+                return result
 
             elif name == "add_repo":
                 project_id = input_data["project_id"]

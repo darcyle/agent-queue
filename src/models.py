@@ -116,6 +116,7 @@ class Agent:
     state: AgentState = AgentState.IDLE
     current_task_id: str | None = None
     checkout_path: str | None = None
+    repo_id: str | None = None
     pid: int | None = None
     last_heartbeat: float | None = None
     total_tokens_used: int = 0

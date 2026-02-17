@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS agents (
     state TEXT NOT NULL DEFAULT 'IDLE',
     current_task_id TEXT REFERENCES tasks(id),
     checkout_path TEXT,
+    repo_id TEXT REFERENCES repos(id),
     pid INTEGER,
     last_heartbeat REAL,
     total_tokens_used INTEGER NOT NULL DEFAULT 0,
@@ -416,12 +417,12 @@ class Database:
     async def create_agent(self, agent: Agent) -> None:
         await self._db.execute(
             "INSERT INTO agents (id, name, agent_type, state, current_task_id, "
-            "checkout_path, pid, last_heartbeat, total_tokens_used, "
+            "checkout_path, repo_id, pid, last_heartbeat, total_tokens_used, "
             "session_tokens_used, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (agent.id, agent.name, agent.agent_type,
              agent.state.value, agent.current_task_id,
-             agent.checkout_path, agent.pid, agent.last_heartbeat,
+             agent.checkout_path, agent.repo_id, agent.pid, agent.last_heartbeat,
              agent.total_tokens_used, agent.session_tokens_used, time.time()),
         )
         await self._db.commit()
@@ -469,6 +470,7 @@ class Database:
             state=AgentState(row["state"]),
             current_task_id=row["current_task_id"],
             checkout_path=row["checkout_path"],
+            repo_id=row["repo_id"] if "repo_id" in row.keys() else None,
             pid=row["pid"],
             last_heartbeat=row["last_heartbeat"],
             total_tokens_used=row["total_tokens_used"],

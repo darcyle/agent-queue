@@ -262,10 +262,12 @@ class Orchestrator:
 
     async def _prepare_workspace(self, task: Task, agent) -> str | None:
         """Prepare a workspace for the task. Returns the workspace path, or None for fallback."""
-        if not task.repo_id:
+        # Use task's repo, or fall back to agent's assigned repo
+        repo_id = task.repo_id or agent.repo_id
+        if not repo_id:
             return None  # No repo — use project workspace
 
-        repo = await self.db.get_repo(task.repo_id)
+        repo = await self.db.get_repo(repo_id)
         if not repo:
             await self._notify_channel(
                 f"**Warning:** Repo `{task.repo_id}` not found for task `{task.id}`. "
