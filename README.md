@@ -2,9 +2,11 @@
 
 **Put your AI agents to work. Go touch grass.**
 
-You've got Claude Code. It's incredible. But you're still babysitting it — watching the terminal, manually kicking off the next task, noticing when it stalls. Agent Queue fixes that. It runs your agents autonomously, in parallel, across all your projects, while you manage everything from Discord on your phone.
+If you're on Claude Max (or any subsidized plan with a big token budget), you're probably leaving most of it on the table. The tokens reset every few hours whether you used them or not. The throttle lifts at 3am and there's nobody at the keyboard. You finish a task, alt-tab away for ten minutes, and the agent sits idle. That's the real cost — not the tokens you spend, but the ones you waste by not having work queued up.
 
-No more sitting at your desk waiting for a task to finish so you can start the next one. Set your agents loose, get a notification when the work's done, and review the diff — from anywhere.
+Agent Queue is a task queue and orchestrator built specifically around this constraint. It keeps one or more Claude Code agents busy across all your projects, automatically recovers from rate limits, and queues the next task before the current one finishes. When the throttle window resets, work resumes immediately — whether you're awake or not.
+
+You manage everything from Discord on your phone. Queue up a week's worth of tasks before you leave the house. Come back to a stack of completed PRs.
 
 ## How it works
 
@@ -42,10 +44,17 @@ The bot is powered by Claude. It understands context, remembers what you were wo
 
 ## Why Agent Queue?
 
-Platforms like [OpenClaw](https://github.com/openclaw/openclaw) solve the general-purpose AI agent problem — connecting to email, calendars, browsers, and everything else. That's impressive, but it's a Swiss Army knife when you need a scalpel. Agent Queue does one thing: **keep your coding agents productive on your projects.**
+Subsidized Claude plans (Max, Team, etc.) give you a large rolling token budget that resets on a schedule. The catch: it's throttled. You hit the limit, you wait. The window resets, you're back.
 
+Most people treat this as a frustrating constraint. Agent Queue treats it as a design target. The system is built around the assumption that **your agents will hit rate limits, and work must continue anyway.** When a task stalls, Agent Queue pauses it, frees the agent, and picks up another task that isn't throttled. When the window resets, the paused task automatically resumes. No intervention required — the only thing that stops your agents from working is running out of tasks to give them.
+
+The scheduler is also token-aware by design: zero LLM calls for orchestration decisions. Every token the system spends is a token your agent spends on actual work.
+
+Platforms like [OpenClaw](https://github.com/openclaw/openclaw) solve the general-purpose AI agent problem — connecting to email, calendars, browsers, and everything else. That's impressive, but it's a Swiss Army knife when you need a scalpel. Agent Queue does one thing: **keep your coding agents saturating their token budget on your projects.**
+
+- **Built for throttled plans.** Auto-pauses on rate limits, auto-resumes when the window resets. Works overnight, works while you're out, works while you sleep.
 - **Development-specific.** Git branches, test verification, merge conflict handling. Not calendar automation.
-- **Deterministic scheduling.** No LLM calls to decide what to work on next. Zero tokens wasted on orchestration.
+- **Zero orchestration overhead.** No LLM calls to decide what to work on next. Every token goes to your agents.
 - **Lightweight.** One Python process, SQLite. Runs on a Raspberry Pi. No Redis, no Kubernetes.
 - **You're in control.** Nothing merges, nothing deploys without you seeing it. Discord notifications keep you in the loop from your phone.
 
@@ -184,9 +193,9 @@ The scheduler tracks a rolling window and favors projects below their target rat
 
 ### Token Budget Management
 
-- Per-project and global hard limits
-- Rate limit detection: when an agent hits a limit, work pauses automatically and resumes when the window resets
-- Token exhaustion pauses the task and frees the agent for other work
+- **Rate limit detection and recovery.** When an agent hits the throttle, the task pauses automatically. A timer fires when the window resets and work resumes — no manual intervention, no missed windows.
+- **Saturate your budget across multiple agents.** While one agent is throttled, others keep working on different projects or tasks.
+- Per-project and global hard limits for pay-as-you-go API keys
 - All usage visible from Discord: `tell me the token breakdown for my-app`
 
 ### Crash Recovery
