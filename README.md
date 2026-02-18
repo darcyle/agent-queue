@@ -1,172 +1,209 @@
 # Agent Queue
 
-**A lightweight orchestration system for AI coding agents.**
+**Put your AI agents to work. Go touch grass.**
 
-Agent Queue keeps your AI agents working while you sleep, eat, or live your life. It manages Claude Code, Codex, Cursor, and Aider sessions across multiple projects — feeding them tasks, handling rate limits, and letting you direct everything from Discord on your phone.
+You've got Claude Code. It's incredible. But you're still babysitting it — watching the terminal, manually kicking off the next task, noticing when it stalls. Agent Queue fixes that. It runs your agents autonomously, in parallel, across all your projects, while you manage everything from Discord on your phone.
+
+No more sitting at your desk waiting for a task to finish so you can start the next one. Set your agents loose, get a notification when the work's done, and review the diff — from anywhere.
+
+## How it works
+
+Agent Queue runs as a background daemon. You talk to it through a dedicated Discord channel — just type naturally, like you're texting a dev lead who has root access to your machine. It understands what you want and makes it happen.
+
+```
+You:     hey can you add a task to fix the login bug in my-app?
+         the error is "JWT expired" in auth.py line 47
+
+Bot:     Created task `task-89` — "Fix JWT expiry bug in auth.py"
+         Assigned to claude-1. Branch: task-89/fix-jwt-expiry-bug
+         I'll post updates in the task thread.
+
+[5 minutes later, in the task thread]
+
+Bot:     ✅ Task Complete — auth.py updated, tests passing
+         18,420 tokens · 2 files changed
+```
+
+The bot is powered by Claude. It understands context, remembers what you were working on, and acts — it doesn't just give you instructions on what to do yourself.
+
+## What it does
+
+**Runs agents in parallel.** Multiple Claude Code agents work simultaneously across your projects. Each agent gets its own workspace — linked to your existing directories, complete with your `.env`, your `node_modules`, your `venv`. No setup overhead per agent.
+
+**Manages the full task lifecycle.** Task created → agent assigned → branch created → work done → tests run → results posted. Retries on failure. Escalates to you when it's stuck. Never silently drops work.
+
+**Streams agent output to Discord threads.** Each task gets its own thread. Watch your agents work in real time. Reply to unblock them if they have a question.
+
+**Tracks token usage.** Per-project, per-task breakdowns. Know exactly where your API budget is going.
+
+**Persists everything.** SQLite-backed. Survives restarts. Pick up exactly where you left off.
+
+**Notes per project.** Keep a running markdown knowledge base for each project — architecture decisions, context, specs. Your agents can read and write notes too.
 
 ## Why Agent Queue?
 
-AI coding agents are powerful but babysitting them is a full-time job. You launch Claude Code on a task, it hits a rate limit, and work stops until you notice. You want three agents working on different features in parallel, but there's no way to coordinate them. You step away from your desk and lose visibility into what's happening.
+Platforms like [OpenClaw](https://github.com/openclaw/openclaw) solve the general-purpose AI agent problem — connecting to email, calendars, browsers, and everything else. That's impressive, but it's a Swiss Army knife when you need a scalpel. Agent Queue does one thing: **keep your coding agents productive on your projects.**
 
-Platforms like [OpenClaw](https://github.com/openclaw/openclaw) solve the general-purpose AI agent problem — connecting to your email, calendar, messaging apps, browser, and everything else. OpenClaw is impressive, but it's a Swiss Army knife when you need a scalpel. Its 145k-star ecosystem covers voice assistants, personal automation, cross-platform messaging, and enterprise governance. That's a lot of surface area when all you want is: **keep my coding agents productive on my projects.**
-
-Agent Queue is that scalpel. It does one thing well:
-
-- **Development-specific.** Task management with git branches, test verification, and merge conflict handling. Not email automation or calendar management.
-- **Deterministic orchestration.** The scheduler is a pure function — no LLM calls to decide what to work on next. When tokens run out, the system pauses and self-recovers. No wasted credits on orchestration overhead.
-- **Lightweight deployment.** A single Python process with SQLite. Runs on a Raspberry Pi. No Redis, no Kubernetes, no Docker required.
-- **Agent-agnostic.** First-class support for Claude Code (via the Python SDK), Codex CLI, Cursor CLI, and Aider. Add new agent types by implementing a four-method interface.
-- **Remote-first control.** Full project management from Discord. Create tasks, check status, approve work, and grant budgets from your phone while waiting in line at the grocery store.
+- **Development-specific.** Git branches, test verification, merge conflict handling. Not calendar automation.
+- **Deterministic scheduling.** No LLM calls to decide what to work on next. Zero tokens wasted on orchestration.
+- **Lightweight.** One Python process, SQLite. Runs on a Raspberry Pi. No Redis, no Kubernetes.
+- **You're in control.** Nothing merges, nothing deploys without you seeing it. Discord notifications keep you in the loop from your phone.
 
 ## Features
 
+### Conversational Control from Discord
+
+The primary interface is a Claude-powered bot in a dedicated Discord channel. Just talk to it.
+
+```
+You:     what's running?
+
+Bot:     ## Status
+         2 agents active:
+         • claude-1 → task-89 "Fix JWT expiry bug"
+         • claude-2 → task-91 "Add user settings page"
+         3 tasks queued for my-app
+
+You:     pause my-app while I'm on vacation
+
+Bot:     Project my-app paused. 3 queued tasks will wait.
+
+You:     actually show me what claude-1 finished yesterday
+
+Bot:     [shows diff, test results, files changed for task-87]
+```
+
+The bot has tools to read files, run shell commands, search your codebase, and manage everything in the system — all accessible through natural conversation.
+
+### Active Project Focus
+
+Set a project as active and every command defaults to it — no need to specify the project every time.
+
+```
+You:     set my-app as active
+
+Bot:     ✓ my-app is now the active project.
+
+You:     add a task to add dark mode
+
+Bot:     Created task in my-app: "Add dark mode support"
+```
+
+### Task Streaming into Threads
+
+When an agent picks up a task, a Discord thread is created automatically. The agent's output streams into that thread in real time. If the agent has a question, it shows up in the thread and you can reply to unblock it.
+
+```
+[Thread: task-89 | Fix JWT expiry bug]
+
+Agent is working...
+→ Reading auth.py
+→ Found the issue: token validation doesn't check exp claim
+→ Writing fix...
+→ Running tests: 14 passed ✓
+```
+
+### Repo Management — Link Your Existing Projects
+
+Don't want to clone a fresh copy? Link your existing directory. The agent works right in your project, with all your environment already set up.
+
+```
+You:     link ~/code/my-app as the my-app repo
+
+Bot:     ✓ Linked /home/jack/code/my-app as repo "my-app"
+         Agents will work directly in this directory.
+```
+
+Three repo modes:
+- **link** — Use an existing directory (your `.env`, `venv`, and `node_modules` included)
+- **clone** — Clone a remote repo; agents get their own checkouts
+- **init** — Start a new empty repo from scratch
+
+### Agent Workspaces
+
+Assign agents to repos as their permanent home base. Tasks go to agents automatically — no need to specify a repo per task.
+
+```
+You:     create agent claude-2 and assign it to the my-app repo
+
+Bot:     ✓ Agent claude-2 created, workspace: my-app
+```
+
+For parallel work, link multiple checkouts of the same project and assign one agent to each. Each agent works in a fully-configured directory with its own environment.
+
+### Project Notes
+
+Keep a markdown knowledge base for each project, accessible from Discord. Great for specs, architecture notes, and context for your agents.
+
+```
+You:     write a note for my-app called "auth-plan" with the
+         design for the new auth system
+
+Bot:     ✓ Note "auth-plan" saved to my-app workspace.
+
+You:     create tasks from the auth-plan note
+
+Bot:     I read the note. Here's what I'd create:
+         1. "Set up JWT validation middleware" — high priority
+         2. "Add refresh token endpoint"
+         3. "Update login flow to use new auth"
+         Create all three? (yes/no)
+```
+
+Agents can also write notes — great for brainstorming tasks where you want the output saved.
+
 ### Deterministic Task State Machine
 
-Every task follows a strict state machine with explicit transitions. No ambiguity, no stuck states, no deadlocks.
+Every task follows a strict lifecycle. No ambiguity, no stuck states.
 
 ```
 DEFINED → READY → ASSIGNED → IN_PROGRESS → VERIFYING → COMPLETED
-                                    │
-                          ┌─────────┼──────────┐
-                          ▼         ▼          ▼
-                       PAUSED   WAITING    FAILED
-                       (auto-   _INPUT     (retry or
-                       resume)  (Discord)   escalate)
+                                   │
+                         ┌─────────┼──────────┐
+                         ▼         ▼          ▼
+                      PAUSED   WAITING    FAILED
+                      (auto-   _INPUT     (retry or
+                      resume)  (Discord)  escalate)
 ```
 
-**Deadlock prevention is guaranteed by design:**
 - PAUSED tasks always have a resume timer — they never stall permanently
-- Circular dependencies are rejected at creation time (DAG validation)
-- Failed tasks retry up to a configurable limit, then escalate to you
-- Subtask completion rolls up automatically to parent tasks
+- Circular dependencies rejected at creation time
+- Failed tasks retry up to a configurable limit, then escalate to you via Discord
+- Subtask completion rolls up to parent tasks automatically
 
-### Multi-Agent, Multi-Project
+### Proportional Scheduling
 
-Run multiple agents across multiple projects simultaneously. Each agent gets its own git checkout — just like a real team of developers, each working in their own copy of the repo.
-
-```
-~/agent-queue-workspaces/
-  ├── project-alpha/
-  │   ├── agent-1/repo/     ← claude working on auth
-  │   └── agent-2/repo/     ← codex working on API
-  └── project-beta/
-      └── agent-3/repo/     ← aider working on tests
-```
-
-### Proportional Effort Allocation
-
-Assign weights to projects instead of hard token budgets. Agent Queue automatically distributes work proportionally:
+Assign weights to projects. Agent Queue distributes work proportionally across them.
 
 ```
-Project Alpha:  weight 3  →  75% of agent time
-Project Beta:   weight 1  →  25% of agent time
+my-app:       weight 3  →  75% of agent time
+side-project: weight 1  →  25% of agent time
 ```
 
-The scheduler tracks a rolling usage window and favors projects below their target ratio. A **minimum task guarantee** ensures even a 5%-weight project gets at least one task completed per window — no starvation.
+The scheduler tracks a rolling window and favors projects below their target ratio. A minimum task guarantee ensures no project starves.
 
-Optional hard budgets are available at global and per-project levels if you want spending caps.
+### Token Budget Management
 
-### Smart Token & Rate Limit Management
-
-Agent Queue handles the most frustrating part of working with AI agents — running out of tokens:
-
-- **Rate limit detection**: When an agent hits a rate limit, work pauses automatically. A timer fires when the window resets, and work resumes. Zero manual intervention.
-- **Token tracking**: Usage is recorded per project, per agent, per task. You always know where your credits are going.
-- **Graceful degradation**: Token exhaustion pauses the task and frees the agent for other work. When tokens are replenished, the task picks up where it left off.
-- **No wasted tokens on orchestration**: The scheduler is pure arithmetic. Deciding what to work on next costs zero tokens.
-
-### Discord Control Plane
-
-Manage everything from Discord — designed to work from your phone.
-
-**Slash commands:**
-```
-/project create my-app --weight 3
-/task create my-app "Implement user authentication"
-  --description "Add JWT-based auth with login/signup endpoints"
-  --test-command "pytest tests/test_auth.py"
-  --priority 50
-/agent add claude-1 claude --model claude-opus-4-6
-/status
-/budget status
-```
-
-**Natural language fallback:**
-```
-You:  "add a high priority task to my-app for rate limiting,
-       it depends on the API refactor"
-
-Bot:  Interpreted as:
-      /task create my-app "Implement rate limiting"
-        --depends-on task-47 --priority 10
-      Execute? (👍 to confirm)
-```
-
-**Agent questions forwarded to you:**
-```
-❓ [my-app] agent-1 asks (task-52 "Implement rate limiting"):
-   "Should rate limiting be per-user or per-API-key?"
-
-Reply in this thread to answer.
-```
-
-**Task results posted automatically:**
-```
-✓ Task-52 "Implement rate limiting" — COMPLETED
-  Agent: agent-1 (claude) | Branch: task-52/implement-rate-limiting
-  Tokens: 18,420 | Files: 3 changed
-  Tests: 14 passed, 0 failed
-```
-
-### Git Workflow
-
-Agent Queue manages the full git lifecycle for each task:
-
-1. **Assignment**: Fetches latest, creates a task branch (`task-52/implement-rate-limiting`)
-2. **Work**: Agent commits on the branch
-3. **Verification**: Pushes branch, runs tests
-4. **Completion**: Merges to main (or escalates conflicts as a new task)
-
-Merge conflicts are handled deterministically — if auto-merge fails, the orchestrator creates a high-priority conflict resolution task and notifies you on Discord.
-
-### Flexible Verification
-
-Each task specifies how completion is verified:
-
-- **auto_test**: Run test commands. All pass = done.
-- **qa_agent**: A separate agent reviews the work and approves or rejects.
-- **human**: Results posted to Discord. You approve or reject from your phone.
+- Per-project and global hard limits
+- Rate limit detection: when an agent hits a limit, work pauses automatically and resumes when the window resets
+- Token exhaustion pauses the task and frees the agent for other work
+- All usage visible from Discord: `tell me the token breakdown for my-app`
 
 ### Crash Recovery
 
-Agent Queue survives restarts without losing state:
-
-- All state is persisted to SQLite with atomic transactions
-- On startup, reconciles database state with actual running processes
-- Dead agent processes are detected and their tasks rescheduled
-- Paused tasks with expired timers are automatically resumed
+- All state persisted to SQLite with atomic transactions
+- On restart: dead agents detected, their tasks rescheduled, timers resumed
 - Graceful shutdown preserves partial work on task branches
 
-### Agent Adapters
+### Multi-Provider Claude Support
 
-Four agent types supported out of the box:
+Works with whatever Claude backend you have:
 
-| Agent | Interface | Structured Output | Session Resume |
-|-------|-----------|-------------------|----------------|
-| **Claude Code** | Python SDK (`claude-agent-sdk`) | Typed message stream | Yes |
-| **Codex** | CLI (`codex exec --json`) | NDJSON events | Yes |
-| **Cursor** | CLI (`cursor --print`) | JSON | No |
-| **Aider** | CLI (`aider --message`) | Text | No |
-
-Adding a new agent type means implementing four async methods:
-
-```python
-class MyAdapter(AgentAdapter):
-    async def start(self, task: TaskContext) -> None: ...
-    async def wait(self) -> AgentOutput: ...
-    async def stop(self) -> None: ...
-    async def is_alive(self) -> bool: ...
-```
+| Provider | How to enable |
+|----------|---------------|
+| **Anthropic (direct)** | Set `ANTHROPIC_API_KEY` |
+| **AWS Bedrock** | Set `AWS_REGION` (uses existing AWS credentials) |
+| **Google Vertex AI** | Set `GOOGLE_CLOUD_PROJECT` |
 
 ## Getting Started
 
@@ -174,9 +211,9 @@ class MyAdapter(AgentAdapter):
 
 - Python 3.12+
 - A Discord bot token ([create one here](https://discord.com/developers/applications))
-- At least one AI agent CLI installed (Claude Code, Codex, Cursor, or Aider)
+- Claude Code installed and configured
 
-### Installation
+### Install
 
 ```bash
 git clone https://github.com/yourusername/agent-queue.git
@@ -184,7 +221,15 @@ cd agent-queue
 pip install -e ".[dev]"
 ```
 
-### Configuration
+### Setup Wizard
+
+Run the interactive setup wizard — it walks you through Discord configuration, API keys, and getting your first agent running:
+
+```bash
+python setup_wizard.py
+```
+
+### Manual Configuration
 
 Create `~/.agent-queue/config.yaml`:
 
@@ -194,6 +239,8 @@ workspace_dir: ~/agent-queue-workspaces
 discord:
   bot_token: ${DISCORD_BOT_TOKEN}
   guild_id: "your-guild-id"
+  control_channel: "agent-queue"       # bot listens here
+  notifications_channel: "agent-queue" # task updates posted here
   authorized_users:
     - "your-discord-user-id"
 
@@ -206,28 +253,7 @@ Set your environment variables:
 
 ```bash
 export DISCORD_BOT_TOKEN="your-bot-token"
-export ANTHROPIC_API_KEY="your-api-key"     # for Claude agents
-export OPENAI_API_KEY="your-api-key"        # for Codex agents
-```
-
-### Register Agents
-
-Create `~/.agent-queue/agents.yaml`:
-
-```yaml
-agents:
-  - name: claude-1
-    type: claude
-    config:
-      model: claude-sonnet-4-20250514
-      permission_mode: acceptEdits
-      allowed_tools: [Read, Write, Edit, Bash, Glob, Grep]
-
-  - name: codex-1
-    type: codex
-    config:
-      model: gpt-5-codex
-      sandbox: workspace-write
+export ANTHROPIC_API_KEY="your-api-key"
 ```
 
 ### Run
@@ -238,20 +264,28 @@ agent-queue
 agent-queue /path/to/config.yaml
 ```
 
-### Quick Start via Discord
+### First Steps in Discord
 
-Once the bot is running and connected to your server:
+Once the bot is online in your server, everything happens through conversation in your control channel:
 
 ```
-/project create my-app --weight 1
-/agent add claude-1 claude
-/task create my-app "Set up project scaffolding with FastAPI"
-  --description "Create a basic FastAPI app with health check endpoint"
-  --test-command "pytest tests/ -v"
-/status
-```
+You:  link ~/code/my-app as my-app
 
-Agent Queue will assign the task to `claude-1`, create a git branch, run the agent, verify tests pass, and post the results back to Discord.
+Bot:  ✓ Linked. Repo "my-app" registered.
+
+You:  create a project called my-app
+
+Bot:  ✓ Project my-app created.
+
+You:  create agent claude-1 and assign it to my-app
+
+Bot:  ✓ Agent claude-1 created.
+
+You:  add a task to add rate limiting to the API
+
+Bot:  Created task `task-1` — "Add rate limiting to API"
+      Assigned to claude-1. I'll post updates in the thread.
+```
 
 ## Architecture
 
@@ -272,10 +306,10 @@ Agent Queue will assign the task to `claude-1`, create a git branch, run the age
 │       ▼             ▼             ▼          │
 │  ┌─────────┐  ┌──────────┐  ┌─────────┐    │
 │  │ Agent 1 │  │ Agent 2  │  │ Agent 3 │    │
-│  │ (Claude)│  │ (Codex)  │  │ (Aider) │    │
+│  │ (Claude)│  │ (Claude) │  │ (Claude)│    │
 │  └─────────┘  └──────────┘  └─────────┘    │
 │                                             │
-│                 SQLite DB                    │
+│                 SQLite DB                   │
 └─────────────────────────────────────────────┘
 ```
 
@@ -294,11 +328,12 @@ agent-queue/
   │   ├── scheduler.py         — deterministic scheduling
   │   ├── orchestrator.py      — core orchestration loop
   │   ├── event_bus.py         — async event system
-  │   ├── adapters/            — agent type implementations
-  │   ├── discord/             — bot, commands, notifications
+  │   ├── adapters/            — Claude Code agent implementation
+  │   ├── discord/             — bot, commands, notifications, NL tools
   │   ├── git/                 — checkout & branch management
   │   └── tokens/              — budget & rate limit tracking
-  └── tests/                   — exhaustive state machine + integration tests
+  ├── setup_wizard.py          — interactive setup
+  └── tests/                   — state machine + integration tests
 ```
 
 ## License
