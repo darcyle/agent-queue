@@ -385,6 +385,9 @@ def _test_discord(
                 info(f"  6. Click {BOLD}Save Changes{RESET}")
             except Exception as e:
                 error(f"Discord error: {e}")
+            finally:
+                if not client.is_closed():
+                    await client.close()
 
         asyncio.run(_check())
         return result["ok"], result["missing_channels"]
@@ -394,6 +397,30 @@ def _test_discord(
 
 
 # ── Step 3: Agent Configuration ──────────────────────────────────────────────
+
+
+def _check_claude_cli() -> tuple[bool, bool]:
+    """Check if the claude CLI is installed and has credentials.
+
+    Returns (is_installed, is_authenticated).
+    is_authenticated is True if credentials from `claude login` are present.
+    """
+    import shutil
+    from pathlib import Path
+
+    if not shutil.which("claude"):
+        return False, False
+
+    # Claude Code stores OAuth credentials after `claude login`
+    home = Path.home()
+    for cred_path in [
+        home / ".claude" / ".credentials.json",
+        home / ".claude" / "credentials.json",
+    ]:
+        if cred_path.exists():
+            return True, True
+
+    return True, False
 
 
 def step_agents(existing: dict) -> dict:
@@ -410,51 +437,89 @@ def step_agents(existing: dict) -> dict:
 
     agents: dict = {"claude": None}
 
-    # Claude setup — try SDK auto-detection first (supports Vertex AI, Bedrock, direct API)
     api_key = os.environ.get("ANTHROPIC_API_KEY", "") or existing.get("ANTHROPIC_API_KEY", "")
     from_env = bool(os.environ.get("ANTHROPIC_API_KEY"))
     claude_ok = False
     sdk_backend = None
 
-    # Step 1: Try the SDK with whatever credentials are already configured
-    print()
-    info("Testing Claude SDK connectivity...")
-    claude_ok, sdk_backend = _test_claude_sdk(api_key if api_key else None)
+    claude_installed, claude_logged_in = _check_claude_cli()
 
-    if claude_ok:
-        success(f"Using {sdk_backend}")
+    # If the user is already logged in via `claude login`, that's sufficient —
+    # the claude_agent_sdk uses the Claude CLI which reads those credentials.
+    if claude_logged_in:
+        print()
+        success("Claude Code: logged in via Anthropic account")
+        claude_ok = True
+        sdk_backend = "Claude Code (Anthropic login)"
     else:
-        # Step 2: If no key and SDK didn't work, prompt for one
-        if not api_key:
-            print()
-            info("No existing credentials detected.")
-            info("You can provide an Anthropic API key, or press Enter to skip")
-            info("if you plan to configure Vertex AI or Bedrock credentials later.")
-            api_key = prompt_secret("Anthropic API key (optional)")
+        # Try Vertex AI / Bedrock / API key auto-detection
+        print()
+        info("Testing Claude SDK connectivity...")
+        claude_ok, sdk_backend = _test_claude_sdk(api_key if api_key else None)
 
-            if api_key:
-                from_env = False
-                _save_env_value("ANTHROPIC_API_KEY", api_key)
-                info("Testing with provided key...")
-                claude_ok, sdk_backend = _test_claude_sdk(api_key)
-
-        # Step 3: Retry loop on failure
-        while not claude_ok and api_key:
+        if claude_ok:
+            success(f"Using {sdk_backend}")
+        else:
+            # No credentials found — offer login or API key
             print()
-            warn("Claude API connection failed. Debugging tips:")
-            info("  - For direct API: verify key at console.anthropic.com")
-            info("  - For Vertex AI: check gcloud auth and GOOGLE_CLOUD_PROJECT")
-            info("  - For Bedrock: check AWS credentials and region")
-            info("  - Ensure no network/proxy issues")
+            info("No Claude credentials detected. Choose how to authenticate:")
             print()
-            if not prompt_yes_no("Retry Claude API connection?", default=True):
-                break
-            claude_ok, sdk_backend = _test_claude_sdk(api_key)
+            print(f"    {BOLD}[1]{RESET} Log in with your Anthropic account  (claude login)")
+            print(f"    {BOLD}[2]{RESET} Enter an API key  (from console.anthropic.com)")
+            print(f"    {BOLD}[3]{RESET} Skip  (configure Vertex AI or Bedrock credentials later)")
+            print()
+            choice = input("  Choice [1/2/3]: ").strip() or "1"
 
-    # Test claude-agent-sdk separately
+            if choice == "1":
+                if not claude_installed:
+                    print()
+                    error("Claude Code CLI not found in PATH.")
+                    info("Install it from: https://claude.ai/download")
+                    info("Then run 'claude login' and re-run this setup.")
+                else:
+                    print()
+                    info("Launching 'claude login' — follow the prompts in your browser...")
+                    try:
+                        import subprocess
+                        subprocess.run(["claude", "login"], check=True)
+                        _, claude_logged_in = _check_claude_cli()
+                        if claude_logged_in:
+                            success("Logged in successfully!")
+                            claude_ok = True
+                            sdk_backend = "Claude Code (Anthropic login)"
+                        else:
+                            warn("Login may not have completed — credentials not found.")
+                            info("Run 'claude login' manually and re-run setup if needed.")
+                    except subprocess.CalledProcessError:
+                        error("Login failed. Run 'claude login' manually and re-run setup.")
+
+            elif choice == "2":
+                api_key = prompt_secret("Anthropic API key")
+                if api_key:
+                    from_env = False
+                    _save_env_value("ANTHROPIC_API_KEY", api_key)
+                    info("Testing with provided key...")
+                    claude_ok, sdk_backend = _test_claude_sdk(api_key)
+
+                    while not claude_ok:
+                        print()
+                        warn("Claude API connection failed. Debugging tips:")
+                        info("  - Verify the key at console.anthropic.com")
+                        info("  - Ensure no network/proxy issues")
+                        print()
+                        if not prompt_yes_no("Retry with this key?", default=True):
+                            break
+                        claude_ok, sdk_backend = _test_claude_sdk(api_key)
+
+    # Test claude-agent-sdk
     print()
     info("Testing claude-agent-sdk...")
-    agent_sdk_ok = _test_claude_agent_sdk()
+    if not claude_installed:
+        warn("Claude Code CLI not found — agents will not be able to run")
+        info("Install from: https://claude.ai/download")
+        agent_sdk_ok = False
+    else:
+        agent_sdk_ok = _test_claude_agent_sdk()
 
     default_model = yaml_cfg.get("model", "claude-sonnet-4-20250514")
     model = prompt("Model", default_model)
@@ -537,7 +602,7 @@ def _test_claude_sdk(api_key: str | None = None) -> tuple[bool, str | None]:
         if os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"):
             info("Trying AWS Bedrock...")
             client = AnthropicBedrock()
-            resp = client.messages.create(**test_kwargs)
+            resp = client.messages.create(**base_test_kwargs)
             if resp.content:
                 success("Claude API connected successfully (AWS Bedrock)")
                 return True, "AWS Bedrock"
