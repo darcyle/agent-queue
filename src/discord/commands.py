@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import os
-import random
 import signal
-import uuid
 
 import discord
 from discord import app_commands
@@ -11,6 +9,7 @@ from discord.ext import commands
 
 from src.models import Project, ProjectStatus, Task, TaskStatus
 from src.discord.notifications import classify_error
+from src.task_names import generate_task_id
 
 
 def setup_commands(bot: commands.Bot) -> None:
@@ -97,6 +96,8 @@ def setup_commands(bot: commands.Bot) -> None:
         active_tasks = [t for t in tasks if t.status == TaskStatus.IN_PROGRESS]
         ready_tasks = [t for t in tasks if t.status == TaskStatus.READY]
         paused_tasks = [t for t in tasks if t.status == TaskStatus.PAUSED]
+        completed_tasks = [t for t in tasks if t.status == TaskStatus.COMPLETED]
+        failed_tasks = [t for t in tasks if t.status == TaskStatus.FAILED]
 
         lines = []
         if bot.orchestrator._paused:
@@ -104,11 +105,41 @@ def setup_commands(bot: commands.Bot) -> None:
             lines.append("")
         lines += [
             "## System Status",
-            f"**Projects:** {len(projects)}",
             f"**Tasks:** {len(tasks)} total — "
-            f"{len(active_tasks)} active, {len(ready_tasks)} ready, {len(paused_tasks)} paused",
+            f"{len(active_tasks)} active, {len(ready_tasks)} ready, "
+            f"{len(completed_tasks)} completed, {len(failed_tasks)} failed, "
+            f"{len(paused_tasks)} paused",
             "",
         ]
+
+        # Per-project breakdown
+        if projects:
+            lines.append("**Projects:**")
+            # Group tasks by project
+            tasks_by_project: dict[str, list] = {}
+            for t in tasks:
+                tasks_by_project.setdefault(t.project_id, []).append(t)
+
+            for p in projects:
+                ptasks = tasks_by_project.get(p.id, [])
+                p_active = sum(1 for t in ptasks if t.status == TaskStatus.IN_PROGRESS)
+                p_ready = sum(1 for t in ptasks if t.status == TaskStatus.READY)
+                p_completed = sum(1 for t in ptasks if t.status == TaskStatus.COMPLETED)
+                p_failed = sum(1 for t in ptasks if t.status == TaskStatus.FAILED)
+
+                status_parts = []
+                if p_active:
+                    status_parts.append(f"{p_active} active")
+                if p_ready:
+                    status_parts.append(f"{p_ready} ready")
+                if p_completed:
+                    status_parts.append(f"{p_completed} completed")
+                if p_failed:
+                    status_parts.append(f"{p_failed} failed")
+
+                stats = ", ".join(status_parts) if status_parts else "no tasks"
+                lines.append(f"• **{p.name}** (`{p.id}`) — {len(ptasks)} tasks: {stats}")
+            lines.append("")
 
         # Agent details
         if agents:
@@ -481,27 +512,6 @@ def setup_commands(bot: commands.Bot) -> None:
     # /add-task — manually add a task to the active/current project
     # ---------------------------------------------------------------------------
 
-    _TASK_ADJECTIVES = [
-        "swift", "bright", "calm", "bold", "keen", "wise", "fair",
-        "sharp", "clear", "eager", "fresh", "grand", "prime", "quick",
-        "smart", "sound", "solid", "stark", "steady", "noble", "crisp",
-        "fleet", "nimble", "brisk", "vivid", "agile", "amber", "azure",
-    ]
-    _TASK_NOUNS = [
-        "falcon", "horizon", "cascade", "ember", "summit", "ridge",
-        "beacon", "current", "delta", "forge", "glacier", "harbor",
-        "impact", "journey", "lantern", "meadow", "nexus", "orbit",
-        "pinnacle", "quest", "rapids", "stone", "torrent", "vault",
-        "willow", "zenith", "apex", "bridge", "crest", "dune",
-        "flare", "grove", "inlet", "jetty", "knoll", "lunar",
-    ]
-
-    def _generate_task_name() -> str:
-        """Return a random adjective-noun task title (e.g. 'swift-falcon')."""
-        adj = random.choice(_TASK_ADJECTIVES)
-        noun = random.choice(_TASK_NOUNS)
-        return f"{adj}-{noun}"
-
     @bot.tree.command(name="add-task", description="Add a task manually to the active project")
     @app_commands.describe(description="What the task should do")
     async def add_task_command(interaction: discord.Interaction, description: str) -> None:
@@ -524,9 +534,9 @@ def setup_commands(bot: commands.Bot) -> None:
             )
             await db.create_project(project)
 
-        # Build task with a random name and a short unique ID
-        task_id = str(uuid.uuid4())[:8]
-        title = _generate_task_name()
+        # Build task with a generated name as the ID
+        task_id = await generate_task_id(db)
+        title = description[:100] if len(description) > 100 else description
         task = Task(
             id=task_id,
             project_id=project_id,
@@ -538,7 +548,6 @@ def setup_commands(bot: commands.Bot) -> None:
 
         embed = discord.Embed(title="✅ Task Added", color=0x2ecc71)
         embed.add_field(name="ID", value=f"`{task_id}`", inline=True)
-        embed.add_field(name="Name", value=title, inline=True)
         embed.add_field(name="Project", value=f"`{project_id}`", inline=True)
         embed.add_field(name="Status", value="🔵 READY", inline=True)
         # Cap description at 1024 chars (Discord embed field limit)

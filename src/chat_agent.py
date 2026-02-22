@@ -5,7 +5,6 @@ import json
 import os
 import subprocess
 import time
-import uuid
 from pathlib import Path
 
 from src.chat_providers import ChatProvider, create_chat_provider
@@ -15,6 +14,7 @@ from src.models import (
     Task, TaskStatus,
 )
 from src.orchestrator import Orchestrator
+from src.task_names import generate_task_id
 
 
 # Tools the LLM can call to manage the system
@@ -951,7 +951,7 @@ class ChatAgent:
                             max_concurrent_agents=1,
                             workspace_path=workspace,
                         ))
-                task_id = str(uuid.uuid4())[:8]
+                task_id = await generate_task_id(db)
                 repo_id = input_data.get("repo_id")
                 requires_approval = input_data.get("requires_approval", False)
                 task = Task(

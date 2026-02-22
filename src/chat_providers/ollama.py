@@ -11,7 +11,7 @@ from .types import ChatResponse, TextBlock, ToolUseBlock
 class OllamaChatProvider(ChatProvider):
     """Chat provider using Ollama's OpenAI-compatible endpoint."""
 
-    def __init__(self, model: str = "qwen2.5:32b", base_url: str = "http://localhost:11434/v1"):
+    def __init__(self, model: str = "qwen2.5:32b-instruct-q3_K_M", base_url: str = "http://localhost:11434/v1"):
         from openai import AsyncOpenAI
 
         self._client = AsyncOpenAI(base_url=base_url, api_key="ollama")

@@ -16,7 +16,7 @@ def create_chat_provider(config: ChatProviderConfig) -> ChatProvider | None:
         from .ollama import OllamaChatProvider
 
         return OllamaChatProvider(
-            model=config.model or "qwen2.5:32b",
+            model=config.model or "qwen2.5:32b-instruct-q3_K_M",
             base_url=config.base_url or "http://localhost:11434/v1",
         )
 
