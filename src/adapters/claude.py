@@ -181,6 +181,11 @@ class ClaudeAdapter(AgentAdapter):
                 summary="\n".join(summary_parts) or "Completed",
                 tokens_used=tokens_used,
             )
+        except ImportError as e:
+            return AgentOutput(
+                result=AgentResult.FAILED,
+                error_message=f"Claude Agent SDK not available: {e}",
+            )
 
     async def stop(self) -> None:
         self._cancel_event.set()
