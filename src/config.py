@@ -42,6 +42,9 @@ class SchedulingConfig:
 class PauseRetryConfig:
     rate_limit_backoff_seconds: int = 60
     token_exhaustion_retry_seconds: int = 300
+    # Exponential-backoff retry knobs (in-process, before the task is paused)
+    rate_limit_max_retries: int = 3
+    rate_limit_max_backoff_seconds: int = 300
 
 
 @dataclass
@@ -159,6 +162,8 @@ def load_config(path: str) -> AppConfig:
             token_exhaustion_retry_seconds=p.get(
                 "token_exhaustion_retry_seconds", 300
             ),
+            rate_limit_max_retries=p.get("rate_limit_max_retries", 3),
+            rate_limit_max_backoff_seconds=p.get("rate_limit_max_backoff_seconds", 300),
         )
 
     if "rate_limits" in raw:

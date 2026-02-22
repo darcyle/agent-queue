@@ -4,8 +4,10 @@ import asyncio
 import json
 import os
 import subprocess
+import time
 import traceback
 import uuid
+from pathlib import Path
 
 import discord
 from discord.ext import commands
@@ -499,13 +501,53 @@ If the user's request is vague, ask for clarification BEFORE creating the task.
 Be concise in Discord messages. Use markdown formatting. When a user asks you to \
 do something, use the available tools to do it — don't just tell them to use slash commands.
 
+Management action confirmations — after completing a management action (create, edit, \
+delete, pause, resume, register, add, stop, restart, etc.), respond with EXACTLY ONE \
+short confirmation line. Do NOT list field values from the tool result, add unsolicited \
+explanations, or split the confirmation across multiple sentences or paragraphs. \
+Examples of correct confirmations:
+- "✅ Project **My App** created (`my-app`)"
+- "✅ Agent **alpha** registered"
+- "✅ Repo `my-repo` linked to `my-project`"
+- "✅ Task `abc123` queued in `my-project`"
+- "✅ Project **Foo** paused"
+- "✅ Task `abc123` deleted"
+
 When creating projects or tasks, generate reasonable IDs from the name \
 (e.g., "my-web-app" for a project named "My Web App").\
 """
 
 
+def _load_claude_oauth_token() -> str | None:
+    """Load OAuth access token from Claude Code's credential file.
+
+    Claude Code stores OAuth tokens in ~/.claude/.credentials.json after
+    ``claude login``.  The Anthropic SDK accepts these via ``auth_token``.
+    """
+    for name in (".credentials.json", "credentials.json"):
+        cred_path = Path.home() / ".claude" / name
+        if not cred_path.exists():
+            continue
+        try:
+            creds = json.loads(cred_path.read_text())
+            oauth = creds.get("claudeAiOauth", {})
+            token = oauth.get("accessToken")
+            if token:
+                expires = oauth.get("expiresAt", 0)
+                if expires and expires < time.time() * 1000:
+                    print("Warning: Claude OAuth token may be expired — trying anyway")
+                return token
+        except Exception as e:
+            print(f"Warning: could not read Claude credentials from {cred_path}: {e}")
+    return None
+
+
 def _create_llm_client():
-    """Create an Anthropic client using whatever backend is available."""
+    """Create an async Anthropic client using whatever backend is available.
+
+    Tries, in order: Vertex AI, Bedrock, ANTHROPIC_API_KEY, Claude OAuth.
+    Returns (None, None) if no credentials are found.
+    """
     import anthropic
 
     # Try Vertex AI first
@@ -514,23 +556,32 @@ def _create_llm_client():
         or os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
     )
     if project_id:
-        from anthropic import AnthropicVertex
+        from anthropic import AsyncAnthropicVertex
 
         region = (
             os.environ.get("GOOGLE_CLOUD_LOCATION")
             or os.environ.get("CLOUD_ML_REGION")
             or "us-east5"
         )
-        return AnthropicVertex(project_id=project_id, region=region), "claude-sonnet-4@20250514"
+        return AsyncAnthropicVertex(project_id=project_id, region=region), "claude-sonnet-4@20250514"
 
     # Try Bedrock
     if os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"):
-        from anthropic import AnthropicBedrock
+        from anthropic import AsyncAnthropicBedrock
 
-        return AnthropicBedrock(), "claude-sonnet-4-20250514"
+        return AsyncAnthropicBedrock(), "claude-sonnet-4-20250514"
 
-    # Direct API
-    return anthropic.Anthropic(), "claude-sonnet-4-20250514"
+    # Try explicit API key
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if api_key:
+        return anthropic.AsyncAnthropic(api_key=api_key), "claude-sonnet-4-20250514"
+
+    # Try Claude Code OAuth credentials (~/.claude/.credentials.json)
+    oauth_token = _load_claude_oauth_token()
+    if oauth_token:
+        return anthropic.AsyncAnthropic(auth_token=oauth_token), "claude-sonnet-4-20250514"
+
+    return None, None
 
 
 MAX_HISTORY_MESSAGES = 50  # Max messages to fetch from Discord
@@ -555,6 +606,32 @@ class AgentQueueBot(commands.Bot):
         self._restart_requested = False
         self._boot_time: float | None = None
         self._active_project_id: str | None = None
+        self._notes_threads: dict[int, str] = {}  # thread_id -> project_id
+        self._notes_threads_path = os.path.join(
+            os.path.dirname(config.database_path), "notes_threads.json"
+        )
+        self._load_notes_threads()
+
+    def _load_notes_threads(self) -> None:
+        try:
+            if os.path.isfile(self._notes_threads_path):
+                with open(self._notes_threads_path) as f:
+                    raw = json.load(f)
+                # Keys are stored as strings in JSON; convert back to int
+                self._notes_threads = {int(k): v for k, v in raw.items()}
+        except Exception as e:
+            print(f"Warning: could not load notes threads: {e}")
+
+    def _save_notes_threads(self) -> None:
+        try:
+            with open(self._notes_threads_path, "w") as f:
+                json.dump(self._notes_threads, f)
+        except Exception as e:
+            print(f"Warning: could not save notes threads: {e}")
+
+    def register_notes_thread(self, thread_id: int, project_id: str) -> None:
+        self._notes_threads[thread_id] = project_id
+        self._save_notes_threads()
 
     async def setup_hook(self) -> None:
         from src.discord.commands import setup_commands
@@ -600,7 +677,10 @@ class AgentQueueBot(commands.Bot):
         # Initialize LLM client
         try:
             self._llm_client, self._llm_model = _create_llm_client()
-            print(f"LLM client initialized (model: {self._llm_model})")
+            if self._llm_client:
+                print(f"LLM client initialized (model: {self._llm_model})")
+            else:
+                print("Warning: No LLM credentials found — set ANTHROPIC_API_KEY or run `claude login`")
         except Exception as e:
             print(f"Warning: Could not initialize LLM client: {e}")
 
@@ -679,13 +759,25 @@ class AgentQueueBot(commands.Bot):
             await self._send_long_message(self._control_channel, text)
 
     async def _create_task_thread(self, thread_name: str, initial_message: str):
-        """Create a Discord thread for streaming agent output. Returns a send callback."""
+        """Create a Discord thread for streaming agent output.
+
+        Returns a tuple of two async callbacks:
+          (send_to_thread, notify_main_channel)
+
+        send_to_thread      — streams content into the thread.
+        notify_main_channel — posts a brief message to the notifications channel
+                              as a reply to the thread-root message, so the
+                              notification is visually linked to the thread.
+
+        Returns None if the notifications channel is unavailable.
+        """
         if not self._notifications_channel:
             print("Cannot create thread: no notifications channel")
             return None
 
         print(f"Creating thread: {thread_name}")
-        # Create the thread with an initial message
+        # Create the thread-root message in the notifications channel, then open
+        # a thread on it so all streaming output stays inside the thread.
         msg = await self._notifications_channel.send(
             f"**Agent working:** {thread_name}"
         )
@@ -699,7 +791,19 @@ class AgentQueueBot(commands.Bot):
             except Exception as e:
                 print(f"Thread send error: {e}")
 
-        return send_to_thread
+        async def notify_main_channel(text: str) -> None:
+            """Reply to the thread-root message with a brief notification."""
+            try:
+                await msg.reply(text)
+            except Exception as e:
+                print(f"Main channel notify error: {e}")
+                # Fallback: plain message in the notifications channel
+                try:
+                    await self._notifications_channel.send(text)
+                except Exception as e2:
+                    print(f"Fallback notify error: {e2}")
+
+        return send_to_thread, notify_main_channel
 
     def _build_system_prompt(self) -> str:
         prompt = SYSTEM_PROMPT_TEMPLATE.format(workspace_dir=self.config.workspace_dir)
@@ -747,14 +851,16 @@ class AgentQueueBot(commands.Bot):
         if self._boot_time and message.created_at.timestamp() < self._boot_time:
             return
 
-        # Only respond in the control channel, or when mentioned
+        # Only respond in the control channel, when mentioned, or in a notes thread
         is_control = (
             self._control_channel
             and message.channel.id == self._control_channel.id
         )
         is_mentioned = self.user in message.mentions
+        notes_project_id = self._notes_threads.get(message.channel.id)
+        is_notes_thread = notes_project_id is not None
 
-        if not is_control and not is_mentioned:
+        if not is_control and not is_mentioned and not is_notes_thread:
             return
 
         # Strip the bot mention from the message text
@@ -766,21 +872,50 @@ class AgentQueueBot(commands.Bot):
             await message.reply("How can I help? Ask me about status, projects, or tasks.")
             return
 
-        if not self._llm_client:
-            await message.reply(
-                "LLM not configured — I can only respond to slash commands. "
-                "Check the daemon logs for details."
-            )
-            return
-
         # Serialize LLM processing per channel to avoid duplicate/concurrent responses
         lock = self._channel_locks.setdefault(message.channel.id, asyncio.Lock())
         async with lock:
             async with message.channel.typing():
                 try:
-                    response = await self._process_with_llm(
-                        text, message.author.display_name, message
-                    )
+                    if not self._llm_client:
+                        await message.reply(
+                            "LLM not configured — I can only respond to slash commands. "
+                            "Set `ANTHROPIC_API_KEY` or run `claude login`."
+                        )
+                        return
+
+                    # Prepend project context for notes threads
+                    user_text = text
+                    if is_notes_thread and not is_control:
+                        user_text = (
+                            f"[Context: this is the notes thread for project "
+                            f"`{notes_project_id}`. Default to using notes tools "
+                            f"(list_notes/write_note/delete_note/read_file) with "
+                            f"project_id='{notes_project_id}'.]\n{text}"
+                        )
+
+                    try:
+                        response = await self._process_with_llm(
+                            user_text, message.author.display_name, message
+                        )
+                    except Exception as e:
+                        import anthropic
+                        if isinstance(e, anthropic.AuthenticationError):
+                            # Token may have been refreshed — reload and retry once
+                            print(f"Auth error — reloading credentials: {e}")
+                            self._llm_client, self._llm_model = _create_llm_client()
+                            if self._llm_client:
+                                response = await self._process_with_llm(
+                                    user_text, message.author.display_name, message
+                                )
+                            else:
+                                response = (
+                                    "Authentication failed. Run `claude login` "
+                                    "or set `ANTHROPIC_API_KEY`."
+                                )
+                        else:
+                            raise
+
                     await self._send_long_message(
                         message.channel, response, reply_to=message
                     )
@@ -858,6 +993,9 @@ class AgentQueueBot(commands.Bot):
         """Return a compact summary of older messages, caching per channel."""
         if not older_messages:
             return None
+        # No LLM client available — skip summarization gracefully
+        if not self._llm_client:
+            return None
 
         last_id = older_messages[-1].id
 
@@ -874,7 +1012,7 @@ class AgentQueueBot(commands.Bot):
         transcript = "\n".join(lines)
 
         try:
-            resp = self._llm_client.messages.create(
+            resp = await self._llm_client.messages.create(
                 model=self._llm_model,
                 max_tokens=512,
                 messages=[{
@@ -912,11 +1050,10 @@ class AgentQueueBot(commands.Bot):
             messages = history + [current]
 
         # Allow multiple rounds of tool use
-        all_text_parts: list[str] = []
         tool_actions: list[str] = []  # Track what tools were called for fallback
 
         for _ in range(10):
-            resp = self._llm_client.messages.create(
+            resp = await self._llm_client.messages.create(
                 model=self._llm_model,
                 max_tokens=1024,
                 system=self._build_system_prompt(),
@@ -943,8 +1080,11 @@ class AgentQueueBot(commands.Bot):
                     return f"Done. Actions taken: {', '.join(tool_actions)}"
                 return "Done."
 
-            # Execute tool calls and build tool results
-            messages.append({"role": "assistant", "content": resp.content})
+            # Execute tool calls and build tool results.
+            # Only keep tool_use blocks in message history — drop any pre-tool
+            # commentary text so the LLM cannot echo or reference it in
+            # subsequent rounds (which is the main source of duplicated output).
+            messages.append({"role": "assistant", "content": tool_uses})
 
             tool_results = []
             for tool_use in tool_uses:
@@ -958,13 +1098,11 @@ class AgentQueueBot(commands.Bot):
 
             messages.append({"role": "user", "content": tool_results})
 
-            # Accumulate text from rounds that also had tool use
-            all_text_parts.extend(text_parts)
+            # Do NOT accumulate pre-tool commentary text — it is never shown in
+            # normal flow and would produce verbose / repeated output if the
+            # loop-limit fallback below is ever reached.
 
-        # Hit the loop limit — return the last text or a summary
-        final_text = "\n".join(all_text_parts).strip()
-        if final_text:
-            return final_text
+        # Hit the loop limit — return a concise summary of what was done.
         if tool_actions:
             return f"Done. Actions taken: {', '.join(tool_actions)}"
         return "Done."

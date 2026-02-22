@@ -44,6 +44,7 @@ class ClaudeAdapter(AgentAdapter):
             for var in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
                 os.environ.pop(var, None)
 
+            import shutil
             from claude_agent_sdk import query, ClaudeAgentOptions
             from claude_agent_sdk.types import (
                 AssistantMessage, ResultMessage, UserMessage,
@@ -60,10 +61,16 @@ class ClaudeAdapter(AgentAdapter):
             _ToolResultBlock = ToolResultBlock
             _sdk_types_loaded = True
 
+            # Prefer the system claude CLI over the SDK's bundled binary.
+            # The bundled binary has no user credentials; the system one does
+            # (either via `claude login` or ANTHROPIC_API_KEY).
+            system_claude = shutil.which("claude")
+
             options = ClaudeAgentOptions(
                 allowed_tools=self._config.allowed_tools,
                 permission_mode=self._config.permission_mode,
                 cwd=self._task.checkout_path or None,
+                cli_path=system_claude,  # None → falls back to bundled binary
             )
             if self._config.model:
                 options.model = self._config.model
@@ -72,79 +79,107 @@ class ClaudeAdapter(AgentAdapter):
 
             summary_parts = []
             tokens_used = 0
+            current_prompt = self._build_prompt()
 
-            print(f"Claude adapter: starting query with prompt ({len(self._build_prompt())} chars)")
-            async for message in query(
-                prompt=self._build_prompt(),
-                options=options,
-            ):
-                # Log every message type for debugging
-                msg_type = getattr(message, "type", "unknown")
-                msg_subtype = getattr(message, "subtype", "")
-                print(f"Claude adapter message: type={msg_type} subtype={msg_subtype}")
+            print(f"Claude adapter: starting query (session={self._session_id or 'new'}, "
+                  f"prompt={len(current_prompt)} chars)")
+            cli_error: str | None = None
+            try:
+                async for message in query(prompt=current_prompt, options=options):
+                    # Log only messages with meaningful subtypes to reduce noise
+                    msg_subtype = getattr(message, "subtype", "")
+                    if msg_subtype and msg_subtype not in ("", None):
+                        msg_type = getattr(message, "type", "unknown")
+                        print(f"Claude adapter message: type={msg_type} subtype={msg_subtype}")
 
-                if self._cancel_event.is_set():
+                    if self._cancel_event.is_set():
+                        return AgentOutput(
+                            result=AgentResult.FAILED,
+                            summary="Cancelled",
+                            error_message="Agent was stopped",
+                        )
+
+                    # Capture session ID from init message.
+                    # SystemMessage only has .subtype and .data (a raw dict);
+                    # the session_id lives in .data, not as a top-level attribute.
+                    if hasattr(message, "subtype") and message.subtype == "init":
+                        data = getattr(message, "data", {})
+                        self._session_id = (
+                            data.get("session_id")
+                            if isinstance(data, dict)
+                            else getattr(message, "session_id", None)
+                        )
+                        print(f"Claude adapter: session started ({self._session_id})")
+
+                    # Forward interesting messages to the callback
+                    if on_message:
+                        text = self._extract_message_text(message)
+                        if text:
+                            await on_message(text)
+
+                    # Capture result and token usage from ResultMessage
+                    if isinstance(message, ResultMessage):
+                        # Check for error result BEFORE treating as success
+                        if getattr(message, "is_error", False):
+                            err_subtype = getattr(message, "subtype", "") or "unknown"
+                            err_result = str(getattr(message, "result", "") or "")
+                            cli_error = (
+                                f"{err_subtype}: {err_result}".strip(": ")
+                                or err_subtype
+                            )
+                            print(f"Claude adapter: CLI returned error result: {cli_error}")
+                        else:
+                            if message.result:
+                                summary_parts.append(str(message.result))
+                        usage = getattr(message, "usage", None)
+                        if usage and isinstance(usage, dict):
+                            tokens_used += usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+                    elif hasattr(message, "result") and message.result:
+                        summary_parts.append(str(message.result))
+
+            except Exception as e:
+                # The SDK throws MessageParseError for unrecognised message types
+                # like rate_limit_event. Claude Code handles rate limiting internally
+                # so these don't actually disrupt the work — just log a warning and
+                # let the orchestrator decide what to do with whatever results we got.
+                import traceback
+                error_msg = str(e)
+                is_rate_limit = (
+                    "rate_limit" in error_msg.lower()
+                    or "rate limit" in error_msg.lower()
+                    or "429" in error_msg
+                )
+                if is_rate_limit:
+                    print(f"Claude adapter WARNING: rate_limit_event from SDK (non-fatal): {error_msg}")
+                else:
+                    # Non-rate-limit errors are real failures
+                    full_traceback = traceback.format_exc()
+                    print(f"Claude adapter error: {error_msg}")
+                    print(full_traceback)
+                    if "token" in error_msg.lower() or "quota" in error_msg.lower():
+                        return AgentOutput(
+                            result=AgentResult.PAUSED_TOKENS,
+                            error_message=error_msg,
+                        )
                     return AgentOutput(
                         result=AgentResult.FAILED,
-                        summary="Cancelled",
-                        error_message="Agent was stopped",
+                        error_message=f"{error_msg}\n{full_traceback}",
                     )
 
-                # Capture session ID from init message
-                if hasattr(message, "subtype") and message.subtype == "init":
-                    self._session_id = getattr(message, "session_id", None)
-
-                # Check for error messages from the SDK
-                if hasattr(message, "is_error") and message.is_error:
-                    error_text = getattr(message, "error", str(message))
-                    print(f"Claude adapter: SDK reported error: {error_text}")
-
-                # Forward interesting messages to the callback
-                if on_message:
-                    text = self._extract_message_text(message)
-                    if text:
-                        await on_message(text)
-                    else:
-                        # Debug: log unhandled message structure
-                        print(f"Claude adapter: unhandled message: {repr(message)[:300]}")
-
-                # Capture result and token usage from ResultMessage
-                if isinstance(message, ResultMessage):
-                    if message.result:
-                        summary_parts.append(str(message.result))
-                    usage = getattr(message, "usage", None)
-                    if usage and isinstance(usage, dict):
-                        tokens_used = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
-                elif hasattr(message, "result") and message.result:
-                    summary_parts.append(str(message.result))
+            # If the CLI reported an error result, propagate it as FAILED
+            if cli_error:
+                print(f"Claude adapter: query failed with CLI error: {cli_error}")
+                return AgentOutput(
+                    result=AgentResult.FAILED,
+                    error_message=cli_error,
+                    tokens_used=tokens_used,
+                )
 
             print(f"Claude adapter: query completed, {len(summary_parts)} result parts")
-
             return AgentOutput(
                 result=AgentResult.COMPLETED,
                 summary="\n".join(summary_parts) or "Completed",
                 tokens_used=tokens_used,
-            )
-        except Exception as e:
-            import traceback
-            error_msg = str(e)
-            full_traceback = traceback.format_exc()
-            print(f"Claude adapter error: {error_msg}")
-            print(full_traceback)
-
-            if "rate" in error_msg.lower() or "429" in error_msg:
-                return AgentOutput(
-                    result=AgentResult.PAUSED_RATE_LIMIT,
-                    error_message=error_msg,
-                )
-            if "token" in error_msg.lower() or "quota" in error_msg.lower():
-                return AgentOutput(
-                    result=AgentResult.PAUSED_TOKENS,
-                    error_message=error_msg,
-                )
-            return AgentOutput(
-                result=AgentResult.FAILED,
-                error_message=f"{error_msg}\n{full_traceback}",
             )
 
     async def stop(self) -> None:

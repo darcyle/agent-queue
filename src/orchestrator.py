@@ -23,9 +23,12 @@ from src.tokens.budget import BudgetManager
 # Callback that sends a formatted string to a Discord channel
 NotifyCallback = Callable[[str], Awaitable[None]]
 
-# Callback that creates a thread and returns a send function for that thread
-# Args: (thread_name, initial_message) -> callback to send messages to the thread
-CreateThreadCallback = Callable[[str, str], Awaitable[NotifyCallback | None]]
+# Callback that creates a thread and returns two send functions:
+#   [0] send_to_thread  — streams content into the thread
+#   [1] notify_main     — posts a brief message to the main channel (e.g. a reply
+#                         to the thread-root message in the notifications channel)
+# Args: (thread_name, initial_message) -> (send_to_thread, notify_main) | None
+CreateThreadCallback = Callable[[str, str], Awaitable[tuple[NotifyCallback, NotifyCallback] | None]]
 
 
 class Orchestrator:
@@ -43,6 +46,13 @@ class Orchestrator:
         self._notify: NotifyCallback | None = None
         self._control_notify: NotifyCallback | None = None
         self._create_thread: CreateThreadCallback | None = None
+        self._paused: bool = False
+
+    def pause(self) -> None:
+        self._paused = True
+
+    def resume(self) -> None:
+        self._paused = False
 
     def set_notify_callback(self, callback: NotifyCallback) -> None:
         """Set a callback for sending notifications (e.g. to Discord)."""
@@ -138,8 +148,11 @@ class Orchestrator:
             # 2. Check DEFINED tasks for dependency resolution
             await self._check_defined_tasks()
 
-            # 3. Schedule
-            actions = await self._schedule()
+            # 3. Schedule (skipped when orchestrator is paused)
+            if not self._paused:
+                actions = await self._schedule()
+            else:
+                actions = []
 
             # 4. Launch assigned tasks as background coroutines
             # Clean up completed background tasks
@@ -396,11 +409,13 @@ class Orchestrator:
 
         # Create a thread for streaming agent output
         thread_send: NotifyCallback | None = None
+        thread_main_notify: NotifyCallback | None = None
         if self._create_thread:
             try:
                 thread_name = f"{task.id} | {task.title}"[:100]
-                thread_send = await self._create_thread(thread_name, start_msg)
-                if thread_send:
+                thread_result = await self._create_thread(thread_name, start_msg)
+                if thread_result:
+                    thread_send, thread_main_notify = thread_result
                     print(f"Created thread for task {task.id}")
                 else:
                     print(f"Thread creation returned None for task {task.id}")
@@ -438,15 +453,62 @@ class Orchestrator:
                 header = f"`{task.id}` | **{agent.name}**\n"
                 await self._notify_channel(header + text)
 
-        output = await adapter.wait(on_message=forward_agent_message)
+        # ------------------------------------------------------------------ #
+        # Exponential-backoff retry loop for Claude API rate limits.
+        #
+        # On every PAUSED_RATE_LIMIT result we:
+        #   1. Post an immediate "rate-limited" notice to Discord.
+        #   2. Sleep for an exponentially-growing delay (base * 2^attempt,
+        #      capped at rate_limit_max_backoff_seconds).
+        #   3. Post a "resuming now" notice to Discord.
+        #   4. Re-initialise the adapter and retry the query.
+        #
+        # After rate_limit_max_retries consecutive rate-limit hits we give
+        # up and fall through to the normal PAUSED_RATE_LIMIT path, which
+        # pauses the task in the DB and retries it in the next scheduler
+        # cycle.
+        #
+        # NOTE: The total sleep time across all retries may exceed
+        # agents_config.stuck_timeout_seconds.  If you enable multiple
+        # retries, raise stuck_timeout_seconds in your config accordingly.
+        # ------------------------------------------------------------------ #
+        _rl_base = self.config.pause_retry.rate_limit_backoff_seconds
+        _rl_max_backoff = self.config.pause_retry.rate_limit_max_backoff_seconds
+        _rl_max_retries = self.config.pause_retry.rate_limit_max_retries
+        _rl_attempt = 0
 
-        # Post completion summary to the thread
-        if thread_send:
-            status = "Completed" if output.result == AgentResult.COMPLETED else output.result.value
-            summary = f"**{status}** — Tokens: {output.tokens_used:,}"
-            if output.error_message:
-                summary += f"\nError: {output.error_message}"
-            await thread_send(summary)
+        while True:
+            output = await adapter.wait(on_message=forward_agent_message)
+
+            if output.result != AgentResult.PAUSED_RATE_LIMIT:
+                break  # Completed, failed, or token-exhausted — leave the loop.
+
+            _rl_attempt += 1
+            if _rl_attempt > _rl_max_retries:
+                # Auto-retries exhausted; let the normal PAUSED handling take over.
+                print(
+                    f"Task {task.id}: rate-limit retries exhausted "
+                    f"({_rl_max_retries}), pausing task."
+                )
+                break
+
+            _backoff = min(_rl_base * (2 ** (_rl_attempt - 1)), _rl_max_backoff)
+            print(
+                f"Task {task.id}: rate limited "
+                f"(attempt {_rl_attempt}/{_rl_max_retries}), "
+                f"waiting {_backoff}s before retry."
+            )
+
+            await self._notify_channel(
+                "⏳ Claude is currently rate-limited. We will try again in a moment."
+            )
+
+            await asyncio.sleep(_backoff)
+
+            await self._notify_channel("✅ Rate limit cleared — resuming now.")
+
+            # Re-initialise the adapter so the next call starts a fresh query.
+            await adapter.start(ctx)
 
         # Record tokens
         if output.tokens_used > 0:
@@ -464,10 +526,21 @@ class Orchestrator:
         # Re-fetch task in case retry_count changed
         task = await self.db.get_task(action.task_id)
 
-        # Helper: post to thread if available, otherwise to notifications
+        # Helper: post to thread if available, otherwise to notifications channel.
+        # Used for in-progress updates (e.g. git errors, paused notices).
         async def _post(msg: str) -> None:
             if thread_send:
                 await thread_send(msg)
+            else:
+                await self._notify_channel(msg)
+
+        # Helper: post a brief notification to the main (notifications) channel.
+        # When a thread exists this replies to the thread-root message so the
+        # notification is visually linked to the thread.  Falls back to a plain
+        # channel message when no thread is available.
+        async def _notify_brief(msg: str) -> None:
+            if thread_main_notify:
+                await thread_main_notify(msg)
             else:
                 await self._notify_channel(msg)
 
@@ -489,17 +562,26 @@ class Orchestrator:
                 await _post(
                     f"**Post-completion git error** for task `{task.id}`: {e}"
                 )
-            await _post(format_task_completed(task, agent, output))
-            # Post full summary to control channel
-            ctrl_lines = [
-                f"**Task Completed:** `{task.id}` — {task.title}",
-                f"Agent: {agent.name} | Tokens: {output.tokens_used:,}",
-            ]
-            if output.summary:
-                ctrl_lines.append(f"\n**Summary:**\n{output.summary}")
-            if output.files_changed:
-                ctrl_lines.append(f"\n**Files changed:** {', '.join(output.files_changed)}")
-            await self._control_channel_post("\n".join(ctrl_lines))
+            # Full summary → last message in the task thread.
+            # Falls back to the notifications channel when no thread exists.
+            if thread_send:
+                summary_lines = [
+                    f"**Task Completed:** `{task.id}` — {task.title}",
+                    f"Agent: {agent.name} | Tokens: {output.tokens_used:,}",
+                ]
+                if output.summary:
+                    summary_lines.append(f"\n**Summary:**\n{output.summary}")
+                if output.files_changed:
+                    summary_lines.append(
+                        f"\n**Files changed:** {', '.join(output.files_changed)}"
+                    )
+                await thread_send("\n".join(summary_lines))
+            else:
+                await self._notify_channel(format_task_completed(task, agent, output))
+            # Brief notification → main channel (reply to thread) + control channel
+            brief = f"✅ Task completed: {task.title} (`{task.id}`)"
+            await _notify_brief(brief)
+            await self._control_channel_post(brief)
 
         elif output.result == AgentResult.FAILED:
             new_retry = task.retry_count + 1
@@ -507,23 +589,49 @@ class Orchestrator:
                 await self.db.update_task(action.task_id,
                                           status=TaskStatus.BLOCKED.value,
                                           retry_count=new_retry)
-                await _post(format_task_blocked(task))
+                brief = (
+                    f"🚫 Task blocked: {task.title} (`{task.id}`) — "
+                    f"max retries ({task.max_retries}) exhausted"
+                )
             else:
                 await self.db.update_task(action.task_id,
                                           status=TaskStatus.READY.value,
                                           retry_count=new_retry,
                                           assigned_agent_id=None)
-                await _post(format_task_failed(task, agent, output))
-            # Post failure details to control channel
-            ctrl_lines = [
-                f"**Task Failed:** `{task.id}` — {task.title}",
-                f"Agent: {agent.name} | Retry: {new_retry}/{task.max_retries}",
-            ]
-            if output.error_message:
-                ctrl_lines.append(f"\n**Error:**\n{output.error_message}")
-            if output.summary:
-                ctrl_lines.append(f"\n**Summary:**\n{output.summary}")
-            await self._control_channel_post("\n".join(ctrl_lines))
+                brief = (
+                    f"⚠️ Task failed: {task.title} (`{task.id}`) — "
+                    f"retry {new_retry}/{task.max_retries}"
+                )
+            # Full failure summary → thread; fallback to notifications if no thread
+            if thread_send:
+                from src.discord.notifications import classify_error
+                error_type, suggestion = classify_error(output.error_message)
+                label = "Blocked" if new_retry >= task.max_retries else "Failed"
+                fail_lines = [
+                    f"**Task {label}:** `{task.id}` — {task.title}",
+                    f"Agent: {agent.name} | Retry: {new_retry}/{task.max_retries}",
+                    f"Error type: **{error_type}**",
+                ]
+                if output.error_message:
+                    snippet = output.error_message[:400]
+                    if len(output.error_message) > 400:
+                        snippet += "…"
+                    fail_lines.append(f"```\n{snippet}\n```")
+                fail_lines.append(f"💡 {suggestion}")
+                fail_lines.append(f"_Use `/agent-error {task.id}` for full details._")
+                if output.summary:
+                    fail_lines.append(f"\n**Summary:**\n{output.summary}")
+                await thread_send("\n".join(fail_lines))
+            else:
+                if new_retry >= task.max_retries:
+                    await self._notify_channel(
+                        format_task_blocked(task, last_error=output.error_message)
+                    )
+                else:
+                    await self._notify_channel(format_task_failed(task, agent, output))
+            # Brief notification → main channel (reply to thread) + control channel
+            await _notify_brief(brief)
+            await self._control_channel_post(brief)
 
         elif output.result in (
             AgentResult.PAUSED_TOKENS, AgentResult.PAUSED_RATE_LIMIT
