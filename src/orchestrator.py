@@ -341,15 +341,11 @@ class Orchestrator:
 
         Returns a PR URL if one was created, otherwise None.
         """
-        if not task.repo_id or not task.branch_name:
-            return None
-
-        repo = await self.db.get_repo(task.repo_id)
-        if not repo:
-            return None
-
         workspace = agent.checkout_path
         if not workspace or not self.git.validate_checkout(workspace):
+            return None
+
+        if not task.branch_name:
             return None
 
         # Commit any uncommitted work on the task branch
@@ -359,11 +355,19 @@ class Orchestrator:
         if not committed:
             print(f"Task {task.id}: no changes to commit on branch {task.branch_name}")
 
-        if task.requires_approval:
+        # Resolve repo config (task's repo or agent's assigned repo)
+        repo_id = task.repo_id or agent.repo_id
+        repo = await self.db.get_repo(repo_id) if repo_id else None
+
+        if repo and task.requires_approval:
             return await self._create_pr_for_task(task, repo, workspace)
-        else:
+        elif repo:
             await self._merge_and_push(task, repo, workspace)
             return None
+
+        # No repo config — changes are committed on the branch but
+        # no merge/push/PR is attempted (e.g. local-only workspace)
+        return None
 
     async def _merge_and_push(self, task: Task, repo: RepoConfig, workspace: str) -> None:
         """Merge the task branch into default and push (clone repos only)."""
@@ -539,18 +543,31 @@ class Orchestrator:
         self._adapters[action.agent_id] = adapter
 
         # Inject system context so the agent knows where it's working
-        full_description = (
-            f"## System Context\n"
-            f"- Workspace directory: {workspace}\n"
-            f"- Global workspaces root: {self.config.workspace_dir}\n"
-            f"- Project: {project.name} (id: {project.id})\n"
-            f"\n## Task\n"
-            f"{task.description}"
+        context_lines = [
+            "## System Context",
+            f"- Workspace directory: {workspace}",
+            f"- Global workspaces root: {self.config.workspace_dir}",
+            f"- Project: {project.name} (id: {project.id})",
+        ]
+        if task.branch_name:
+            context_lines.append(f"- Git branch: {task.branch_name}")
+
+        context_lines.append(
+            "\n## Important: Committing Your Work\n"
+            "When you have finished making changes, you MUST commit your work:\n"
+            "1. `git add` the files you changed\n"
+            "2. `git commit` with a descriptive message\n"
+            "Do NOT push — the system handles pushing and PR creation."
         )
+
+        context_lines.append(f"\n## Task\n{task.description}")
+
+        full_description = "\n".join(context_lines)
 
         ctx = TaskContext(
             description=full_description,
             checkout_path=workspace,
+            branch_name=task.branch_name or "",
         )
         await adapter.start(ctx)
 
