@@ -628,6 +628,13 @@ everything an engineer needs to complete the work without asking follow-up quest
 Always include the project's workspace path so the agent knows where to work. \
 If the user's request is vague, ask for clarification BEFORE creating the task.
 
+CRITICAL — When you discuss or generate a plan with the user, and they approve it, \
+you MUST include the FULL plan in the task description. The agent runs autonomously \
+with NO plan mode — it cannot plan and wait for approval. The task description IS the \
+plan. Include specific file paths, code changes, new files to create, and step-by-step \
+implementation instructions. The more detailed the description, the better the agent \
+will execute. Never create a task with just a summary — include the complete plan.
+
 Be concise in Discord messages. Use markdown formatting. When a user asks you to \
 do something, use the available tools to do it — don't just tell them to use slash commands.
 

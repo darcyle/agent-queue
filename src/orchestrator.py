@@ -565,6 +565,10 @@ class Orchestrator:
             context_lines.append(f"- Git branch: {task.branch_name}")
 
         context_lines.append(
+            "\n## Important: Execution Rules\n"
+            "You are running autonomously — there is NO interactive user to approve plans.\n"
+            "Do NOT use plan mode or EnterPlanMode. Implement the changes DIRECTLY.\n"
+            "If the task description contains a plan, execute it immediately — do not re-plan.\n"
             "\n## Important: Committing Your Work\n"
             "When you have finished making changes, you MUST commit your work:\n"
             "1. `git add` the files you changed\n"
