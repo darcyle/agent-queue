@@ -17,6 +17,97 @@ _ToolUseBlock = None
 _ToolResultBlock = None
 
 
+async def _resilient_query(prompt, options):
+    """Wrap claude_agent_sdk.query() to survive MessageParseError.
+
+    The SDK's message parser raises MessageParseError for unknown message
+    types like ``rate_limit_event``.  Because ``query()`` yields from an
+    async generator, a single parse error kills the entire iterator.
+
+    This wrapper accesses the SDK internals to iterate raw JSON dicts and
+    parse them ourselves, silently skipping unknown types instead of crashing.
+    """
+    from claude_agent_sdk._internal.client import InternalClient
+    from claude_agent_sdk._internal.message_parser import parse_message
+    from claude_agent_sdk._errors import MessageParseError as _MPE
+    from claude_agent_sdk.types import ClaudeAgentOptions
+    import os, json
+    from collections.abc import AsyncIterable
+
+    os.environ["CLAUDE_CODE_ENTRYPOINT"] = "sdk-py"
+
+    client = InternalClient()
+
+    configured_options = options
+    if options.can_use_tool:
+        if isinstance(prompt, str):
+            raise ValueError("can_use_tool requires streaming mode")
+        if options.permission_prompt_tool_name:
+            raise ValueError("can_use_tool and permission_prompt_tool_name are mutually exclusive")
+        from dataclasses import replace
+        configured_options = replace(options, permission_prompt_tool_name="stdio")
+
+    from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+    transport = SubprocessCLITransport(prompt=prompt, options=configured_options)
+    await transport.connect()
+
+    sdk_mcp_servers = {}
+    if configured_options.mcp_servers and isinstance(configured_options.mcp_servers, dict):
+        for name, config in configured_options.mcp_servers.items():
+            if isinstance(config, dict) and config.get("type") == "sdk":
+                sdk_mcp_servers[name] = config["instance"]
+
+    from dataclasses import asdict
+    agents_dict = None
+    if configured_options.agents:
+        agents_dict = {
+            name: {k: v for k, v in asdict(agent_def).items() if v is not None}
+            for name, agent_def in configured_options.agents.items()
+        }
+
+    hooks = (
+        client._convert_hooks_to_internal_format(configured_options.hooks)
+        if configured_options.hooks else None
+    )
+
+    from claude_agent_sdk._internal.query import Query
+    query_obj = Query(
+        transport=transport,
+        is_streaming_mode=True,
+        can_use_tool=configured_options.can_use_tool,
+        hooks=hooks,
+        sdk_mcp_servers=sdk_mcp_servers,
+        agents=agents_dict,
+    )
+
+    try:
+        await query_obj.start()
+        await query_obj.initialize()
+
+        if isinstance(prompt, str):
+            user_message = {
+                "type": "user",
+                "session_id": "",
+                "message": {"role": "user", "content": prompt},
+                "parent_tool_use_id": None,
+            }
+            await transport.write(json.dumps(user_message) + "\n")
+            await transport.end_input()
+        elif isinstance(prompt, AsyncIterable) and query_obj._tg:
+            query_obj._tg.start_soon(query_obj.stream_input, prompt)
+
+        # Iterate raw dicts, parse ourselves, skip unknown message types
+        async for data in query_obj.receive_messages():
+            try:
+                yield parse_message(data)
+            except _MPE as e:
+                msg_type = data.get("type", "unknown") if isinstance(data, dict) else "unknown"
+                print(f"Claude adapter: skipping unrecognised message type '{msg_type}': {e}")
+                continue
+    finally:
+        await query_obj.close()
+
+
 @dataclass
 class ClaudeAdapterConfig:
     model: str = ""  # Empty = let Claude Code pick the default model
@@ -45,7 +136,7 @@ class ClaudeAdapter(AgentAdapter):
                 os.environ.pop(var, None)
 
             import shutil
-            from claude_agent_sdk import query, ClaudeAgentOptions
+            from claude_agent_sdk import ClaudeAgentOptions
             from claude_agent_sdk.types import (
                 AssistantMessage, ResultMessage, UserMessage,
                 TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock,
@@ -85,7 +176,7 @@ class ClaudeAdapter(AgentAdapter):
                   f"prompt={len(current_prompt)} chars)")
             cli_error: str | None = None
             try:
-                async for message in query(prompt=current_prompt, options=options):
+                async for message in _resilient_query(prompt=current_prompt, options=options):
                     # Log only messages with meaningful subtypes to reduce noise
                     msg_subtype = getattr(message, "subtype", "")
                     if msg_subtype and msg_subtype not in ("", None):
@@ -138,33 +229,20 @@ class ClaudeAdapter(AgentAdapter):
                         summary_parts.append(str(message.result))
 
             except Exception as e:
-                # The SDK throws MessageParseError for unrecognised message types
-                # like rate_limit_event. Claude Code handles rate limiting internally
-                # so these don't actually disrupt the work — just log a warning and
-                # let the orchestrator decide what to do with whatever results we got.
                 import traceback
                 error_msg = str(e)
-                is_rate_limit = (
-                    "rate_limit" in error_msg.lower()
-                    or "rate limit" in error_msg.lower()
-                    or "429" in error_msg
-                )
-                if is_rate_limit:
-                    print(f"Claude adapter WARNING: rate_limit_event from SDK (non-fatal): {error_msg}")
-                else:
-                    # Non-rate-limit errors are real failures
-                    full_traceback = traceback.format_exc()
-                    print(f"Claude adapter error: {error_msg}")
-                    print(full_traceback)
-                    if "token" in error_msg.lower() or "quota" in error_msg.lower():
-                        return AgentOutput(
-                            result=AgentResult.PAUSED_TOKENS,
-                            error_message=error_msg,
-                        )
+                full_traceback = traceback.format_exc()
+                print(f"Claude adapter error: {error_msg}")
+                print(full_traceback)
+                if "token" in error_msg.lower() or "quota" in error_msg.lower():
                     return AgentOutput(
-                        result=AgentResult.FAILED,
-                        error_message=f"{error_msg}\n{full_traceback}",
+                        result=AgentResult.PAUSED_TOKENS,
+                        error_message=error_msg,
                     )
+                return AgentOutput(
+                    result=AgentResult.FAILED,
+                    error_message=f"{error_msg}\n{full_traceback}",
+                )
 
             # If the CLI reported an error result, propagate it as FAILED
             if cli_error:
@@ -175,7 +253,24 @@ class ClaudeAdapter(AgentAdapter):
                     tokens_used=tokens_used,
                 )
 
-            print(f"Claude adapter: query completed, {len(summary_parts)} result parts")
+            print(f"Claude adapter: query completed, {len(summary_parts)} result parts, "
+                  f"{tokens_used} tokens")
+
+            # If the agent used 0 tokens and produced no meaningful output,
+            # something went wrong (e.g. auth failure, rate limit, CLI crash).
+            if tokens_used == 0 and not summary_parts:
+                print("Claude adapter: 0 tokens and no output — treating as failure")
+                return AgentOutput(
+                    result=AgentResult.FAILED,
+                    error_message=(
+                        "Agent session ended with 0 tokens and no output. "
+                        "Possible causes: rate limit on subscription, "
+                        "authentication failure, or Claude CLI crash. "
+                        "Check `claude login` status and subscription limits."
+                    ),
+                    tokens_used=0,
+                )
+
             return AgentOutput(
                 result=AgentResult.COMPLETED,
                 summary="\n".join(summary_parts) or "Completed",

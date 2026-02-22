@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import os
+import random
 import signal
+import uuid
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-import os
-
-from src.models import ProjectStatus, TaskStatus
+from src.models import Project, ProjectStatus, Task, TaskStatus
 from src.discord.notifications import classify_error
 
 
@@ -476,3 +476,72 @@ def setup_commands(bot: commands.Bot) -> None:
             )
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ---------------------------------------------------------------------------
+    # /add-task — manually add a task to the active/current project
+    # ---------------------------------------------------------------------------
+
+    _TASK_ADJECTIVES = [
+        "swift", "bright", "calm", "bold", "keen", "wise", "fair",
+        "sharp", "clear", "eager", "fresh", "grand", "prime", "quick",
+        "smart", "sound", "solid", "stark", "steady", "noble", "crisp",
+        "fleet", "nimble", "brisk", "vivid", "agile", "amber", "azure",
+    ]
+    _TASK_NOUNS = [
+        "falcon", "horizon", "cascade", "ember", "summit", "ridge",
+        "beacon", "current", "delta", "forge", "glacier", "harbor",
+        "impact", "journey", "lantern", "meadow", "nexus", "orbit",
+        "pinnacle", "quest", "rapids", "stone", "torrent", "vault",
+        "willow", "zenith", "apex", "bridge", "crest", "dune",
+        "flare", "grove", "inlet", "jetty", "knoll", "lunar",
+    ]
+
+    def _generate_task_name() -> str:
+        """Return a random adjective-noun task title (e.g. 'swift-falcon')."""
+        adj = random.choice(_TASK_ADJECTIVES)
+        noun = random.choice(_TASK_NOUNS)
+        return f"{adj}-{noun}"
+
+    @bot.tree.command(name="add-task", description="Add a task manually to the active project")
+    @app_commands.describe(description="What the task should do")
+    async def add_task_command(interaction: discord.Interaction, description: str) -> None:
+        db = bot.orchestrator.db
+
+        # Resolve the target project: use the active project, or fall back to "quick-tasks"
+        project_id = bot.agent._active_project_id or "quick-tasks"
+        project = await db.get_project(project_id)
+
+        # Auto-create "quick-tasks" if it doesn't exist yet
+        if not project:
+            workspace = os.path.join(bot.config.workspace_dir, project_id)
+            os.makedirs(workspace, exist_ok=True)
+            project = Project(
+                id=project_id,
+                name="Quick Tasks",
+                credit_weight=0.5,
+                max_concurrent_agents=1,
+                workspace_path=workspace,
+            )
+            await db.create_project(project)
+
+        # Build task with a random name and a short unique ID
+        task_id = str(uuid.uuid4())[:8]
+        title = _generate_task_name()
+        task = Task(
+            id=task_id,
+            project_id=project_id,
+            title=title,
+            description=description,
+            status=TaskStatus.READY,
+        )
+        await db.create_task(task)
+
+        embed = discord.Embed(title="✅ Task Added", color=0x2ecc71)
+        embed.add_field(name="ID", value=f"`{task_id}`", inline=True)
+        embed.add_field(name="Name", value=title, inline=True)
+        embed.add_field(name="Project", value=f"`{project_id}`", inline=True)
+        embed.add_field(name="Status", value="🔵 READY", inline=True)
+        # Cap description at 1024 chars (Discord embed field limit)
+        desc_preview = description if len(description) <= 1024 else description[:1021] + "..."
+        embed.add_field(name="Description", value=desc_preview, inline=False)
+        await interaction.response.send_message(embed=embed)
