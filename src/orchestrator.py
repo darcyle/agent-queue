@@ -710,7 +710,8 @@ class Orchestrator:
                                         payload=pr_url)
                 await _post(format_pr_created(task, pr_url))
                 brief = f"🔍 PR created for review: {task.title} (`{task.id}`)\n{pr_url}"
-                await _notify_brief(brief)
+                if thread_send:
+                    await _notify_brief(brief)
                 await self._control_channel_post(brief)
             elif task.requires_approval and not pr_url:
                 # Approval required but no PR (e.g. LINK repo) — wait for manual approval
@@ -745,7 +746,8 @@ class Orchestrator:
                 else:
                     await self._notify_channel(format_task_completed(task, agent, output))
                 brief = f"✅ Task completed: {task.title} (`{task.id}`)"
-                await _notify_brief(brief)
+                if thread_send:
+                    await _notify_brief(brief)
                 await self._control_channel_post(brief)
 
         elif output.result == AgentResult.FAILED:
@@ -795,7 +797,8 @@ class Orchestrator:
                 else:
                     await self._notify_channel(format_task_failed(task, agent, output))
             # Brief notification → main channel (reply to thread) + control channel
-            await _notify_brief(brief)
+            if thread_send:
+                await _notify_brief(brief)
             await self._control_channel_post(brief)
 
         elif output.result in (
