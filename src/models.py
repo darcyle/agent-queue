@@ -147,3 +147,37 @@ class AgentOutput:
     files_changed: list[str] = field(default_factory=list)
     tokens_used: int = 0
     error_message: str | None = None
+
+
+@dataclass
+class Hook:
+    id: str
+    project_id: str
+    name: str
+    enabled: bool = True
+    trigger: str = '{}'          # JSON: {"type": "periodic", "interval_seconds": 7200}
+    context_steps: str = '[]'    # JSON array of step configs
+    prompt_template: str = ''    # Template with {{step_0}}, {{event}} placeholders
+    llm_config: str | None = None  # JSON: {"provider": "anthropic", "model": "..."}
+    cooldown_seconds: int = 3600
+    max_tokens_per_run: int | None = None
+    created_at: float = 0.0
+    updated_at: float = 0.0
+
+
+@dataclass
+class HookRun:
+    id: str
+    hook_id: str
+    project_id: str
+    trigger_reason: str          # "periodic", "cron", "event:task_completed", "manual"
+    status: str = 'running'      # running, completed, failed, skipped
+    event_data: str | None = None
+    context_results: str | None = None
+    prompt_sent: str | None = None
+    llm_response: str | None = None
+    actions_taken: str | None = None
+    skipped_reason: str | None = None
+    tokens_used: int = 0
+    started_at: float = 0.0
+    completed_at: float | None = None

@@ -11,7 +11,7 @@ from pathlib import Path
 from src.chat_providers import ChatProvider, create_chat_provider
 from src.config import AppConfig
 from src.models import (
-    Agent, Project, ProjectStatus, RepoConfig, RepoSourceType,
+    Agent, Hook, Project, ProjectStatus, RepoConfig, RepoSourceType,
     Task, TaskStatus,
 )
 from src.orchestrator import Orchestrator
@@ -405,6 +405,110 @@ TOOLS = [
         },
     },
     {
+        "name": "create_hook",
+        "description": (
+            "Create a hook that automatically triggers actions. Hooks gather context "
+            "(shell commands, file reads, HTTP checks, DB queries) and send a prompt "
+            "to an LLM that has access to all system tools (create_task, list_tasks, etc.). "
+            "Trigger types: 'periodic' (interval_seconds), 'event' (event_type). "
+            "Context step types: 'shell' (command, timeout, skip_llm_if_exit_zero), "
+            "'read_file' (path, max_lines), 'http' (url, skip_llm_if_status_ok), "
+            "'db_query' (query name, params), 'git_diff' (workspace, base_branch). "
+            "Use {{step_0}}, {{step_1}}, {{event}} in prompt_template."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "name": {"type": "string", "description": "Hook name (used as ID slug)"},
+                "trigger": {
+                    "type": "object",
+                    "description": "Trigger config: {type: 'periodic', interval_seconds: N} or {type: 'event', event_type: '...'}",
+                },
+                "context_steps": {
+                    "type": "array",
+                    "description": "Array of context step configs",
+                    "items": {"type": "object"},
+                },
+                "prompt_template": {
+                    "type": "string",
+                    "description": "Prompt template with {{step_N}} and {{event}} placeholders",
+                },
+                "cooldown_seconds": {
+                    "type": "integer",
+                    "description": "Min seconds between runs (default 3600)",
+                    "default": 3600,
+                },
+                "llm_config": {
+                    "type": "object",
+                    "description": "Optional LLM config override: {provider, model, base_url}",
+                },
+            },
+            "required": ["project_id", "name", "trigger", "prompt_template"],
+        },
+    },
+    {
+        "name": "list_hooks",
+        "description": "List hooks, optionally filtered by project.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Filter by project ID (optional)"},
+            },
+        },
+    },
+    {
+        "name": "edit_hook",
+        "description": "Update a hook's configuration (any field: enabled, trigger, context_steps, prompt_template, cooldown_seconds, llm_config).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hook_id": {"type": "string", "description": "Hook ID"},
+                "enabled": {"type": "boolean", "description": "Enable/disable the hook"},
+                "trigger": {"type": "object", "description": "New trigger config"},
+                "context_steps": {"type": "array", "description": "New context steps", "items": {"type": "object"}},
+                "prompt_template": {"type": "string", "description": "New prompt template"},
+                "cooldown_seconds": {"type": "integer", "description": "New cooldown"},
+                "llm_config": {"type": "object", "description": "New LLM config override"},
+            },
+            "required": ["hook_id"],
+        },
+    },
+    {
+        "name": "delete_hook",
+        "description": "Delete a hook and its run history.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hook_id": {"type": "string", "description": "Hook ID to delete"},
+            },
+            "required": ["hook_id"],
+        },
+    },
+    {
+        "name": "list_hook_runs",
+        "description": "Show recent execution history for a hook.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hook_id": {"type": "string", "description": "Hook ID"},
+                "limit": {"type": "integer", "description": "Number of runs to show (default 10)", "default": 10},
+            },
+            "required": ["hook_id"],
+        },
+    },
+    {
+        "name": "fire_hook",
+        "description": "Manually trigger a hook immediately, ignoring cooldown.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hook_id": {"type": "string", "description": "Hook ID to fire"},
+            },
+            "required": ["hook_id"],
+        },
+    },
+    {
         "name": "list_notes",
         "description": "List all notes for a project. Notes are markdown documents stored in the project workspace.",
         "input_schema": {
@@ -466,6 +570,8 @@ You can directly (using your tools):
 - Get token usage breakdowns with `get_token_usage`
 - Delete entire projects (cascading) with `delete_project`
 - Create, read, edit, and delete project notes with `list_notes`, `write_note`, `delete_note`, and `read_file`
+- Create and manage hooks for automated self-improvement with `create_hook`, `list_hooks`, \
+`edit_hook`, `delete_hook`, `list_hook_runs`, and `fire_hook`
 
 Repository management — use the `add_repo` tool to connect repos to projects:
 - **clone**: Clone a git repo by URL. Agents get their own checkout. Use for remote repos.
@@ -495,6 +601,17 @@ read the note, propose a list of tasks with titles and descriptions, and wait \
 for the user to approve before calling `create_task` for each one.
 - When creating a brainstorming task for an agent, include the notes path in the \
 task description so the agent writes its output to `<workspace>/notes/<name>.md`.
+
+Hook system — hooks enable automated self-improvement by running context-gathering steps \
+and sending prompts to an LLM that has access to all system tools:
+- **Periodic hooks**: Run on a schedule (e.g., run tests every 2 hours, analyze logs hourly)
+- **Event hooks**: Fire when something happens (e.g., review every completed task)
+- **Context steps**: Gather data before prompting (shell commands, file reads, HTTP checks, DB queries)
+- **Short-circuit**: Skip the LLM call if conditions are met (e.g., tests pass = no action needed)
+- When creating hooks, the `prompt_template` uses `{{step_0}}`, `{{step_1}}` for context step outputs \
+and `{{event}}`, `{{event.task_id}}` for event data.
+- Example: A test-watcher hook runs `pytest`, skips LLM if tests pass, otherwise asks LLM to create \
+tasks for failures.
 
 IMPORTANT — You are a dispatcher, not a worker. You CANNOT write code, edit files, \
 run commands, or do technical work yourself. When a user asks you to DO something \
@@ -1252,6 +1369,108 @@ class ChatAgent:
                         ],
                         "total": sum(r["total"] for r in rows),
                     }
+
+            elif name == "create_hook":
+                project_id = input_data["project_id"]
+                project = await db.get_project(project_id)
+                if not project:
+                    return {"error": f"Project '{project_id}' not found"}
+                hook_id = input_data["name"].lower().replace(" ", "-")
+                hook = Hook(
+                    id=hook_id,
+                    project_id=project_id,
+                    name=input_data["name"],
+                    trigger=json.dumps(input_data["trigger"]),
+                    context_steps=json.dumps(input_data.get("context_steps", [])),
+                    prompt_template=input_data["prompt_template"],
+                    cooldown_seconds=input_data.get("cooldown_seconds", 3600),
+                    llm_config=json.dumps(input_data["llm_config"]) if input_data.get("llm_config") else None,
+                )
+                await db.create_hook(hook)
+                return {"created": hook_id, "name": hook.name, "project_id": project_id}
+
+            elif name == "list_hooks":
+                project_id = input_data.get("project_id")
+                hooks = await db.list_hooks(project_id=project_id)
+                return {
+                    "hooks": [
+                        {
+                            "id": h.id,
+                            "project_id": h.project_id,
+                            "name": h.name,
+                            "enabled": h.enabled,
+                            "trigger": json.loads(h.trigger),
+                            "cooldown_seconds": h.cooldown_seconds,
+                        }
+                        for h in hooks
+                    ]
+                }
+
+            elif name == "edit_hook":
+                hook_id = input_data["hook_id"]
+                hook = await db.get_hook(hook_id)
+                if not hook:
+                    return {"error": f"Hook '{hook_id}' not found"}
+                updates = {}
+                if "enabled" in input_data:
+                    updates["enabled"] = input_data["enabled"]
+                if "trigger" in input_data:
+                    updates["trigger"] = json.dumps(input_data["trigger"])
+                if "context_steps" in input_data:
+                    updates["context_steps"] = json.dumps(input_data["context_steps"])
+                if "prompt_template" in input_data:
+                    updates["prompt_template"] = input_data["prompt_template"]
+                if "cooldown_seconds" in input_data:
+                    updates["cooldown_seconds"] = input_data["cooldown_seconds"]
+                if "llm_config" in input_data:
+                    updates["llm_config"] = json.dumps(input_data["llm_config"])
+                if not updates:
+                    return {"error": "No fields to update"}
+                await db.update_hook(hook_id, **updates)
+                return {"updated": hook_id, "fields": list(updates.keys())}
+
+            elif name == "delete_hook":
+                hook_id = input_data["hook_id"]
+                hook = await db.get_hook(hook_id)
+                if not hook:
+                    return {"error": f"Hook '{hook_id}' not found"}
+                await db.delete_hook(hook_id)
+                return {"deleted": hook_id, "name": hook.name}
+
+            elif name == "list_hook_runs":
+                hook_id = input_data["hook_id"]
+                hook = await db.get_hook(hook_id)
+                if not hook:
+                    return {"error": f"Hook '{hook_id}' not found"}
+                limit = input_data.get("limit", 10)
+                runs = await db.list_hook_runs(hook_id, limit=limit)
+                return {
+                    "hook_id": hook_id,
+                    "hook_name": hook.name,
+                    "runs": [
+                        {
+                            "id": r.id,
+                            "trigger_reason": r.trigger_reason,
+                            "status": r.status,
+                            "tokens_used": r.tokens_used,
+                            "skipped_reason": r.skipped_reason,
+                            "started_at": r.started_at,
+                            "completed_at": r.completed_at,
+                        }
+                        for r in runs
+                    ],
+                }
+
+            elif name == "fire_hook":
+                hook_id = input_data["hook_id"]
+                hooks_engine = self.orchestrator.hooks
+                if not hooks_engine:
+                    return {"error": "Hook engine is not enabled"}
+                try:
+                    await hooks_engine.fire_hook(hook_id)
+                    return {"fired": hook_id, "status": "running"}
+                except ValueError as e:
+                    return {"error": str(e)}
 
             elif name == "list_notes":
                 project = await db.get_project(input_data["project_id"])

@@ -18,6 +18,7 @@ from src.models import (
     AgentOutput, AgentResult, AgentState, RepoConfig, RepoSourceType,
     Task, TaskStatus, TaskContext,
 )
+from src.hooks import HookEngine
 from src.scheduler import AssignAction, Scheduler, SchedulerState
 from src.tokens.budget import BudgetManager
 
@@ -49,6 +50,7 @@ class Orchestrator:
         self._create_thread: CreateThreadCallback | None = None
         self._paused: bool = False
         self._last_approval_check: float = 0.0
+        self.hooks: HookEngine | None = None
 
     def pause(self) -> None:
         self._paused = True
@@ -117,6 +119,10 @@ class Orchestrator:
     async def initialize(self) -> None:
         await self.db.initialize()
         await self._recover_stale_state()
+        if self.config.hook_engine.enabled:
+            self.hooks = HookEngine(self.db, self.bus, self.config)
+            self.hooks.set_orchestrator(self)
+            await self.hooks.initialize()
 
     async def _recover_stale_state(self) -> None:
         """Reset any in-flight work from a previous daemon run.
@@ -139,6 +145,8 @@ class Orchestrator:
                                       assigned_agent_id=None)
 
     async def shutdown(self) -> None:
+        if self.hooks:
+            await self.hooks.shutdown()
         await self.db.close()
 
     async def run_one_cycle(self) -> None:
@@ -170,6 +178,10 @@ class Orchestrator:
                     continue  # Already running
                 bg = asyncio.create_task(self._execute_task_safe(action))
                 self._running_tasks[action.task_id] = bg
+
+            # 5. Run hook engine tick
+            if self.hooks:
+                await self.hooks.tick()
         except Exception as e:
             print(f"Scheduler cycle error: {e}")
             import traceback

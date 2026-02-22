@@ -48,6 +48,12 @@ class PauseRetryConfig:
 
 
 @dataclass
+class HookEngineConfig:
+    enabled: bool = True
+    max_concurrent_hooks: int = 2
+
+
+@dataclass
 class ChatProviderConfig:
     provider: str = "anthropic"  # "anthropic" or "ollama"
     model: str = ""              # Empty = provider default
@@ -68,6 +74,7 @@ class AppConfig:
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
     chat_provider: ChatProviderConfig = field(default_factory=ChatProviderConfig)
+    hook_engine: HookEngineConfig = field(default_factory=HookEngineConfig)
     global_token_budget_daily: int | None = None
     rate_limits: dict[str, dict[str, int]] = field(default_factory=dict)
 
@@ -180,6 +187,13 @@ def load_config(path: str) -> AppConfig:
             provider=cp.get("provider", "anthropic"),
             model=cp.get("model", ""),
             base_url=cp.get("base_url", ""),
+        )
+
+    if "hook_engine" in raw:
+        h = raw["hook_engine"]
+        config.hook_engine = HookEngineConfig(
+            enabled=h.get("enabled", True),
+            max_concurrent_hooks=h.get("max_concurrent_hooks", 2),
         )
 
     if "rate_limits" in raw:

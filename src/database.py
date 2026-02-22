@@ -7,8 +7,8 @@ import uuid
 import aiosqlite
 
 from src.models import (
-    Agent, AgentState, Project, ProjectStatus, RepoConfig, RepoSourceType,
-    Task, TaskStatus, VerificationType,
+    Agent, AgentState, Hook, HookRun, Project, ProjectStatus, RepoConfig,
+    RepoSourceType, Task, TaskStatus, VerificationType,
 )
 
 SCHEMA = """
@@ -141,6 +141,38 @@ CREATE TABLE IF NOT EXISTS task_results (
 CREATE TABLE IF NOT EXISTS system_config (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS hooks (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    name TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    trigger TEXT NOT NULL,
+    context_steps TEXT NOT NULL DEFAULT '[]',
+    prompt_template TEXT NOT NULL,
+    llm_config TEXT,
+    cooldown_seconds INTEGER NOT NULL DEFAULT 3600,
+    max_tokens_per_run INTEGER,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS hook_runs (
+    id TEXT PRIMARY KEY,
+    hook_id TEXT NOT NULL REFERENCES hooks(id),
+    project_id TEXT NOT NULL,
+    trigger_reason TEXT NOT NULL,
+    event_data TEXT,
+    context_results TEXT,
+    prompt_sent TEXT,
+    llm_response TEXT,
+    actions_taken TEXT,
+    skipped_reason TEXT,
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'running',
+    started_at REAL NOT NULL,
+    completed_at REAL
 );
 """
 
@@ -582,6 +614,8 @@ class Database:
             await self._db.execute("DELETE FROM task_context WHERE task_id = ?", (tid,))
             await self._db.execute("DELETE FROM task_tools WHERE task_id = ?", (tid,))
 
+        await self._db.execute("DELETE FROM hook_runs WHERE project_id = ?", (project_id,))
+        await self._db.execute("DELETE FROM hooks WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM token_ledger WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM tasks WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM repos WHERE project_id = ?", (project_id,))
@@ -612,6 +646,155 @@ class Database:
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
+    # --- Atomic Operations ---
+
+    # --- Hooks ---
+
+    async def create_hook(self, hook: Hook) -> None:
+        now = time.time()
+        await self._db.execute(
+            "INSERT INTO hooks (id, project_id, name, enabled, trigger, "
+            "context_steps, prompt_template, llm_config, cooldown_seconds, "
+            "max_tokens_per_run, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (hook.id, hook.project_id, hook.name, int(hook.enabled),
+             hook.trigger, hook.context_steps, hook.prompt_template,
+             hook.llm_config, hook.cooldown_seconds, hook.max_tokens_per_run,
+             now, now),
+        )
+        await self._db.commit()
+
+    async def get_hook(self, hook_id: str) -> Hook | None:
+        cursor = await self._db.execute(
+            "SELECT * FROM hooks WHERE id = ?", (hook_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_hook(row)
+
+    async def list_hooks(
+        self, project_id: str | None = None, enabled: bool | None = None
+    ) -> list[Hook]:
+        conditions = []
+        vals = []
+        if project_id:
+            conditions.append("project_id = ?")
+            vals.append(project_id)
+        if enabled is not None:
+            conditions.append("enabled = ?")
+            vals.append(int(enabled))
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = await self._db.execute(
+            f"SELECT * FROM hooks {where}", vals
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_hook(r) for r in rows]
+
+    async def update_hook(self, hook_id: str, **kwargs) -> None:
+        sets = []
+        vals = []
+        for key, value in kwargs.items():
+            if key == "enabled":
+                value = int(value)
+            sets.append(f"{key} = ?")
+            vals.append(value)
+        sets.append("updated_at = ?")
+        vals.append(time.time())
+        vals.append(hook_id)
+        await self._db.execute(
+            f"UPDATE hooks SET {', '.join(sets)} WHERE id = ?", vals
+        )
+        await self._db.commit()
+
+    async def delete_hook(self, hook_id: str) -> None:
+        await self._db.execute("DELETE FROM hook_runs WHERE hook_id = ?", (hook_id,))
+        await self._db.execute("DELETE FROM hooks WHERE id = ?", (hook_id,))
+        await self._db.commit()
+
+    def _row_to_hook(self, row) -> Hook:
+        return Hook(
+            id=row["id"],
+            project_id=row["project_id"],
+            name=row["name"],
+            enabled=bool(row["enabled"]),
+            trigger=row["trigger"],
+            context_steps=row["context_steps"],
+            prompt_template=row["prompt_template"],
+            llm_config=row["llm_config"],
+            cooldown_seconds=row["cooldown_seconds"],
+            max_tokens_per_run=row["max_tokens_per_run"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    # --- Hook Runs ---
+
+    async def create_hook_run(self, run: HookRun) -> None:
+        await self._db.execute(
+            "INSERT INTO hook_runs (id, hook_id, project_id, trigger_reason, "
+            "event_data, context_results, prompt_sent, llm_response, "
+            "actions_taken, skipped_reason, tokens_used, status, started_at, "
+            "completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (run.id, run.hook_id, run.project_id, run.trigger_reason,
+             run.event_data, run.context_results, run.prompt_sent,
+             run.llm_response, run.actions_taken, run.skipped_reason,
+             run.tokens_used, run.status, run.started_at, run.completed_at),
+        )
+        await self._db.commit()
+
+    async def update_hook_run(self, run_id: str, **kwargs) -> None:
+        sets = []
+        vals = []
+        for key, value in kwargs.items():
+            sets.append(f"{key} = ?")
+            vals.append(value)
+        vals.append(run_id)
+        await self._db.execute(
+            f"UPDATE hook_runs SET {', '.join(sets)} WHERE id = ?", vals
+        )
+        await self._db.commit()
+
+    async def get_last_hook_run(self, hook_id: str) -> HookRun | None:
+        cursor = await self._db.execute(
+            "SELECT * FROM hook_runs WHERE hook_id = ? "
+            "ORDER BY started_at DESC LIMIT 1",
+            (hook_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_hook_run(row)
+
+    async def list_hook_runs(
+        self, hook_id: str, limit: int = 20
+    ) -> list[HookRun]:
+        cursor = await self._db.execute(
+            "SELECT * FROM hook_runs WHERE hook_id = ? "
+            "ORDER BY started_at DESC LIMIT ?",
+            (hook_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_hook_run(r) for r in rows]
+
+    def _row_to_hook_run(self, row) -> HookRun:
+        return HookRun(
+            id=row["id"],
+            hook_id=row["hook_id"],
+            project_id=row["project_id"],
+            trigger_reason=row["trigger_reason"],
+            status=row["status"],
+            event_data=row["event_data"],
+            context_results=row["context_results"],
+            prompt_sent=row["prompt_sent"],
+            llm_response=row["llm_response"],
+            actions_taken=row["actions_taken"],
+            skipped_reason=row["skipped_reason"],
+            tokens_used=row["tokens_used"],
+            started_at=row["started_at"],
+            completed_at=row["completed_at"],
+        )
 
     # --- Atomic Operations ---
 
