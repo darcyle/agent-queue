@@ -161,6 +161,82 @@ Bot:     I read the note. Here's what I'd create:
 
 Agents can also write notes — great for brainstorming tasks where you want the output saved.
 
+### Hooks — Automated Self-Improvement
+
+Hooks let Agent Queue monitor itself and react automatically. A hook is: **trigger → gather context → send prompt to LLM with all existing tools**. No code changes needed for new use cases — just create a new hook config via Discord.
+
+```
+You:     create a hook that runs tests every 2 hours and creates
+         tasks for any failures
+
+Bot:     ✅ Hook "test-watcher" created for my-app
+         Trigger: every 2 hours
+         When tests pass, the hook short-circuits (zero tokens).
+         When tests fail, the LLM creates fix tasks automatically.
+```
+
+**Trigger types:**
+- **Periodic** — Run on a schedule (every N seconds)
+- **Event-driven** — Fire when something happens (`task_completed`, `task_failed`, etc.)
+
+**Context steps** gather data before prompting the LLM:
+
+| Step type | What it does |
+|-----------|-------------|
+| `shell` | Run a command, capture stdout/stderr/exit code |
+| `read_file` | Read file contents |
+| `http` | Make an HTTP request |
+| `db_query` | Run a named query (safe, not raw SQL) |
+| `git_diff` | Get diff output |
+
+**Short-circuit conditions** skip the LLM call (zero tokens) when everything is fine:
+- `skip_llm_if_exit_zero` — Tests pass? No action needed.
+- `skip_llm_if_empty` — No log output? Nothing to analyze.
+- `skip_llm_if_status_ok` — Health check returns 200? All good.
+
+**Example hooks:**
+
+```
+# Self-healing test suite — runs pytest, creates tasks for failures
+You:     create a hook for my-app called "test-watcher" that runs
+         "cd ~/code/my-app && python -m pytest 2>&1" every 2 hours,
+         skips the LLM if tests pass, and creates tasks for failures
+
+# Log analyzer — scans daemon logs for errors
+You:     create a hook that tails the last 500 lines of the daemon
+         log every hour and creates tasks for real errors
+
+# Post-task reviewer — reviews every completed task
+You:     create a hook that fires on task_completed events and
+         reviews the results for regressions
+
+# Health check — pings a service endpoint
+You:     create a hook that checks http://localhost:8080/health
+         every 5 minutes, skips if healthy, creates a task if down
+```
+
+**Managing hooks:**
+```
+You:     list hooks for my-app
+Bot:     2 hooks:
+         • test-watcher (periodic, every 2h) — enabled
+         • log-analyzer (periodic, every 1h) — enabled
+
+You:     show recent runs for test-watcher
+Bot:     Last 5 runs:
+         • 2h ago — skipped (tests passed)
+         • 4h ago — skipped (tests passed)
+         • 6h ago — completed, created task "Fix test_auth failure"
+
+You:     fire test-watcher now
+Bot:     ✅ Hook fired manually. Running now.
+
+You:     disable test-watcher
+Bot:     ✅ Hook "test-watcher" disabled.
+```
+
+The prompt template uses `{{step_0}}`, `{{step_1}}` for context step outputs and `{{event}}`, `{{event.task_id}}` for event data. The LLM has access to all existing tools (`create_task`, `list_tasks`, etc.), so it decides what action to take — no hard-coded monitor types.
+
 ### Deterministic Task State Machine
 
 Every task follows a strict lifecycle. No ambiguity, no stuck states.
@@ -256,6 +332,10 @@ discord:
 scheduling:
   rolling_window_hours: 24
   min_task_guarantee: true
+
+hook_engine:
+  enabled: true
+  max_concurrent_hooks: 2
 ```
 
 Set your environment variables:
@@ -336,6 +416,7 @@ agent-queue/
   │   ├── state_machine.py     — task & agent state machines
   │   ├── scheduler.py         — deterministic scheduling
   │   ├── orchestrator.py      — core orchestration loop
+  │   ├── hooks.py             — generic hook engine (self-improvement)
   │   ├── event_bus.py         — async event system
   │   ├── adapters/            — Claude Code agent implementation
   │   ├── discord/             — bot, commands, notifications, NL tools
