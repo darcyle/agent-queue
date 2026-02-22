@@ -8,6 +8,7 @@ import time
 import uuid
 from pathlib import Path
 
+from src.chat_providers import ChatProvider, create_chat_provider
 from src.config import AppConfig
 from src.models import (
     Agent, Project, ProjectStatus, RepoConfig, RepoSourceType,
@@ -530,68 +531,6 @@ When creating projects or tasks, generate reasonable IDs from the name \
 """
 
 
-def _load_claude_oauth_token() -> str | None:
-    """Load OAuth access token from Claude Code's credential file."""
-    for name in (".credentials.json", "credentials.json"):
-        cred_path = Path.home() / ".claude" / name
-        if not cred_path.exists():
-            continue
-        try:
-            creds = json.loads(cred_path.read_text())
-            oauth = creds.get("claudeAiOauth", {})
-            token = oauth.get("accessToken")
-            if token:
-                expires = oauth.get("expiresAt", 0)
-                if expires and expires < time.time() * 1000:
-                    print("Warning: Claude OAuth token may be expired — trying anyway")
-                return token
-        except Exception as e:
-            print(f"Warning: could not read Claude credentials from {cred_path}: {e}")
-    return None
-
-
-def _create_llm_client():
-    """Create an async Anthropic client using whatever backend is available.
-
-    Tries, in order: Vertex AI, Bedrock, ANTHROPIC_API_KEY, Claude OAuth.
-    Returns (None, None) if no credentials are found.
-    """
-    import anthropic
-
-    # Try Vertex AI first
-    project_id = (
-        os.environ.get("GOOGLE_CLOUD_PROJECT")
-        or os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
-    )
-    if project_id:
-        from anthropic import AsyncAnthropicVertex
-
-        region = (
-            os.environ.get("GOOGLE_CLOUD_LOCATION")
-            or os.environ.get("CLOUD_ML_REGION")
-            or "us-east5"
-        )
-        return AsyncAnthropicVertex(project_id=project_id, region=region), "claude-sonnet-4@20250514"
-
-    # Try Bedrock
-    if os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"):
-        from anthropic import AsyncAnthropicBedrock
-
-        return AsyncAnthropicBedrock(), "claude-sonnet-4-20250514"
-
-    # Try explicit API key
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if api_key:
-        return anthropic.AsyncAnthropic(api_key=api_key), "claude-sonnet-4-20250514"
-
-    # Try Claude Code OAuth credentials (~/.claude/.credentials.json)
-    oauth_token = _load_claude_oauth_token()
-    if oauth_token:
-        return anthropic.AsyncAnthropic(auth_token=oauth_token), "claude-sonnet-4-20250514"
-
-    return None, None
-
-
 def _count_by(items, key_fn) -> dict[str, int]:
     counts: dict[str, int] = {}
     for item in items:
@@ -611,30 +550,28 @@ class ChatAgent:
     def __init__(self, orchestrator: Orchestrator, config: AppConfig):
         self.orchestrator = orchestrator
         self.config = config
-        self._llm_client = None
-        self._llm_model: str | None = None
+        self._provider: ChatProvider | None = None
         self._active_project_id: str | None = None
 
     def initialize(self) -> bool:
-        """Create LLM client. Returns True if credentials found."""
-        self._llm_client, self._llm_model = _create_llm_client()
-        return self._llm_client is not None
+        """Create LLM provider. Returns True if provider is ready."""
+        self._provider = create_chat_provider(self.config.chat_provider)
+        return self._provider is not None
 
     @property
     def is_ready(self) -> bool:
-        return self._llm_client is not None
+        return self._provider is not None
 
     @property
     def model(self) -> str | None:
-        return self._llm_model
+        return self._provider.model_name if self._provider else None
 
     def set_active_project(self, project_id: str | None) -> None:
         self._active_project_id = project_id
 
     def reload_credentials(self) -> bool:
-        """Re-create the LLM client (e.g. after token refresh). Returns True on success."""
-        self._llm_client, self._llm_model = _create_llm_client()
-        return self._llm_client is not None
+        """Re-create the LLM provider (e.g. after token refresh). Returns True on success."""
+        return self.initialize()
 
     def _build_system_prompt(self) -> str:
         prompt = SYSTEM_PROMPT_TEMPLATE.format(workspace_dir=self.config.workspace_dir)
@@ -659,8 +596,8 @@ class ChatAgent:
         dicts.  The caller is responsible for building history from whatever
         source it uses (Discord channel, CLI readline, HTTP session, etc.).
         """
-        if not self._llm_client:
-            raise RuntimeError("LLM client not initialized — call initialize() first")
+        if not self._provider:
+            raise RuntimeError("LLM provider not initialized — call initialize() first")
 
         messages = list(history) if history else []
 
@@ -675,24 +612,15 @@ class ChatAgent:
         tool_actions: list[str] = []
 
         for _ in range(10):
-            resp = await self._llm_client.messages.create(
-                model=self._llm_model,
-                max_tokens=1024,
+            resp = await self._provider.create_message(
+                messages=messages,
                 system=self._build_system_prompt(),
                 tools=TOOLS,
-                messages=messages,
+                max_tokens=1024,
             )
 
-            text_parts = []
-            tool_uses = []
-            for block in resp.content:
-                if block.type == "text":
-                    text_parts.append(block.text)
-                elif block.type == "tool_use":
-                    tool_uses.append(block)
-
-            if not tool_uses:
-                response = "\n".join(text_parts).strip()
+            if not resp.tool_uses:
+                response = "\n".join(resp.text_parts).strip()
                 if response:
                     return response
                 if tool_actions:
@@ -700,10 +628,10 @@ class ChatAgent:
                 return "Done."
 
             # Only keep tool_use blocks in assistant message (drop pre-tool commentary)
-            messages.append({"role": "assistant", "content": tool_uses})
+            messages.append({"role": "assistant", "content": resp.tool_uses})
 
             tool_results = []
-            for tool_use in tool_uses:
+            for tool_use in resp.tool_uses:
                 result = await self._execute_tool(tool_use.name, tool_use.input)
                 tool_actions.append(tool_use.name)
                 tool_results.append({
@@ -720,12 +648,10 @@ class ChatAgent:
 
     async def summarize(self, transcript: str) -> str | None:
         """Summarize a conversation transcript. Returns None on failure."""
-        if not self._llm_client:
+        if not self._provider:
             return None
         try:
-            resp = await self._llm_client.messages.create(
-                model=self._llm_model,
-                max_tokens=512,
+            resp = await self._provider.create_message(
                 messages=[{
                     "role": "user",
                     "content": (
@@ -736,8 +662,11 @@ class ChatAgent:
                         f"{transcript}"
                     ),
                 }],
+                system="You are a helpful assistant that summarizes conversations.",
+                max_tokens=512,
             )
-            return resp.content[0].text
+            parts = resp.text_parts
+            return parts[0] if parts else None
         except Exception as e:
             print(f"Summary generation failed: {e}")
             return None

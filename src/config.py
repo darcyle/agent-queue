@@ -48,6 +48,13 @@ class PauseRetryConfig:
 
 
 @dataclass
+class ChatProviderConfig:
+    provider: str = "anthropic"  # "anthropic" or "ollama"
+    model: str = ""              # Empty = provider default
+    base_url: str = ""           # For Ollama
+
+
+@dataclass
 class AppConfig:
     workspace_dir: str = field(
         default_factory=lambda: os.path.expanduser("~/agent-queue-workspaces")
@@ -60,6 +67,7 @@ class AppConfig:
     agents_config: AgentsDefaultConfig = field(default_factory=AgentsDefaultConfig)
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
+    chat_provider: ChatProviderConfig = field(default_factory=ChatProviderConfig)
     global_token_budget_daily: int | None = None
     rate_limits: dict[str, dict[str, int]] = field(default_factory=dict)
 
@@ -164,6 +172,14 @@ def load_config(path: str) -> AppConfig:
             ),
             rate_limit_max_retries=p.get("rate_limit_max_retries", 3),
             rate_limit_max_backoff_seconds=p.get("rate_limit_max_backoff_seconds", 300),
+        )
+
+    if "chat_provider" in raw:
+        cp = raw["chat_provider"]
+        config.chat_provider = ChatProviderConfig(
+            provider=cp.get("provider", "anthropic"),
+            model=cp.get("model", ""),
+            base_url=cp.get("base_url", ""),
         )
 
     if "rate_limits" in raw:
