@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     assigned_agent_id TEXT REFERENCES agents(id),
     branch_name TEXT,
     resume_after REAL,
+    requires_approval INTEGER NOT NULL DEFAULT 0,
+    pr_url TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -159,6 +161,8 @@ class Database:
             "ALTER TABLE projects ADD COLUMN workspace_path TEXT",
             "ALTER TABLE repos ADD COLUMN source_type TEXT NOT NULL DEFAULT 'clone'",
             "ALTER TABLE repos ADD COLUMN source_path TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE tasks ADD COLUMN requires_approval INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN pr_url TEXT",
         ]:
             try:
                 await self._db.execute(migration)
@@ -285,13 +289,13 @@ class Database:
             "INSERT INTO tasks (id, project_id, parent_task_id, repo_id, title, "
             "description, priority, status, verification_type, retry_count, "
             "max_retries, assigned_agent_id, branch_name, resume_after, "
-            "created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "requires_approval, pr_url, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (task.id, task.project_id, task.parent_task_id, task.repo_id,
              task.title, task.description, task.priority, task.status.value,
              task.verification_type.value, task.retry_count, task.max_retries,
              task.assigned_agent_id, task.branch_name, task.resume_after,
-             now, now),
+             int(task.requires_approval), task.pr_url, now, now),
         )
         await self._db.commit()
 
@@ -359,6 +363,7 @@ class Database:
         return [self._row_to_task(r) for r in rows]
 
     def _row_to_task(self, row) -> Task:
+        keys = row.keys()
         return Task(
             id=row["id"],
             project_id=row["project_id"],
@@ -374,6 +379,8 @@ class Database:
             assigned_agent_id=row["assigned_agent_id"],
             branch_name=row["branch_name"],
             resume_after=row["resume_after"],
+            requires_approval=bool(row["requires_approval"]) if "requires_approval" in keys else False,
+            pr_url=row["pr_url"] if "pr_url" in keys else None,
         )
 
     # --- Dependencies ---

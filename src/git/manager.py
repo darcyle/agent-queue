@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -124,6 +125,58 @@ class GitManager:
             return output.split("\n") if output else []
         except GitError:
             return []
+
+    def commit_all(self, checkout_path: str, message: str) -> bool:
+        """Stage all changes and commit. Returns True if a commit was made, False if nothing to commit."""
+        self._run(["add", "-A"], cwd=checkout_path)
+        # git diff --cached --quiet exits 1 if there are staged changes
+        result = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"],
+            cwd=checkout_path,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return False  # Nothing to commit
+        self._run(["commit", "-m", message], cwd=checkout_path)
+        return True
+
+    def create_pr(
+        self, checkout_path: str, branch: str, title: str, body: str,
+        base: str = "main",
+    ) -> str:
+        """Create a GitHub PR using the gh CLI. Returns the PR URL."""
+        result = subprocess.run(
+            ["gh", "pr", "create", "--title", title, "--body", body,
+             "--base", base, "--head", branch],
+            cwd=checkout_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise GitError(f"gh pr create failed: {result.stderr.strip()}")
+        return result.stdout.strip()
+
+    def check_pr_merged(self, checkout_path: str, pr_url: str) -> bool | None:
+        """Check if a PR has been merged.
+
+        Returns True (merged), False (still open), None (closed without merge).
+        """
+        result = subprocess.run(
+            ["gh", "pr", "view", pr_url, "--json", "state,mergedAt"],
+            cwd=checkout_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise GitError(f"gh pr view failed: {result.stderr.strip()}")
+        data = json.loads(result.stdout)
+        state = data.get("state", "").upper()
+        if state == "MERGED" or data.get("mergedAt"):
+            return True
+        if state == "OPEN":
+            return False
+        # CLOSED without merge
+        return None
 
     @staticmethod
     def slugify(text: str) -> str:

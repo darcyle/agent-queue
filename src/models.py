@@ -12,6 +12,7 @@ class TaskStatus(Enum):
     WAITING_INPUT = "WAITING_INPUT"
     PAUSED = "PAUSED"
     VERIFYING = "VERIFYING"
+    AWAITING_APPROVAL = "AWAITING_APPROVAL"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     BLOCKED = "BLOCKED"
@@ -30,6 +31,8 @@ class TaskEvent(Enum):
     RESUME_TIMER = "RESUME_TIMER"
     VERIFY_PASSED = "VERIFY_PASSED"
     VERIFY_FAILED = "VERIFY_FAILED"
+    PR_CREATED = "PR_CREATED"
+    PR_MERGED = "PR_MERGED"
     RETRY = "RETRY"
     MAX_RETRIES = "MAX_RETRIES"
 
@@ -106,6 +109,8 @@ class Task:
     assigned_agent_id: str | None = None
     branch_name: str | None = None
     resume_after: float | None = None  # unix timestamp
+    requires_approval: bool = False
+    pr_url: str | None = None
 
 
 @dataclass

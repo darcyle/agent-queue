@@ -10,6 +10,7 @@ from src.config import AppConfig
 from src.database import Database
 from src.discord.notifications import (
     format_task_completed, format_task_failed, format_task_blocked,
+    format_pr_created,
 )
 from src.event_bus import EventBus
 from src.git.manager import GitManager
@@ -47,6 +48,7 @@ class Orchestrator:
         self._control_notify: NotifyCallback | None = None
         self._create_thread: CreateThreadCallback | None = None
         self._paused: bool = False
+        self._last_approval_check: float = 0.0
 
     def pause(self) -> None:
         self._paused = True
@@ -142,6 +144,9 @@ class Orchestrator:
     async def run_one_cycle(self) -> None:
         """Run one complete scheduling + execution cycle."""
         try:
+            # 0. Check AWAITING_APPROVAL tasks for PR merge status
+            await self._check_awaiting_approval()
+
             # 1. Check for PAUSED tasks that should resume
             await self._resume_paused_tasks()
 
@@ -331,20 +336,37 @@ class Orchestrator:
 
         return workspace
 
-    async def _complete_workspace(self, task: Task, agent) -> None:
-        """Post-completion: merge branch and optionally push (clone repos only)."""
+    async def _complete_workspace(self, task: Task, agent) -> str | None:
+        """Post-completion: commit agent work, then merge or create PR.
+
+        Returns a PR URL if one was created, otherwise None.
+        """
         if not task.repo_id or not task.branch_name:
-            return
+            return None
 
         repo = await self.db.get_repo(task.repo_id)
         if not repo:
-            return
+            return None
 
         workspace = agent.checkout_path
         if not workspace or not self.git.validate_checkout(workspace):
-            return
+            return None
 
-        # Merge task branch into default branch
+        # Commit any uncommitted work on the task branch
+        committed = self.git.commit_all(
+            workspace, f"agent: {task.title}\n\nTask-Id: {task.id}"
+        )
+        if not committed:
+            print(f"Task {task.id}: no changes to commit on branch {task.branch_name}")
+
+        if task.requires_approval:
+            return await self._create_pr_for_task(task, repo, workspace)
+        else:
+            await self._merge_and_push(task, repo, workspace)
+            return None
+
+    async def _merge_and_push(self, task: Task, repo: RepoConfig, workspace: str) -> None:
+        """Merge the task branch into default and push (clone repos only)."""
         merged = self.git.merge_branch(workspace, task.branch_name, repo.default_branch)
         if not merged:
             await self._notify_channel(
@@ -353,13 +375,100 @@ class Orchestrator:
             )
             return
 
-        # Only push for clone repos (user controls their own remotes for linked repos)
         if repo.source_type == RepoSourceType.CLONE:
             try:
                 self.git.push_branch(workspace, repo.default_branch)
             except Exception as e:
                 await self._notify_channel(
                     f"**Push Failed:** Could not push `{repo.default_branch}` for task `{task.id}`: {e}"
+                )
+
+    async def _create_pr_for_task(
+        self, task: Task, repo: RepoConfig, workspace: str,
+    ) -> str | None:
+        """Push the task branch and create a PR. Returns the PR URL or None."""
+        if repo.source_type == RepoSourceType.LINK:
+            # LINK repos typically have no remote — notify user to review manually
+            await self._notify_channel(
+                f"**Approval Required:** Task `{task.id}` — {task.title}\n"
+                f"Branch `{task.branch_name}` is ready for review in `{workspace}`.\n"
+                f"Use the `approve_task` command to complete it."
+            )
+            return None
+
+        try:
+            self.git.push_branch(workspace, task.branch_name)
+        except Exception as e:
+            await self._notify_channel(
+                f"**Push Failed:** Could not push branch `{task.branch_name}` "
+                f"for task `{task.id}`: {e}"
+            )
+            return None
+
+        try:
+            pr_url = self.git.create_pr(
+                workspace,
+                branch=task.branch_name,
+                title=task.title,
+                body=f"Automated PR for task `{task.id}`.\n\n{task.description[:500]}",
+                base=repo.default_branch,
+            )
+            return pr_url
+        except Exception as e:
+            await self._notify_channel(
+                f"**PR Creation Failed:** Task `{task.id}` — {e}\n"
+                f"Branch `{task.branch_name}` has been pushed. Create a PR manually."
+            )
+            return None
+
+    async def _check_awaiting_approval(self) -> None:
+        """Poll PR status for tasks awaiting approval. Throttled to once per 60s."""
+        now = time.time()
+        if now - self._last_approval_check < 60:
+            return
+        self._last_approval_check = now
+
+        tasks = await self.db.list_tasks(status=TaskStatus.AWAITING_APPROVAL)
+        for task in tasks:
+            if not task.pr_url:
+                continue
+
+            # Need a checkout path to run gh commands
+            checkout_path = None
+            if task.assigned_agent_id:
+                agent = await self.db.get_agent(task.assigned_agent_id)
+                if agent and agent.checkout_path:
+                    checkout_path = agent.checkout_path
+            if not checkout_path and task.repo_id:
+                repo = await self.db.get_repo(task.repo_id)
+                if repo and repo.source_path:
+                    checkout_path = repo.source_path
+
+            if not checkout_path:
+                continue
+
+            try:
+                merged = self.git.check_pr_merged(checkout_path, task.pr_url)
+            except Exception as e:
+                print(f"Error checking PR for task {task.id}: {e}")
+                continue
+
+            if merged is True:
+                await self.db.update_task(
+                    task.id, status=TaskStatus.COMPLETED.value)
+                await self.db.log_event(
+                    "task_completed", project_id=task.project_id,
+                    task_id=task.id)
+                await self._notify_channel(
+                    f"**PR Merged:** Task `{task.id}` — {task.title} is now COMPLETED."
+                )
+            elif merged is None:
+                # Closed without merge
+                await self.db.update_task(
+                    task.id, status=TaskStatus.BLOCKED.value)
+                await self._notify_channel(
+                    f"**PR Closed:** Task `{task.id}` — {task.title} "
+                    f"was closed without merging. Marked as BLOCKED."
                 )
 
     async def _execute_task(self, action: AssignAction) -> None:
@@ -548,40 +657,67 @@ class Orchestrator:
         if output.result == AgentResult.COMPLETED:
             await self.db.update_task(action.task_id,
                                       status=TaskStatus.VERIFYING.value)
-            # Auto-verify for now (run test commands later)
-            await self.db.update_task(action.task_id,
-                                      status=TaskStatus.COMPLETED.value)
-            await self.db.log_event("task_completed",
-                                    project_id=action.project_id,
-                                    task_id=action.task_id,
-                                    agent_id=action.agent_id)
-            # Post-completion: merge branch and push if applicable
+
+            # Post-completion: commit, merge or create PR
+            pr_url = None
             try:
-                await self._complete_workspace(task, agent)
+                pr_url = await self._complete_workspace(task, agent)
             except Exception as e:
                 await _post(
                     f"**Post-completion git error** for task `{task.id}`: {e}"
                 )
-            # Full summary → last message in the task thread.
-            # Falls back to the notifications channel when no thread exists.
-            if thread_send:
-                summary_lines = [
-                    f"**Task Completed:** `{task.id}` — {task.title}",
-                    f"Agent: {agent.name} | Tokens: {output.tokens_used:,}",
-                ]
-                if output.summary:
-                    summary_lines.append(f"\n**Summary:**\n{output.summary}")
-                if output.files_changed:
-                    summary_lines.append(
-                        f"\n**Files changed:** {', '.join(output.files_changed)}"
-                    )
-                await thread_send("\n".join(summary_lines))
+
+            if pr_url:
+                # PR-based approval workflow
+                await self.db.update_task(
+                    action.task_id,
+                    status=TaskStatus.AWAITING_APPROVAL.value,
+                    pr_url=pr_url,
+                )
+                await self.db.log_event("pr_created",
+                                        project_id=action.project_id,
+                                        task_id=action.task_id,
+                                        agent_id=action.agent_id,
+                                        payload=pr_url)
+                await _post(format_pr_created(task, pr_url))
+                brief = f"🔍 PR created for review: {task.title} (`{task.id}`)\n{pr_url}"
+                await _notify_brief(brief)
+                await self._control_channel_post(brief)
+            elif task.requires_approval and not pr_url:
+                # Approval required but no PR (e.g. LINK repo) — wait for manual approval
+                await self.db.update_task(
+                    action.task_id,
+                    status=TaskStatus.AWAITING_APPROVAL.value,
+                )
+                brief = f"🔍 Awaiting manual approval: {task.title} (`{task.id}`)"
+                await _notify_brief(brief)
+                await self._control_channel_post(brief)
             else:
-                await self._notify_channel(format_task_completed(task, agent, output))
-            # Brief notification → main channel (reply to thread) + control channel
-            brief = f"✅ Task completed: {task.title} (`{task.id}`)"
-            await _notify_brief(brief)
-            await self._control_channel_post(brief)
+                # No approval needed — mark completed
+                await self.db.update_task(action.task_id,
+                                          status=TaskStatus.COMPLETED.value)
+                await self.db.log_event("task_completed",
+                                        project_id=action.project_id,
+                                        task_id=action.task_id,
+                                        agent_id=action.agent_id)
+                # Full summary → last message in the task thread.
+                if thread_send:
+                    summary_lines = [
+                        f"**Task Completed:** `{task.id}` — {task.title}",
+                        f"Agent: {agent.name} | Tokens: {output.tokens_used:,}",
+                    ]
+                    if output.summary:
+                        summary_lines.append(f"\n**Summary:**\n{output.summary}")
+                    if output.files_changed:
+                        summary_lines.append(
+                            f"\n**Files changed:** {', '.join(output.files_changed)}"
+                        )
+                    await thread_send("\n".join(summary_lines))
+                else:
+                    await self._notify_channel(format_task_completed(task, agent, output))
+                brief = f"✅ Task completed: {task.title} (`{task.id}`)"
+                await _notify_brief(brief)
+                await self._control_channel_post(brief)
 
         elif output.result == AgentResult.FAILED:
             new_retry = task.retry_count + 1

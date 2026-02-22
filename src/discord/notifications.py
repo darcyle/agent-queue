@@ -136,6 +136,14 @@ def format_task_blocked(task: Task, last_error: str | None = None) -> str:
     return "\n".join(lines)
 
 
+def format_pr_created(task: Task, pr_url: str) -> str:
+    return (
+        f"**PR Created:** `{task.id}` — {task.title}\n"
+        f"Review and merge to complete: {pr_url}\n"
+        f"Status: AWAITING_APPROVAL"
+    )
+
+
 def format_agent_question(task: Task, agent: Agent, question: str) -> str:
     return (
         f"**Agent Question:** `{task.id}` — {task.title}\n"

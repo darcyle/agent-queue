@@ -10,6 +10,7 @@ class TestTaskStatus:
         expected = {
             "DEFINED", "READY", "ASSIGNED", "IN_PROGRESS",
             "WAITING_INPUT", "PAUSED", "VERIFYING",
+            "AWAITING_APPROVAL",
             "COMPLETED", "FAILED", "BLOCKED",
         }
         assert {s.value for s in TaskStatus} == expected
@@ -22,6 +23,7 @@ class TestTaskEvent:
             "AGENT_COMPLETED", "AGENT_FAILED", "TOKENS_EXHAUSTED",
             "AGENT_QUESTION", "HUMAN_REPLIED", "INPUT_TIMEOUT",
             "RESUME_TIMER", "VERIFY_PASSED", "VERIFY_FAILED",
+            "PR_CREATED", "PR_MERGED",
             "RETRY", "MAX_RETRIES",
         }
         assert {e.value for e in TaskEvent} == expected

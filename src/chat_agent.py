@@ -121,6 +121,11 @@ TOOLS = [
                     "type": "string",
                     "description": "Repository ID to work in (optional — agent gets an isolated checkout/worktree)",
                 },
+                "requires_approval": {
+                    "type": "boolean",
+                    "description": "If true, agent work creates a PR instead of auto-merging. Human must approve/merge the PR.",
+                    "default": False,
+                },
             },
             "required": ["title", "description"],
         },
@@ -266,6 +271,17 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "Task ID to delete"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "approve_task",
+        "description": "Manually approve and complete a task that is AWAITING_APPROVAL. Use for tasks on LINK repos that don't have GitHub PRs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID to approve"},
             },
             "required": ["task_id"],
         },
@@ -891,6 +907,7 @@ class ChatAgent:
                         ))
                 task_id = str(uuid.uuid4())[:8]
                 repo_id = input_data.get("repo_id")
+                requires_approval = input_data.get("requires_approval", False)
                 task = Task(
                     id=task_id,
                     project_id=project_id,
@@ -899,6 +916,7 @@ class ChatAgent:
                     priority=input_data.get("priority", 100),
                     status=TaskStatus.READY,
                     repo_id=repo_id,
+                    requires_approval=requires_approval,
                 )
                 await db.create_task(task)
                 result = {
@@ -908,13 +926,15 @@ class ChatAgent:
                 }
                 if repo_id:
                     result["repo_id"] = repo_id
+                if requires_approval:
+                    result["requires_approval"] = True
                 return result
 
             elif name == "get_task":
                 task = await db.get_task(input_data["task_id"])
                 if not task:
                     return {"error": f"Task '{input_data['task_id']}' not found"}
-                return {
+                info = {
                     "id": task.id,
                     "project_id": task.project_id,
                     "title": task.title,
@@ -924,7 +944,11 @@ class ChatAgent:
                     "assigned_agent": task.assigned_agent_id,
                     "retry_count": task.retry_count,
                     "max_retries": task.max_retries,
+                    "requires_approval": task.requires_approval,
                 }
+                if task.pr_url:
+                    info["pr_url"] = task.pr_url
+                return info
 
             elif name == "edit_task":
                 task = await db.get_task(input_data["task_id"])
@@ -976,6 +1000,23 @@ class ChatAgent:
                         return {"error": f"Could not stop task before deleting: {error}"}
                 await db.delete_task(input_data["task_id"])
                 return {"deleted": input_data["task_id"], "title": task.title}
+
+            elif name == "approve_task":
+                task = await db.get_task(input_data["task_id"])
+                if not task:
+                    return {"error": f"Task '{input_data['task_id']}' not found"}
+                if task.status != TaskStatus.AWAITING_APPROVAL:
+                    return {"error": f"Task is not awaiting approval (status: {task.status.value})"}
+                await db.update_task(
+                    input_data["task_id"],
+                    status=TaskStatus.COMPLETED.value,
+                )
+                await db.log_event(
+                    "task_completed",
+                    project_id=task.project_id,
+                    task_id=task.id,
+                )
+                return {"approved": input_data["task_id"], "title": task.title}
 
             elif name == "list_agents":
                 agents = await db.list_agents()
