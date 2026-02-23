@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 import pytest
@@ -5,9 +6,9 @@ from src.orchestrator import Orchestrator
 from src.database import Database
 from src.models import (
     Project, Task, Agent, TaskStatus, AgentState, AgentResult,
-    TaskContext, AgentOutput,
+    TaskContext, AgentOutput, RepoConfig, RepoSourceType,
 )
-from src.adapters.base import AgentAdapter
+from src.adapters.base import AgentAdapter, MessageCallback
 from src.config import AppConfig, AutoTaskConfig
 
 
@@ -17,9 +18,11 @@ class MockAdapter(AgentAdapter):
         self._tokens = tokens
 
     async def start(self, task): pass
-    async def wait(self):
+
+    async def wait(self, on_message: MessageCallback | None = None):
         return AgentOutput(result=self._result, summary="Done",
                            tokens_used=self._tokens)
+
     async def stop(self): pass
     async def is_alive(self): return True
 
@@ -33,6 +36,19 @@ class MockAdapterFactory:
         return MockAdapter(result=self.result, tokens=self.tokens)
 
 
+async def _drain_running_tasks(orch: Orchestrator) -> None:
+    """Wait for all background tasks launched by the orchestrator to complete.
+
+    ``run_one_cycle`` launches ``_execute_task_safe`` as background
+    ``asyncio.Task`` objects.  Tests must await these before asserting on
+    final task status, otherwise there is a race between the background
+    coroutine and the assertions.
+    """
+    if orch._running_tasks:
+        await asyncio.gather(*orch._running_tasks.values(), return_exceptions=True)
+        orch._running_tasks.clear()
+
+
 @pytest.fixture
 async def orch(tmp_path):
     config = AppConfig(
@@ -42,6 +58,8 @@ async def orch(tmp_path):
     o = Orchestrator(config, adapter_factory=MockAdapterFactory())
     await o.initialize()
     yield o
+    # Drain any remaining background tasks before closing DB
+    await _drain_running_tasks(o)
     await o.shutdown()
 
 
@@ -57,6 +75,7 @@ class TestOrchestratorLifecycle:
         ))
 
         await orch.run_one_cycle()
+        await _drain_running_tasks(orch)
 
         task = await orch.db.get_task("t-1")
         assert task.status == TaskStatus.COMPLETED
@@ -73,6 +92,7 @@ class TestOrchestratorLifecycle:
         ))
 
         await orch.run_one_cycle()
+        await _drain_running_tasks(orch)
 
         task = await orch.db.get_task("t-1")
         # Should be READY for retry (failed once, max 2)
@@ -92,6 +112,7 @@ class TestOrchestratorLifecycle:
         ))
 
         await orch.run_one_cycle()
+        await _drain_running_tasks(orch)
 
         task = await orch.db.get_task("t-1")
         assert task.status == TaskStatus.PAUSED
@@ -115,6 +136,7 @@ class TestOrchestratorLifecycle:
         # t-2 depends on t-1 which is not yet COMPLETED at scheduling time,
         # so it stays DEFINED until the next cycle.
         await orch.run_one_cycle()
+        await _drain_running_tasks(orch)
 
         t1 = await orch.db.get_task("t-1")
         t2 = await orch.db.get_task("t-2")
@@ -138,6 +160,7 @@ class TestAutoTaskGeneration:
         o = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await o.initialize()
         yield o, workspace
+        await _drain_running_tasks(o)
         await o.shutdown()
 
     async def test_generates_tasks_from_plan_on_completion(self, orch_with_workspace):
@@ -173,6 +196,7 @@ Add comprehensive test suite.
         ))
 
         await orch.run_one_cycle()
+        await _drain_running_tasks(orch)
 
         # Original task should be completed
         task = await orch.db.get_task("t-1")
@@ -221,6 +245,7 @@ Third.
         ))
 
         await orch.run_one_cycle()
+        await _drain_running_tasks(orch)
 
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 3
@@ -253,6 +278,7 @@ Third.
         ))
 
         await orch.run_one_cycle()
+        await _drain_running_tasks(orch)
 
         task = await orch.db.get_task("t-1")
         assert task.status == TaskStatus.COMPLETED
@@ -287,6 +313,7 @@ Third.
         ))
 
         await orch.run_one_cycle()
+        await _drain_running_tasks(orch)
 
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 0
@@ -311,6 +338,7 @@ Third.
         ))
 
         await orch.run_one_cycle()
+        await _drain_running_tasks(orch)
 
         # Plan file should be deleted
         assert not plan_path.exists()
@@ -319,21 +347,37 @@ Third.
         """When inherit_repo is True, subtasks should have the parent's repo_id."""
         orch, workspace = orch_with_workspace
 
+        # Place the plan file directly in the workspace root (simulating
+        # an agent that wrote a plan in its checkout directory).
         claude_dir = workspace / ".claude"
         claude_dir.mkdir()
         (claude_dir / "plan.md").write_text("## Build it\n\nDo the build.\n")
 
         await orch.db.create_project(Project(id="p-1", name="alpha"))
-        await orch.db.create_agent(Agent(id="a-1", name="claude-1",
-                                         agent_type="claude"))
-        await orch.db.create_task(Task(
-            id="t-1", project_id="p-1", title="Plan",
-            description="Plan it", status=TaskStatus.READY,
-            repo_id="repo-1",
+        await orch.db.create_repo(RepoConfig(
+            id="repo-1", project_id="p-1",
+            source_type=RepoSourceType.INIT,
+            url="", default_branch="main",
+            checkout_base_path=str(workspace),
         ))
 
-        await orch.run_one_cycle()
+        # Create the parent task with repo_id set
+        parent = Task(
+            id="t-1", project_id="p-1", title="Plan",
+            description="Plan it", status=TaskStatus.COMPLETED,
+            repo_id="repo-1",
+        )
+        await orch.db.create_task(parent)
 
+        # Call _generate_tasks_from_plan directly to test repo inheritance
+        # without going through the full execution flow (which would
+        # create a different workspace path for the repo checkout).
+        generated = await orch._generate_tasks_from_plan(parent, str(workspace))
+
+        assert len(generated) == 1
+        assert generated[0].repo_id == "repo-1"
+
+        # Verify the subtask was persisted in the database
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 1
         assert subtasks[0].repo_id == "repo-1"
@@ -367,6 +411,7 @@ Implement JWT-based sessions.
         ))
 
         await orch.run_one_cycle()
+        await _drain_running_tasks(orch)
 
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 2
@@ -404,6 +449,7 @@ Implement JWT-based sessions.
         ))
 
         await orch.run_one_cycle()
+        await _drain_running_tasks(orch)
 
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 2
@@ -413,3 +459,88 @@ Implement JWT-based sessions.
             assert len(deps) == 0
 
         await orch.shutdown()
+
+    async def test_numbered_list_plan_generates_tasks(self, orch_with_workspace):
+        """Plans using numbered lists should also generate subtasks."""
+        orch, workspace = orch_with_workspace
+
+        claude_dir = workspace / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "plan.md").write_text("""1. Set up project scaffolding
+   - Create directory structure
+   - Initialize package.json
+
+2. Implement core module
+   - Add main logic
+   - Add error handling
+
+3. Add tests and documentation
+""")
+
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_agent(Agent(id="a-1", name="claude-1",
+                                         agent_type="claude"))
+        await orch.db.create_task(Task(
+            id="t-1", project_id="p-1", title="Build Feature",
+            description="Build the feature",
+            status=TaskStatus.READY,
+        ))
+
+        await orch.run_one_cycle()
+        await _drain_running_tasks(orch)
+
+        subtasks = await orch.db.get_subtasks("t-1")
+        assert len(subtasks) == 3
+
+        titles = [t.title for t in subtasks]
+        assert "Set up project scaffolding" in titles
+        assert "Implement core module" in titles
+        assert "Add tests and documentation" in titles
+
+    async def test_generated_tasks_promote_through_dependency_chain(
+        self, orch_with_workspace
+    ):
+        """After auto-generation, running more cycles should promote tasks
+        through the dependency chain as each completes."""
+        orch, workspace = orch_with_workspace
+
+        claude_dir = workspace / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "plan.md").write_text("""## First step
+
+Do the first thing.
+
+## Second step
+
+Do the second thing.
+""")
+
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_agent(Agent(id="a-1", name="claude-1",
+                                         agent_type="claude"))
+        await orch.db.create_task(Task(
+            id="t-1", project_id="p-1", title="Plan",
+            description="Plan it", status=TaskStatus.READY,
+        ))
+
+        # First cycle: execute t-1, generate subtasks
+        await orch.run_one_cycle()
+        await _drain_running_tasks(orch)
+
+        subtasks = await orch.db.get_subtasks("t-1")
+        assert len(subtasks) == 2
+        subtasks.sort(key=lambda t: t.priority)
+
+        # Second cycle: first subtask should be promoted to READY and executed
+        await orch.run_one_cycle()
+        await _drain_running_tasks(orch)
+
+        st1 = await orch.db.get_task(subtasks[0].id)
+        assert st1.status == TaskStatus.COMPLETED
+
+        # Third cycle: second subtask should now have deps met
+        await orch.run_one_cycle()
+        await _drain_running_tasks(orch)
+
+        st2 = await orch.db.get_task(subtasks[1].id)
+        assert st2.status == TaskStatus.COMPLETED
