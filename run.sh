@@ -30,11 +30,12 @@ source .venv/bin/activate
 case "${1:-start}" in
     start)
         # Acquire an exclusive lock to prevent two simultaneous starts
-        exec 9>"$LOCK_FILE"
-        if ! flock -n 9; then
+        if ! mkdir "$LOCK_FILE" 2>/dev/null; then
             echo "Error: another './run.sh start' is already in progress."
+            echo "(If not, remove the stale lock with: rmdir $LOCK_FILE)"
             exit 1
         fi
+        trap 'rmdir "$LOCK_FILE" 2>/dev/null' EXIT
 
         # Check PID file first
         if [[ -f "$PID_FILE" ]]; then
@@ -63,7 +64,8 @@ case "${1:-start}" in
         echo "$DAEMON_PID" > "$PID_FILE"
 
         # Release lock — PID file now guards subsequent starts
-        exec 9>&-
+        rmdir "$LOCK_FILE" 2>/dev/null
+        trap - EXIT
 
         # Verify it actually started
         sleep 2
