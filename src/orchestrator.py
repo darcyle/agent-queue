@@ -19,7 +19,11 @@ from src.models import (
     Task, TaskStatus, TaskContext,
 )
 from src.hooks import HookEngine
+from src.plan_parser import (
+    find_plan_file, read_plan_file, parse_plan, build_task_description,
+)
 from src.scheduler import AssignAction, Scheduler, SchedulerState
+from src.task_names import generate_task_id
 from src.tokens.budget import BudgetManager
 
 # Callback that sends a formatted string to a Discord channel
@@ -191,7 +195,10 @@ class Orchestrator:
         """Wrapper around _execute_task that catches exceptions and enforces timeout."""
         timeout = self.config.agents_config.stuck_timeout_seconds
         try:
-            await asyncio.wait_for(self._execute_task(action), timeout=timeout)
+            if timeout > 0:
+                await asyncio.wait_for(self._execute_task(action), timeout=timeout)
+            else:
+                await self._execute_task(action)
         except asyncio.TimeoutError:
             print(f"Task {action.task_id} timed out after {timeout}s")
             # Stop the adapter if it's still running
@@ -436,6 +443,96 @@ class Orchestrator:
                 f"Branch `{task.branch_name}` has been pushed. Create a PR manually."
             )
             return None
+
+    async def _generate_tasks_from_plan(
+        self, task: Task, workspace: str
+    ) -> list[Task]:
+        """Check for a plan file in the workspace and create subtasks from it.
+
+        Called after a task completes successfully.  If a plan file is found
+        (e.g. ``.claude/plan.md``), it is parsed and each step is turned
+        into a new task linked to the completed task as parent.
+
+        Returns the list of created tasks (empty if no plan was found or
+        auto-task generation is disabled).
+        """
+        config = self.config.auto_task
+        if not config.enabled:
+            return []
+
+        plan_path = find_plan_file(workspace, config.plan_file_patterns)
+        if not plan_path:
+            return []
+
+        try:
+            raw = read_plan_file(plan_path)
+        except Exception as e:
+            print(f"Auto-task: failed to read plan file {plan_path}: {e}")
+            return []
+
+        plan = parse_plan(raw, source_file=plan_path)
+        if not plan.steps:
+            print(f"Auto-task: plan file {plan_path} parsed but contained no steps")
+            return []
+
+        print(
+            f"Auto-task: found {len(plan.steps)} steps in plan file "
+            f"{plan_path} for task {task.id}"
+        )
+
+        # Extract any preamble text before the first step as shared context
+        plan_context = ""
+        if plan.steps and plan.raw_content:
+            first_step_title = plan.steps[0].title
+            idx = plan.raw_content.find(first_step_title)
+            if idx > 0:
+                plan_context = plan.raw_content[:idx].strip()
+                # Remove the document title heading if present
+                import re
+                plan_context = re.sub(
+                    r"^#\s+.+$\n?", "", plan_context, count=1, flags=re.MULTILINE
+                ).strip()
+
+        created_tasks: list[Task] = []
+        prev_task_id: str | None = None
+
+        for step in plan.steps:
+            new_id = await generate_task_id(self.db)
+            description = build_task_description(
+                step, parent_task=task, plan_context=plan_context
+            )
+
+            new_task = Task(
+                id=new_id,
+                project_id=task.project_id,
+                title=step.title,
+                description=description,
+                priority=config.base_priority + step.priority_hint,
+                status=TaskStatus.DEFINED,
+                parent_task_id=task.id,
+                repo_id=task.repo_id if config.inherit_repo else None,
+                requires_approval=(
+                    task.requires_approval if config.inherit_approval else False
+                ),
+            )
+
+            await self.db.create_task(new_task)
+
+            # Chain dependencies: each step depends on the previous one
+            if config.chain_dependencies and prev_task_id:
+                await self.db.add_dependency(new_id, depends_on=prev_task_id)
+
+            created_tasks.append(new_task)
+            prev_task_id = new_id
+
+        # Clean up the plan file so it won't be re-processed if the workspace
+        # is reused for another task.
+        try:
+            os.remove(plan_path)
+        except OSError:
+            pass
+
+        return created_tasks
 
     async def _check_awaiting_approval(self) -> None:
         """Poll PR status for tasks awaiting approval. Throttled to once per 60s."""
@@ -753,6 +850,27 @@ class Orchestrator:
                 if thread_send:
                     await _notify_brief(brief)
                 await self._control_channel_post(brief)
+
+            # --- Auto-task generation from implementation plans ---
+            # After any successful completion path, check for plan files
+            # in the workspace and generate follow-up tasks.
+            try:
+                generated = await self._generate_tasks_from_plan(task, workspace)
+                if generated:
+                    task_list = ", ".join(
+                        f"`{t.id}` ({t.title})" for t in generated
+                    )
+                    plan_msg = (
+                        f"📋 **Auto-generated {len(generated)} task(s)** "
+                        f"from plan in `{task.id}`:\n{task_list}"
+                    )
+                    await _post(plan_msg)
+                    await _notify_brief(plan_msg)
+                    await self._control_channel_post(plan_msg)
+            except Exception as e:
+                print(f"Auto-task generation error for task {task.id}: {e}")
+                import traceback
+                traceback.print_exc()
 
         elif output.result == AgentResult.FAILED:
             new_retry = task.retry_count + 1

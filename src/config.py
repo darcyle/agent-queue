@@ -28,7 +28,7 @@ class NLParserConfig:
 @dataclass
 class AgentsDefaultConfig:
     heartbeat_interval_seconds: int = 30
-    stuck_timeout_seconds: int = 600
+    stuck_timeout_seconds: int = 0  # 0 = no timeout (was 600)
     graceful_shutdown_timeout_seconds: int = 30
 
 
@@ -45,6 +45,21 @@ class PauseRetryConfig:
     # Exponential-backoff retry knobs (in-process, before the task is paused)
     rate_limit_max_retries: int = 3
     rate_limit_max_backoff_seconds: int = 300
+
+
+@dataclass
+class AutoTaskConfig:
+    """Configuration for auto-generating tasks from implementation plans."""
+
+    enabled: bool = True
+    plan_file_patterns: list[str] = field(default_factory=lambda: [
+        ".claude/plan.md",
+        "plan.md",
+    ])
+    inherit_repo: bool = True           # Subtasks inherit parent's repo_id
+    inherit_approval: bool = True       # Subtasks inherit parent's requires_approval
+    base_priority: int = 100            # Base priority for generated tasks
+    chain_dependencies: bool = True     # Tasks depend on previous step
 
 
 @dataclass
@@ -75,6 +90,7 @@ class AppConfig:
     pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
     chat_provider: ChatProviderConfig = field(default_factory=ChatProviderConfig)
     hook_engine: HookEngineConfig = field(default_factory=HookEngineConfig)
+    auto_task: AutoTaskConfig = field(default_factory=AutoTaskConfig)
     global_token_budget_daily: int | None = None
     rate_limits: dict[str, dict[str, int]] = field(default_factory=dict)
 
@@ -157,7 +173,7 @@ def load_config(path: str) -> AppConfig:
         a = raw["agents"]
         config.agents_config = AgentsDefaultConfig(
             heartbeat_interval_seconds=a.get("heartbeat_interval_seconds", 30),
-            stuck_timeout_seconds=a.get("stuck_timeout_seconds", 600),
+            stuck_timeout_seconds=a.get("stuck_timeout_seconds", 0),
             graceful_shutdown_timeout_seconds=a.get(
                 "graceful_shutdown_timeout_seconds", 30
             ),
@@ -194,6 +210,19 @@ def load_config(path: str) -> AppConfig:
         config.hook_engine = HookEngineConfig(
             enabled=h.get("enabled", True),
             max_concurrent_hooks=h.get("max_concurrent_hooks", 2),
+        )
+
+    if "auto_task" in raw:
+        at = raw["auto_task"]
+        config.auto_task = AutoTaskConfig(
+            enabled=at.get("enabled", True),
+            plan_file_patterns=at.get("plan_file_patterns", [
+                ".claude/plan.md", "plan.md",
+            ]),
+            inherit_repo=at.get("inherit_repo", True),
+            inherit_approval=at.get("inherit_approval", True),
+            base_priority=at.get("base_priority", 100),
+            chain_dependencies=at.get("chain_dependencies", True),
         )
 
     if "rate_limits" in raw:
