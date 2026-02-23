@@ -1,7 +1,7 @@
 """Parse implementation plan files into structured task definitions.
 
 When an agent completes a task that results in an implementation plan
-(written to `.claude/plan.md` or a similar file in the workspace), this
+(written to ``.claude/plan.md`` or a similar file in the workspace), this
 module reads the plan file, parses its markdown content, and extracts
 individual steps that can be turned into follow-up tasks.
 """
@@ -190,7 +190,7 @@ def _clean_step_title(title: str) -> str:
     # Remove leading patterns like "Step 1:", "Phase 1:", "1.", "1)"
     # Require a digit after the keyword so plain "Task Foo" is kept.
     title = re.sub(
-        r"^(?:Step|Phase|Part|Task)\s*\d+\s*[:.)\-—–]\s*",
+        r"^(?:Step|Phase|Part|Task)\s*\d+\s*[:.)\-\u2014\u2013]\s*",
         "", title, flags=re.IGNORECASE,
     )
     # Handle keyword + digit without separator: "Step 1 Do something"
@@ -199,7 +199,7 @@ def _clean_step_title(title: str) -> str:
         "", title, flags=re.IGNORECASE,
     )
     # Remove leading number + separator if still present
-    title = re.sub(r"^\d+[.):\-—–]\s*", "", title)
+    title = re.sub(r"^\d+[.):\-\u2014\u2013]\s*", "", title)
     # Remove bold/italic markdown
     title = re.sub(r"\*{1,2}(.+?)\*{1,2}", r"\1", title)
     return title.strip()

@@ -905,6 +905,27 @@ class Orchestrator:
                 import traceback
                 traceback.print_exc()
 
+            # --- Auto-task generation from implementation plans ---
+            # After any successful completion path, check for plan files
+            # in the workspace and generate follow-up tasks.
+            try:
+                generated = await self._generate_tasks_from_plan(task, workspace)
+                if generated:
+                    task_list = ", ".join(
+                        f"`{t.id}` ({t.title})" for t in generated
+                    )
+                    plan_msg = (
+                        f"📋 **Auto-generated {len(generated)} task(s)** "
+                        f"from plan in `{task.id}`:\n{task_list}"
+                    )
+                    await _post(plan_msg)
+                    await _notify_brief(plan_msg)
+                    await self._control_channel_post(plan_msg)
+            except Exception as e:
+                print(f"Auto-task generation error for task {task.id}: {e}")
+                import traceback
+                traceback.print_exc()
+
         elif output.result == AgentResult.FAILED:
             new_retry = task.retry_count + 1
             if new_retry >= task.max_retries:
