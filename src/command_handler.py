@@ -1332,6 +1332,42 @@ class CommandHandler:
             "status": "pushed",
         }
 
+    async def _cmd_merge_branch(self, args: dict) -> dict:
+        """Merge a branch into the default branch in a project's repo."""
+        branch_name = args.get("branch_name")
+        if not branch_name:
+            return {"error": "branch_name is required"}
+
+        checkout_path, repo, err = await self._resolve_repo_path(args)
+        if err:
+            return err
+
+        git = self.orchestrator.git
+        default_branch = repo.default_branch if repo else "main"
+
+        try:
+            success = git.merge_branch(checkout_path, branch_name, default_branch)
+        except Exception as e:
+            return {"error": f"Failed to merge: {e}"}
+
+        if not success:
+            return {
+                "project_id": args["project_id"],
+                "repo_id": repo.id if repo else "(workspace)",
+                "branch": branch_name,
+                "target": default_branch,
+                "status": "conflict",
+                "message": "Merge conflict — merge was aborted",
+            }
+
+        return {
+            "project_id": args["project_id"],
+            "repo_id": repo.id if repo else "(workspace)",
+            "branch": branch_name,
+            "target": default_branch,
+            "status": "merged",
+        }
+
     # -----------------------------------------------------------------------
     # Hook commands
     # -----------------------------------------------------------------------
