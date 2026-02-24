@@ -1129,19 +1129,21 @@ class CommandHandler:
 
     async def _cmd_git_log(self, args: dict) -> dict:
         """Show recent commit log for a repository."""
-        repo_id = args["repo_id"]
-        count = args.get("count", 10)
         checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
             return err
+
         git = self.orchestrator.git
-        branch = git.get_current_branch(checkout_path)
+        count = args.get("count", 10)
+
         log_output = git.get_recent_commits(checkout_path, count=count)
+        branch = git.get_current_branch(checkout_path)
+
         return {
-            "repo_id": repo_id,
+            "project_id": args["project_id"],
+            "repo_id": repo.id if repo else "(workspace)",
             "branch": branch,
             "log": log_output or "(no commits)",
-            "count": count,
         }
 
     # -- Additional project-based git commands ------------------------------
