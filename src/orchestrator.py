@@ -673,6 +673,15 @@ class Orchestrator:
                     project_id=task.project_id,
                 )
 
+        # Clean up the task branch after successful merge
+        try:
+            self.git.delete_branch(
+                workspace, task.branch_name,
+                delete_remote=repo.source_type == RepoSourceType.CLONE,
+            )
+        except Exception:
+            pass  # branch cleanup is best-effort
+
     async def _create_pr_for_task(
         self, task: Task, repo: RepoConfig, workspace: str,
     ) -> str | None:
@@ -969,6 +978,14 @@ class Orchestrator:
                 f"**PR Merged:** Task `{task.id}` — {task.title} is now COMPLETED.",
                 project_id=task.project_id,
             )
+            # Clean up the task branch (remote may already be deleted by GitHub)
+            if task.branch_name:
+                try:
+                    self.git.delete_branch(
+                        checkout_path, task.branch_name, delete_remote=True,
+                    )
+                except Exception:
+                    pass  # branch cleanup is best-effort
         elif merged is None:
             # Closed without merge
             await self.db.update_task(

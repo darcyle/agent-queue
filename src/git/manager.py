@@ -117,6 +117,24 @@ class GitManager:
             self._run(["merge", "--abort"], cwd=checkout_path)
             return False
 
+    def delete_branch(
+        self, checkout_path: str, branch_name: str, *, delete_remote: bool = True,
+    ) -> None:
+        """Delete a branch locally and optionally on the remote."""
+        try:
+            self._run(["branch", "-d", branch_name], cwd=checkout_path)
+        except GitError:
+            # Force-delete if not fully merged (e.g. squash-merged PR)
+            try:
+                self._run(["branch", "-D", branch_name], cwd=checkout_path)
+            except GitError:
+                pass  # branch may not exist locally
+        if delete_remote:
+            try:
+                self._run(["push", "origin", "--delete", branch_name], cwd=checkout_path)
+            except GitError:
+                pass  # branch may not exist on remote (already deleted)
+
     def create_worktree(self, source_path: str, worktree_path: str, branch: str) -> None:
         """Create a git worktree for agent isolation on linked repos."""
         os.makedirs(os.path.dirname(worktree_path), exist_ok=True)
