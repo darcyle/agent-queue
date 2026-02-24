@@ -1,8 +1,8 @@
 # Executive Summary: Per-Project Discord Channel System
 
 **Date:** 2026-02-24
-**Status:** Independently verified and confirmed
-**Source audits:** `eager-vault/background` (deep code inspection), `sharp-stone/verdict-confirmed` (independent re-verification)
+**Status:** VERDICT CONFIRMED — all five gaps independently verified against source code
+**Source audits:** `eager-vault/background` (deep code inspection), `sharp-stone/verdict-confirmed` (independent re-verification), `bright-summit/verdict` (final code-level verification)
 **Scope:** All 34 source files in `src/`, `setup_wizard.py`, and 14 test files
 
 ---
@@ -220,6 +220,41 @@ These are not gaps but noteworthy items for future consideration:
 4. **Notes threads:** Separate context injection path from control channels. Both work correctly with independent project scoping.
 
 5. **Rate limit resilience:** In-process exponential backoff retry loop before pausing, with mandatory `resume_after` timers preventing deadlock. Fully operational.
+
+---
+
+## Final Verification: Code-Level Evidence
+
+Independent source-code inspection on 2026-02-24 (`bright-summit/verdict`) confirms every gap with specific evidence:
+
+### Gap 1 — CONFIRMED
+`setup_wizard.py:264-324`: `step_discord()` builds a `channels` dict with exactly three keys — `control`, `notifications`, `agent_questions`. No reference to per-project channels, `discord_channel_id`, or `discord_control_channel_id` anywhere in the 1,169-line file.
+
+### Gap 2 — CONFIRMED
+`src/discord/nl_parser.py`: 42-line file containing `parse_natural_language()` with keyword-matching stubs. Codebase-wide search for `nl_parser` returns only `src/config.py:87,165-167` where `NLParserConfig` is defined and loaded — but never consumed by any runtime code path. Zero imports of `nl_parser` in any other `src/` file.
+
+### Gap 3 — CONFIRMED
+`src/discord/commands.py:402-406`:
+- Line 403: `handler.execute("get_task", {"task_id": "__noop__"})` — vestigial no-op call that retrieves nothing useful
+- Lines 404-406: `handler.execute("list_projects", {})` loads all projects, then scans the result list to validate a single `project_id` — when `get_project` (direct lookup) is available and used in other commands
+
+### Gap 4 — CONFIRMED
+No `/channel-map` or `/channels` command exists in `commands.py`. The `/projects` command (lines 191-209) partially covers this by appending `<#channel_id>` mentions inline, but there is no dedicated channel-centric view.
+
+### Gap 5 — CONFIRMED
+`src/command_handler.py:233-245`: `_cmd_delete_project()` calls `self.db.delete_project(pid)` for cascade DB cleanup but never touches the bot's in-memory caches. `src/discord/bot.py:32-33` defines `_project_channels` and `_project_control_channels` dicts. `bot.py:197-229`: `_resolve_project_channels()` logs `Warning:` for channels not found in guild but does not nullify the corresponding `discord_channel_id`/`discord_control_channel_id` in the database.
+
+### Verification Summary
+
+| Gap | Claimed | Verified | Evidence |
+|-----|---------|----------|----------|
+| 1 | Setup wizard ignores per-project channels | ✅ | `setup_wizard.py` — 0 references to per-project channels |
+| 2 | nl_parser.py is dead code | ✅ | 0 imports across entire `src/` directory |
+| 3 | /create-channel has dead code + O(n) validation | ✅ | `commands.py:402-406` — `__noop__` get_task + list_projects scan |
+| 4 | No channel map command | ✅ | No `/channel-map` or `/channels` command registered |
+| 5 | No cache cleanup on project delete | ✅ | `command_handler.py:244` — `delete_project()` without cache eviction |
+
+**All five gaps are real, accurately characterized, and independently verified at the source-code level.**
 
 ---
 
