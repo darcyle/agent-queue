@@ -424,6 +424,109 @@ def setup_commands(bot: commands.Bot) -> None:
     # PROJECT COMMANDS
     # ===================================================================
 
+    async def _auto_create_project_channels(
+        guild: discord.Guild,
+        cmd_handler,
+        project_id: str,
+        ppc,
+    ) -> list[dict]:
+        """Auto-create per-project Discord channels based on config.
+
+        Uses the ``create_channel_for_project`` command handler for the actual
+        creation, which is idempotent (reuses existing channels with matching
+        names).
+
+        Returns a list of result dicts with keys:
+            channel_type, channel_name, display (for embed formatting).
+        """
+        results: list[dict] = []
+        guild_channels = [{"id": ch.id, "name": ch.name} for ch in guild.text_channels]
+
+        # Resolve category (create if needed)
+        category: discord.CategoryChannel | None = None
+        if ppc.category_name:
+            for cat in guild.categories:
+                if cat.name.lower() == ppc.category_name.lower():
+                    category = cat
+                    break
+            if category is None:
+                try:
+                    category = await guild.create_category(
+                        ppc.category_name,
+                        reason="AgentQueue: auto-created category for project channels",
+                    )
+                except (discord.Forbidden, discord.HTTPException):
+                    pass  # Fall through — channels will be created without a category
+
+        for ch_type, convention in [
+            ("notifications", ppc.naming_convention),
+            ("control", ppc.control_naming_convention),
+        ]:
+            channel_name = convention.format(project_id=project_id)
+
+            # Check if channel already exists
+            existing_id = None
+            for ch in guild_channels:
+                if ch["name"] == channel_name:
+                    existing_id = str(ch["id"])
+                    break
+
+            created_channel_id = None
+            if not existing_id:
+                # Create the channel in Discord
+                try:
+                    topic = f"AgentQueue {ch_type} for project: {project_id}"
+                    new_ch = await guild.create_text_channel(
+                        name=channel_name,
+                        category=category,
+                        topic=topic,
+                        reason=f"AgentQueue: auto-created {ch_type} channel for {project_id}",
+                    )
+                    created_channel_id = str(new_ch.id)
+                    guild_channels.append({"id": new_ch.id, "name": new_ch.name})
+                except (discord.Forbidden, discord.HTTPException):
+                    results.append({
+                        "channel_type": ch_type,
+                        "channel_name": channel_name,
+                        "display": f"⚠️ Failed to create #{channel_name}",
+                    })
+                    continue
+
+            # Delegate to command handler for project linking (idempotent)
+            link_result = await cmd_handler.execute("create_channel_for_project", {
+                "project_id": project_id,
+                "channel_name": channel_name,
+                "channel_type": ch_type,
+                "guild_channels": guild_channels,
+                "_created_channel_id": created_channel_id,
+            })
+
+            if "error" in link_result:
+                results.append({
+                    "channel_type": ch_type,
+                    "channel_name": channel_name,
+                    "display": f"⚠️ #{channel_name} ({link_result['error']})",
+                })
+            else:
+                action = link_result.get("action", "linked")
+                ch_id = link_result.get("channel_id", "")
+                mention = f"<#{ch_id}>" if ch_id else f"#{channel_name}"
+                label = "linked" if action == "linked_existing" else "created"
+                results.append({
+                    "channel_type": ch_type,
+                    "channel_name": channel_name,
+                    "display": f"{mention} ({label})",
+                })
+
+        # Refresh the bot's channel cache after creating new channels
+        if hasattr(bot, '_resolve_project_channels'):
+            try:
+                await bot._resolve_project_channels()
+            except Exception:
+                pass
+
+        return results
+
     @bot.tree.command(name="create-project", description="Create a new project")
     @app_commands.describe(
         name="Project name",
@@ -436,21 +539,50 @@ def setup_commands(bot: commands.Bot) -> None:
         credit_weight: float = 1.0,
         max_concurrent_agents: int = 2,
     ):
+        # Defer if auto-channel creation is enabled (may take a few seconds)
+        ppc = bot.config.discord.per_project_channels
+        will_auto_create = ppc.auto_create and interaction.guild is not None
+        if will_auto_create:
+            await interaction.response.defer()
+
         result = await handler.execute("create_project", {
             "name": name,
             "credit_weight": credit_weight,
             "max_concurrent_agents": max_concurrent_agents,
         })
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            if will_auto_create:
+                await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            else:
+                await interaction.response.send_message(
+                    f"Error: {result['error']}", ephemeral=True
+                )
             return
+
+        project_id = result["created"]
         embed = discord.Embed(title="✅ Project Created", color=0x2ecc71)
         embed.add_field(name="Name", value=name, inline=True)
-        embed.add_field(name="ID", value=f"`{result['created']}`", inline=True)
+        embed.add_field(name="ID", value=f"`{project_id}`", inline=True)
         embed.add_field(name="Weight", value=str(credit_weight), inline=True)
         embed.add_field(name="Max Agents", value=str(max_concurrent_agents), inline=True)
         embed.add_field(name="Workspace", value=f"`{result.get('workspace', '')}`", inline=False)
-        await interaction.response.send_message(embed=embed)
+
+        # Auto-create per-project channels if configured
+        if will_auto_create:
+            channel_results = await _auto_create_project_channels(
+                interaction.guild, handler, project_id, ppc,
+            )
+            for cr in channel_results:
+                embed.add_field(
+                    name=f"📢 {cr['channel_type'].title()} Channel",
+                    value=cr["display"],
+                    inline=True,
+                )
+
+        if will_auto_create:
+            await interaction.followup.send(embed=embed)
+        else:
+            await interaction.response.send_message(embed=embed)
 
     @bot.tree.command(name="edit-project", description="Edit a project's settings")
     @app_commands.describe(

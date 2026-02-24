@@ -315,16 +315,8 @@ def step_discord(existing: dict) -> dict:
                 break
             authorized_users.append(uid)
 
-    # Per-project channel guidance
-    if discord_ok:
-        print()
-        info("Per-project channels (optional):")
-        info("  You can isolate each project's notifications into its own Discord channel.")
-        info("  After creating projects, use these Discord slash commands:")
-        info("    /create-channel <project-id>  — create & link a new channel automatically")
-        info("    /set-channel <project-id>     — link an existing channel to a project")
-        info("    /channel-map                  — view all project-channel mappings")
-        info("  Projects without dedicated channels fall back to the global channels above.")
+    # Per-project channel configuration
+    per_project_cfg = _step_per_project_channels(existing, discord_ok)
 
     return {
         "bot_token": bot_token,
@@ -332,6 +324,119 @@ def step_discord(existing: dict) -> dict:
         "channels": channels,
         "authorized_users": authorized_users,
         "connected": discord_ok,
+        "per_project_channels": per_project_cfg,
+    }
+
+
+def _step_per_project_channels(existing: dict, discord_ok: bool) -> dict:
+    """Guide users through per-project Discord channel configuration.
+
+    Returns a dict with per-project channel settings:
+        auto_create: bool — auto-create channels when projects are created
+        naming_convention: str — channel name pattern for notifications
+        control_naming_convention: str — channel name pattern for control
+        category_name: str — Discord category name for project channels
+    """
+    yaml_cfg = existing.get("_yaml", {})
+    discord_cfg = yaml_cfg.get("discord", {})
+    existing_ppc = discord_cfg.get("per_project_channels", {})
+
+    defaults = {
+        "auto_create": existing_ppc.get("auto_create", False),
+        "naming_convention": existing_ppc.get(
+            "naming_convention", "{project_id}-notifications"
+        ),
+        "control_naming_convention": existing_ppc.get(
+            "control_naming_convention", "{project_id}-control"
+        ),
+        "category_name": existing_ppc.get("category_name", ""),
+    }
+
+    print()
+    print(f"  {BOLD}Per-Project Channels{RESET}")
+    info("Each project can have its own dedicated Discord channel(s) for")
+    info("notifications and control, instead of sharing the global channels.")
+    print()
+
+    if not prompt_yes_no(
+        "Enable automatic per-project channel creation?",
+        default=defaults["auto_create"],
+    ):
+        # User declined — show manual instructions and return defaults (disabled)
+        if discord_ok:
+            print()
+            info("You can still create per-project channels manually via Discord:")
+            info("  /create-channel <project-id>  — create & link a new channel")
+            info("  /set-channel <project-id>     — link an existing channel")
+            info("  /channel-map                  — view all project-channel mappings")
+            info("Projects without dedicated channels fall back to the global channels.")
+        return {
+            "auto_create": False,
+            "naming_convention": defaults["naming_convention"],
+            "control_naming_convention": defaults["control_naming_convention"],
+            "category_name": defaults["category_name"],
+        }
+
+    # ── Naming convention ──
+    print()
+    info("Channel naming convention uses {project_id} as a placeholder.")
+    info("Examples: for a project 'my-app',")
+    info("  '{project_id}-notifications'  →  #my-app-notifications")
+    info("  '{project_id}-notify'         →  #my-app-notify")
+    info("  'aq-{project_id}'             →  #aq-my-app")
+    print()
+
+    notify_convention = prompt(
+        "Notifications channel pattern",
+        defaults["naming_convention"],
+    )
+    if "{project_id}" not in notify_convention:
+        warn("Pattern must contain {project_id} — resetting to default")
+        notify_convention = "{project_id}-notifications"
+
+    control_convention = prompt(
+        "Control channel pattern",
+        defaults["control_naming_convention"],
+    )
+    if "{project_id}" not in control_convention:
+        warn("Pattern must contain {project_id} — resetting to default")
+        control_convention = "{project_id}-control"
+
+    # ── Category ──
+    print()
+    info("You can organize project channels under a Discord category.")
+    info("If the category doesn't exist, it will be created automatically.")
+    print()
+
+    category_name = prompt(
+        "Discord category for project channels (blank to skip)",
+        defaults["category_name"],
+    )
+
+    # ── Summary ──
+    print()
+    success("Per-project channel configuration:")
+    info(f"  Auto-create:         enabled")
+    info(f"  Notifications:       {notify_convention}")
+    info(f"  Control:             {control_convention}")
+    if category_name:
+        info(f"  Category:            {category_name}")
+    else:
+        info(f"  Category:            (none — channels created at top level)")
+
+    if discord_ok:
+        print()
+        info("Channels will be created automatically when you add projects.")
+        info("You can also manage them manually:")
+        info("  /create-channel <project-id>  — create & link a channel")
+        info("  /set-channel <project-id>     — link an existing channel")
+        info("  /channel-map                  — view all project-channel mappings")
+
+    return {
+        "auto_create": True,
+        "naming_convention": notify_convention,
+        "control_naming_convention": control_convention,
+        "category_name": category_name,
     }
 
 
@@ -1008,6 +1113,18 @@ def step_write_config(
         yaml_lines.append("  authorized_users:")
         for uid in discord_cfg["authorized_users"]:
             yaml_lines.append(f'    - "{uid}"')
+
+    # Per-project channel configuration
+    ppc = discord_cfg.get("per_project_channels", {})
+    if ppc.get("auto_create"):
+        yaml_lines.append("  per_project_channels:")
+        yaml_lines.append(f"    auto_create: true")
+        yaml_lines.append(f"    naming_convention: \"{ppc['naming_convention']}\"")
+        yaml_lines.append(
+            f"    control_naming_convention: \"{ppc['control_naming_convention']}\""
+        )
+        if ppc.get("category_name"):
+            yaml_lines.append(f"    category_name: \"{ppc['category_name']}\"")
 
     yaml_lines.append("")
 

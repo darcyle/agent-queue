@@ -8,6 +8,16 @@ import yaml
 
 
 @dataclass
+class PerProjectChannelsConfig:
+    """Configuration for automatic per-project Discord channel management."""
+
+    auto_create: bool = False
+    naming_convention: str = "{project_id}-notifications"
+    control_naming_convention: str = "{project_id}-control"
+    category_name: str = ""  # Discord category to group project channels (optional)
+
+
+@dataclass
 class DiscordConfig:
     bot_token: str = ""
     guild_id: str = ""
@@ -17,6 +27,9 @@ class DiscordConfig:
         "agent_questions": "agent-questions",
     })
     authorized_users: list[str] = field(default_factory=list)
+    per_project_channels: PerProjectChannelsConfig = field(
+        default_factory=PerProjectChannelsConfig
+    )
 
 
 @dataclass
@@ -162,11 +175,25 @@ def load_config(path: str) -> AppConfig:
 
     if "discord" in raw:
         d = raw["discord"]
+        ppc = PerProjectChannelsConfig()
+        if "per_project_channels" in d:
+            pp = d["per_project_channels"]
+            ppc = PerProjectChannelsConfig(
+                auto_create=pp.get("auto_create", False),
+                naming_convention=pp.get(
+                    "naming_convention", "{project_id}-notifications"
+                ),
+                control_naming_convention=pp.get(
+                    "control_naming_convention", "{project_id}-control"
+                ),
+                category_name=pp.get("category_name", ""),
+            )
         config.discord = DiscordConfig(
             bot_token=d.get("bot_token", ""),
             guild_id=d.get("guild_id", ""),
             channels=d.get("channels", config.discord.channels),
             authorized_users=d.get("authorized_users", []),
+            per_project_channels=ppc,
         )
 
     if "agents" in raw:
