@@ -144,6 +144,24 @@ TOOLS = [
         },
     },
     {
+        "name": "get_project_for_channel",
+        "description": (
+            "Reverse lookup: given a Discord channel ID, find which project it belongs to. "
+            "Checks both notifications and control channel mappings across all projects. "
+            "Returns the project ID and channel type, or null if no project is linked."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "channel_id": {
+                    "type": "string",
+                    "description": "Discord channel ID to look up",
+                },
+            },
+            "required": ["channel_id"],
+        },
+    },
+    {
         "name": "create_channel_for_project",
         "description": (
             "Create a dedicated Discord channel for a project, or reuse an existing "
@@ -941,7 +959,7 @@ You can directly (using your tools):
 - Pause, resume, or check the orchestrator (task scheduler) with `orchestrator_control`
 - Manually override a task's status with `set_task_status` (bypasses state machine)
 - Inspect the last error for a task with `get_agent_error` (shows error classification and suggested fix)
-- Configure per-project Discord channels with `set_project_channel`, `set_control_interface`, `get_project_channels`, and `create_channel_for_project`
+- Configure per-project Discord channels with `set_project_channel`, `set_control_interface`, `get_project_channels`, `get_project_for_channel`, and `create_channel_for_project`
 
 Repository management — use the `add_repo` tool to connect repos to projects:
 - **clone**: Clone a git repo by URL. Agents get their own checkout. Use for remote repos.
@@ -987,12 +1005,16 @@ Per-project Discord channels — route notifications to dedicated channels:
 - By default, all projects share the global #notifications and #control channels.
 - Use `set_project_channel` to link a Discord channel to a project for notifications or control.
 - Use `set_control_interface` to set a project's control channel by name (string lookup).
+- Use `create_channel_for_project` to create (or reuse) a dedicated Discord channel for a \
+project — idempotent, so calling it twice with the same name links the existing channel.
 - When a project has a dedicated notifications channel, task threads, status updates, and \
 completion notices for that project are routed there automatically.
 - When a project has a dedicated control channel, the bot responds to messages in that \
 channel with project context, similar to the global control channel.
 - Use the `/set-channel` or `/create-channel` Discord commands to manage channels interactively.
 - Use `get_project_channels` to see which channels are configured for a project.
+- Use `get_project_for_channel` for reverse lookup — given a channel ID, find which project \
+it belongs to and whether it is a notifications or control channel.
 
 IMPORTANT — You are a dispatcher, not a worker. You CANNOT write code, edit files, \
 run commands, or do technical work yourself. When a user asks you to DO something \

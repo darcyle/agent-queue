@@ -302,6 +302,43 @@ class CommandHandler:
             "control_channel_id": project.discord_control_channel_id,
         }
 
+    async def _cmd_get_project_for_channel(self, args: dict) -> dict:
+        """Reverse lookup: find which project a Discord channel belongs to.
+
+        Scans all projects and checks both ``discord_channel_id``
+        (notifications) and ``discord_control_channel_id`` (control)
+        fields.  Returns the first match with the channel type, or
+        ``project_id: null`` if no project is linked to the channel.
+        """
+        channel_id = args.get("channel_id")
+        if not channel_id:
+            return {"error": "channel_id is required"}
+
+        channel_id = str(channel_id)
+        projects = await self.db.list_projects()
+        for project in projects:
+            if project.discord_channel_id == channel_id:
+                return {
+                    "channel_id": channel_id,
+                    "project_id": project.id,
+                    "project_name": project.name,
+                    "channel_type": "notifications",
+                }
+            if project.discord_control_channel_id == channel_id:
+                return {
+                    "channel_id": channel_id,
+                    "project_id": project.id,
+                    "project_name": project.name,
+                    "channel_type": "control",
+                }
+
+        return {
+            "channel_id": channel_id,
+            "project_id": None,
+            "project_name": None,
+            "channel_type": None,
+        }
+
     async def _cmd_create_channel_for_project(self, args: dict) -> dict:
         """Create (or reuse) a dedicated Discord channel for a project.
 
