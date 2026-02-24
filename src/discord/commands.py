@@ -593,10 +593,16 @@ def setup_commands(bot: commands.Bot) -> None:
             await interaction.followup.send("Error: Not in a guild.", ephemeral=True)
             return
 
+        if ch_type == "notifications":
+            topic = f"Agent Queue notifications for project: {project_id}"
+        else:
+            topic = f"Agent Queue control channel for project: {project_id}"
+
         try:
             new_channel = await guild.create_text_channel(
                 name=name,
                 category=category,
+                topic=topic,
                 reason=f"AgentQueue: {ch_type} channel for project {project_id}",
             )
         except discord.Forbidden:
