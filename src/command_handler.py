@@ -1307,6 +1307,31 @@ class CommandHandler:
             "status": "committed",
         }
 
+    async def _cmd_push_branch(self, args: dict) -> dict:
+        """Push the current (or specified) branch to origin."""
+        checkout_path, repo, err = await self._resolve_repo_path(args)
+        if err:
+            return err
+
+        git = self.orchestrator.git
+        branch_name = args.get("branch_name")
+        if not branch_name:
+            branch_name = git.get_current_branch(checkout_path)
+            if not branch_name:
+                return {"error": "Could not determine current branch"}
+
+        try:
+            git.push_branch(checkout_path, branch_name)
+        except Exception as e:
+            return {"error": f"Failed to push: {e}"}
+
+        return {
+            "project_id": args["project_id"],
+            "repo_id": repo.id if repo else "(workspace)",
+            "branch": branch_name,
+            "status": "pushed",
+        }
+
     # -----------------------------------------------------------------------
     # Hook commands
     # -----------------------------------------------------------------------
