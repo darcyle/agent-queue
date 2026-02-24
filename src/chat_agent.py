@@ -74,6 +74,42 @@ TOOLS = [
         },
     },
     {
+        "name": "set_project_channel",
+        "description": (
+            "Link a Discord channel to a project for per-project notifications or control. "
+            "When set, task updates and threads for this project will be routed to its "
+            "dedicated channel instead of the global notifications channel."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "channel_id": {
+                    "type": "string",
+                    "description": "Discord channel ID to link",
+                },
+                "channel_type": {
+                    "type": "string",
+                    "enum": ["notifications", "control"],
+                    "description": "Channel purpose: 'notifications' (task updates, threads) or 'control' (commands, chat)",
+                    "default": "notifications",
+                },
+            },
+            "required": ["project_id", "channel_id"],
+        },
+    },
+    {
+        "name": "get_project_channels",
+        "description": "Get the Discord channel IDs configured for a project (notifications and control).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
         "name": "list_tasks",
         "description": "List tasks, optionally filtered by project or status.",
         "input_schema": {
@@ -634,6 +670,7 @@ You can directly (using your tools):
 - Pause, resume, or check the orchestrator (task scheduler) with `orchestrator_control`
 - Manually override a task's status with `set_task_status` (bypasses state machine)
 - Inspect the last error for a task with `get_agent_error` (shows error classification and suggested fix)
+- Configure per-project Discord channels with `set_project_channel` and `get_project_channels`
 
 Repository management — use the `add_repo` tool to connect repos to projects:
 - **clone**: Clone a git repo by URL. Agents get their own checkout. Use for remote repos.
@@ -674,6 +711,16 @@ and sending prompts to an LLM that has access to all system tools:
 and `{{event}}`, `{{event.task_id}}` for event data.
 - Example: A test-watcher hook runs `pytest`, skips LLM if tests pass, otherwise asks LLM to create \
 tasks for failures.
+
+Per-project Discord channels — route notifications to dedicated channels:
+- By default, all projects share the global #notifications and #control channels.
+- Use `set_project_channel` to link a Discord channel to a project for notifications or control.
+- When a project has a dedicated notifications channel, task threads, status updates, and \
+completion notices for that project are routed there automatically.
+- When a project has a dedicated control channel, the bot responds to messages in that \
+channel with project context, similar to the global control channel.
+- Use the `/set-channel` or `/create-channel` Discord commands to manage channels interactively.
+- Use `get_project_channels` to see which channels are configured for a project.
 
 IMPORTANT — You are a dispatcher, not a worker. You CANNOT write code, edit files, \
 run commands, or do technical work yourself. When a user asks you to DO something \

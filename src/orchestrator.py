@@ -26,15 +26,22 @@ from src.scheduler import AssignAction, Scheduler, SchedulerState
 from src.task_names import generate_task_id
 from src.tokens.budget import BudgetManager
 
-# Callback that sends a formatted string to a Discord channel
-NotifyCallback = Callable[[str], Awaitable[None]]
+# Callback that sends a formatted string to a Discord channel.
+# Accepts an optional project_id to route to per-project channels.
+NotifyCallback = Callable[[str, str | None], Awaitable[None]]
 
 # Callback that creates a thread and returns two send functions:
 #   [0] send_to_thread  — streams content into the thread
 #   [1] notify_main     — posts a brief message to the main channel (e.g. a reply
 #                         to the thread-root message in the notifications channel)
-# Args: (thread_name, initial_message) -> (send_to_thread, notify_main) | None
-CreateThreadCallback = Callable[[str, str], Awaitable[tuple[NotifyCallback, NotifyCallback] | None]]
+# Args: (thread_name, initial_message, project_id) -> (send_to_thread, notify_main) | None
+# The inner callbacks (send_to_thread, notify_main) do NOT take project_id since
+# the thread is already created in the correct channel.
+ThreadSendCallback = Callable[[str], Awaitable[None]]
+CreateThreadCallback = Callable[
+    [str, str, str | None],
+    Awaitable[tuple[ThreadSendCallback, ThreadSendCallback] | None],
+]
 
 
 class Orchestrator:
@@ -100,23 +107,32 @@ class Orchestrator:
             self._adapters.pop(agent_id, None)
 
         await self._notify_channel(
-            f"**Task Stopped:** `{task_id}` — {task.title}"
+            f"**Task Stopped:** `{task_id}` — {task.title}",
+            project_id=task.project_id,
         )
         return None
 
-    async def _notify_channel(self, message: str) -> None:
-        """Send a notification if a callback is set."""
+    async def _notify_channel(self, message: str, project_id: str | None = None) -> None:
+        """Send a notification if a callback is set.
+
+        When *project_id* is given the callback can route the message to a
+        per-project Discord channel (falling back to the global notifications
+        channel if the project has none configured).
+        """
         if self._notify:
             try:
-                await self._notify(message)
+                await self._notify(message, project_id)
             except Exception as e:
                 print(f"Notification error: {e}")
 
-    async def _control_channel_post(self, message: str) -> None:
-        """Post a message to the control channel if a callback is set."""
+    async def _control_channel_post(self, message: str, project_id: str | None = None) -> None:
+        """Post a message to the control channel if a callback is set.
+
+        Routing follows the same per-project logic as ``_notify_channel``.
+        """
         if self._control_notify:
             try:
-                await self._control_notify(message)
+                await self._control_notify(message, project_id)
             except Exception as e:
                 print(f"Control channel notification error: {e}")
 
@@ -215,7 +231,8 @@ class Orchestrator:
                 current_task_id=None)
             self._adapters.pop(action.agent_id, None)
             await self._notify_channel(
-                f"**Task Timed Out:** `{action.task_id}` — exceeded {timeout}s. Marked as BLOCKED."
+                f"**Task Timed Out:** `{action.task_id}` — exceeded {timeout}s. Marked as BLOCKED.",
+                project_id=action.project_id,
             )
             return
         except Exception as e:
@@ -232,7 +249,8 @@ class Orchestrator:
             except Exception:
                 pass
             await self._notify_channel(
-                f"**Error executing task** `{action.task_id}`: {e}"
+                f"**Error executing task** `{action.task_id}`: {e}",
+                project_id=action.project_id,
             )
         finally:
             self._running_tasks.pop(action.task_id, None)
@@ -308,7 +326,8 @@ class Orchestrator:
         if not repo:
             await self._notify_channel(
                 f"**Warning:** Repo `{task.repo_id}` not found for task `{task.id}`. "
-                f"Falling back to project workspace."
+                f"Falling back to project workspace.",
+                project_id=task.project_id,
             )
             return None
 
@@ -333,7 +352,8 @@ class Orchestrator:
             if not os.path.isdir(repo.source_path):
                 await self._notify_channel(
                     f"**Warning:** Linked repo path `{repo.source_path}` does not exist. "
-                    f"Falling back to project workspace."
+                    f"Falling back to project workspace.",
+                    project_id=task.project_id,
                 )
                 return None
             # Work directly in the source directory (preserves .env, venv, etc.)
@@ -394,7 +414,8 @@ class Orchestrator:
         if not merged:
             await self._notify_channel(
                 f"**Merge Conflict:** Task `{task.id}` branch `{task.branch_name}` "
-                f"has conflicts with `{repo.default_branch}`. Manual resolution needed."
+                f"has conflicts with `{repo.default_branch}`. Manual resolution needed.",
+                project_id=task.project_id,
             )
             return
 
@@ -403,7 +424,8 @@ class Orchestrator:
                 self.git.push_branch(workspace, repo.default_branch)
             except Exception as e:
                 await self._notify_channel(
-                    f"**Push Failed:** Could not push `{repo.default_branch}` for task `{task.id}`: {e}"
+                    f"**Push Failed:** Could not push `{repo.default_branch}` for task `{task.id}`: {e}",
+                    project_id=task.project_id,
                 )
 
     async def _create_pr_for_task(
@@ -415,7 +437,8 @@ class Orchestrator:
             await self._notify_channel(
                 f"**Approval Required:** Task `{task.id}` — {task.title}\n"
                 f"Branch `{task.branch_name}` is ready for review in `{workspace}`.\n"
-                f"Use the `approve_task` command to complete it."
+                f"Use the `approve_task` command to complete it.",
+                project_id=task.project_id,
             )
             return None
 
@@ -424,7 +447,8 @@ class Orchestrator:
         except Exception as e:
             await self._notify_channel(
                 f"**Push Failed:** Could not push branch `{task.branch_name}` "
-                f"for task `{task.id}`: {e}"
+                f"for task `{task.id}`: {e}",
+                project_id=task.project_id,
             )
             return None
 
@@ -440,7 +464,8 @@ class Orchestrator:
         except Exception as e:
             await self._notify_channel(
                 f"**PR Creation Failed:** Task `{task.id}` — {e}\n"
-                f"Branch `{task.branch_name}` has been pushed. Create a PR manually."
+                f"Branch `{task.branch_name}` has been pushed. Create a PR manually.",
+                project_id=task.project_id,
             )
             return None
 
@@ -573,7 +598,8 @@ class Orchestrator:
                     "task_completed", project_id=task.project_id,
                     task_id=task.id)
                 await self._notify_channel(
-                    f"**PR Merged:** Task `{task.id}` — {task.title} is now COMPLETED."
+                    f"**PR Merged:** Task `{task.id}` — {task.title} is now COMPLETED.",
+                    project_id=task.project_id,
                 )
             elif merged is None:
                 # Closed without merge
@@ -581,14 +607,16 @@ class Orchestrator:
                     task.id, status=TaskStatus.BLOCKED.value)
                 await self._notify_channel(
                     f"**PR Closed:** Task `{task.id}` — {task.title} "
-                    f"was closed without merging. Marked as BLOCKED."
+                    f"was closed without merging. Marked as BLOCKED.",
+                    project_id=task.project_id,
                 )
 
     async def _execute_task(self, action: AssignAction) -> None:
         if not self._adapter_factory:
             print(f"Cannot execute task {action.task_id}: no adapter factory configured")
             await self._notify_channel(
-                f"**Error:** Cannot execute task `{action.task_id}` — no agent adapter configured."
+                f"**Error:** Cannot execute task `{action.task_id}` — no agent adapter configured.",
+                project_id=action.project_id,
             )
             return
 
@@ -613,7 +641,8 @@ class Orchestrator:
         except Exception as e:
             await self._notify_channel(
                 f"**Workspace Error:** Task `{task.id}` — {e}\n"
-                f"Falling back to project workspace."
+                f"Falling back to project workspace.",
+                project_id=action.project_id,
             )
             workspace = fallback_workspace
 
@@ -627,15 +656,15 @@ class Orchestrator:
             f"Agent: {agent.name}"
             + (f"\nBranch: `{task.branch_name}`" if task.branch_name else "")
         )
-        await self._notify_channel(start_msg)
+        await self._notify_channel(start_msg, project_id=action.project_id)
 
         # Create a thread for streaming agent output
-        thread_send: NotifyCallback | None = None
-        thread_main_notify: NotifyCallback | None = None
+        thread_send: ThreadSendCallback | None = None
+        thread_main_notify: ThreadSendCallback | None = None
         if self._create_thread:
             try:
                 thread_name = f"{task.id} | {task.title}"[:100]
-                thread_result = await self._create_thread(thread_name, start_msg)
+                thread_result = await self._create_thread(thread_name, start_msg, action.project_id)
                 if thread_result:
                     thread_send, thread_main_notify = thread_result
                     print(f"Created thread for task {task.id}")
@@ -690,7 +719,7 @@ class Orchestrator:
                 await thread_send(text)
             else:
                 header = f"`{task.id}` | **{agent.name}**\n"
-                await self._notify_channel(header + text)
+                await self._notify_channel(header + text, project_id=action.project_id)
 
         # ------------------------------------------------------------------ #
         # Exponential-backoff retry loop for Claude API rate limits.
@@ -739,12 +768,13 @@ class Orchestrator:
             )
 
             await self._notify_channel(
-                "⏳ Claude is currently rate-limited. We will try again in a moment."
+                "⏳ Claude is currently rate-limited. We will try again in a moment.",
+                project_id=action.project_id,
             )
 
             await asyncio.sleep(_backoff)
 
-            await self._notify_channel("✅ Rate limit cleared — resuming now.")
+            await self._notify_channel("✅ Rate limit cleared — resuming now.", project_id=action.project_id)
 
             # Re-initialise the adapter so the next call starts a fresh query.
             await adapter.start(ctx)
@@ -771,7 +801,7 @@ class Orchestrator:
             if thread_send:
                 await thread_send(msg)
             else:
-                await self._notify_channel(msg)
+                await self._notify_channel(msg, project_id=action.project_id)
 
         # Helper: post a brief notification to the main (notifications) channel.
         # When a thread exists this replies to the thread-root message so the
@@ -781,7 +811,7 @@ class Orchestrator:
             if thread_main_notify:
                 await thread_main_notify(msg)
             else:
-                await self._notify_channel(msg)
+                await self._notify_channel(msg, project_id=action.project_id)
 
         # Handle result
         if output.result == AgentResult.COMPLETED:
@@ -813,7 +843,7 @@ class Orchestrator:
                 brief = f"🔍 PR created for review: {task.title} (`{task.id}`)\n{pr_url}"
                 if thread_send:
                     await _notify_brief(brief)
-                await self._control_channel_post(brief)
+                await self._control_channel_post(brief, project_id=action.project_id)
             elif task.requires_approval and not pr_url:
                 # Approval required but no PR (e.g. LINK repo) — wait for manual approval
                 await self.db.update_task(
@@ -822,7 +852,7 @@ class Orchestrator:
                 )
                 brief = f"🔍 Awaiting manual approval: {task.title} (`{task.id}`)"
                 await _notify_brief(brief)
-                await self._control_channel_post(brief)
+                await self._control_channel_post(brief, project_id=action.project_id)
             else:
                 # No approval needed — mark completed
                 await self.db.update_task(action.task_id,
@@ -845,11 +875,14 @@ class Orchestrator:
                         )
                     await thread_send("\n".join(summary_lines))
                 else:
-                    await self._notify_channel(format_task_completed(task, agent, output))
+                    await self._notify_channel(
+                        format_task_completed(task, agent, output),
+                        project_id=action.project_id,
+                    )
                 brief = f"✅ Task completed: {task.title} (`{task.id}`)"
                 if thread_send:
                     await _notify_brief(brief)
-                await self._control_channel_post(brief)
+                await self._control_channel_post(brief, project_id=action.project_id)
 
             # --- Auto-task generation from implementation plans ---
             # After any successful completion path, check for plan files
@@ -866,7 +899,7 @@ class Orchestrator:
                     )
                     await _post(plan_msg)
                     await _notify_brief(plan_msg)
-                    await self._control_channel_post(plan_msg)
+                    await self._control_channel_post(plan_msg, project_id=action.project_id)
             except Exception as e:
                 print(f"Auto-task generation error for task {task.id}: {e}")
                 import traceback
@@ -914,14 +947,18 @@ class Orchestrator:
             else:
                 if new_retry >= task.max_retries:
                     await self._notify_channel(
-                        format_task_blocked(task, last_error=output.error_message)
+                        format_task_blocked(task, last_error=output.error_message),
+                        project_id=action.project_id,
                     )
                 else:
-                    await self._notify_channel(format_task_failed(task, agent, output))
+                    await self._notify_channel(
+                        format_task_failed(task, agent, output),
+                        project_id=action.project_id,
+                    )
             # Brief notification → main channel (reply to thread) + control channel
             if thread_send:
                 await _notify_brief(brief)
-            await self._control_channel_post(brief)
+            await self._control_channel_post(brief, project_id=action.project_id)
 
         elif output.result in (
             AgentResult.PAUSED_TOKENS, AgentResult.PAUSED_RATE_LIMIT

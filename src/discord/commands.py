@@ -197,7 +197,15 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         lines = []
         for p in projects:
-            lines.append(f"• **{p['name']}** (`{p['id']}`) — {p['status']}, weight={p['credit_weight']}")
+            line = f"• **{p['name']}** (`{p['id']}`) — {p['status']}, weight={p['credit_weight']}"
+            channel_parts = []
+            if p.get("discord_channel_id"):
+                channel_parts.append(f"<#{p['discord_channel_id']}>")
+            if p.get("discord_control_channel_id"):
+                channel_parts.append(f"ctrl: <#{p['discord_control_channel_id']}>")
+            if channel_parts:
+                line += f" | {', '.join(channel_parts)}"
+            lines.append(line)
         await interaction.response.send_message("\n".join(lines))
 
     @bot.tree.command(name="agents", description="List all agents")
@@ -325,6 +333,122 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         await interaction.response.send_message(
             f"🗑️ Project **{result.get('name', project_id)}** (`{project_id}`) deleted."
+        )
+
+    # -------------------------------------------------------------------
+    # CHANNEL MANAGEMENT COMMANDS
+    # -------------------------------------------------------------------
+
+    @bot.tree.command(
+        name="set-channel",
+        description="Link a Discord channel to a project for notifications or control",
+    )
+    @app_commands.describe(
+        project_id="Project ID",
+        channel="The Discord channel to link",
+        channel_type="Channel purpose: notifications (default) or control",
+    )
+    @app_commands.choices(channel_type=[
+        app_commands.Choice(name="notifications", value="notifications"),
+        app_commands.Choice(name="control", value="control"),
+    ])
+    async def set_channel_command(
+        interaction: discord.Interaction,
+        project_id: str,
+        channel: discord.TextChannel,
+        channel_type: app_commands.Choice[str] | None = None,
+    ):
+        ch_type = channel_type.value if channel_type else "notifications"
+        result = await handler.execute("set_project_channel", {
+            "project_id": project_id,
+            "channel_id": str(channel.id),
+            "channel_type": ch_type,
+        })
+        if "error" in result:
+            await interaction.response.send_message(
+                f"Error: {result['error']}", ephemeral=True
+            )
+            return
+        # Update the bot's channel cache immediately
+        bot.update_project_channel(project_id, channel, ch_type)
+        await interaction.response.send_message(
+            f"✅ Project `{project_id}` {ch_type} channel set to {channel.mention}"
+        )
+
+    @bot.tree.command(
+        name="create-channel",
+        description="Create a new Discord channel for a project",
+    )
+    @app_commands.describe(
+        project_id="Project ID",
+        channel_name="Name for the new channel (defaults to project ID)",
+        channel_type="Channel purpose: notifications (default) or control",
+        category="Category to create the channel in (optional)",
+    )
+    @app_commands.choices(channel_type=[
+        app_commands.Choice(name="notifications", value="notifications"),
+        app_commands.Choice(name="control", value="control"),
+    ])
+    async def create_channel_command(
+        interaction: discord.Interaction,
+        project_id: str,
+        channel_name: str | None = None,
+        channel_type: app_commands.Choice[str] | None = None,
+        category: discord.CategoryChannel | None = None,
+    ):
+        await interaction.response.defer()
+        ch_type = channel_type.value if channel_type else "notifications"
+
+        # Validate project exists
+        project = await handler.execute("get_task", {"task_id": "__noop__"})  # tiny hack — just check via DB
+        project_result = await handler.execute("list_projects", {})
+        project_ids = [p["id"] for p in project_result.get("projects", [])]
+        if project_id not in project_ids:
+            await interaction.followup.send(
+                f"Error: Project `{project_id}` not found.", ephemeral=True
+            )
+            return
+
+        name = channel_name or project_id
+        # Create the Discord channel
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("Error: Not in a guild.", ephemeral=True)
+            return
+
+        try:
+            new_channel = await guild.create_text_channel(
+                name=name,
+                category=category,
+                reason=f"AgentQueue: {ch_type} channel for project {project_id}",
+            )
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "Error: Bot lacks permission to create channels.", ephemeral=True
+            )
+            return
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                f"Error creating channel: {e}", ephemeral=True
+            )
+            return
+
+        # Link it to the project in the database
+        result = await handler.execute("set_project_channel", {
+            "project_id": project_id,
+            "channel_id": str(new_channel.id),
+            "channel_type": ch_type,
+        })
+        if "error" in result:
+            await interaction.followup.send(
+                f"Channel created but linking failed: {result['error']}", ephemeral=True
+            )
+            return
+
+        # Update the bot's channel cache immediately
+        bot.update_project_channel(project_id, new_channel, ch_type)
+        await interaction.followup.send(
+            f"✅ Created {new_channel.mention} as {ch_type} channel for project `{project_id}`"
         )
 
     @bot.tree.command(name="pause", description="Pause a project")

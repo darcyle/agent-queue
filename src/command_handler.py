@@ -130,19 +130,22 @@ class CommandHandler:
 
     async def _cmd_list_projects(self, args: dict) -> dict:
         projects = await self.db.list_projects()
-        return {
-            "projects": [
-                {
-                    "id": p.id,
-                    "name": p.name,
-                    "status": p.status.value,
-                    "credit_weight": p.credit_weight,
-                    "max_concurrent_agents": p.max_concurrent_agents,
-                    "workspace": p.workspace_path,
-                }
-                for p in projects
-            ]
-        }
+        result = []
+        for p in projects:
+            info = {
+                "id": p.id,
+                "name": p.name,
+                "status": p.status.value,
+                "credit_weight": p.credit_weight,
+                "max_concurrent_agents": p.max_concurrent_agents,
+                "workspace": p.workspace_path,
+            }
+            if p.discord_channel_id:
+                info["discord_channel_id"] = p.discord_channel_id
+            if p.discord_control_channel_id:
+                info["discord_control_channel_id"] = p.discord_control_channel_id
+            result.append(info)
+        return {"projects": result}
 
     async def _cmd_create_project(self, args: dict) -> dict:
         project_id = args["name"].lower().replace(" ", "-")
@@ -190,6 +193,42 @@ class CommandHandler:
             return {"error": "No fields to update. Provide name, credit_weight, or max_concurrent_agents."}
         await self.db.update_project(pid, **updates)
         return {"updated": pid, "fields": list(updates.keys())}
+
+    async def _cmd_set_project_channel(self, args: dict) -> dict:
+        """Link an existing Discord channel to a project for notifications or control."""
+        pid = args["project_id"]
+        project = await self.db.get_project(pid)
+        if not project:
+            return {"error": f"Project '{pid}' not found"}
+
+        channel_id = args["channel_id"]
+        channel_type = args.get("channel_type", "notifications")
+        if channel_type not in ("notifications", "control"):
+            return {"error": "channel_type must be 'notifications' or 'control'"}
+
+        if channel_type == "control":
+            await self.db.update_project(pid, discord_control_channel_id=channel_id)
+        else:
+            await self.db.update_project(pid, discord_channel_id=channel_id)
+
+        return {
+            "project_id": pid,
+            "channel_id": channel_id,
+            "channel_type": channel_type,
+            "status": "linked",
+        }
+
+    async def _cmd_get_project_channels(self, args: dict) -> dict:
+        """Return the Discord channel IDs configured for a project."""
+        pid = args["project_id"]
+        project = await self.db.get_project(pid)
+        if not project:
+            return {"error": f"Project '{pid}' not found"}
+        return {
+            "project_id": pid,
+            "notifications_channel_id": project.discord_channel_id,
+            "control_channel_id": project.discord_control_channel_id,
+        }
 
     async def _cmd_delete_project(self, args: dict) -> dict:
         pid = args["project_id"]

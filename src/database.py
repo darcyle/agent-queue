@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS projects (
     total_tokens_used INTEGER NOT NULL DEFAULT 0,
     budget_limit INTEGER,
     workspace_path TEXT,
+    discord_channel_id TEXT,
+    discord_control_channel_id TEXT,
     created_at REAL NOT NULL
 );
 
@@ -195,6 +197,8 @@ class Database:
             "ALTER TABLE repos ADD COLUMN source_path TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE tasks ADD COLUMN requires_approval INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE tasks ADD COLUMN pr_url TEXT",
+            "ALTER TABLE projects ADD COLUMN discord_channel_id TEXT",
+            "ALTER TABLE projects ADD COLUMN discord_control_channel_id TEXT",
         ]:
             try:
                 await self._db.execute(migration)
@@ -211,12 +215,14 @@ class Database:
     async def create_project(self, project: Project) -> None:
         await self._db.execute(
             "INSERT INTO projects (id, name, credit_weight, max_concurrent_agents, "
-            "status, total_tokens_used, budget_limit, workspace_path, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "status, total_tokens_used, budget_limit, workspace_path, "
+            "discord_channel_id, discord_control_channel_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (project.id, project.name, project.credit_weight,
              project.max_concurrent_agents, project.status.value,
              project.total_tokens_used, project.budget_limit,
-             project.workspace_path, time.time()),
+             project.workspace_path, project.discord_channel_id,
+             project.discord_control_channel_id, time.time()),
         )
         await self._db.commit()
 
@@ -256,6 +262,7 @@ class Database:
         await self._db.commit()
 
     def _row_to_project(self, row) -> Project:
+        keys = row.keys()
         return Project(
             id=row["id"],
             name=row["name"],
@@ -264,7 +271,9 @@ class Database:
             status=ProjectStatus(row["status"]),
             total_tokens_used=row["total_tokens_used"],
             budget_limit=row["budget_limit"],
-            workspace_path=row["workspace_path"] if "workspace_path" in row.keys() else None,
+            workspace_path=row["workspace_path"] if "workspace_path" in keys else None,
+            discord_channel_id=row["discord_channel_id"] if "discord_channel_id" in keys else None,
+            discord_control_channel_id=row["discord_control_channel_id"] if "discord_control_channel_id" in keys else None,
         )
 
     # --- Repos ---

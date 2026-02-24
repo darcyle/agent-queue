@@ -28,6 +28,9 @@ class AgentQueueBot(commands.Bot):
         self.agent = ChatAgent(orchestrator, config)
         self._control_channel: discord.TextChannel | None = None
         self._notifications_channel: discord.TextChannel | None = None
+        # Per-project channel caches: project_id -> channel
+        self._project_channels: dict[str, discord.TextChannel] = {}
+        self._project_control_channels: dict[str, discord.TextChannel] = {}
         self._processed_messages: set[int] = set()
         self._channel_summaries: dict[int, tuple[int, str]] = {}  # channel_id -> (up_to_message_id, summary)
         self._channel_locks: dict[int, asyncio.Lock] = {}  # prevent concurrent LLM calls per channel
@@ -38,6 +41,7 @@ class AgentQueueBot(commands.Bot):
             os.path.dirname(config.database_path), "notes_threads.json"
         )
         self._load_notes_threads()
+        self._guild: discord.Guild | None = None
 
     def _load_notes_threads(self) -> None:
         try:
@@ -60,6 +64,19 @@ class AgentQueueBot(commands.Bot):
         self._notes_threads[thread_id] = project_id
         self._save_notes_threads()
 
+    def update_project_channel(
+        self, project_id: str, channel: discord.TextChannel, channel_type: str = "notifications"
+    ) -> None:
+        """Update the cached channel for a project at runtime.
+
+        Called after ``/set-channel`` or ``/create-channel`` commands so the
+        bot immediately routes to the new channel without requiring a restart.
+        """
+        if channel_type == "control":
+            self._project_control_channels[project_id] = channel
+        else:
+            self._project_channels[project_id] = channel
+
     async def setup_hook(self) -> None:
         from src.discord.commands import setup_commands
         setup_commands(self)
@@ -75,6 +92,7 @@ class AgentQueueBot(commands.Bot):
         # Cache channels
         if self.config.discord.guild_id:
             guild = self.get_guild(int(self.config.discord.guild_id))
+            self._guild = guild
             if guild:
                 control_name = self.config.discord.channels.get("control", "control")
                 notifications_name = self.config.discord.channels.get("notifications", "notifications")
@@ -99,6 +117,9 @@ class AgentQueueBot(commands.Bot):
                 # Wire up thread creation for task streaming
                 if self._notifications_channel:
                     self.orchestrator.set_create_thread_callback(self._create_task_thread)
+
+                # Resolve per-project channels from database
+                await self._resolve_project_channels()
 
         # Initialize LLM client via ChatAgent
         try:
@@ -173,17 +194,71 @@ class AgentQueueBot(commands.Bot):
             else:
                 await channel.send(chunk)
 
-    async def _send_notification(self, text: str) -> None:
-        """Send a message to the notifications channel."""
-        if self._notifications_channel:
-            await self._send_long_message(self._notifications_channel, text)
+    async def _resolve_project_channels(self) -> None:
+        """Resolve per-project Discord channels from the database.
 
-    async def _send_control_message(self, text: str) -> None:
-        """Send a message to the control channel."""
-        if self._control_channel:
-            await self._send_long_message(self._control_channel, text)
+        Projects may have ``discord_channel_id`` and/or
+        ``discord_control_channel_id`` set.  This method looks up the
+        corresponding :class:`discord.TextChannel` objects and caches
+        them for fast routing.
+        """
+        if not self._guild:
+            return
 
-    async def _create_task_thread(self, thread_name: str, initial_message: str):
+        projects = await self.orchestrator.db.list_projects()
+        for project in projects:
+            if project.discord_channel_id:
+                ch = self._guild.get_channel(int(project.discord_channel_id))
+                if ch and isinstance(ch, discord.TextChannel):
+                    self._project_channels[project.id] = ch
+                    print(f"Project '{project.id}' notifications: #{ch.name}")
+                else:
+                    print(
+                        f"Warning: project '{project.id}' channel "
+                        f"{project.discord_channel_id} not found in guild"
+                    )
+            if project.discord_control_channel_id:
+                ch = self._guild.get_channel(int(project.discord_control_channel_id))
+                if ch and isinstance(ch, discord.TextChannel):
+                    self._project_control_channels[project.id] = ch
+                    print(f"Project '{project.id}' control: #{ch.name}")
+                else:
+                    print(
+                        f"Warning: project '{project.id}' control channel "
+                        f"{project.discord_control_channel_id} not found in guild"
+                    )
+
+    def _get_notification_channel(
+        self, project_id: str | None = None
+    ) -> discord.TextChannel | None:
+        """Return the notification channel for a project, falling back to global."""
+        if project_id and project_id in self._project_channels:
+            return self._project_channels[project_id]
+        return self._notifications_channel
+
+    def _get_control_channel(
+        self, project_id: str | None = None
+    ) -> discord.TextChannel | None:
+        """Return the control channel for a project, falling back to global."""
+        if project_id and project_id in self._project_control_channels:
+            return self._project_control_channels[project_id]
+        return self._control_channel
+
+    async def _send_notification(self, text: str, project_id: str | None = None) -> None:
+        """Send a message to the notifications channel (project-specific or global)."""
+        channel = self._get_notification_channel(project_id)
+        if channel:
+            await self._send_long_message(channel, text)
+
+    async def _send_control_message(self, text: str, project_id: str | None = None) -> None:
+        """Send a message to the control channel (project-specific or global)."""
+        channel = self._get_control_channel(project_id)
+        if channel:
+            await self._send_long_message(channel, text)
+
+    async def _create_task_thread(
+        self, thread_name: str, initial_message: str, project_id: str | None = None
+    ):
         """Create a Discord thread for streaming agent output.
 
         Returns a tuple of two async callbacks:
@@ -196,14 +271,15 @@ class AgentQueueBot(commands.Bot):
 
         Returns None if the notifications channel is unavailable.
         """
-        if not self._notifications_channel:
+        channel = self._get_notification_channel(project_id)
+        if not channel:
             print("Cannot create thread: no notifications channel")
             return None
 
-        print(f"Creating thread: {thread_name}")
+        print(f"Creating thread: {thread_name}" + (f" (project: {project_id})" if project_id else ""))
         # Create the thread-root message in the notifications channel, then open
         # a thread on it so all streaming output stays inside the thread.
-        msg = await self._notifications_channel.send(
+        msg = await channel.send(
             f"**Agent working:** {thread_name}"
         )
         thread = await msg.create_thread(name=thread_name)
@@ -224,7 +300,7 @@ class AgentQueueBot(commands.Bot):
                 print(f"Main channel notify error: {e}")
                 # Fallback: plain message in the notifications channel
                 try:
-                    await self._notifications_channel.send(text)
+                    await channel.send(text)
                 except Exception as e2:
                     print(f"Fallback notify error: {e2}")
 
@@ -247,16 +323,25 @@ class AgentQueueBot(commands.Bot):
         if self._boot_time and message.created_at.timestamp() < self._boot_time:
             return
 
-        # Only respond in the control channel, when mentioned, or in a notes thread
+        # Only respond in the control channel, per-project control channels,
+        # when mentioned, or in a notes thread
         is_control = (
             self._control_channel
             and message.channel.id == self._control_channel.id
         )
+        # Check if this is a per-project control channel
+        project_control_id: str | None = None
+        for pid, ch in self._project_control_channels.items():
+            if message.channel.id == ch.id:
+                project_control_id = pid
+                break
+        is_project_control = project_control_id is not None
+
         is_mentioned = self.user in message.mentions
         notes_project_id = self._notes_threads.get(message.channel.id)
         is_notes_thread = notes_project_id is not None
 
-        if not is_control and not is_mentioned and not is_notes_thread:
+        if not is_control and not is_project_control and not is_mentioned and not is_notes_thread:
             return
 
         # Strip the bot mention from the message text
@@ -280,9 +365,16 @@ class AgentQueueBot(commands.Bot):
                         )
                         return
 
-                    # Prepend project context for notes threads
+                    # Prepend project context for notes threads and project control channels
                     user_text = text
-                    if is_notes_thread and not is_control:
+                    if is_project_control and not is_control:
+                        user_text = (
+                            f"[Context: this is the control channel for project "
+                            f"`{project_control_id}`. Default to using "
+                            f"project_id='{project_control_id}' for all project-scoped "
+                            f"commands.]\n{text}"
+                        )
+                    elif is_notes_thread and not is_control:
                         user_text = (
                             f"[Context: this is the notes thread for project "
                             f"`{notes_project_id}`. Default to using notes tools "
