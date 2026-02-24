@@ -9,8 +9,6 @@ from src.discord.notifications import (
     format_agent_question,
     format_budget_warning,
 )
-from src.discord.nl_parser import parse_natural_language, ParsedCommand
-
 
 class TestNotificationFormatting:
     def test_format_task_completed(self):
@@ -56,24 +54,3 @@ class TestNotificationFormatting:
         assert "alpha" in result
 
 
-class TestNLParser:
-    async def test_status_intent(self):
-        result = await parse_natural_language("what's the status?")
-        assert result.intent == "status"
-
-    async def test_pause_intent(self):
-        result = await parse_natural_language("pause project alpha")
-        assert result.intent == "pause_project"
-
-    async def test_resume_intent(self):
-        result = await parse_natural_language("resume project alpha")
-        assert result.intent == "resume_project"
-
-    async def test_create_task_intent(self):
-        result = await parse_natural_language("add task: implement login page")
-        assert result.intent == "create_task"
-        assert result.task_description is not None
-
-    async def test_unknown_intent(self):
-        result = await parse_natural_language("xyzzy foobar")
-        assert result.intent == "unknown"

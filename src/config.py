@@ -20,12 +20,6 @@ class DiscordConfig:
 
 
 @dataclass
-class NLParserConfig:
-    model: str = "claude-haiku"
-    max_tokens: int = 500
-
-
-@dataclass
 class AgentsDefaultConfig:
     heartbeat_interval_seconds: int = 30
     stuck_timeout_seconds: int = 0  # 0 = no timeout (was 600)
@@ -84,7 +78,6 @@ class AppConfig:
         default_factory=lambda: os.path.expanduser("~/.agent-queue/agent-queue.db")
     )
     discord: DiscordConfig = field(default_factory=DiscordConfig)
-    nl_parser: NLParserConfig = field(default_factory=NLParserConfig)
     agents_config: AgentsDefaultConfig = field(default_factory=AgentsDefaultConfig)
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
@@ -160,13 +153,6 @@ def load_config(path: str) -> AppConfig:
             guild_id=d.get("guild_id", ""),
             channels=d.get("channels", config.discord.channels),
             authorized_users=d.get("authorized_users", []),
-        )
-
-    if "nl_parser" in raw:
-        n = raw["nl_parser"]
-        config.nl_parser = NLParserConfig(
-            model=n.get("model", "claude-haiku"),
-            max_tokens=n.get("max_tokens", 500),
         )
 
     if "agents" in raw:

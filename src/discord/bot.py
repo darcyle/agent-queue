@@ -77,6 +77,15 @@ class AgentQueueBot(commands.Bot):
         else:
             self._project_channels[project_id] = channel
 
+    def clear_project_channels(self, project_id: str) -> None:
+        """Remove all cached channels for a project.
+
+        Called after project deletion to keep the in-memory cache in sync
+        with the database and avoid stale routing entries.
+        """
+        self._project_channels.pop(project_id, None)
+        self._project_control_channels.pop(project_id, None)
+
     async def setup_hook(self) -> None:
         from src.discord.commands import setup_commands
         setup_commands(self)
@@ -201,6 +210,10 @@ class AgentQueueBot(commands.Bot):
         ``discord_control_channel_id`` set.  This method looks up the
         corresponding :class:`discord.TextChannel` objects and caches
         them for fast routing.
+
+        When a stored channel ID no longer resolves to a guild channel
+        (e.g. the Discord channel was deleted), the stale ID is nullified
+        in the database to prevent orphaned references from accumulating.
         """
         if not self._guild:
             return
@@ -215,7 +228,10 @@ class AgentQueueBot(commands.Bot):
                 else:
                     print(
                         f"Warning: project '{project.id}' channel "
-                        f"{project.discord_channel_id} not found in guild"
+                        f"{project.discord_channel_id} not found in guild — clearing stale ID"
+                    )
+                    await self.orchestrator.db.update_project(
+                        project.id, discord_channel_id=None
                     )
             if project.discord_control_channel_id:
                 ch = self._guild.get_channel(int(project.discord_control_channel_id))
@@ -225,7 +241,10 @@ class AgentQueueBot(commands.Bot):
                 else:
                     print(
                         f"Warning: project '{project.id}' control channel "
-                        f"{project.discord_control_channel_id} not found in guild"
+                        f"{project.discord_control_channel_id} not found in guild — clearing stale ID"
+                    )
+                    await self.orchestrator.db.update_project(
+                        project.id, discord_control_channel_id=None
                     )
 
     def _get_notification_channel(

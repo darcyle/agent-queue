@@ -315,6 +315,17 @@ def step_discord(existing: dict) -> dict:
                 break
             authorized_users.append(uid)
 
+    # Per-project channel guidance
+    if discord_ok:
+        print()
+        info("Per-project channels (optional):")
+        info("  You can isolate each project's notifications into its own Discord channel.")
+        info("  After creating projects, use these Discord slash commands:")
+        info("    /create-channel <project-id>  — create & link a new channel automatically")
+        info("    /set-channel <project-id>     — link an existing channel to a project")
+        info("    /channel-map                  — view all project-channel mappings")
+        info("  Projects without dedicated channels fall back to the global channels above.")
+
     return {
         "bot_token": bot_token,
         "guild_id": guild_id,

@@ -331,6 +331,8 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
             return
+        # Clear the bot's in-memory channel cache for the deleted project
+        bot.clear_project_channels(project_id)
         await interaction.response.send_message(
             f"🗑️ Project **{result.get('name', project_id)}** (`{project_id}`) deleted."
         )
@@ -399,11 +401,9 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.response.defer()
         ch_type = channel_type.value if channel_type else "notifications"
 
-        # Validate project exists
-        project = await handler.execute("get_task", {"task_id": "__noop__"})  # tiny hack — just check via DB
-        project_result = await handler.execute("list_projects", {})
-        project_ids = [p["id"] for p in project_result.get("projects", [])]
-        if project_id not in project_ids:
+        # Validate project exists (direct lookup)
+        project_check = await handler.execute("get_project_channels", {"project_id": project_id})
+        if "error" in project_check:
             await interaction.followup.send(
                 f"Error: Project `{project_id}` not found.", ephemeral=True
             )
@@ -450,6 +450,50 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.followup.send(
             f"✅ Created {new_channel.mention} as {ch_type} channel for project `{project_id}`"
         )
+
+    @bot.tree.command(
+        name="channel-map",
+        description="Show all project-to-channel mappings",
+    )
+    async def channel_map_command(interaction: discord.Interaction):
+        result = await handler.execute("list_projects", {})
+        projects = result.get("projects", [])
+        if not projects:
+            await interaction.response.send_message("No projects configured.")
+            return
+
+        # Build a channel-centric view: collect all channel assignments
+        lines = ["**Channel Map**\n"]
+        assigned = []
+        unassigned = []
+
+        for p in projects:
+            notif_id = p.get("discord_channel_id")
+            ctrl_id = p.get("discord_control_channel_id")
+            if notif_id or ctrl_id:
+                parts = [f"**{p['name']}** (`{p['id']}`)"]
+                if notif_id:
+                    parts.append(f"  notifications: <#{notif_id}>")
+                if ctrl_id:
+                    parts.append(f"  control: <#{ctrl_id}>")
+                assigned.append("\n".join(parts))
+            else:
+                unassigned.append(f"`{p['id']}`")
+
+        if assigned:
+            lines.append("**Projects with dedicated channels:**")
+            for entry in assigned:
+                lines.append(f"• {entry}")
+        else:
+            lines.append("_No projects have dedicated channels yet._")
+
+        if unassigned:
+            lines.append(f"\n**Using global channels:** {', '.join(unassigned)}")
+
+        lines.append(
+            f"\n_Use `/set-channel` or `/create-channel` to assign project channels._"
+        )
+        await interaction.response.send_message("\n".join(lines))
 
     @bot.tree.command(name="pause", description="Pause a project")
     @app_commands.describe(project_id="Project ID to pause")
