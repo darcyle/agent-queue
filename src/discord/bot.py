@@ -26,6 +26,9 @@ class AgentQueueBot(commands.Bot):
         self.config = config
         self.orchestrator = orchestrator
         self.agent = ChatAgent(orchestrator, config)
+        # Register a callback so that project deletions (from any caller)
+        # automatically purge the bot's in-memory channel caches.
+        self.agent.handler._on_project_deleted = self.clear_project_channels
         self._control_channel: discord.TextChannel | None = None
         self._notifications_channel: discord.TextChannel | None = None
         # Per-project channel caches: project_id -> channel
@@ -81,10 +84,36 @@ class AgentQueueBot(commands.Bot):
         """Remove all cached channels for a project.
 
         Called after project deletion to keep the in-memory cache in sync
-        with the database and avoid stale routing entries.
+        with the database and avoid stale routing entries.  Cleans up:
+        - ``_project_channels`` / ``_project_control_channels``
+        - ``_notes_threads`` entries that map to the deleted project
+        - ``_channel_summaries`` and ``_channel_locks`` for the project's channels
         """
-        self._project_channels.pop(project_id, None)
-        self._project_control_channels.pop(project_id, None)
+        # Collect Discord channel IDs before removing them from the cache so we
+        # can clean up secondary caches keyed by channel ID.
+        stale_channel_ids: set[int] = set()
+        ch = self._project_channels.pop(project_id, None)
+        if ch is not None:
+            stale_channel_ids.add(ch.id)
+        ch = self._project_control_channels.pop(project_id, None)
+        if ch is not None:
+            stale_channel_ids.add(ch.id)
+
+        # Remove notes-thread mappings that point to the deleted project.
+        # These are also persisted to disk, so we re-save afterwards.
+        stale_thread_ids = [
+            tid for tid, pid in self._notes_threads.items() if pid == project_id
+        ]
+        if stale_thread_ids:
+            for tid in stale_thread_ids:
+                stale_channel_ids.add(tid)
+                del self._notes_threads[tid]
+            self._save_notes_threads()
+
+        # Purge channel-level caches keyed by Discord channel/thread ID.
+        for cid in stale_channel_ids:
+            self._channel_summaries.pop(cid, None)
+            self._channel_locks.pop(cid, None)
 
     async def setup_hook(self) -> None:
         from src.discord.commands import setup_commands

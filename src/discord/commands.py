@@ -325,17 +325,60 @@ def setup_commands(bot: commands.Bot) -> None:
         )
 
     @bot.tree.command(name="delete-project", description="Delete a project and all its data")
-    @app_commands.describe(project_id="Project ID to delete")
-    async def delete_project_command(interaction: discord.Interaction, project_id: str):
-        result = await handler.execute("delete_project", {"project_id": project_id})
+    @app_commands.describe(
+        project_id="Project ID to delete",
+        archive_channels="Archive the project's Discord channels instead of leaving them (default: False)",
+    )
+    @app_commands.choices(archive_channels=[
+        app_commands.Choice(name="Yes – archive channels", value=1),
+        app_commands.Choice(name="No – leave channels as-is", value=0),
+    ])
+    async def delete_project_command(
+        interaction: discord.Interaction,
+        project_id: str,
+        archive_channels: app_commands.Choice[int] | None = None,
+    ):
+        do_archive = archive_channels is not None and archive_channels.value == 1
+        result = await handler.execute(
+            "delete_project",
+            {"project_id": project_id, "archive_channels": do_archive},
+        )
         if "error" in result:
             await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
             return
-        # Clear the bot's in-memory channel cache for the deleted project
-        bot.clear_project_channels(project_id)
-        await interaction.response.send_message(
-            f"🗑️ Project **{result.get('name', project_id)}** (`{project_id}`) deleted."
-        )
+
+        # The command handler's _on_project_deleted callback already cleared
+        # the bot's in-memory caches.  Now handle optional channel archival.
+        archived: list[str] = []
+        if do_archive and result.get("channel_ids"):
+            guild = interaction.guild
+            if guild:
+                for ch_type, ch_id in result["channel_ids"].items():
+                    channel = guild.get_channel(int(ch_id))
+                    if channel and isinstance(channel, discord.TextChannel):
+                        try:
+                            # Archive by moving to read-only: deny Send Messages
+                            # for @everyone while preserving history.
+                            overwrite = channel.overwrites_for(guild.default_role)
+                            overwrite.send_messages = False
+                            await channel.set_permissions(
+                                guild.default_role, overwrite=overwrite,
+                                reason=f"Archived: project {project_id} deleted",
+                            )
+                            await channel.edit(
+                                name=f"archived-{channel.name}",
+                                reason=f"Archived: project {project_id} deleted",
+                            )
+                            archived.append(f"#{channel.name} ({ch_type})")
+                        except discord.Forbidden:
+                            archived.append(f"#{channel.name} ({ch_type}) — no permission to archive")
+
+        msg = f"🗑️ Project **{result.get('name', project_id)}** (`{project_id}`) deleted."
+        if archived:
+            msg += "\n📦 Archived channels: " + ", ".join(archived)
+        elif do_archive:
+            msg += "\n*(No linked channels to archive.)*"
+        await interaction.response.send_message(msg)
 
     # -------------------------------------------------------------------
     # CHANNEL MANAGEMENT COMMANDS

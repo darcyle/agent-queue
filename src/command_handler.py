@@ -12,6 +12,7 @@ import os
 import signal
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from src.config import AppConfig
@@ -43,6 +44,10 @@ class CommandHandler:
         self.orchestrator = orchestrator
         self.config = config
         self._active_project_id: str | None = None
+        # Optional callback invoked after a project is deleted.
+        # Signature: callback(project_id: str) -> None
+        # The Discord bot registers this to clean in-memory channel caches.
+        self._on_project_deleted: Callable[[str], None] | None = None
 
     @property
     def db(self):
@@ -241,8 +246,30 @@ class CommandHandler:
                 "error": f"Cannot delete: {len(tasks)} task(s) currently IN_PROGRESS. "
                          "Stop them first."
             }
+
+        # Capture channel IDs before the DB cascade removes them.
+        channel_ids: dict[str, str] = {}
+        if project.discord_channel_id:
+            channel_ids["notifications"] = project.discord_channel_id
+        if project.discord_control_channel_id:
+            channel_ids["control"] = project.discord_control_channel_id
+
         await self.db.delete_project(pid)
-        return {"deleted": pid, "name": project.name}
+
+        # Notify listeners (e.g. Discord bot) so they can purge in-memory
+        # channel caches, notes-thread mappings, etc.
+        if self._on_project_deleted:
+            self._on_project_deleted(pid)
+
+        result: dict = {"deleted": pid, "name": project.name}
+        if channel_ids:
+            result["channel_ids"] = channel_ids
+        # Pass through the caller's archive preference so the Discord layer
+        # can act on it.
+        archive = args.get("archive_channels", False)
+        if archive:
+            result["archive_channels"] = True
+        return result
 
     # -----------------------------------------------------------------------
     # Task commands

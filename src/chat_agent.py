@@ -394,11 +394,16 @@ TOOLS = [
     },
     {
         "name": "delete_project",
-        "description": "Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any task is IN_PROGRESS.",
+        "description": "Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any task is IN_PROGRESS. In-memory channel caches are automatically purged. Optionally archive the project's Discord channels.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {"type": "string", "description": "Project ID to delete"},
+                "archive_channels": {
+                    "type": "boolean",
+                    "description": "If true, archive the project's Discord channels (rename + set read-only) instead of leaving them as-is. Default: false.",
+                    "default": False,
+                },
             },
             "required": ["project_id"],
         },
