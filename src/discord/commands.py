@@ -1573,6 +1573,243 @@ def setup_commands(bot: commands.Bot) -> None:
         full_message = header + "\n\n".join(sections)
         await _send_long(interaction, full_message, followup=True)
 
+    # -------------------------------------------------------------------
+    # GIT MANAGEMENT COMMANDS
+    # -------------------------------------------------------------------
+    # Project-based git commands that auto-detect the project from the
+    # Discord channel.  These call the newer project-oriented handlers
+    # (create_branch, checkout_branch, commit_changes, push_branch,
+    # merge_branch, git_branch) which resolve repos via project_id.
+
+    @bot.tree.command(
+        name="git-branches",
+        description="List branches or create a new branch in a project's repository",
+    )
+    @app_commands.describe(
+        project_id="Project ID (auto-detected from channel)",
+        name="New branch name to create (omit to list branches)",
+        repo_id="Repo ID (optional — uses first repo if omitted)",
+    )
+    async def git_branches_command(
+        interaction: discord.Interaction,
+        project_id: str | None = None,
+        name: str | None = None,
+        repo_id: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(
+                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+        args: dict = {"project_id": project_id}
+        if repo_id:
+            args["repo_id"] = repo_id
+        if name:
+            args["name"] = name
+        result = await handler.execute("git_branch", args)
+        if "error" in result:
+            await interaction.followup.send(f"Error: {result['error']}")
+            return
+
+        if "created" in result:
+            await interaction.followup.send(
+                f"✅ Created and switched to branch `{result['created']}` "
+                f"on `{project_id}`"
+            )
+        else:
+            current = result.get("current_branch", "?")
+            branches = result.get("branches", [])
+            branch_list = "\n".join(branches) if branches else "(no branches)"
+            text = (
+                f"## Branches: `{project_id}`\n"
+                f"**Current:** `{current}`\n```\n{branch_list}\n```"
+            )
+            await _send_long(interaction, text, followup=True)
+
+    @bot.tree.command(
+        name="git-checkout",
+        description="Switch to an existing branch in a project's repository",
+    )
+    @app_commands.describe(
+        project_id="Project ID (auto-detected from channel)",
+        branch_name="Branch name to switch to",
+        repo_id="Repo ID (optional — uses first repo if omitted)",
+    )
+    async def git_checkout_command(
+        interaction: discord.Interaction,
+        branch_name: str,
+        project_id: str | None = None,
+        repo_id: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(
+                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+        args: dict = {"project_id": project_id, "branch_name": branch_name}
+        if repo_id:
+            args["repo_id"] = repo_id
+        result = await handler.execute("checkout_branch", args)
+        if "error" in result:
+            await interaction.followup.send(f"Error: {result['error']}")
+            return
+        await interaction.followup.send(
+            f"✅ Switched to branch `{result['branch']}` on `{project_id}`"
+        )
+
+    @bot.tree.command(
+        name="project-commit",
+        description="Stage all changes and commit in a project's repository",
+    )
+    @app_commands.describe(
+        project_id="Project ID (auto-detected from channel)",
+        message="Commit message",
+        repo_id="Repo ID (optional — uses first repo if omitted)",
+    )
+    async def project_commit_command(
+        interaction: discord.Interaction,
+        message: str,
+        project_id: str | None = None,
+        repo_id: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(
+                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+        args: dict = {"project_id": project_id, "message": message}
+        if repo_id:
+            args["repo_id"] = repo_id
+        result = await handler.execute("commit_changes", args)
+        if "error" in result:
+            await interaction.followup.send(f"Error: {result['error']}")
+            return
+        if result.get("status") == "committed":
+            repo_label = result.get("repo_id", "?")
+            await interaction.followup.send(
+                f"✅ Committed in `{repo_label}` on `{project_id}`: {message}"
+            )
+        else:
+            await interaction.followup.send(
+                f"ℹ️ Nothing to commit on `{project_id}` — working tree clean"
+            )
+
+    @bot.tree.command(
+        name="project-push",
+        description="Push a branch to origin in a project's repository",
+    )
+    @app_commands.describe(
+        project_id="Project ID (auto-detected from channel)",
+        branch_name="Branch to push (defaults to current branch)",
+        repo_id="Repo ID (optional — uses first repo if omitted)",
+    )
+    async def project_push_command(
+        interaction: discord.Interaction,
+        project_id: str | None = None,
+        branch_name: str | None = None,
+        repo_id: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(
+                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+        args: dict = {"project_id": project_id}
+        if branch_name:
+            args["branch_name"] = branch_name
+        if repo_id:
+            args["repo_id"] = repo_id
+        result = await handler.execute("push_branch", args)
+        if "error" in result:
+            await interaction.followup.send(f"Error: {result['error']}")
+            return
+        pushed_branch = result.get("branch", "?")
+        await interaction.followup.send(
+            f"✅ Pushed `{pushed_branch}` to origin on `{project_id}`"
+        )
+
+    @bot.tree.command(
+        name="project-merge",
+        description="Merge a branch into the default branch in a project's repository",
+    )
+    @app_commands.describe(
+        project_id="Project ID (auto-detected from channel)",
+        branch_name="Branch to merge",
+        repo_id="Repo ID (optional — uses first repo if omitted)",
+    )
+    async def project_merge_command(
+        interaction: discord.Interaction,
+        branch_name: str,
+        project_id: str | None = None,
+        repo_id: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(
+                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+        args: dict = {"project_id": project_id, "branch_name": branch_name}
+        if repo_id:
+            args["repo_id"] = repo_id
+        result = await handler.execute("merge_branch", args)
+        if "error" in result:
+            await interaction.followup.send(f"Error: {result['error']}")
+            return
+        if result.get("status") == "conflict":
+            target = result.get("target", "main")
+            await interaction.followup.send(
+                f"⚠️ Merge conflict — `{branch_name}` could not be merged "
+                f"into `{target}` on `{project_id}`. Merge was aborted."
+            )
+        else:
+            target = result.get("target", "main")
+            await interaction.followup.send(
+                f"✅ Merged `{branch_name}` into `{target}` on `{project_id}`"
+            )
+
+    @bot.tree.command(
+        name="project-create-branch",
+        description="Create and switch to a new branch in a project's repository",
+    )
+    @app_commands.describe(
+        project_id="Project ID (auto-detected from channel)",
+        branch_name="Name for the new branch",
+        repo_id="Repo ID (optional — uses first repo if omitted)",
+    )
+    async def project_create_branch_command(
+        interaction: discord.Interaction,
+        branch_name: str,
+        project_id: str | None = None,
+        repo_id: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(
+                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+        args: dict = {"project_id": project_id, "branch_name": branch_name}
+        if repo_id:
+            args["repo_id"] = repo_id
+        result = await handler.execute("create_branch", args)
+        if "error" in result:
+            await interaction.followup.send(f"Error: {result['error']}")
+            return
+        await interaction.followup.send(
+            f"✅ Created and switched to branch `{result['branch']}` on `{project_id}`"
+        )
+
     @bot.tree.command(
         name="git-commit",
         description="Stage all changes and commit in a repository",
