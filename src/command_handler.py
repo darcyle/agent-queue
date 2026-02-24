@@ -223,6 +223,57 @@ class CommandHandler:
             "status": "linked",
         }
 
+    async def _cmd_set_control_interface(self, args: dict) -> dict:
+        """Set a project's control channel by channel *name* (string lookup).
+
+        Resolves the channel name within the guild, then delegates to
+        ``_cmd_set_project_channel`` with ``channel_type='control'``.
+        Requires ``guild_channels`` to be supplied by the caller (the Discord
+        command layer passes the guild's text channels so this layer stays
+        Discord-import-free).
+        """
+        pid = args.get("project_id") or args.get("project_name")
+        if not pid:
+            return {"error": "project_id (or project_name) is required"}
+        channel_name: str | None = args.get("channel_name")
+        if not channel_name:
+            return {"error": "channel_name is required"}
+
+        # Normalise: strip leading '#' if the user included one.
+        channel_name = channel_name.lstrip("#").strip()
+
+        # --- Resolve channel name → ID ---
+        # Option A: The caller already looked up the ID (Discord slash command).
+        channel_id: str | None = args.get("_resolved_channel_id")
+
+        if not channel_id:
+            # Option B: guild_channels list supplied (list of {id, name} dicts).
+            guild_channels = args.get("guild_channels")
+            if guild_channels:
+                for ch in guild_channels:
+                    if ch["name"] == channel_name:
+                        channel_id = str(ch["id"])
+                        break
+                if not channel_id:
+                    return {
+                        "error": f"No text channel named '{channel_name}' found in this server"
+                    }
+            else:
+                return {
+                    "error": (
+                        "Cannot resolve channel name without guild context. "
+                        "Use set_project_channel with a channel_id instead, "
+                        "or invoke this command from Discord."
+                    )
+                }
+
+        # Delegate to the existing set_project_channel handler.
+        return await self._cmd_set_project_channel({
+            "project_id": pid,
+            "channel_id": channel_id,
+            "channel_type": "control",
+        })
+
     async def _cmd_get_project_channels(self, args: dict) -> dict:
         """Return the Discord channel IDs configured for a project."""
         pid = args["project_id"]

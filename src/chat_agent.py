@@ -99,6 +99,26 @@ TOOLS = [
         },
     },
     {
+        "name": "set_control_interface",
+        "description": (
+            "Set a project's control channel by channel name (string). "
+            "Looks up the Discord channel by name in the current server and "
+            "links it as the project's control channel. "
+            "This is a convenience wrapper around set_project_channel with channel_type='control'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID (or project name)"},
+                "channel_name": {
+                    "type": "string",
+                    "description": "Discord channel name to set as the control interface (e.g. 'my-project-control')",
+                },
+            },
+            "required": ["project_id", "channel_name"],
+        },
+    },
+    {
         "name": "get_project_channels",
         "description": "Get the Discord channel IDs configured for a project (notifications and control).",
         "input_schema": {
@@ -802,7 +822,7 @@ You can directly (using your tools):
 - Pause, resume, or check the orchestrator (task scheduler) with `orchestrator_control`
 - Manually override a task's status with `set_task_status` (bypasses state machine)
 - Inspect the last error for a task with `get_agent_error` (shows error classification and suggested fix)
-- Configure per-project Discord channels with `set_project_channel` and `get_project_channels`
+- Configure per-project Discord channels with `set_project_channel`, `set_control_interface`, and `get_project_channels`
 
 Repository management — use the `add_repo` tool to connect repos to projects:
 - **clone**: Clone a git repo by URL. Agents get their own checkout. Use for remote repos.
@@ -847,6 +867,7 @@ tasks for failures.
 Per-project Discord channels — route notifications to dedicated channels:
 - By default, all projects share the global #notifications and #control channels.
 - Use `set_project_channel` to link a Discord channel to a project for notifications or control.
+- Use `set_control_interface` to set a project's control channel by name (string lookup).
 - When a project has a dedicated notifications channel, task threads, status updates, and \
 completion notices for that project are routed there automatically.
 - When a project has a dedicated control channel, the bot responds to messages in that \

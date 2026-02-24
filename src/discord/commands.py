@@ -555,6 +555,59 @@ def setup_commands(bot: commands.Bot) -> None:
         )
 
     @bot.tree.command(
+        name="set-control-interface",
+        description="Set a project's control channel by name",
+    )
+    @app_commands.describe(
+        project_id="Project ID",
+        channel_name="Name of the Discord channel to use as the control interface",
+    )
+    async def set_control_interface_command(
+        interaction: discord.Interaction,
+        project_id: str,
+        channel_name: str,
+    ):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message(
+                "Error: Not in a guild.", ephemeral=True
+            )
+            return
+
+        # Strip leading '#' if the user included one.
+        channel_name = channel_name.lstrip("#").strip()
+
+        # Look up the channel by name in the guild.
+        matched_channel: discord.TextChannel | None = None
+        for ch in guild.text_channels:
+            if ch.name == channel_name:
+                matched_channel = ch
+                break
+
+        if not matched_channel:
+            await interaction.response.send_message(
+                f"Error: No text channel named `{channel_name}` found in this server.",
+                ephemeral=True,
+            )
+            return
+
+        result = await handler.execute("set_control_interface", {
+            "project_id": project_id,
+            "channel_name": channel_name,
+            "_resolved_channel_id": str(matched_channel.id),
+        })
+        if "error" in result:
+            await interaction.response.send_message(
+                f"Error: {result['error']}", ephemeral=True
+            )
+            return
+        # Update the bot's channel cache immediately
+        bot.update_project_channel(project_id, matched_channel, "control")
+        await interaction.response.send_message(
+            f"✅ Project `{project_id}` control channel set to {matched_channel.mention}"
+        )
+
+    @bot.tree.command(
         name="create-channel",
         description="Create a new Discord channel for a project",
     )
