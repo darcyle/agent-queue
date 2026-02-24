@@ -171,6 +171,31 @@ def format_chain_stuck(
     return "\n".join(lines)
 
 
+def format_stuck_defined_task(
+    task: Task,
+    blocking_deps: list[tuple[str, str, str]],
+    stuck_hours: float,
+) -> str:
+    """Format a notification for a DEFINED task stuck waiting on dependencies."""
+    lines = [
+        f"⏳ **Stuck Task:** `{task.id}` — {task.title}",
+        f"Has been DEFINED for **{stuck_hours:.1f} hours** without promotion to READY.",
+    ]
+    if blocking_deps:
+        lines.append("Blocked by:")
+        for dep_id, dep_title, dep_status in blocking_deps[:5]:
+            lines.append(f"  • `{dep_id}` — {dep_title} (status: {dep_status})")
+        if len(blocking_deps) > 5:
+            lines.append(f"  … and {len(blocking_deps) - 5} more")
+    else:
+        lines.append("_No unmet dependencies found — this may be a bug in promotion logic._")
+    lines.append(
+        f"_Use `/skip-task <blocking-task-id>` to skip a blocker, "
+        f"or `/restart-task <blocking-task-id>` to retry it._"
+    )
+    return "\n".join(lines)
+
+
 def format_budget_warning(project_name: str, usage: int, limit: int) -> str:
     pct = (usage / limit * 100) if limit > 0 else 0
     return (

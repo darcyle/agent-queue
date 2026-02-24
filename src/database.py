@@ -410,6 +410,14 @@ class Database:
         row = await cursor.fetchone()
         return row["updated_at"] if row else None
 
+    async def get_task_created_at(self, task_id: str) -> float | None:
+        """Return the ``created_at`` timestamp for a task, or *None*."""
+        cursor = await self._db.execute(
+            "SELECT created_at FROM tasks WHERE id = ?", (task_id,)
+        )
+        row = await cursor.fetchone()
+        return row["created_at"] if row else None
+
     async def get_subtasks(self, parent_task_id: str) -> list[Task]:
         cursor = await self._db.execute(
             "SELECT * FROM tasks WHERE parent_task_id = ?", (parent_task_id,)
@@ -475,6 +483,32 @@ class Database:
         )
         rows = await cursor.fetchall()
         return all(r["status"] == TaskStatus.COMPLETED.value for r in rows)
+
+    async def get_stuck_defined_tasks(self, threshold_seconds: int) -> list[Task]:
+        """Return DEFINED tasks whose created_at is older than *threshold_seconds* ago."""
+        cutoff = time.time() - threshold_seconds
+        cursor = await self._db.execute(
+            "SELECT * FROM tasks WHERE status = ? AND created_at < ? "
+            "ORDER BY created_at ASC",
+            (TaskStatus.DEFINED.value, cutoff),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_task(r) for r in rows]
+
+    async def get_blocking_dependencies(self, task_id: str) -> list[tuple[str, str, str]]:
+        """Return (dep_task_id, dep_title, dep_status) for unmet dependencies.
+
+        Only returns dependencies whose status is NOT COMPLETED.
+        """
+        cursor = await self._db.execute(
+            "SELECT t.id, t.title, t.status "
+            "FROM task_dependencies d "
+            "JOIN tasks t ON t.id = d.depends_on_task_id "
+            "WHERE d.task_id = ? AND t.status != ?",
+            (task_id, TaskStatus.COMPLETED.value),
+        )
+        rows = await cursor.fetchall()
+        return [(r["id"], r["title"], r["status"]) for r in rows]
 
     async def get_dependents(self, task_id: str) -> set[str]:
         """Return task IDs that directly depend on *task_id* (reverse lookup)."""

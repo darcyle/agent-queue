@@ -10,7 +10,7 @@ from src.config import AppConfig
 from src.database import Database
 from src.discord.notifications import (
     format_task_completed, format_task_failed, format_task_blocked,
-    format_pr_created, format_chain_stuck,
+    format_pr_created, format_chain_stuck, format_stuck_defined_task,
 )
 from src.event_bus import EventBus
 from src.git.manager import GitManager
@@ -73,6 +73,9 @@ class Orchestrator:
         # Tracks the last time we sent a reminder for an AWAITING_APPROVAL
         # task that has no PR URL (keyed by task_id).
         self._no_pr_reminded_at: dict[str, float] = {}
+        # Tracks the last time a "stuck DEFINED" notification was sent for
+        # each task (keyed by task_id) to rate-limit alerts.
+        self._stuck_notified_at: dict[str, float] = {}
         self.hooks: HookEngine | None = None
 
     def pause(self) -> None:
@@ -264,6 +267,9 @@ class Orchestrator:
             # 2. Check DEFINED tasks for dependency resolution
             await self._check_defined_tasks()
 
+            # 2b. Check for tasks stuck in DEFINED status beyond threshold
+            await self._check_stuck_defined_tasks()
+
             # 3. Schedule (skipped when orchestrator is paused)
             if not self._paused:
                 actions = await self._schedule()
@@ -361,6 +367,62 @@ class Orchestrator:
                 deps_met = await self.db.are_dependencies_met(task.id)
                 if deps_met:
                     await self.db.update_task(task.id, status=TaskStatus.READY.value)
+
+    async def _check_stuck_defined_tasks(self) -> None:
+        """Detect DEFINED tasks that have been waiting longer than the configured
+        threshold and send a rate-limited warning with blocking dependency info."""
+        threshold = self.config.monitoring.stuck_task_threshold_seconds
+        if threshold <= 0:
+            return  # Disabled
+
+        stuck_tasks = await self.db.get_stuck_defined_tasks(threshold)
+        if not stuck_tasks:
+            return
+
+        now = time.time()
+
+        # Clean up notification tracker for tasks no longer DEFINED
+        stuck_ids = {t.id for t in stuck_tasks}
+        for tid in list(self._stuck_notified_at):
+            if tid not in stuck_ids:
+                del self._stuck_notified_at[tid]
+
+        for task in stuck_tasks:
+            # Rate-limit: only notify once per threshold period per task
+            last_notified = self._stuck_notified_at.get(task.id, 0)
+            if now - last_notified < threshold:
+                continue
+
+            # Find which dependencies are blocking this task
+            blocking = await self.db.get_blocking_dependencies(task.id)
+
+            # Calculate how long the task has been stuck
+            task_created_at = await self.db.get_task_created_at(task.id)
+            if not task_created_at:
+                task_created_at = now  # fallback (should not happen)
+            stuck_hours = (now - task_created_at) / 3600
+
+            msg = format_stuck_defined_task(task, blocking, stuck_hours)
+            await self._notify_channel(msg, project_id=task.project_id)
+
+            # Log the event
+            blocking_info = ", ".join(
+                f"{dep_id}({dep_status})" for dep_id, _, dep_status in blocking[:10]
+            )
+            await self.db.log_event(
+                "stuck_defined_task",
+                project_id=task.project_id,
+                task_id=task.id,
+                payload=f"stuck_hours={stuck_hours:.1f}, "
+                        f"blocking=[{blocking_info}]",
+            )
+            print(
+                f"Stuck task detected: {task.id} — {task.title} "
+                f"(DEFINED for {stuck_hours:.1f}h, "
+                f"blocked by {len(blocking)} deps)"
+            )
+
+            self._stuck_notified_at[task.id] = now
 
     async def _find_stuck_downstream(self, blocked_task_id: str) -> list[Task]:
         """Walk the dependency graph forward and collect all DEFINED tasks

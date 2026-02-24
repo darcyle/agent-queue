@@ -64,6 +64,12 @@ class AutoTaskConfig:
 
 
 @dataclass
+class MonitoringConfig:
+    """Configuration for monitoring stuck or stalled tasks."""
+    stuck_task_threshold_seconds: int = 3600  # 1 hour default
+
+
+@dataclass
 class HookEngineConfig:
     enabled: bool = True
     max_concurrent_hooks: int = 2
@@ -90,6 +96,7 @@ class AppConfig:
     pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
     chat_provider: ChatProviderConfig = field(default_factory=ChatProviderConfig)
     hook_engine: HookEngineConfig = field(default_factory=HookEngineConfig)
+    monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     auto_task: AutoTaskConfig = field(default_factory=AutoTaskConfig)
     global_token_budget_daily: int | None = None
     rate_limits: dict[str, dict[str, int]] = field(default_factory=dict)
@@ -203,6 +210,14 @@ def load_config(path: str) -> AppConfig:
         config.hook_engine = HookEngineConfig(
             enabled=h.get("enabled", True),
             max_concurrent_hooks=h.get("max_concurrent_hooks", 2),
+        )
+
+    if "monitoring" in raw:
+        m = raw["monitoring"]
+        config.monitoring = MonitoringConfig(
+            stuck_task_threshold_seconds=m.get(
+                "stuck_task_threshold_seconds", 3600
+            ),
         )
 
     if "auto_task" in raw:
