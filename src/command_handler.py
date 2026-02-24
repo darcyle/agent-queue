@@ -1230,6 +1230,29 @@ class CommandHandler:
             "file_count": len(changed_files),
         }
 
+    async def _cmd_create_branch(self, args: dict) -> dict:
+        """Create and switch to a new branch in a project's repo."""
+        branch_name = args.get("branch_name")
+        if not branch_name:
+            return {"error": "branch_name is required"}
+
+        checkout_path, repo, err = await self._resolve_repo_path(args)
+        if err:
+            return err
+
+        git = self.orchestrator.git
+        try:
+            git.create_branch(checkout_path, branch_name)
+        except Exception as e:
+            return {"error": f"Failed to create branch: {e}"}
+
+        return {
+            "project_id": args["project_id"],
+            "repo_id": repo.id if repo else "(workspace)",
+            "branch": branch_name,
+            "status": "created",
+        }
+
     # -----------------------------------------------------------------------
     # Hook commands
     # -----------------------------------------------------------------------
