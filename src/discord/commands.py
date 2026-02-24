@@ -1931,6 +1931,40 @@ def setup_commands(bot: commands.Bot) -> None:
         )
 
     @bot.tree.command(
+        name="merge",
+        description="Merge a branch into the default branch",
+    )
+    @app_commands.describe(
+        project_id="Project ID",
+        branch_name="Branch to merge",
+        repo_id="Specific repo ID (optional)",
+    )
+    async def merge_command(
+        interaction: discord.Interaction,
+        project_id: str,
+        branch_name: str,
+        repo_id: str | None = None,
+    ):
+        args: dict = {"project_id": project_id, "branch_name": branch_name}
+        if repo_id:
+            args["repo_id"] = repo_id
+        result = await handler.execute("merge_branch", args)
+        if "error" in result:
+            await interaction.response.send_message(
+                f"Error: {result['error']}", ephemeral=True,
+            )
+            return
+        if result.get("status") == "conflict":
+            await interaction.response.send_message(
+                f"⚠️ Merge conflict when merging `{branch_name}` → `{result.get('target', 'main')}`. "
+                f"Merge was aborted."
+            )
+            return
+        await interaction.response.send_message(
+            f"✅ Merged `{branch_name}` → `{result.get('target', 'main')}` in `{result.get('repo_id', project_id)}`"
+        )
+
+    @bot.tree.command(
         name="git-commit",
         description="Stage all changes and commit in a repository",
     )
