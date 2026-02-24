@@ -821,38 +821,73 @@ class CommandHandler:
             "repos": repo_statuses,
         }
 
-    async def _resolve_repo_path(self, repo_id: str) -> tuple[str | None, dict | None]:
-        """Resolve a repo_id to its checkout path.
+    async def _resolve_repo_path(
+        self, args: dict,
+    ) -> tuple[str | None, RepoConfig | None, dict | None]:
+        """Resolve the git checkout path for a project/repo pair.
 
-        Returns (path, None) on success, or (None, error_dict) on failure.
+        Returns ``(checkout_path, repo_config, error_dict)``.
+        On success *error_dict* is ``None``.  On failure *checkout_path* is
+        ``None``.
+
+        When only *repo_id* is supplied (without *project_id*) the repo is
+        looked up directly — this keeps older repo-id-only commands working.
         """
-        from src.git.manager import GitError
-        repo = await self.db.get_repo(repo_id)
-        if not repo:
-            return None, {"error": f"Repository '{repo_id}' not found"}
-        if repo.source_type == RepoSourceType.LINK and repo.source_path:
-            repo_path = repo.source_path
-        elif repo.source_type == RepoSourceType.CLONE and repo.checkout_base_path:
-            repo_path = repo.checkout_base_path
-        else:
-            return None, {"error": f"Repository '{repo_id}' has no usable path"}
-        if not os.path.isdir(repo_path):
-            return None, {"error": f"Path not found: {repo_path}"}
+        project_id = args.get("project_id")
+        repo_id = args.get("repo_id")
+
+        if not project_id and not repo_id:
+            return None, None, {"error": "project_id is required"}
+
+        project = None
+        if project_id:
+            project = await self.db.get_project(project_id)
+            if not project:
+                return None, None, {"error": f"Project '{project_id}' not found"}
+
         git = self.orchestrator.git
-        if not git.validate_checkout(repo_path):
-            return None, {"error": f"Not a valid git repository: {repo_path}"}
-        return repo_path, None
+
+        if repo_id:
+            repo = await self.db.get_repo(repo_id)
+            if not repo:
+                return None, None, {"error": f"Repo '{repo_id}' not found"}
+        elif project_id:
+            repos = await self.db.list_repos(project_id=project_id)
+            repo = repos[0] if repos else None
+        else:
+            repo = None
+
+        if repo:
+            if repo.source_type == RepoSourceType.LINK and repo.source_path:
+                checkout_path = repo.source_path
+            elif repo.source_type in (RepoSourceType.CLONE, RepoSourceType.INIT) and repo.checkout_base_path:
+                checkout_path = repo.checkout_base_path
+            else:
+                return None, repo, {"error": f"Repo '{repo.id}' has no usable path"}
+        else:
+            if not project:
+                return None, None, {"error": "No repo found and no project context"}
+            checkout_path = project.workspace_path
+            if not checkout_path or not os.path.isdir(checkout_path):
+                return None, None, {"error": f"Project '{project_id}' has no repos and no valid workspace"}
+
+        if not os.path.isdir(checkout_path):
+            return None, repo, {"error": f"Path not found: {checkout_path}"}
+        if not git.validate_checkout(checkout_path):
+            return None, repo, {"error": f"Not a valid git repository: {checkout_path}"}
+
+        return checkout_path, repo, None
 
     async def _cmd_git_commit(self, args: dict) -> dict:
         """Stage all changes and create a commit in a repository."""
         from src.git.manager import GitError
         repo_id = args["repo_id"]
         message = args["message"]
-        repo_path, err = await self._resolve_repo_path(repo_id)
+        checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
             return err
         try:
-            committed = self.orchestrator.git.commit_all(repo_path, message)
+            committed = self.orchestrator.git.commit_all(checkout_path, message)
         except GitError as e:
             return {"error": str(e)}
         if not committed:
@@ -863,15 +898,15 @@ class CommandHandler:
         """Push a branch to the remote origin."""
         from src.git.manager import GitError
         repo_id = args["repo_id"]
-        repo_path, err = await self._resolve_repo_path(repo_id)
+        checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
             return err
         git = self.orchestrator.git
-        branch = args.get("branch") or git.get_current_branch(repo_path)
+        branch = args.get("branch") or git.get_current_branch(checkout_path)
         if not branch:
             return {"error": "Could not determine current branch"}
         try:
-            git.push_branch(repo_path, branch)
+            git.push_branch(checkout_path, branch)
         except GitError as e:
             return {"error": str(e)}
         return {"repo_id": repo_id, "pushed": branch}
@@ -881,11 +916,11 @@ class CommandHandler:
         from src.git.manager import GitError
         repo_id = args["repo_id"]
         branch_name = args["branch_name"]
-        repo_path, err = await self._resolve_repo_path(repo_id)
+        checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
             return err
         try:
-            self.orchestrator.git.create_branch(repo_path, branch_name)
+            self.orchestrator.git.create_branch(checkout_path, branch_name)
         except GitError as e:
             return {"error": str(e)}
         return {"repo_id": repo_id, "created_branch": branch_name}
@@ -895,13 +930,12 @@ class CommandHandler:
         from src.git.manager import GitError
         repo_id = args["repo_id"]
         branch_name = args["branch_name"]
-        repo_path, err = await self._resolve_repo_path(repo_id)
+        checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
             return err
-        repo = await self.db.get_repo(repo_id)
-        default_branch = args.get("default_branch") or repo.default_branch or "main"
+        default_branch = args.get("default_branch") or (repo.default_branch if repo else "main") or "main"
         try:
-            success = self.orchestrator.git.merge_branch(repo_path, branch_name, default_branch)
+            success = self.orchestrator.git.merge_branch(checkout_path, branch_name, default_branch)
         except GitError as e:
             return {"error": str(e)}
         if not success:
@@ -924,17 +958,16 @@ class CommandHandler:
         repo_id = args["repo_id"]
         title = args["title"]
         body = args.get("body", "")
-        repo_path, err = await self._resolve_repo_path(repo_id)
+        checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
             return err
         git = self.orchestrator.git
-        branch = args.get("branch") or git.get_current_branch(repo_path)
+        branch = args.get("branch") or git.get_current_branch(checkout_path)
         if not branch:
             return {"error": "Could not determine current branch"}
-        repo = await self.db.get_repo(repo_id)
-        base = args.get("base") or repo.default_branch or "main"
+        base = args.get("base") or (repo.default_branch if repo else "main") or "main"
         try:
-            pr_url = git.create_pr(repo_path, branch, title, body, base)
+            pr_url = git.create_pr(checkout_path, branch, title, body, base)
         except GitError as e:
             return {"error": str(e)}
         return {"repo_id": repo_id, "pr_url": pr_url, "branch": branch, "base": base}
@@ -942,12 +975,11 @@ class CommandHandler:
     async def _cmd_git_changed_files(self, args: dict) -> dict:
         """List files changed compared to a base branch."""
         repo_id = args["repo_id"]
-        repo_path, err = await self._resolve_repo_path(repo_id)
+        checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
             return err
-        repo = await self.db.get_repo(repo_id)
-        base_branch = args.get("base_branch") or repo.default_branch or "main"
-        files = self.orchestrator.git.get_changed_files(repo_path, base_branch)
+        base_branch = args.get("base_branch") or (repo.default_branch if repo else "main") or "main"
+        files = self.orchestrator.git.get_changed_files(checkout_path, base_branch)
         return {
             "repo_id": repo_id,
             "base_branch": base_branch,
@@ -959,69 +991,18 @@ class CommandHandler:
         """Show recent commit log for a repository."""
         repo_id = args["repo_id"]
         count = args.get("count", 10)
-        repo_path, err = await self._resolve_repo_path(repo_id)
+        checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
             return err
         git = self.orchestrator.git
-        branch = git.get_current_branch(repo_path)
-        log_output = git.get_recent_commits(repo_path, count=count)
+        branch = git.get_current_branch(checkout_path)
+        log_output = git.get_recent_commits(checkout_path, count=count)
         return {
             "repo_id": repo_id,
             "branch": branch,
             "log": log_output or "(no commits)",
             "count": count,
         }
-
-    # -- Project-based repo resolution helper (used by newer git commands) --
-
-    async def _resolve_project_repo_path(
-        self, project_id: str, repo_id: str | None = None,
-    ) -> dict:
-        """Resolve a project (and optional repo) to a checkout path.
-
-        Returns ``{"path": str, "repo": RepoConfig | None, "project": Project}``
-        on success, or ``{"error": str}`` on failure.
-
-        When *repo_id* is supplied the specific repo is looked up; otherwise
-        the first repo attached to the project is used.  If the project has no
-        repos, the project workspace path is tried as a fallback.
-        """
-        project = await self.db.get_project(project_id)
-        if not project:
-            return {"error": f"Project '{project_id}' not found"}
-
-        repos = await self.db.list_repos(project_id=project_id)
-
-        if repo_id:
-            repo = next((r for r in repos if r.id == repo_id), None)
-            if not repo:
-                return {"error": f"Repo '{repo_id}' not found in project '{project_id}'"}
-            repos = [repo]
-
-        if repos:
-            repo = repos[0]
-            if repo.source_type == RepoSourceType.LINK and repo.source_path:
-                repo_path = repo.source_path
-            elif repo.source_type in (RepoSourceType.CLONE, RepoSourceType.INIT) and repo.checkout_base_path:
-                repo_path = repo.checkout_base_path
-            else:
-                return {"error": f"Repo '{repo.id}' has no valid path configured"}
-
-            if not os.path.isdir(repo_path):
-                return {"error": f"Path not found: {repo_path}"}
-            if not self.orchestrator.git.validate_checkout(repo_path):
-                return {"error": f"Not a valid git repo: {repo_path}"}
-
-            return {"path": repo_path, "repo": repo, "project": project}
-
-        # Fallback to project workspace
-        workspace = project.workspace_path
-        if not workspace or not os.path.isdir(workspace):
-            return {"error": f"Project '{project_id}' has no repos and no valid workspace path"}
-        if not self.orchestrator.git.validate_checkout(workspace):
-            return {"error": f"Project workspace is not a git repository"}
-
-        return {"path": workspace, "repo": None, "project": project}
 
     # -- Additional project-based git commands ------------------------------
 
@@ -1033,19 +1014,16 @@ class CommandHandler:
         """
         from src.git.manager import GitError
 
-        resolved = await self._resolve_project_repo_path(
-            args["project_id"], args.get("repo_id"),
-        )
-        if "error" in resolved:
-            return resolved
+        checkout_path, repo, err = await self._resolve_repo_path(args)
+        if err:
+            return err
 
-        repo_path = resolved["path"]
         git = self.orchestrator.git
         new_branch = args.get("name")
 
         if new_branch:
             try:
-                git.create_branch(repo_path, new_branch)
+                git.create_branch(checkout_path, new_branch)
             except GitError as e:
                 return {"error": str(e)}
             return {
@@ -1054,8 +1032,8 @@ class CommandHandler:
                 "message": f"Created and switched to branch '{new_branch}'",
             }
         else:
-            branches = git.list_branches(repo_path)
-            current = git.get_current_branch(repo_path)
+            branches = git.list_branches(checkout_path)
+            current = git.get_current_branch(checkout_path)
             return {
                 "project_id": args["project_id"],
                 "current_branch": current,
@@ -1066,22 +1044,19 @@ class CommandHandler:
         """Switch to an existing branch."""
         from src.git.manager import GitError
 
-        resolved = await self._resolve_project_repo_path(
-            args["project_id"], args.get("repo_id"),
-        )
-        if "error" in resolved:
-            return resolved
+        checkout_path, repo, err = await self._resolve_repo_path(args)
+        if err:
+            return err
 
-        repo_path = resolved["path"]
         branch = args["branch"]
         git = self.orchestrator.git
 
-        old_branch = git.get_current_branch(repo_path)
+        old_branch = git.get_current_branch(checkout_path)
         try:
-            git.checkout_branch(repo_path, branch)
+            git.checkout_branch(checkout_path, branch)
         except GitError as e:
             return {"error": str(e)}
-        new_branch = git.get_current_branch(repo_path)
+        new_branch = git.get_current_branch(checkout_path)
 
         return {
             "project_id": args["project_id"],
@@ -1092,24 +1067,19 @@ class CommandHandler:
 
     async def _cmd_git_diff(self, args: dict) -> dict:
         """Show diff for a project repo against a base branch."""
-        resolved = await self._resolve_project_repo_path(
-            args["project_id"], args.get("repo_id"),
-        )
-        if "error" in resolved:
-            return resolved
+        checkout_path, repo, err = await self._resolve_repo_path(args)
+        if err:
+            return err
 
-        repo_path = resolved["path"]
         git = self.orchestrator.git
 
         # Determine base branch from repo config or fallback
-        default_branch = "main"
-        if resolved.get("repo") and resolved["repo"].default_branch:
-            default_branch = resolved["repo"].default_branch
+        default_branch = (repo.default_branch if repo else "main") or "main"
         base = args.get("base_branch", default_branch)
 
-        current_branch = git.get_current_branch(repo_path)
-        diff = git.get_diff(repo_path, base)
-        changed_files = git.get_changed_files(repo_path, base)
+        current_branch = git.get_current_branch(checkout_path)
+        diff = git.get_diff(checkout_path, base)
+        changed_files = git.get_changed_files(checkout_path, base)
 
         return {
             "project_id": args["project_id"],
