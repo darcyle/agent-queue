@@ -95,7 +95,7 @@ def classify_error(error_message: str | None) -> tuple[str, str]:
 def format_task_completed(task: Task, agent: Agent, output: AgentOutput) -> str:
     lines = [
         f"**Task Completed:** `{task.id}` — {task.title}",
-        f"Agent: {agent.name}",
+        f"Project: `{task.project_id}` | Agent: {agent.name}",
         f"Tokens used: {output.tokens_used:,}",
     ]
     if output.summary:
@@ -109,7 +109,7 @@ def format_task_failed(task: Task, agent: Agent, output: AgentOutput) -> str:
     error_type, suggestion = classify_error(output.error_message)
     lines = [
         f"**Task Failed:** `{task.id}` — {task.title}",
-        f"Agent: {agent.name} | Retry: {task.retry_count}/{task.max_retries}",
+        f"Project: `{task.project_id}` | Agent: {agent.name} | Retry: {task.retry_count}/{task.max_retries}",
         f"Error type: **{error_type}**",
     ]
     if output.error_message:
@@ -126,7 +126,7 @@ def format_task_failed(task: Task, agent: Agent, output: AgentOutput) -> str:
 def format_task_blocked(task: Task, last_error: str | None = None) -> str:
     lines = [
         f"**Task Blocked:** `{task.id}` — {task.title}",
-        f"Max retries ({task.max_retries}) exhausted. Manual intervention required.",
+        f"Project: `{task.project_id}` | Max retries ({task.max_retries}) exhausted. Manual intervention required.",
     ]
     if last_error:
         error_type, suggestion = classify_error(last_error)
@@ -139,6 +139,7 @@ def format_task_blocked(task: Task, last_error: str | None = None) -> str:
 def format_pr_created(task: Task, pr_url: str) -> str:
     return (
         f"**PR Created:** `{task.id}` — {task.title}\n"
+        f"Project: `{task.project_id}`\n"
         f"Review and merge to complete: {pr_url}\n"
         f"Status: AWAITING_APPROVAL"
     )
@@ -147,7 +148,8 @@ def format_pr_created(task: Task, pr_url: str) -> str:
 def format_agent_question(task: Task, agent: Agent, question: str) -> str:
     return (
         f"**Agent Question:** `{task.id}` — {task.title}\n"
-        f"Agent {agent.name} asks:\n> {question[:500]}"
+        f"Project: `{task.project_id}` | Agent: {agent.name}\n"
+        f"> {question[:500]}"
     )
 
 
@@ -158,7 +160,7 @@ def format_chain_stuck(
     """Format a notification about downstream tasks stuck because of a blocked task."""
     lines = [
         f"⛓️ **Dependency Chain Stuck:** `{blocked_task.id}` — {blocked_task.title} is BLOCKED",
-        f"{len(stuck_tasks)} downstream task(s) are now permanently stuck:",
+        f"Project: `{blocked_task.project_id}` | {len(stuck_tasks)} downstream task(s) are now permanently stuck:",
     ]
     for t in stuck_tasks[:10]:
         lines.append(f"  • `{t.id}` — {t.title} (status: {t.status.value})")
@@ -179,7 +181,7 @@ def format_stuck_defined_task(
     """Format a notification for a DEFINED task stuck waiting on dependencies."""
     lines = [
         f"⏳ **Stuck Task:** `{task.id}` — {task.title}",
-        f"Has been DEFINED for **{stuck_hours:.1f} hours** without promotion to READY.",
+        f"Project: `{task.project_id}` | Has been DEFINED for **{stuck_hours:.1f} hours** without promotion to READY.",
     ]
     if blocking_deps:
         lines.append("Blocked by:")

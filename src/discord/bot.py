@@ -317,17 +317,50 @@ class AgentQueueBot(commands.Bot):
             return self._project_control_channels[project_id]
         return self._control_channel
 
+    def _is_global_notification_channel(
+        self, channel: discord.TextChannel, project_id: str | None
+    ) -> bool:
+        """Return True if *channel* is the global fallback (not a per-project channel)."""
+        return (
+            project_id is not None
+            and channel == self._notifications_channel
+            and project_id not in self._project_channels
+        )
+
+    def _is_global_control_channel(
+        self, channel: discord.TextChannel, project_id: str | None
+    ) -> bool:
+        """Return True if *channel* is the global fallback (not a per-project control channel)."""
+        return (
+            project_id is not None
+            and channel == self._control_channel
+            and project_id not in self._project_control_channels
+        )
+
+    @staticmethod
+    def _prepend_project_tag(text: str, project_id: str) -> str:
+        """Prepend a ``[project-id]`` tag to a message for global-channel context."""
+        return f"[`{project_id}`] {text}"
+
     async def _send_notification(self, text: str, project_id: str | None = None) -> None:
-        """Send a message to the notifications channel (project-specific or global)."""
+        """Send a message to the notifications channel (project-specific or global).
+
+        When the notification is routed to the **global** channel (because the
+        project has no dedicated channel), a ``[project-id]`` tag is prepended
+        so users can tell which project the message belongs to.
+        """
         channel = self._get_notification_channel(project_id)
         if channel:
+            if project_id and self._is_global_notification_channel(channel, project_id):
+                text = self._prepend_project_tag(text, project_id)
             await self._send_long_message(channel, text)
 
     async def _send_control_message(self, text: str, project_id: str | None = None) -> None:
         """Send a message to the control channel (project-specific or global).
 
         Skips sending if the control channel is the same as the notifications
-        channel to avoid duplicate messages.
+        channel to avoid duplicate messages.  Prepends a ``[project-id]`` tag
+        when falling back to the global control channel.
         """
         channel = self._get_control_channel(project_id)
         if not channel:
@@ -337,6 +370,8 @@ class AgentQueueBot(commands.Bot):
         notify_channel = self._get_notification_channel(project_id)
         if channel.id == notify_channel.id if notify_channel else False:
             return
+        if project_id and self._is_global_control_channel(channel, project_id):
+            text = self._prepend_project_tag(text, project_id)
         await self._send_long_message(channel, text)
 
     async def _create_task_thread(
@@ -359,13 +394,24 @@ class AgentQueueBot(commands.Bot):
             print("Cannot create thread: no notifications channel")
             return None
 
-        print(f"Creating thread: {thread_name}" + (f" (project: {project_id})" if project_id else ""))
+        # When routing to the global channel, prepend a project tag so users
+        # can tell which project the thread belongs to.
+        is_global = self._is_global_notification_channel(channel, project_id)
+        display_name = thread_name
+        if is_global and project_id:
+            display_name = f"[{project_id}] {thread_name}"
+
+        print(
+            f"Creating thread: {thread_name}"
+            + (f" (project: {project_id})" if project_id else "")
+            + (f" → #{channel.name}" + (" (global)" if is_global else " (per-project)"))
+        )
         # Create the thread-root message in the notifications channel, then open
         # a thread on it so all streaming output stays inside the thread.
         msg = await channel.send(
-            f"**Agent working:** {thread_name}"
+            f"**Agent working:** {display_name}"
         )
-        thread = await msg.create_thread(name=thread_name)
+        thread = await msg.create_thread(name=display_name[:100])
         await thread.send(initial_message)
         print(f"Thread created: {thread.id}")
 
