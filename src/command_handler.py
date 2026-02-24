@@ -164,7 +164,23 @@ class CommandHandler:
             workspace_path=workspace,
         )
         await self.db.create_project(project)
-        return {"created": project_id, "name": project.name, "workspace": workspace}
+
+        # Determine whether auto-channel creation should happen.
+        # An explicit ``auto_create_channels`` arg takes precedence;
+        # otherwise fall back to the per-project-channels config flag.
+        explicit = args.get("auto_create_channels")
+        if explicit is not None:
+            should_auto_create = bool(explicit)
+        else:
+            ppc = self.config.discord.per_project_channels
+            should_auto_create = ppc.auto_create
+
+        return {
+            "created": project_id,
+            "name": project.name,
+            "workspace": workspace,
+            "auto_create_channels": should_auto_create,
+        }
 
     async def _cmd_pause_project(self, args: dict) -> dict:
         pid = args["project_id"]

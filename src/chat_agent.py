@@ -18,7 +18,12 @@ TOOLS = [
     },
     {
         "name": "create_project",
-        "description": "Create a new project.",
+        "description": (
+            "Create a new project.  Optionally auto-create dedicated Discord "
+            "channels (notifications + control) for the project.  When "
+            "auto_create_channels is omitted the behaviour is determined by "
+            "the per_project_channels.auto_create config flag."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -32,6 +37,15 @@ TOOLS = [
                     "type": "integer",
                     "description": "Max agents working on this project simultaneously",
                     "default": 2,
+                },
+                "auto_create_channels": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, auto-create dedicated Discord channels for "
+                        "this project after creation.  If false, skip channel "
+                        "creation.  When omitted, falls back to the global "
+                        "per_project_channels.auto_create config setting."
+                    ),
                 },
             },
             "required": ["name"],

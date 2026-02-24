@@ -532,24 +532,37 @@ def setup_commands(bot: commands.Bot) -> None:
         name="Project name",
         credit_weight="Scheduling weight (default 1.0)",
         max_concurrent_agents="Max agents working simultaneously (default 2)",
+        auto_create_channels="Auto-create Discord channels for this project (overrides config)",
     )
     async def create_project_command(
         interaction: discord.Interaction,
         name: str,
         credit_weight: float = 1.0,
         max_concurrent_agents: int = 2,
+        auto_create_channels: bool | None = None,
     ):
-        # Defer if auto-channel creation is enabled (may take a few seconds)
-        ppc = bot.config.discord.per_project_channels
-        will_auto_create = ppc.auto_create and interaction.guild is not None
-        if will_auto_create:
-            await interaction.response.defer()
-
-        result = await handler.execute("create_project", {
+        # Build args for the command handler.  An explicit
+        # ``auto_create_channels`` parameter overrides the global config.
+        create_args: dict = {
             "name": name,
             "credit_weight": credit_weight,
             "max_concurrent_agents": max_concurrent_agents,
-        })
+        }
+        if auto_create_channels is not None:
+            create_args["auto_create_channels"] = auto_create_channels
+
+        # Determine up-front whether auto-channel creation will happen so
+        # we can defer the response (Discord requires early deferral for
+        # operations that may take longer than 3 seconds).
+        ppc = bot.config.discord.per_project_channels
+        if auto_create_channels is not None:
+            will_auto_create = auto_create_channels and interaction.guild is not None
+        else:
+            will_auto_create = ppc.auto_create and interaction.guild is not None
+        if will_auto_create:
+            await interaction.response.defer()
+
+        result = await handler.execute("create_project", create_args)
         if "error" in result:
             if will_auto_create:
                 await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
@@ -567,8 +580,9 @@ def setup_commands(bot: commands.Bot) -> None:
         embed.add_field(name="Max Agents", value=str(max_concurrent_agents), inline=True)
         embed.add_field(name="Workspace", value=f"`{result.get('workspace', '')}`", inline=False)
 
-        # Auto-create per-project channels if configured
-        if will_auto_create:
+        # Auto-create per-project channels when the handler says so.
+        # The handler resolves the explicit param vs config flag for us.
+        if result.get("auto_create_channels") and interaction.guild is not None:
             channel_results = await _auto_create_project_channels(
                 interaction.guild, handler, project_id, ppc,
             )
