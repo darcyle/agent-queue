@@ -441,6 +441,71 @@ class CommandHandler:
             "title": task.title,
         }
 
+    async def _cmd_skip_task(self, args: dict) -> dict:
+        """Skip a BLOCKED/FAILED task to unblock its dependency chain."""
+        error, unblocked = await self.orchestrator.skip_task(args["task_id"])
+        if error:
+            return {"error": error}
+        return {
+            "skipped": args["task_id"],
+            "unblocked_count": len(unblocked),
+            "unblocked": [
+                {"id": t.id, "title": t.title} for t in unblocked
+            ],
+        }
+
+    async def _cmd_get_chain_health(self, args: dict) -> dict:
+        """Check dependency chain health for a task or project."""
+        task_id = args.get("task_id")
+        project_id = args.get("project_id")
+
+        if task_id:
+            task = await self.db.get_task(task_id)
+            if not task:
+                return {"error": f"Task '{task_id}' not found"}
+            if task.status != TaskStatus.BLOCKED:
+                return {
+                    "task_id": task_id,
+                    "status": task.status.value,
+                    "stuck_downstream": [],
+                    "message": "Task is not blocked — no stuck chain.",
+                }
+            stuck = await self.orchestrator._find_stuck_downstream(task_id)
+            return {
+                "task_id": task_id,
+                "title": task.title,
+                "status": task.status.value,
+                "stuck_downstream": [
+                    {"id": t.id, "title": t.title, "status": t.status.value}
+                    for t in stuck
+                ],
+                "stuck_count": len(stuck),
+            }
+
+        # If project_id given (or fall back to active), list all blocked tasks
+        # with stuck chains.
+        pid = project_id or self._active_project_id
+        blocked_tasks = await self.db.list_tasks(
+            project_id=pid, status=TaskStatus.BLOCKED
+        )
+        chains = []
+        for bt in blocked_tasks:
+            stuck = await self.orchestrator._find_stuck_downstream(bt.id)
+            if stuck:
+                chains.append({
+                    "blocked_task": {"id": bt.id, "title": bt.title},
+                    "stuck_downstream": [
+                        {"id": t.id, "title": t.title}
+                        for t in stuck
+                    ],
+                    "stuck_count": len(stuck),
+                })
+        return {
+            "project_id": pid,
+            "stuck_chains": chains,
+            "total_stuck_chains": len(chains),
+        }
+
     async def _cmd_get_task_result(self, args: dict) -> dict:
         result = await self.db.get_task_result(args["task_id"])
         if not result:

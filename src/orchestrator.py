@@ -10,7 +10,7 @@ from src.config import AppConfig
 from src.database import Database
 from src.discord.notifications import (
     format_task_completed, format_task_failed, format_task_blocked,
-    format_pr_created,
+    format_pr_created, format_chain_stuck,
 )
 from src.event_bus import EventBus
 from src.git.manager import GitManager
@@ -93,6 +93,56 @@ class Orchestrator:
         """Set a callback for creating per-task threads."""
         self._create_thread = callback
 
+    async def skip_task(self, task_id: str) -> tuple[str | None, list[Task]]:
+        """Skip a BLOCKED or FAILED task to unblock its dependency chain.
+
+        Marks the task as COMPLETED so downstream dependents can proceed.
+        Returns (error_string | None, list_of_unblocked_tasks).
+        """
+        task = await self.db.get_task(task_id)
+        if not task:
+            return f"Task '{task_id}' not found", []
+        if task.status not in (TaskStatus.BLOCKED, TaskStatus.FAILED):
+            return (
+                f"Task is not BLOCKED or FAILED (status: {task.status.value}). "
+                f"Only blocked/failed tasks can be skipped.",
+                [],
+            )
+
+        await self.db.update_task(
+            task_id,
+            status=TaskStatus.COMPLETED.value,
+        )
+        await self.db.log_event(
+            "task_skipped",
+            project_id=task.project_id,
+            task_id=task.id,
+            payload=f"skipped from {task.status.value}",
+        )
+
+        # Find which downstream tasks will now become unblocked.
+        # After we set this task to COMPLETED, any direct dependents
+        # whose other deps are also met will be promoted by the
+        # next _check_defined_tasks cycle.
+        unblocked: list[Task] = []
+        dependents = await self.db.get_dependents(task_id)
+        for dep_id in dependents:
+            dep_task = await self.db.get_task(dep_id)
+            if dep_task and dep_task.status == TaskStatus.DEFINED:
+                # Check if all deps (including the now-skipped one) are met
+                if await self.db.are_dependencies_met(dep_id):
+                    unblocked.append(dep_task)
+
+        await self._notify_channel(
+            f"**Task Skipped:** `{task_id}` — {task.title}\n"
+            f"Marked as COMPLETED to unblock dependency chain."
+            + (f"\n{len(unblocked)} task(s) will be unblocked in the next cycle."
+               if unblocked else ""),
+            project_id=task.project_id,
+        )
+
+        return None, unblocked
+
     async def stop_task(self, task_id: str) -> str | None:
         """Stop an in-progress task. Returns None on success, error string on failure."""
         task = await self.db.get_task(task_id)
@@ -122,6 +172,8 @@ class Orchestrator:
             f"**Task Stopped:** `{task_id}` — {task.title}",
             project_id=task.project_id,
         )
+        # Check if stopping this task blocks a dependency chain
+        await self._notify_stuck_chain(task)
         return None
 
     async def _notify_channel(self, message: str, project_id: str | None = None) -> None:
@@ -265,6 +317,10 @@ class Orchestrator:
                 f"**Task Timed Out:** `{action.task_id}` — exceeded {timeout}s. Marked as BLOCKED.",
                 project_id=action.project_id,
             )
+            # Check if this blocked task breaks a dependency chain
+            task = await self.db.get_task(action.task_id)
+            if task:
+                await self._notify_stuck_chain(task)
             return
         except Exception as e:
             print(f"Error executing task {action.task_id}: {e}")
@@ -305,6 +361,60 @@ class Orchestrator:
                 deps_met = await self.db.are_dependencies_met(task.id)
                 if deps_met:
                     await self.db.update_task(task.id, status=TaskStatus.READY.value)
+
+    async def _find_stuck_downstream(self, blocked_task_id: str) -> list[Task]:
+        """Walk the dependency graph forward and collect all DEFINED tasks
+        that are permanently stuck because *blocked_task_id* is BLOCKED.
+
+        A task is considered stuck if it (directly or transitively) depends on
+        the blocked task and none of its dependency paths can reach COMPLETED.
+        In practice this means every task downstream of the blocked one whose
+        status is still DEFINED (i.e. waiting for deps).
+        """
+        stuck: list[Task] = []
+        visited: set[str] = set()
+        queue: list[str] = [blocked_task_id]
+
+        while queue:
+            current_id = queue.pop(0)
+            if current_id in visited:
+                continue
+            visited.add(current_id)
+
+            dependents = await self.db.get_dependents(current_id)
+            for dep_id in dependents:
+                if dep_id in visited:
+                    continue
+                task = await self.db.get_task(dep_id)
+                if not task:
+                    continue
+                # Only DEFINED tasks are "stuck" — tasks in other states
+                # (READY, IN_PROGRESS, etc.) have already moved past the
+                # dependency gate.
+                if task.status == TaskStatus.DEFINED:
+                    stuck.append(task)
+                    # Continue walking: this stuck task may itself have
+                    # downstream dependents.
+                    queue.append(dep_id)
+
+        return stuck
+
+    async def _notify_stuck_chain(self, blocked_task: Task) -> None:
+        """Check for downstream stuck tasks and send a notification."""
+        stuck = await self._find_stuck_downstream(blocked_task.id)
+        if not stuck:
+            return
+
+        msg = format_chain_stuck(blocked_task, stuck)
+        await self._notify_channel(msg, project_id=blocked_task.project_id)
+        await self._control_channel_post(msg, project_id=blocked_task.project_id)
+        await self.db.log_event(
+            "chain_stuck",
+            project_id=blocked_task.project_id,
+            task_id=blocked_task.id,
+            payload=f"stuck_count={len(stuck)}, "
+                    f"stuck_ids={[t.id for t in stuck[:20]]}",
+        )
 
     async def _schedule(self) -> list[AssignAction]:
         projects = await self.db.list_projects()
@@ -806,6 +916,7 @@ class Orchestrator:
                 f"was closed without merging. Marked as BLOCKED.",
                 project_id=task.project_id,
             )
+            await self._notify_stuck_chain(task)
 
     async def _execute_task(self, action: AssignAction) -> None:
         if not self._adapter_factory:
@@ -1182,6 +1293,10 @@ class Orchestrator:
             if thread_send:
                 await _notify_brief(brief)
             await self._control_channel_post(brief, project_id=action.project_id)
+
+            # Check if this blocked task breaks a dependency chain
+            if new_retry >= task.max_retries:
+                await self._notify_stuck_chain(task)
 
         elif output.result in (
             AgentResult.PAUSED_TOKENS, AgentResult.PAUSED_RATE_LIMIT

@@ -702,6 +702,84 @@ def setup_commands(bot: commands.Bot) -> None:
             f"✅ Task `{task_id}` ({result.get('title', '')}) approved and completed."
         )
 
+    @bot.tree.command(
+        name="skip-task",
+        description="Skip a blocked/failed task to unblock its dependency chain",
+    )
+    @app_commands.describe(task_id="Task ID to skip")
+    async def skip_task_command(interaction: discord.Interaction, task_id: str):
+        result = await handler.execute("skip_task", {"task_id": task_id})
+        if "error" in result:
+            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            return
+        unblocked_count = result.get("unblocked_count", 0)
+        msg = f"⏭️ Task `{task_id}` skipped (marked COMPLETED)."
+        if unblocked_count:
+            unblocked_list = ", ".join(
+                f"`{t['id']}`" for t in result.get("unblocked", [])
+            )
+            msg += f"\n{unblocked_count} task(s) unblocked: {unblocked_list}"
+        await interaction.response.send_message(msg)
+
+    @bot.tree.command(
+        name="chain-health",
+        description="Check dependency chain health for stuck tasks",
+    )
+    @app_commands.describe(
+        task_id="(Optional) Check a specific blocked task",
+        project_id="(Optional) Check all blocked chains in a project",
+    )
+    async def chain_health_command(
+        interaction: discord.Interaction,
+        task_id: str | None = None,
+        project_id: str | None = None,
+    ):
+        args = {}
+        if task_id:
+            args["task_id"] = task_id
+        if project_id:
+            args["project_id"] = project_id
+        result = await handler.execute("get_chain_health", args)
+        if "error" in result:
+            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            return
+
+        if "task_id" in result:
+            stuck = result.get("stuck_downstream", [])
+            if not stuck:
+                await interaction.response.send_message(
+                    f"✅ No stuck downstream tasks for `{result['task_id']}`."
+                )
+            else:
+                lines = [
+                    f"⛓️ **Stuck Chain:** `{result['task_id']}` — {result.get('title', '')}",
+                    f"{len(stuck)} downstream task(s) stuck:",
+                ]
+                for t in stuck[:15]:
+                    lines.append(f"  • `{t['id']}` — {t['title']} ({t['status']})")
+                if len(stuck) > 15:
+                    lines.append(f"  … and {len(stuck) - 15} more")
+                await interaction.response.send_message("\n".join(lines))
+        else:
+            chains = result.get("stuck_chains", [])
+            if not chains:
+                await interaction.response.send_message(
+                    f"✅ No stuck dependency chains"
+                    + (f" in project `{result.get('project_id')}`" if result.get("project_id") else "")
+                    + "."
+                )
+            else:
+                lines = [f"⛓️ **{len(chains)} stuck chain(s):**"]
+                for chain in chains[:10]:
+                    bt = chain["blocked_task"]
+                    lines.append(
+                        f"  • `{bt['id']}` — {bt['title']} "
+                        f"→ {chain['stuck_count']} stuck task(s)"
+                    )
+                if len(chains) > 10:
+                    lines.append(f"  … and {len(chains) - 10} more chains")
+                await interaction.response.send_message("\n".join(lines))
+
     @bot.tree.command(name="set-status", description="Change the status of a task")
     @app_commands.describe(
         task_id="Task ID to update",

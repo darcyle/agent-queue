@@ -476,6 +476,32 @@ class Database:
         rows = await cursor.fetchall()
         return all(r["status"] == TaskStatus.COMPLETED.value for r in rows)
 
+    async def get_dependents(self, task_id: str) -> set[str]:
+        """Return task IDs that directly depend on *task_id* (reverse lookup)."""
+        cursor = await self._db.execute(
+            "SELECT task_id FROM task_dependencies WHERE depends_on_task_id = ?",
+            (task_id,),
+        )
+        rows = await cursor.fetchall()
+        return {r["task_id"] for r in rows}
+
+    async def remove_dependency(self, task_id: str, depends_on: str) -> None:
+        """Remove a single dependency edge."""
+        await self._db.execute(
+            "DELETE FROM task_dependencies "
+            "WHERE task_id = ? AND depends_on_task_id = ?",
+            (task_id, depends_on),
+        )
+        await self._db.commit()
+
+    async def remove_all_dependencies_on(self, depends_on_task_id: str) -> None:
+        """Remove all dependency edges pointing to a given task."""
+        await self._db.execute(
+            "DELETE FROM task_dependencies WHERE depends_on_task_id = ?",
+            (depends_on_task_id,),
+        )
+        await self._db.commit()
+
     # --- Agents ---
 
     async def create_agent(self, agent: Agent) -> None:

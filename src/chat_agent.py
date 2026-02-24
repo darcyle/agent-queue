@@ -316,6 +316,28 @@ TOOLS = [
         },
     },
     {
+        "name": "skip_task",
+        "description": "Skip a BLOCKED or FAILED task to unblock its dependency chain. Marks the task as COMPLETED so downstream dependents can proceed.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID to skip"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "get_chain_health",
+        "description": "Check dependency chain health. Shows downstream tasks stuck because of blocked tasks. Pass task_id for a specific task, or project_id for all stuck chains in a project.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "(Optional) Check a specific blocked task"},
+                "project_id": {"type": "string", "description": "(Optional) Check all blocked chains in a project"},
+            },
+        },
+    },
+    {
         "name": "get_status",
         "description": "Get a high-level overview of the system: projects, agents, tasks counts.",
         "input_schema": {"type": "object", "properties": {}},

@@ -151,6 +151,26 @@ def format_agent_question(task: Task, agent: Agent, question: str) -> str:
     )
 
 
+def format_chain_stuck(
+    blocked_task: Task,
+    stuck_tasks: list[Task],
+) -> str:
+    """Format a notification about downstream tasks stuck because of a blocked task."""
+    lines = [
+        f"⛓️ **Dependency Chain Stuck:** `{blocked_task.id}` — {blocked_task.title} is BLOCKED",
+        f"{len(stuck_tasks)} downstream task(s) are now permanently stuck:",
+    ]
+    for t in stuck_tasks[:10]:
+        lines.append(f"  • `{t.id}` — {t.title} (status: {t.status.value})")
+    if len(stuck_tasks) > 10:
+        lines.append(f"  … and {len(stuck_tasks) - 10} more")
+    lines.append(
+        f"_Use `/skip-task {blocked_task.id}` to skip the blocked task and "
+        f"unblock the chain, or `/restart-task {blocked_task.id}` to retry it._"
+    )
+    return "\n".join(lines)
+
+
 def format_budget_warning(project_name: str, usage: int, limit: int) -> str:
     pct = (usage / limit * 100) if limit > 0 else 0
     return (
