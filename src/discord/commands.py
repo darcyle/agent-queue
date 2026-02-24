@@ -25,6 +25,30 @@ def setup_commands(bot: commands.Bot) -> None:
     handler = bot.agent.handler
 
     # ---------------------------------------------------------------------------
+    # Channel→project resolution helper
+    # ---------------------------------------------------------------------------
+
+    async def _resolve_project_from_context(
+        interaction: discord.Interaction,
+        project_id: str | None,
+    ) -> str | None:
+        """Resolve *project_id*, falling back to the channel→project mapping.
+
+        If *project_id* was explicitly supplied by the user it is returned
+        unchanged.  Otherwise the interaction's channel is checked against
+        the bot's reverse channel-to-project lookup so that commands run
+        inside a project-specific channel automatically inherit that project.
+        """
+        if project_id is not None:
+            return project_id
+        return bot.get_project_for_channel(interaction.channel_id)
+
+    _NO_PROJECT_MSG = (
+        "Could not determine project — please provide `project_id` "
+        "or run this command from a project channel."
+    )
+
+    # ---------------------------------------------------------------------------
     # Shared task-detail helper
     # ---------------------------------------------------------------------------
 
@@ -831,8 +855,12 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.response.send_message("\n".join(lines))
 
     @bot.tree.command(name="pause", description="Pause a project")
-    @app_commands.describe(project_id="Project ID to pause")
-    async def pause_command(interaction: discord.Interaction, project_id: str):
+    @app_commands.describe(project_id="Project ID to pause (auto-detected from channel)")
+    async def pause_command(interaction: discord.Interaction, project_id: str | None = None):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            return
         result = await handler.execute("pause_project", {"project_id": project_id})
         if "error" in result:
             await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
@@ -842,8 +870,12 @@ def setup_commands(bot: commands.Bot) -> None:
         )
 
     @bot.tree.command(name="resume", description="Resume a paused project")
-    @app_commands.describe(project_id="Project ID to resume")
-    async def resume_command(interaction: discord.Interaction, project_id: str):
+    @app_commands.describe(project_id="Project ID to resume (auto-detected from channel)")
+    async def resume_command(interaction: discord.Interaction, project_id: str | None = None):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            return
         result = await handler.execute("resume_project", {"project_id": project_id})
         if "error" in result:
             await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
@@ -872,8 +904,9 @@ def setup_commands(bot: commands.Bot) -> None:
     # ===================================================================
 
     @bot.tree.command(name="tasks", description="List tasks for a project")
-    @app_commands.describe(project_id="Project ID to filter by")
+    @app_commands.describe(project_id="Project ID to filter by (auto-detected from channel)")
     async def tasks_command(interaction: discord.Interaction, project_id: str | None = None):
+        project_id = await _resolve_project_from_context(interaction, project_id)
         args = {}
         if project_id:
             args["project_id"] = project_id
@@ -903,7 +936,11 @@ def setup_commands(bot: commands.Bot) -> None:
     @bot.tree.command(name="add-task", description="Add a task manually to the active project")
     @app_commands.describe(description="What the task should do")
     async def add_task_command(interaction: discord.Interaction, description: str):
-        project_id = handler._active_project_id or "quick-tasks"
+        project_id = (
+            bot.get_project_for_channel(interaction.channel_id)
+            or handler._active_project_id
+            or "quick-tasks"
+        )
         title = description[:100] if len(description) > 100 else description
         result = await handler.execute("create_task", {
             "project_id": project_id,
@@ -1018,13 +1055,14 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         task_id="(Optional) Check a specific blocked task",
-        project_id="(Optional) Check all blocked chains in a project",
+        project_id="(Optional) Check all blocked chains in a project (auto-detected from channel)",
     )
     async def chain_health_command(
         interaction: discord.Interaction,
         task_id: str | None = None,
         project_id: str | None = None,
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
         args = {}
         if task_id:
             args["task_id"] = task_id
@@ -1269,8 +1307,9 @@ def setup_commands(bot: commands.Bot) -> None:
     # ===================================================================
 
     @bot.tree.command(name="repos", description="List registered repositories")
-    @app_commands.describe(project_id="Filter by project ID (optional)")
+    @app_commands.describe(project_id="Filter by project ID (auto-detected from channel)")
     async def repos_command(interaction: discord.Interaction, project_id: str | None = None):
+        project_id = await _resolve_project_from_context(interaction, project_id)
         args = {}
         if project_id:
             args["project_id"] = project_id
@@ -1297,7 +1336,7 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(name="add-repo", description="Register a repository for a project")
     @app_commands.describe(
-        project_id="Project ID",
+        project_id="Project ID (auto-detected from channel)",
         source="How to set up the repo",
         url="Git URL (for clone)",
         path="Existing directory path (for link)",
@@ -1311,13 +1350,17 @@ def setup_commands(bot: commands.Bot) -> None:
     ])
     async def add_repo_command(
         interaction: discord.Interaction,
-        project_id: str,
         source: app_commands.Choice[str],
+        project_id: str | None = None,
         url: str | None = None,
         path: str | None = None,
         name: str | None = None,
         default_branch: str = "main",
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            return
         args: dict = {
             "project_id": project_id,
             "source": source.value,
@@ -1347,8 +1390,12 @@ def setup_commands(bot: commands.Bot) -> None:
         name="git-status",
         description="Show the git status of a project's repository",
     )
-    @app_commands.describe(project_id="Project ID to check git status for")
-    async def git_status_command(interaction: discord.Interaction, project_id: str):
+    @app_commands.describe(project_id="Project ID to check git status for (auto-detected from channel)")
+    async def git_status_command(interaction: discord.Interaction, project_id: str | None = None):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            return
         await interaction.response.defer()
         result = await handler.execute("get_git_status", {"project_id": project_id})
         if "error" in result:
@@ -1600,8 +1647,9 @@ def setup_commands(bot: commands.Bot) -> None:
     # ===================================================================
 
     @bot.tree.command(name="hooks", description="List automation hooks")
-    @app_commands.describe(project_id="Filter by project ID (optional)")
+    @app_commands.describe(project_id="Filter by project ID (auto-detected from channel)")
     async def hooks_command(interaction: discord.Interaction, project_id: str | None = None):
+        project_id = await _resolve_project_from_context(interaction, project_id)
         args = {}
         if project_id:
             args["project_id"] = project_id
@@ -1632,7 +1680,7 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(name="create-hook", description="Create an automation hook")
     @app_commands.describe(
-        project_id="Project ID",
+        project_id="Project ID (auto-detected from channel)",
         name="Hook name",
         trigger_type="Trigger type",
         trigger_value="Interval seconds (periodic) or event type (event)",
@@ -1645,13 +1693,17 @@ def setup_commands(bot: commands.Bot) -> None:
     ])
     async def create_hook_command(
         interaction: discord.Interaction,
-        project_id: str,
         name: str,
         trigger_type: app_commands.Choice[str],
         trigger_value: str,
         prompt_template: str,
+        project_id: str | None = None,
         cooldown_seconds: int = 3600,
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            return
         if trigger_type.value == "periodic":
             try:
                 interval = int(trigger_value)
@@ -1767,8 +1819,12 @@ def setup_commands(bot: commands.Bot) -> None:
     # ===================================================================
 
     @bot.tree.command(name="notes", description="View and manage notes for a project")
-    @app_commands.describe(project_id="Project ID")
-    async def notes_command(interaction: discord.Interaction, project_id: str):
+    @app_commands.describe(project_id="Project ID (auto-detected from channel)")
+    async def notes_command(interaction: discord.Interaction, project_id: str | None = None):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            return
         result = await handler.execute("list_notes", {"project_id": project_id})
         if "error" in result:
             await interaction.response.send_message(
@@ -1809,16 +1865,20 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(name="write-note", description="Create or update a project note")
     @app_commands.describe(
-        project_id="Project ID",
+        project_id="Project ID (auto-detected from channel)",
         title="Note title",
         content="Note content (markdown)",
     )
     async def write_note_command(
         interaction: discord.Interaction,
-        project_id: str,
         title: str,
         content: str,
+        project_id: str | None = None,
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            return
         result = await handler.execute("write_note", {
             "project_id": project_id,
             "title": title,
@@ -1834,14 +1894,18 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(name="delete-note", description="Delete a project note")
     @app_commands.describe(
-        project_id="Project ID",
+        project_id="Project ID (auto-detected from channel)",
         title="Note title",
     )
     async def delete_note_command(
         interaction: discord.Interaction,
-        project_id: str,
         title: str,
+        project_id: str | None = None,
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            return
         result = await handler.execute("delete_note", {
             "project_id": project_id,
             "title": title,
