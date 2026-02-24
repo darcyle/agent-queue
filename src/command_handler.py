@@ -1253,6 +1253,29 @@ class CommandHandler:
             "status": "created",
         }
 
+    async def _cmd_checkout_branch(self, args: dict) -> dict:
+        """Check out an existing branch."""
+        branch_name = args.get("branch_name")
+        if not branch_name:
+            return {"error": "branch_name is required"}
+
+        checkout_path, repo, err = await self._resolve_repo_path(args)
+        if err:
+            return err
+
+        git = self.orchestrator.git
+        try:
+            git._run(["checkout", branch_name], cwd=checkout_path)
+        except Exception as e:
+            return {"error": f"Failed to checkout branch: {e}"}
+
+        return {
+            "project_id": args["project_id"],
+            "repo_id": repo.id if repo else "(workspace)",
+            "branch": branch_name,
+            "status": "checked_out",
+        }
+
     # -----------------------------------------------------------------------
     # Hook commands
     # -----------------------------------------------------------------------
