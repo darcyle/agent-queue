@@ -7,7 +7,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from src.models import Project, ProjectStatus, RepoSourceType, Task, TaskStatus
+from src.models import Agent, AgentState, Project, ProjectStatus, RepoSourceType, Task, TaskStatus
 from src.discord.notifications import classify_error
 from src.task_names import generate_task_id
 
@@ -680,3 +680,426 @@ def setup_commands(bot: commands.Bot) -> None:
             )
             preview = full_message[:300].rstrip() + "\n\n*Full output attached.*"
             await interaction.followup.send(preview, file=file)
+
+    # ---------------------------------------------------------------------------
+    # /create-project — create a new project
+    # ---------------------------------------------------------------------------
+
+    @bot.tree.command(name="create-project", description="Create a new project")
+    @app_commands.describe(
+        name="Project name",
+        credit_weight="Scheduling weight (default 1.0)",
+        max_concurrent_agents="Max agents working simultaneously (default 2)",
+    )
+    async def create_project_command(
+        interaction: discord.Interaction,
+        name: str,
+        credit_weight: float = 1.0,
+        max_concurrent_agents: int = 2,
+    ) -> None:
+        db = bot.orchestrator.db
+        project_id = name.lower().replace(" ", "-")
+        workspace = os.path.join(bot.config.workspace_dir, project_id)
+        os.makedirs(workspace, exist_ok=True)
+        project = Project(
+            id=project_id,
+            name=name,
+            credit_weight=credit_weight,
+            max_concurrent_agents=max_concurrent_agents,
+            workspace_path=workspace,
+        )
+        await db.create_project(project)
+
+        embed = discord.Embed(title="✅ Project Created", color=0x2ecc71)
+        embed.add_field(name="Name", value=name, inline=True)
+        embed.add_field(name="ID", value=f"`{project_id}`", inline=True)
+        embed.add_field(name="Weight", value=str(credit_weight), inline=True)
+        embed.add_field(name="Max Agents", value=str(max_concurrent_agents), inline=True)
+        embed.add_field(name="Workspace", value=f"`{workspace}`", inline=False)
+        await interaction.response.send_message(embed=embed)
+
+    # ---------------------------------------------------------------------------
+    # /delete-project — delete a project and all associated data
+    # ---------------------------------------------------------------------------
+
+    @bot.tree.command(name="delete-project", description="Delete a project and all its data")
+    @app_commands.describe(project_id="Project ID to delete")
+    async def delete_project_command(
+        interaction: discord.Interaction, project_id: str
+    ) -> None:
+        db = bot.orchestrator.db
+        project = await db.get_project(project_id)
+        if not project:
+            await interaction.response.send_message(
+                f"Project `{project_id}` not found.", ephemeral=True
+            )
+            return
+        tasks = await db.list_tasks(project_id=project_id, status=TaskStatus.IN_PROGRESS)
+        if tasks:
+            await interaction.response.send_message(
+                f"Cannot delete: {len(tasks)} task(s) currently IN_PROGRESS. Stop them first.",
+                ephemeral=True,
+            )
+            return
+        await db.delete_project(project_id)
+        await interaction.response.send_message(
+            f"🗑️ Project **{project.name}** (`{project_id}`) deleted."
+        )
+
+    # ---------------------------------------------------------------------------
+    # /stop-task — stop a running task
+    # ---------------------------------------------------------------------------
+
+    @bot.tree.command(name="stop-task", description="Stop a task that is currently in progress")
+    @app_commands.describe(task_id="Task ID to stop")
+    async def stop_task_command(
+        interaction: discord.Interaction, task_id: str
+    ) -> None:
+        error = await bot.orchestrator.stop_task(task_id)
+        if error:
+            await interaction.response.send_message(
+                f"Error: {error}", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(f"⏹ Task `{task_id}` stopped.")
+
+    # ---------------------------------------------------------------------------
+    # /restart-task — restart a failed/completed/blocked task
+    # ---------------------------------------------------------------------------
+
+    @bot.tree.command(name="restart-task", description="Reset a task back to READY for re-execution")
+    @app_commands.describe(task_id="Task ID to restart")
+    async def restart_task_command(
+        interaction: discord.Interaction, task_id: str
+    ) -> None:
+        db = bot.orchestrator.db
+        task = await db.get_task(task_id)
+        if not task:
+            await interaction.response.send_message(
+                f"Task `{task_id}` not found.", ephemeral=True
+            )
+            return
+        if task.status == TaskStatus.IN_PROGRESS:
+            await interaction.response.send_message(
+                "Task is currently in progress. Stop it first.", ephemeral=True
+            )
+            return
+        old_status = task.status.value
+        await db.update_task(
+            task_id,
+            status=TaskStatus.READY.value,
+            retry_count=0,
+            assigned_agent_id=None,
+        )
+        await interaction.response.send_message(
+            f"🔄 Task `{task_id}` restarted ({old_status} → READY)"
+        )
+
+    # ---------------------------------------------------------------------------
+    # /delete-task — delete a task
+    # ---------------------------------------------------------------------------
+
+    @bot.tree.command(name="delete-task", description="Delete a task")
+    @app_commands.describe(task_id="Task ID to delete")
+    async def delete_task_command(
+        interaction: discord.Interaction, task_id: str
+    ) -> None:
+        db = bot.orchestrator.db
+        task = await db.get_task(task_id)
+        if not task:
+            await interaction.response.send_message(
+                f"Task `{task_id}` not found.", ephemeral=True
+            )
+            return
+        if task.status == TaskStatus.IN_PROGRESS:
+            error = await bot.orchestrator.stop_task(task_id)
+            if error:
+                await interaction.response.send_message(
+                    f"Could not stop task before deleting: {error}", ephemeral=True
+                )
+                return
+        await db.delete_task(task_id)
+        await interaction.response.send_message(
+            f"🗑️ Task `{task_id}` ({task.title}) deleted."
+        )
+
+    # ---------------------------------------------------------------------------
+    # /approve-task — approve a task awaiting approval
+    # ---------------------------------------------------------------------------
+
+    @bot.tree.command(name="approve-task", description="Approve a task that is awaiting approval")
+    @app_commands.describe(task_id="Task ID to approve")
+    async def approve_task_command(
+        interaction: discord.Interaction, task_id: str
+    ) -> None:
+        db = bot.orchestrator.db
+        task = await db.get_task(task_id)
+        if not task:
+            await interaction.response.send_message(
+                f"Task `{task_id}` not found.", ephemeral=True
+            )
+            return
+        if task.status != TaskStatus.AWAITING_APPROVAL:
+            await interaction.response.send_message(
+                f"Task is not awaiting approval (status: {task.status.value}).",
+                ephemeral=True,
+            )
+            return
+        await db.update_task(task_id, status=TaskStatus.COMPLETED.value)
+        await db.log_event(
+            "task_completed",
+            project_id=task.project_id,
+            task_id=task.id,
+        )
+        await interaction.response.send_message(
+            f"✅ Task `{task_id}` ({task.title}) approved and completed."
+        )
+
+    # ---------------------------------------------------------------------------
+    # /task-result — show the output/results of a task
+    # ---------------------------------------------------------------------------
+
+    @bot.tree.command(name="task-result", description="Show the results/output of a completed task")
+    @app_commands.describe(task_id="Task ID to inspect")
+    async def task_result_command(
+        interaction: discord.Interaction, task_id: str
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        db = bot.orchestrator.db
+
+        task = await db.get_task(task_id)
+        if not task:
+            await interaction.followup.send(
+                f"Task `{task_id}` not found.", ephemeral=True
+            )
+            return
+
+        result = await db.get_task_result(task_id)
+        if not result:
+            await interaction.followup.send(
+                f"No results found for task `{task_id}`.", ephemeral=True
+            )
+            return
+
+        embed = discord.Embed(
+            title=f"Task Result: {task_id}",
+            color=0x2ecc71 if result.get("result") == "completed" else 0xe74c3c,
+        )
+        embed.add_field(name="Task", value=task.title, inline=False)
+        embed.add_field(name="Status", value=task.status.value, inline=True)
+        embed.add_field(
+            name="Result",
+            value=result.get("result", "unknown"),
+            inline=True,
+        )
+
+        summary = result.get("summary") or ""
+        if summary:
+            summary_text = summary[:1000] + ("…" if len(summary) > 1000 else "")
+            embed.add_field(
+                name="Summary", value=summary_text, inline=False
+            )
+
+        files = result.get("files_changed") or []
+        if files:
+            file_list = "\n".join(f"• `{f}`" for f in files[:20])
+            if len(files) > 20:
+                file_list += f"\n_...and {len(files) - 20} more_"
+            embed.add_field(name="Files Changed", value=file_list, inline=False)
+
+        tokens = result.get("tokens_used", 0)
+        if tokens:
+            embed.add_field(
+                name="Tokens Used", value=f"{tokens:,}", inline=True
+            )
+
+        error_msg = result.get("error_message") or ""
+        if error_msg:
+            snippet = error_msg[:500] + ("…" if len(error_msg) > 500 else "")
+            embed.add_field(
+                name="Error", value=f"```\n{snippet}\n```", inline=False
+            )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ---------------------------------------------------------------------------
+    # /events — show recent system events
+    # ---------------------------------------------------------------------------
+
+    @bot.tree.command(name="events", description="Show recent system events")
+    @app_commands.describe(limit="Number of events to show (default 10)")
+    async def events_command(
+        interaction: discord.Interaction, limit: int = 10
+    ) -> None:
+        db = bot.orchestrator.db
+        events = await db.get_recent_events(limit=limit)
+        if not events:
+            await interaction.response.send_message("No recent events.")
+            return
+
+        lines = ["## Recent Events"]
+        for evt in events:
+            ts = evt.get("timestamp", "")
+            etype = evt.get("event_type", "unknown")
+            project = evt.get("project_id", "")
+            task = evt.get("task_id", "")
+
+            parts = [f"**{etype}**"]
+            if project:
+                parts.append(f"project=`{project}`")
+            if task:
+                parts.append(f"task=`{task}`")
+            if ts:
+                parts.append(f"at {ts}")
+
+            lines.append(f"• {' — '.join(parts)}")
+
+        msg = "\n".join(lines)
+        if len(msg) > 2000:
+            msg = msg[:1997] + "..."
+        await interaction.response.send_message(msg)
+
+    # ---------------------------------------------------------------------------
+    # /create-agent — register a new agent
+    # ---------------------------------------------------------------------------
+
+    @bot.tree.command(name="create-agent", description="Register a new agent")
+    @app_commands.describe(
+        name="Agent display name",
+        agent_type="Agent type (claude, codex, cursor, aider)",
+        repo_id="Repository ID to assign as workspace (optional)",
+    )
+    @app_commands.choices(agent_type=[
+        app_commands.Choice(name="claude", value="claude"),
+        app_commands.Choice(name="codex",  value="codex"),
+        app_commands.Choice(name="cursor", value="cursor"),
+        app_commands.Choice(name="aider",  value="aider"),
+    ])
+    async def create_agent_command(
+        interaction: discord.Interaction,
+        name: str,
+        agent_type: app_commands.Choice[str] | None = None,
+        repo_id: str | None = None,
+    ) -> None:
+        db = bot.orchestrator.db
+        agent_id = name.lower().replace(" ", "-")
+        atype = agent_type.value if agent_type else "claude"
+
+        if repo_id:
+            repo = await db.get_repo(repo_id)
+            if not repo:
+                await interaction.response.send_message(
+                    f"Repo `{repo_id}` not found.", ephemeral=True
+                )
+                return
+
+        agent = Agent(
+            id=agent_id,
+            name=name,
+            agent_type=atype,
+            repo_id=repo_id,
+        )
+        await db.create_agent(agent)
+
+        embed = discord.Embed(title="✅ Agent Registered", color=0x2ecc71)
+        embed.add_field(name="Name", value=name, inline=True)
+        embed.add_field(name="ID", value=f"`{agent_id}`", inline=True)
+        embed.add_field(name="Type", value=atype, inline=True)
+        if repo_id:
+            embed.add_field(name="Repo", value=f"`{repo_id}`", inline=True)
+        await interaction.response.send_message(embed=embed)
+
+    # ---------------------------------------------------------------------------
+    # /repos — list registered repositories
+    # ---------------------------------------------------------------------------
+
+    @bot.tree.command(name="repos", description="List registered repositories")
+    @app_commands.describe(project_id="Filter by project ID (optional)")
+    async def repos_command(
+        interaction: discord.Interaction, project_id: str | None = None
+    ) -> None:
+        db = bot.orchestrator.db
+        repos = await db.list_repos(project_id=project_id)
+        if not repos:
+            await interaction.response.send_message("No repositories registered.")
+            return
+
+        lines = ["## Repositories"]
+        for r in repos:
+            source_info = ""
+            if r.source_type == RepoSourceType.LINK and r.source_path:
+                source_info = f" → `{r.source_path}`"
+            elif r.source_type == RepoSourceType.CLONE and r.url:
+                source_info = f" → {r.url}"
+            lines.append(
+                f"• **{r.id}** ({r.source_type.value}){source_info} — "
+                f"project: `{r.project_id}`, branch: `{r.default_branch}`"
+            )
+
+        msg = "\n".join(lines)
+        if len(msg) > 2000:
+            msg = msg[:1997] + "..."
+        await interaction.response.send_message(msg)
+
+    # ---------------------------------------------------------------------------
+    # /hooks — list hooks
+    # ---------------------------------------------------------------------------
+
+    @bot.tree.command(name="hooks", description="List automation hooks")
+    @app_commands.describe(project_id="Filter by project ID (optional)")
+    async def hooks_command(
+        interaction: discord.Interaction, project_id: str | None = None
+    ) -> None:
+        db = bot.orchestrator.db
+        hooks = await db.list_hooks(project_id=project_id)
+        if not hooks:
+            await interaction.response.send_message("No hooks configured.")
+            return
+
+        import json as _json
+        lines = ["## Hooks"]
+        for h in hooks:
+            status = "✅ enabled" if h.enabled else "❌ disabled"
+            try:
+                trigger = _json.loads(h.trigger)
+                trigger_desc = trigger.get("type", "unknown")
+                if trigger_desc == "periodic":
+                    interval = trigger.get("interval_seconds", 0)
+                    trigger_desc = f"periodic ({interval}s)"
+                elif trigger_desc == "event":
+                    trigger_desc = f"event: {trigger.get('event_type', '?')}"
+            except Exception:
+                trigger_desc = "unknown"
+            lines.append(
+                f"• **{h.name}** (`{h.id}`) — {status}, trigger: {trigger_desc}, "
+                f"project: `{h.project_id}`"
+            )
+
+        msg = "\n".join(lines)
+        if len(msg) > 2000:
+            msg = msg[:1997] + "..."
+        await interaction.response.send_message(msg)
+
+    # ---------------------------------------------------------------------------
+    # /set-project — set or clear the active project
+    # ---------------------------------------------------------------------------
+
+    @bot.tree.command(name="set-project", description="Set or clear the active project for the chat agent")
+    @app_commands.describe(project_id="Project ID to set as active (leave empty to clear)")
+    async def set_project_command(
+        interaction: discord.Interaction, project_id: str | None = None
+    ) -> None:
+        if project_id:
+            project = await bot.orchestrator.db.get_project(project_id)
+            if not project:
+                await interaction.response.send_message(
+                    f"Project `{project_id}` not found.", ephemeral=True
+                )
+                return
+            bot.agent.set_active_project(project_id)
+            await interaction.response.send_message(
+                f"📌 Active project set to **{project.name}** (`{project_id}`)"
+            )
+        else:
+            bot.agent.set_active_project(None)
+            await interaction.response.send_message("📌 Active project cleared.")

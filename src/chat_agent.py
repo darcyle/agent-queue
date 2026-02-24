@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import subprocess
 import time
 from pathlib import Path
 
 from src.chat_providers import ChatProvider, create_chat_provider
 from src.config import AppConfig
+from src.discord.notifications import classify_error
 from src.models import (
     Agent, Hook, Project, ProjectStatus, RepoConfig, RepoSourceType,
     Task, TaskStatus,
@@ -562,6 +564,53 @@ TOOLS = [
             "required": ["project_id"],
         },
     },
+    {
+        "name": "restart_daemon",
+        "description": "Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "orchestrator_control",
+        "description": "Pause, resume, or check the status of the orchestrator (task scheduler). When paused, no new tasks will be assigned to agents.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["pause", "resume", "status"],
+                    "description": "Action to perform: pause, resume, or status",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "set_task_status",
+        "description": "Manually override the status of a task. Bypasses the state machine — use to unstick tasks or force a status change.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID to update"},
+                "status": {
+                    "type": "string",
+                    "enum": ["DEFINED", "READY", "IN_PROGRESS", "COMPLETED", "FAILED", "BLOCKED"],
+                    "description": "New status for the task",
+                },
+            },
+            "required": ["task_id", "status"],
+        },
+    },
+    {
+        "name": "get_agent_error",
+        "description": "Get the last error recorded for a task, including error classification, suggested fix, and agent summary.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID to inspect"},
+            },
+            "required": ["task_id"],
+        },
+    },
 ]
 
 SYSTEM_PROMPT_TEMPLATE = """\
@@ -591,6 +640,10 @@ You can directly (using your tools):
 - Create, read, edit, and delete project notes with `list_notes`, `write_note`, `delete_note`, and `read_file`
 - Create and manage hooks for automated self-improvement with `create_hook`, `list_hooks`, \
 `edit_hook`, `delete_hook`, `list_hook_runs`, and `fire_hook`
+- Restart the daemon with `restart_daemon`
+- Pause, resume, or check the orchestrator (task scheduler) with `orchestrator_control`
+- Manually override a task's status with `set_task_status` (bypasses state machine)
+- Inspect the last error for a task with `get_agent_error` (shows error classification and suggested fix)
 
 Repository management — use the `add_repo` tool to connect repos to projects:
 - **clone**: Clone a git repo by URL. Agents get their own checkout. Use for remote repos.
@@ -1642,6 +1695,74 @@ class ChatAgent:
                     "project_name": project.name,
                     "repos": repo_statuses,
                 }
+
+            elif name == "restart_daemon":
+                os.kill(os.getpid(), signal.SIGTERM)
+                return {"status": "restarting", "message": "Daemon restart initiated"}
+
+            elif name == "orchestrator_control":
+                action = input_data["action"]
+                orch = self.orchestrator
+                if action == "pause":
+                    orch.pause()
+                    return {"status": "paused", "message": "Orchestrator paused — no new tasks will be scheduled"}
+                elif action == "resume":
+                    orch.resume()
+                    return {"status": "running", "message": "Orchestrator resumed"}
+                else:  # status
+                    running = len(orch._running_tasks)
+                    return {
+                        "status": "paused" if orch._paused else "running",
+                        "running_tasks": running,
+                    }
+
+            elif name == "set_task_status":
+                task_id = input_data["task_id"]
+                new_status = input_data["status"]
+                task = await db.get_task(task_id)
+                if not task:
+                    return {"error": f"Task '{task_id}' not found"}
+                old_status = task.status.value
+                await db.update_task(task_id, status=TaskStatus(new_status))
+                return {
+                    "task_id": task_id,
+                    "old_status": old_status,
+                    "new_status": new_status,
+                    "title": task.title,
+                }
+
+            elif name == "get_agent_error":
+                task_id = input_data["task_id"]
+                task = await db.get_task(task_id)
+                if not task:
+                    return {"error": f"Task '{task_id}' not found"}
+
+                result = await db.get_task_result(task_id)
+
+                info = {
+                    "task_id": task_id,
+                    "title": task.title,
+                    "status": task.status.value,
+                    "retries": f"{task.retry_count} / {task.max_retries}",
+                }
+
+                if not result:
+                    info["message"] = "No result recorded yet for this task"
+                    return info
+
+                result_value = result.get("result", "unknown")
+                error_msg = result.get("error_message") or ""
+                error_type, suggestion = classify_error(error_msg)
+
+                info["result"] = result_value
+                info["error_type"] = error_type
+                info["error_message"] = error_msg[:2000] if error_msg else None
+                info["suggested_fix"] = suggestion
+                summary = result.get("summary") or ""
+                if summary:
+                    info["agent_summary"] = summary[:1000]
+
+                return info
 
             else:
                 return {"error": f"Unknown tool: {name}"}
