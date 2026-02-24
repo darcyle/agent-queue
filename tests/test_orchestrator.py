@@ -444,6 +444,96 @@ Implement JWT-based sessions.
 
         await orch.shutdown()
 
+    async def test_only_last_step_inherits_approval_when_chained(self, tmp_path):
+        """When chain_dependencies=True and inherit_approval=True, only the
+        last generated step should inherit requires_approval from the parent.
+        Intermediate steps should have requires_approval=False so they don't
+        block the chain."""
+        workspace = tmp_path / "workspaces"
+        workspace.mkdir()
+
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(workspace),
+            auto_task=AutoTaskConfig(
+                chain_dependencies=True,
+                inherit_approval=True,
+            ),
+        )
+        orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        await orch.initialize()
+
+        claude_dir = workspace / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "plan.md").write_text(
+            "## Step A\n\nFirst.\n\n## Step B\n\nSecond.\n\n## Step C\n\nThird.\n"
+        )
+
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+
+        parent = Task(
+            id="t-1", project_id="p-1", title="Plan",
+            description="Plan it", status=TaskStatus.COMPLETED,
+            requires_approval=True,
+        )
+        await orch.db.create_task(parent)
+
+        generated = await orch._generate_tasks_from_plan(parent, str(workspace))
+        assert len(generated) == 3
+
+        # Sort by priority to get them in order
+        generated.sort(key=lambda t: t.priority)
+
+        # Intermediate steps should NOT require approval
+        assert generated[0].requires_approval is False
+        assert generated[1].requires_approval is False
+
+        # Only the last step should inherit the parent's requires_approval
+        assert generated[2].requires_approval is True
+
+        await orch.shutdown()
+
+    async def test_all_steps_inherit_approval_when_not_chained(self, tmp_path):
+        """When chain_dependencies=False and inherit_approval=True, ALL steps
+        should inherit requires_approval from the parent (original behavior)."""
+        workspace = tmp_path / "workspaces"
+        workspace.mkdir()
+
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(workspace),
+            auto_task=AutoTaskConfig(
+                chain_dependencies=False,
+                inherit_approval=True,
+            ),
+        )
+        orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        await orch.initialize()
+
+        claude_dir = workspace / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "plan.md").write_text(
+            "## Step A\n\nFirst.\n\n## Step B\n\nSecond.\n"
+        )
+
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+
+        parent = Task(
+            id="t-1", project_id="p-1", title="Plan",
+            description="Plan it", status=TaskStatus.COMPLETED,
+            requires_approval=True,
+        )
+        await orch.db.create_task(parent)
+
+        generated = await orch._generate_tasks_from_plan(parent, str(workspace))
+        assert len(generated) == 2
+
+        # Both steps should inherit approval since chain is disabled
+        assert generated[0].requires_approval is True
+        assert generated[1].requires_approval is True
+
+        await orch.shutdown()
+
     async def test_numbered_list_plan_generates_tasks(self, orch_with_workspace):
         """Plans using numbered lists should also generate subtasks."""
         orch, workspace = orch_with_workspace

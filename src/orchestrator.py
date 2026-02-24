@@ -544,12 +544,26 @@ class Orchestrator:
 
         created_tasks: list[Task] = []
         prev_task_id: str | None = None
+        total_steps = len(plan.steps)
 
-        for step in plan.steps:
+        for step_idx, step in enumerate(plan.steps):
             new_id = await generate_task_id(self.db)
             description = build_task_description(
                 step, parent_task=task, plan_context=plan_context
             )
+
+            # When chain_dependencies is enabled, only the final step
+            # should require approval.  Intermediate steps run without
+            # approval so the chain isn't blocked at every step.
+            is_last_step = (step_idx == total_steps - 1)
+            if config.inherit_approval and config.chain_dependencies:
+                step_requires_approval = (
+                    task.requires_approval if is_last_step else False
+                )
+            elif config.inherit_approval:
+                step_requires_approval = task.requires_approval
+            else:
+                step_requires_approval = False
 
             new_task = Task(
                 id=new_id,
@@ -560,9 +574,7 @@ class Orchestrator:
                 status=TaskStatus.DEFINED,
                 parent_task_id=task.id,
                 repo_id=task.repo_id if config.inherit_repo else None,
-                requires_approval=(
-                    task.requires_approval if config.inherit_approval else False
-                ),
+                requires_approval=step_requires_approval,
             )
 
             await self.db.create_task(new_task)
