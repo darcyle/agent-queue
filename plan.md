@@ -1,731 +1,177 @@
-# Plan: Additional Discord Commands for Git Management
+# Executive Summary: Per-Project Discord Channel Infrastructure
 
-## Overview
-
-The agent-queue system already has a solid `GitManager` class (`src/git/manager.py`) with methods for creating branches, checking out branches, committing, pushing, merging, diffing, and creating PRs. However, the Discord interface only exposes **two** git-related commands today:
-
-- `/git-status` — shows branch, working tree status, and recent commits for a project's repos
-- `/task-diff` — shows the git diff for a specific task's branch
-
-All other git operations (branch creation, checkout, commit, push, merge, PR creation, log viewing) are only accessible **indirectly** via the LLM chat agent's `run_command` tool (which runs raw shell commands) or happen **automatically** inside the orchestrator during task lifecycle. There are no dedicated commands for users to perform ad-hoc git operations on project repos from Discord.
-
-This plan adds **7 new git management commands** exposed as both:
-1. **CommandHandler backend methods** (`_cmd_*`) — the shared business logic
-2. **LLM chat tools** (in `TOOLS` list) — so the chat agent can call them
-3. **Discord slash commands** (`/git-*`) — for direct user interaction
+**Validation date:** 2026-02-24
+**Branch:** `eager-vault/background`
+**Method:** Direct code inspection of every file touching channel, project, or routing logic
+**Scope:** Full codebase audit confirming existing infrastructure for multi-channel support, automatic channel creation, channel-context-aware project resolution, and setup wizard support
 
 ---
 
-## Step 1: Add New Command Handler Methods to `src/command_handler.py`
+## Verdict
 
-Add the following methods to the `CommandHandler` class, in the existing `# Git commands` section (after `_cmd_get_git_status`). Each method resolves the repository path from a `project_id` and optional `repo_id`, validates the checkout, and delegates to `self.orchestrator.git`.
+The per-project Discord channel system is **architecturally complete and production-ready** at the storage, routing, orchestrator, and LLM integration layers. The full data flow — project creation, channel assignment, per-project notification routing with global fallback, and channel-context-aware NL command scoping — is operational.
 
-### Helper: Resolve repo path
-
-Add a private helper `_resolve_repo_path(project_id, repo_id=None)` that:
-1. Looks up the project (returns error if not found)
-2. If `repo_id` is given, looks up that specific repo
-3. If no `repo_id`, picks the first repo for the project (or falls back to `project.workspace_path`)
-4. Validates the path is a git checkout
-5. Returns `(checkout_path, repo, error_dict)` — error_dict is None on success
-
-This avoids duplicating repo-resolution logic across every new command.
-
-```python
-async def _resolve_repo_path(self, args: dict) -> tuple[str | None, RepoConfig | None, dict | None]:
-    """Resolve the git checkout path for a project/repo pair.
-
-    Returns (checkout_path, repo_config, error_dict).
-    On success error_dict is None. On failure checkout_path is None.
-    """
-    project_id = args.get("project_id")
-    if not project_id:
-        return None, None, {"error": "project_id is required"}
-    project = await self.db.get_project(project_id)
-    if not project:
-        return None, None, {"error": f"Project '{project_id}' not found"}
-
-    repo_id = args.get("repo_id")
-    git = self.orchestrator.git
-
-    if repo_id:
-        repo = await self.db.get_repo(repo_id)
-        if not repo:
-            return None, None, {"error": f"Repo '{repo_id}' not found"}
-    else:
-        repos = await self.db.list_repos(project_id=project_id)
-        repo = repos[0] if repos else None
-
-    if repo:
-        if repo.source_type == RepoSourceType.LINK and repo.source_path:
-            checkout_path = repo.source_path
-        elif repo.source_type == RepoSourceType.CLONE and repo.checkout_base_path:
-            checkout_path = repo.checkout_base_path
-        else:
-            return None, repo, {"error": f"Repo '{repo.id}' has no usable path"}
-    else:
-        checkout_path = project.workspace_path
-        if not checkout_path or not os.path.isdir(checkout_path):
-            return None, None, {"error": f"Project '{project_id}' has no repos and no valid workspace"}
-
-    if not os.path.isdir(checkout_path):
-        return None, repo, {"error": f"Path not found: {checkout_path}"}
-    if not git.validate_checkout(checkout_path):
-        return None, repo, {"error": f"Not a valid git repository: {checkout_path}"}
-
-    return checkout_path, repo, None
-```
-
-### 1a. `_cmd_create_branch`
-
-Creates a new branch in a project's repo. Uses `git checkout -b <branch_name>`.
-
-```python
-async def _cmd_create_branch(self, args: dict) -> dict:
-    branch_name = args.get("branch_name")
-    if not branch_name:
-        return {"error": "branch_name is required"}
-
-    checkout_path, repo, err = await self._resolve_repo_path(args)
-    if err:
-        return err
-
-    git = self.orchestrator.git
-    try:
-        git.create_branch(checkout_path, branch_name)
-    except Exception as e:
-        return {"error": f"Failed to create branch: {e}"}
-
-    return {
-        "project_id": args["project_id"],
-        "repo_id": repo.id if repo else "(workspace)",
-        "branch": branch_name,
-        "status": "created",
-    }
-```
-
-### 1b. `_cmd_checkout_branch`
-
-Checks out an existing branch. Uses `git checkout <branch_name>`.
-
-```python
-async def _cmd_checkout_branch(self, args: dict) -> dict:
-    branch_name = args.get("branch_name")
-    if not branch_name:
-        return {"error": "branch_name is required"}
-
-    checkout_path, repo, err = await self._resolve_repo_path(args)
-    if err:
-        return err
-
-    git = self.orchestrator.git
-    try:
-        git.checkout(checkout_path, branch_name)
-    except Exception as e:
-        return {"error": f"Failed to checkout branch: {e}"}
-
-    return {
-        "project_id": args["project_id"],
-        "repo_id": repo.id if repo else "(workspace)",
-        "branch": branch_name,
-        "status": "checked_out",
-    }
-```
-
-### 1c. `_cmd_commit_changes`
-
-Stages all changes and commits with a message. Uses the existing `git.commit_all()`.
-
-```python
-async def _cmd_commit_changes(self, args: dict) -> dict:
-    message = args.get("message")
-    if not message:
-        return {"error": "message is required"}
-
-    checkout_path, repo, err = await self._resolve_repo_path(args)
-    if err:
-        return err
-
-    git = self.orchestrator.git
-    try:
-        committed = git.commit_all(checkout_path, message)
-    except Exception as e:
-        return {"error": f"Failed to commit: {e}"}
-
-    if not committed:
-        return {
-            "project_id": args["project_id"],
-            "repo_id": repo.id if repo else "(workspace)",
-            "status": "nothing_to_commit",
-            "message": "No changes to commit",
-        }
-
-    return {
-        "project_id": args["project_id"],
-        "repo_id": repo.id if repo else "(workspace)",
-        "commit_message": message,
-        "status": "committed",
-    }
-```
-
-### 1d. `_cmd_push_branch`
-
-Pushes the current (or specified) branch to origin. Uses `git.push_branch()`.
-
-```python
-async def _cmd_push_branch(self, args: dict) -> dict:
-    checkout_path, repo, err = await self._resolve_repo_path(args)
-    if err:
-        return err
-
-    git = self.orchestrator.git
-    branch_name = args.get("branch_name")
-    if not branch_name:
-        branch_name = git.get_current_branch(checkout_path)
-        if not branch_name:
-            return {"error": "Could not determine current branch"}
-
-    try:
-        git.push_branch(checkout_path, branch_name)
-    except Exception as e:
-        return {"error": f"Failed to push: {e}"}
-
-    return {
-        "project_id": args["project_id"],
-        "repo_id": repo.id if repo else "(workspace)",
-        "branch": branch_name,
-        "status": "pushed",
-    }
-```
-
-### 1e. `_cmd_merge_branch`
-
-Merges a branch into the default branch. Uses `git.merge_branch()`.
-
-```python
-async def _cmd_merge_branch(self, args: dict) -> dict:
-    branch_name = args.get("branch_name")
-    if not branch_name:
-        return {"error": "branch_name is required"}
-
-    checkout_path, repo, err = await self._resolve_repo_path(args)
-    if err:
-        return err
-
-    git = self.orchestrator.git
-    default_branch = repo.default_branch if repo else "main"
-
-    try:
-        success = git.merge_branch(checkout_path, branch_name, default_branch)
-    except Exception as e:
-        return {"error": f"Failed to merge: {e}"}
-
-    if not success:
-        return {
-            "project_id": args["project_id"],
-            "repo_id": repo.id if repo else "(workspace)",
-            "branch": branch_name,
-            "target": default_branch,
-            "status": "conflict",
-            "message": "Merge conflict — merge was aborted",
-        }
-
-    return {
-        "project_id": args["project_id"],
-        "repo_id": repo.id if repo else "(workspace)",
-        "branch": branch_name,
-        "target": default_branch,
-        "status": "merged",
-    }
-```
-
-### 1f. `_cmd_git_log`
-
-Shows the git log for a project's repo. Uses `git.get_recent_commits()`.
-
-```python
-async def _cmd_git_log(self, args: dict) -> dict:
-    checkout_path, repo, err = await self._resolve_repo_path(args)
-    if err:
-        return err
-
-    git = self.orchestrator.git
-    count = args.get("count", 10)
-
-    log_output = git.get_recent_commits(checkout_path, count=count)
-    branch = git.get_current_branch(checkout_path)
-
-    return {
-        "project_id": args["project_id"],
-        "repo_id": repo.id if repo else "(workspace)",
-        "branch": branch,
-        "log": log_output or "(no commits)",
-    }
-```
-
-### 1g. `_cmd_git_diff`
-
-Shows the diff of the working tree or against a base branch. Complements the existing task-scoped `_cmd_get_task_diff`.
-
-```python
-async def _cmd_git_diff(self, args: dict) -> dict:
-    checkout_path, repo, err = await self._resolve_repo_path(args)
-    if err:
-        return err
-
-    git = self.orchestrator.git
-    base = args.get("base_branch")
-
-    try:
-        if base:
-            diff = git.get_diff(checkout_path, base)
-        else:
-            # Working tree diff (unstaged changes)
-            diff = git._run(["diff"], cwd=checkout_path)
-    except Exception as e:
-        return {"error": f"Failed to get diff: {e}"}
-
-    return {
-        "project_id": args["project_id"],
-        "repo_id": repo.id if repo else "(workspace)",
-        "base_branch": base or "(working tree)",
-        "diff": diff or "(no changes)",
-    }
-```
+Five **targeted gaps** remain, all concentrated in the **UX and automation** layers. No architectural refactoring is required; each gap can be closed with additive changes to existing code.
 
 ---
 
-## Step 2: Add LLM Tool Definitions to `src/chat_agent.py`
+## Layer-by-Layer Assessment
 
-Add the following entries to the `TOOLS` list in `src/chat_agent.py`. These mirror the command handler methods and let the LLM chat agent invoke them via tool use.
+### 1. Storage Layer — ✅ Complete
 
-```python
-{
-    "name": "create_branch",
-    "description": "Create a new git branch in a project's repository.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string", "description": "Project ID"},
-            "branch_name": {"type": "string", "description": "Name for the new branch"},
-            "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
-        },
-        "required": ["project_id", "branch_name"],
-    },
-},
-{
-    "name": "checkout_branch",
-    "description": "Switch to an existing git branch in a project's repository.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string", "description": "Project ID"},
-            "branch_name": {"type": "string", "description": "Branch name to check out"},
-            "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
-        },
-        "required": ["project_id", "branch_name"],
-    },
-},
-{
-    "name": "commit_changes",
-    "description": "Stage all changes and create a git commit in a project's repository.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string", "description": "Project ID"},
-            "message": {"type": "string", "description": "Commit message"},
-            "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
-        },
-        "required": ["project_id", "message"],
-    },
-},
-{
-    "name": "push_branch",
-    "description": "Push a branch to the remote origin in a project's repository.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string", "description": "Project ID"},
-            "branch_name": {"type": "string", "description": "Branch to push (optional — pushes current branch if omitted)"},
-            "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
-        },
-        "required": ["project_id"],
-    },
-},
-{
-    "name": "merge_branch",
-    "description": "Merge a branch into the default branch (e.g., main). Aborts if there are conflicts.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string", "description": "Project ID"},
-            "branch_name": {"type": "string", "description": "Branch to merge into the default branch"},
-            "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
-        },
-        "required": ["project_id", "branch_name"],
-    },
-},
-{
-    "name": "git_log",
-    "description": "Show recent git commits for a project's repository.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string", "description": "Project ID"},
-            "count": {"type": "integer", "description": "Number of commits to show (default 10)", "default": 10},
-            "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
-        },
-        "required": ["project_id"],
-    },
-},
-{
-    "name": "git_diff",
-    "description": "Show the git diff for a project's repository. Without base_branch shows working tree changes; with base_branch shows diff against that branch.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string", "description": "Project ID"},
-            "base_branch": {"type": "string", "description": "Base branch to diff against (optional — shows working tree diff if omitted)"},
-            "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
-        },
-        "required": ["project_id"],
-    },
-},
-```
+| Component | File | Status |
+|-----------|------|--------|
+| Schema columns | `src/database.py` L14–27 | `discord_channel_id TEXT` and `discord_control_channel_id TEXT` on `projects` table |
+| Migrations | `src/database.py` L200–201 | `ALTER TABLE` migrations for both columns (idempotent) |
+| CRUD operations | `src/database.py` L215–227 | `create_project` persists both fields; `update_project` supports partial updates |
+| Data model | `src/models.py` L84–95 | `Project` dataclass includes `discord_channel_id: str | None` and `discord_control_channel_id: str | None` |
 
-Also update the `SYSTEM_PROMPT_TEMPLATE` in the same file, adding to the git-related capabilities list:
+Both channel ID fields flow through the full persistence lifecycle: creation, reads, updates, and project listing. No storage-layer work is needed.
 
-```
-- Create branches with `create_branch`, switch branches with `checkout_branch`
-- Commit changes with `commit_changes`, push branches with `push_branch`
-- Merge branches with `merge_branch`
-- View commit history with `git_log`, see diffs with `git_diff`
-```
+### 2. Routing Layer — ✅ Complete (with Global Fallback)
+
+| Component | File | Lines | Description |
+|-----------|------|-------|-------------|
+| Channel resolution on startup | `src/discord/bot.py` | 197–229 | `_resolve_project_channels()` loads all projects, resolves Discord channel objects, caches in `_project_channels` / `_project_control_channels` dicts |
+| Notification routing | `src/discord/bot.py` | 231–257 | `_get_notification_channel(project_id)` and `_get_control_channel(project_id)` — check per-project cache first, fall back to global |
+| Runtime cache update | `src/discord/bot.py` | 67–78 | `update_project_channel()` — hot-updates cache after `/set-channel` or `/create-channel` (zero-restart) |
+| Thread creation | `src/discord/bot.py` | 259–307 | `_create_task_thread()` accepts `project_id`, creates thread in the correct per-project or global channel |
+
+**Routing correctness:** Every notification and thread-creation call site in the orchestrator passes `project_id`, ensuring per-project isolation when a channel is configured. When no per-project channel exists, messages fall through to the global channel — no notifications are lost.
+
+### 3. Orchestrator Layer — ✅ Complete
+
+| Component | File | Lines | Description |
+|-----------|------|-------|-------------|
+| Notify callback | `src/orchestrator.py` | 115–127 | `_notify_channel(message, project_id)` — forwards to bot callback with project context |
+| Control callback | `src/orchestrator.py` | 128–137 | `_control_channel_post(message, project_id)` — same pattern for control channel |
+| Callback registration | `src/orchestrator.py` | 72–82 | `set_notify_callback()`, `set_control_callback()`, `set_create_thread_callback()` |
+| Call sites | `src/orchestrator.py` | L109–112, L327, L803–814, L846, L855, L885, L902 | All task lifecycle events (stop, error, completion, output) route via `project_id` |
+
+The orchestrator consistently threads `project_id` through all notification paths. No orchestrator changes are needed.
+
+### 4. Discord Command Layer — ✅ Complete
+
+| Command | File | Lines | Description |
+|---------|------|-------|-------------|
+| `/set-channel` | `src/discord/commands.py` | 342–376 | Links an existing Discord channel to a project (notifications or control). Updates DB + bot cache immediately. |
+| `/create-channel` | `src/discord/commands.py` | 378–452 | Creates a new text channel in the guild and auto-links it to a project. Handles permissions errors, category placement. |
+
+Both commands immediately update the bot's in-memory channel cache via `bot.update_project_channel()`, so routing takes effect without restart.
+
+### 5. Command Handler (Business Logic) — ✅ Complete
+
+| Method | File | Lines | Description |
+|--------|------|-------|-------------|
+| `_cmd_set_project_channel` | `src/command_handler.py` | 197–219 | Validates project exists, validates channel_type, persists to DB |
+| `_cmd_get_project_channels` | `src/command_handler.py` | 221–231 | Returns both channel IDs for a project |
+
+Clean, well-validated business logic. Both methods are wired to Discord slash commands and LLM chat tools.
+
+### 6. LLM Chat Integration — ✅ Complete
+
+| Component | File | Lines | Description |
+|-----------|------|-------|-------------|
+| `set_project_channel` tool | `src/chat_agent.py` | 77–99 | LLM can programmatically link channels to projects |
+| `get_project_channels` tool | `src/chat_agent.py` | 100–111 | LLM can query channel assignments |
+| Channel context injection | `src/discord/bot.py` | 368–383 | Messages in per-project control channels automatically get `[Context: project_id='...']` prepended, so the LLM scopes commands to that project |
+| System prompt docs | `src/chat_agent.py` | 670–724 | Documents channel management tools and usage |
+
+The LLM can both manage and respond contextually to per-project channels.
 
 ---
 
-## Step 3: Add Discord Slash Commands to `src/discord/commands.py`
+## Five Targeted Gaps
 
-Add the following slash commands in a new `# GIT MANAGEMENT COMMANDS` section, right after the existing `git-status` command. Each command follows the established pattern: thin formatting wrapper → `handler.execute()` → format response.
+All gaps are in the **UX and automation** layers. None require architectural changes — each is a self-contained, additive enhancement.
 
-### 3a. `/create-branch`
+### Gap 1: Setup Wizard Ignores Per-Project Channels
 
-```python
-@bot.tree.command(name="create-branch", description="Create a new git branch in a project's repo")
-@app_commands.describe(
-    project_id="Project ID",
-    branch_name="Name for the new branch",
-    repo_id="Specific repo ID (optional)",
-)
-async def create_branch_command(
-    interaction: discord.Interaction,
-    project_id: str,
-    branch_name: str,
-    repo_id: str | None = None,
-):
-    args = {"project_id": project_id, "branch_name": branch_name}
-    if repo_id:
-        args["repo_id"] = repo_id
-    result = await handler.execute("create_branch", args)
-    if "error" in result:
-        await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
-        return
-    await interaction.response.send_message(
-        f"🌿 Branch `{branch_name}` created in `{result.get('repo_id', project_id)}`"
-    )
-```
+**Location:** `setup_wizard.py` L217–325 (`step_discord()`)
 
-### 3b. `/checkout-branch`
+**Current state:** The setup wizard configures three *global* channel names (control, notifications, agent_questions) and tests connectivity. It has zero awareness of per-project channels — no prompts to create them, no discovery of existing channels, no linking workflow.
 
-```python
-@bot.tree.command(name="checkout-branch", description="Switch to an existing git branch")
-@app_commands.describe(
-    project_id="Project ID",
-    branch_name="Branch name to check out",
-    repo_id="Specific repo ID (optional)",
-)
-async def checkout_branch_command(
-    interaction: discord.Interaction,
-    project_id: str,
-    branch_name: str,
-    repo_id: str | None = None,
-):
-    args = {"project_id": project_id, "branch_name": branch_name}
-    if repo_id:
-        args["repo_id"] = repo_id
-    result = await handler.execute("checkout_branch", args)
-    if "error" in result:
-        await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
-        return
-    await interaction.response.send_message(
-        f"🔀 Switched to branch `{branch_name}` in `{result.get('repo_id', project_id)}`"
-    )
-```
+**Impact:** New users complete setup with only global channels and never discover per-project isolation exists.
 
-### 3c. `/commit`
+**Fix:** Add an optional post-setup step that iterates configured projects and offers to create/link dedicated channels for each. Estimated: ~50 lines of additive code in `setup_wizard.py`.
 
-```python
-@bot.tree.command(name="commit", description="Stage all changes and commit")
-@app_commands.describe(
-    project_id="Project ID",
-    message="Commit message",
-    repo_id="Specific repo ID (optional)",
-)
-async def commit_command(
-    interaction: discord.Interaction,
-    project_id: str,
-    message: str,
-    repo_id: str | None = None,
-):
-    args = {"project_id": project_id, "message": message}
-    if repo_id:
-        args["repo_id"] = repo_id
-    result = await handler.execute("commit_changes", args)
-    if "error" in result:
-        await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
-        return
-    if result.get("status") == "nothing_to_commit":
-        await interaction.response.send_message(
-            f"ℹ️ Nothing to commit in `{result.get('repo_id', project_id)}` — working tree clean."
-        )
-        return
-    await interaction.response.send_message(
-        f"✅ Committed in `{result.get('repo_id', project_id)}`: {message}"
-    )
-```
+### Gap 2: Natural Language Parser is Dead Code
 
-### 3d. `/push`
+**Location:** `src/discord/nl_parser.py` (entire file, 42 lines)
 
-```python
-@bot.tree.command(name="push", description="Push a branch to the remote")
-@app_commands.describe(
-    project_id="Project ID",
-    branch_name="Branch to push (optional — pushes current branch)",
-    repo_id="Specific repo ID (optional)",
-)
-async def push_command(
-    interaction: discord.Interaction,
-    project_id: str,
-    branch_name: str | None = None,
-    repo_id: str | None = None,
-):
-    args: dict = {"project_id": project_id}
-    if branch_name:
-        args["branch_name"] = branch_name
-    if repo_id:
-        args["repo_id"] = repo_id
-    result = await handler.execute("push_branch", args)
-    if "error" in result:
-        await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
-        return
-    pushed_branch = result.get("branch", branch_name or "current")
-    await interaction.response.send_message(
-        f"🚀 Pushed `{pushed_branch}` in `{result.get('repo_id', project_id)}`"
-    )
-```
+**Current state:** `parse_natural_language()` is defined but never imported or called anywhere in the codebase. The `NLParserConfig` exists in `src/config.py` L87 but is never consumed by the bot. The parser itself is a keyword-matching stub with no project-context extraction — it doesn't attempt to identify which project a user is referring to.
 
-### 3e. `/merge`
+**Impact:** The intended flow of extracting project context from freeform messages (e.g., "pause my-app" → project_id='my-app') doesn't work. Users must either type in a per-project control channel (which has context injection) or explicitly name the project.
 
-```python
-@bot.tree.command(name="merge", description="Merge a branch into the default branch")
-@app_commands.describe(
-    project_id="Project ID",
-    branch_name="Branch to merge",
-    repo_id="Specific repo ID (optional)",
-)
-async def merge_command(
-    interaction: discord.Interaction,
-    project_id: str,
-    branch_name: str,
-    repo_id: str | None = None,
-):
-    args = {"project_id": project_id, "branch_name": branch_name}
-    if repo_id:
-        args["repo_id"] = repo_id
-    result = await handler.execute("merge_branch", args)
-    if "error" in result:
-        await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
-        return
-    if result.get("status") == "conflict":
-        await interaction.response.send_message(
-            f"⚠️ Merge conflict when merging `{branch_name}` → `{result.get('target', 'main')}`. "
-            f"Merge was aborted."
-        )
-        return
-    await interaction.response.send_message(
-        f"✅ Merged `{branch_name}` → `{result.get('target', 'main')}` in `{result.get('repo_id', project_id)}`"
-    )
-```
+**Fix:** Either integrate the parser into `bot.py`'s `on_message` flow with project-context extraction, or remove the dead code and document that the LLM-based chat agent handles all NL understanding (which it already does via the context injection at L370–376). Estimated: ~30 lines to integrate, or 0 lines to remove + document.
 
-### 3f. `/git-log`
+### Gap 3: `/create-channel` Uses Inefficient Project Validation
 
-```python
-@bot.tree.command(name="git-log", description="Show recent git commits")
-@app_commands.describe(
-    project_id="Project ID",
-    count="Number of commits to show (default 10)",
-    repo_id="Specific repo ID (optional)",
-)
-async def git_log_command(
-    interaction: discord.Interaction,
-    project_id: str,
-    count: int = 10,
-    repo_id: str | None = None,
-):
-    args: dict = {"project_id": project_id, "count": count}
-    if repo_id:
-        args["repo_id"] = repo_id
-    result = await handler.execute("git_log", args)
-    if "error" in result:
-        await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
-        return
-    branch = result.get("branch", "?")
-    log = result.get("log", "(no commits)")
-    repo_label = result.get("repo_id", project_id)
-    msg = f"## Git Log: `{repo_label}` (branch: `{branch}`)\n```\n{log}\n```"
-    await _send_long(interaction, msg, followup=False)
-```
+**Location:** `src/discord/commands.py` L402–410
 
-### 3g. `/git-diff`
+**Current state:** The `/create-channel` command validates that a project exists by calling `handler.execute("list_projects", {})` and scanning the full project list. Line 403 also has a vestigial no-op call (`handler.execute("get_task", {"task_id": "__noop__"})`) that serves no purpose.
 
-```python
-@bot.tree.command(name="git-diff", description="Show git diff for a project's repo")
-@app_commands.describe(
-    project_id="Project ID",
-    base_branch="Base branch to diff against (optional — shows working tree diff)",
-    repo_id="Specific repo ID (optional)",
-)
-async def git_diff_command(
-    interaction: discord.Interaction,
-    project_id: str,
-    base_branch: str | None = None,
-    repo_id: str | None = None,
-):
-    args: dict = {"project_id": project_id}
-    if base_branch:
-        args["base_branch"] = base_branch
-    if repo_id:
-        args["repo_id"] = repo_id
-    result = await handler.execute("git_diff", args)
-    if "error" in result:
-        await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
-        return
+**Impact:** Functionally correct but wasteful — loads all projects into memory to check if one exists. The `database.get_project(id)` method already exists and is used everywhere else (including `_cmd_set_project_channel` at L200).
 
-    diff = result.get("diff", "(no changes)")
-    base_label = result.get("base_branch", "working tree")
-    repo_label = result.get("repo_id", project_id)
-    header = f"**Repo:** `{repo_label}` | **Diff against:** `{base_label}`\n"
+**Fix:** Replace L402–410 with a direct `handler.execute("get_project", {"project_id": project_id})` or equivalent DB call. Remove the no-op line. Estimated: 5-line change.
 
-    if len(diff) > 1800:
-        await interaction.response.defer()
-        await interaction.followup.send(
-            content=f"{header}*Diff attached ({len(diff):,} chars)*",
-            file=discord.File(
-                fp=io.BytesIO(diff.encode("utf-8")),
-                filename=f"diff-{project_id}.patch",
-            ),
-        )
-    else:
-        await interaction.response.send_message(
-            f"{header}```diff\n{diff}\n```"
-        )
-```
+### Gap 4: No Channel Map / Overview Command
+
+**Current state:** There is no way for a user to see an overview of all project-to-channel assignments at a glance. The only way to check is to call `get_project_channels` for each project individually (via LLM chat) or inspect the database.
+
+**Impact:** As the number of projects grows, users lose track of which channels are linked to which projects. There's no `/channel-map` or `/channels` command to provide a dashboard view.
+
+**Fix:** Add a `/channel-map` slash command (and corresponding LLM tool) that lists all projects and their assigned notification/control channels. Estimated: ~40 lines in `commands.py` + ~15 lines in `command_handler.py`.
+
+### Gap 5: No Channel Cleanup on Project Deletion or Channel Loss
+
+**Location:** `src/command_handler.py` L233+ (`_cmd_delete_project`) and `src/discord/bot.py` L197–229 (`_resolve_project_channels`)
+
+**Current state:**
+- **Project deletion** (`_cmd_delete_project`) does not clear channel assignments or remove the project from the bot's channel cache. Orphaned channel references remain in the database.
+- **Channel resolution** logs a warning if a channel ID can't be found in the guild (L216–219, L226–229), but takes no corrective action — the stale ID stays in the database.
+- There is no mechanism to detect that a previously-linked Discord channel has been deleted and alert the user or fall back gracefully.
+
+**Impact:** Over time, deleted projects or deleted Discord channels leave stale references. No data loss occurs (the fallback to global channels still works), but it creates confusion and clutter.
+
+**Fix:**
+- In `_cmd_delete_project`: clear `discord_channel_id` and `discord_control_channel_id` and remove from bot cache.
+- In `_resolve_project_channels`: optionally null-out stale channel IDs in the database and log a user-visible warning.
+- Estimated: ~20 lines across two files.
 
 ---
 
-## Step 4: Add `checkout` Method to `GitManager` (`src/git/manager.py`)
+## File Inventory
 
-The `GitManager` currently has `create_branch()` (which does `checkout -b`) but no plain `checkout` method for switching to an existing branch. Add one:
-
-```python
-def checkout(self, checkout_path: str, branch_name: str) -> None:
-    """Switch to an existing branch."""
-    self._run(["checkout", branch_name], cwd=checkout_path)
-```
-
-Then update `_cmd_checkout_branch` in the command handler to call `git.checkout()` instead of the raw `git._run()` call, keeping the public API clean.
-
----
-
-## Step 5: Safety Considerations
-
-### 5a. Authorization Guard
-
-All new commands should respect the existing authorization model. The Discord bot already checks `authorized_users` in the config for messages. Slash commands should follow the same pattern. No additional auth changes needed since the existing bot-level authorization applies to all slash commands equally.
-
-### 5b. Prevent Destructive Operations During Active Tasks
-
-Add a safety check to `_cmd_checkout_branch`, `_cmd_merge_branch`, and `_cmd_commit_changes`: if any task is `IN_PROGRESS` for the same project and repo, warn the user that switching branches or merging could disrupt the running agent. The command should still execute (the user may know what they're doing), but the response should include a warning.
-
-```python
-# In each potentially-disruptive command handler:
-in_progress_tasks = await self.db.list_tasks(
-    project_id=args["project_id"], status=TaskStatus.IN_PROGRESS
-)
-warning = None
-if in_progress_tasks:
-    warning = f"⚠️ {len(in_progress_tasks)} task(s) currently IN_PROGRESS for this project"
-
-# Include warning in result dict if present:
-if warning:
-    result["warning"] = warning
-```
-
-The slash command formatter then appends the warning to the Discord message.
-
-### 5c. Git Error Handling
-
-All `GitManager` operations can raise `GitError`. The command handler methods wrap them in try/except and return structured `{"error": ...}` dicts. The slash commands display errors with `ephemeral=True` so only the command issuer sees them.
+| File | Role | Status |
+|------|------|--------|
+| `src/models.py` | `Project` dataclass with channel fields | ✅ Complete |
+| `src/database.py` | Schema, migrations, CRUD for channel IDs | ✅ Complete |
+| `src/orchestrator.py` | Notification callbacks with `project_id` threading | ✅ Complete |
+| `src/discord/bot.py` | Channel cache, routing, context injection, thread creation | ✅ Complete |
+| `src/discord/commands.py` | `/set-channel`, `/create-channel` slash commands | ✅ Complete (Gap 3: validation) |
+| `src/command_handler.py` | `set_project_channel`, `get_project_channels` business logic | ✅ Complete (Gap 5: cleanup) |
+| `src/chat_agent.py` | LLM tools and system prompt for channel management | ✅ Complete |
+| `src/discord/nl_parser.py` | NL parsing stub — never called | ⚠️ Dead code (Gap 2) |
+| `setup_wizard.py` | Discord setup — global channels only | ⚠️ No per-project support (Gap 1) |
 
 ---
 
-## Step 6: Testing
+## Effort Estimate
 
-### 6a. Unit Tests for New Command Handler Methods
+| Gap | Effort | Risk | Priority |
+|-----|--------|------|----------|
+| Gap 1: Setup wizard per-project channels | ~2 hours | Low | Medium |
+| Gap 2: NL parser dead code | ~1 hour (integrate or remove) | Low | Low |
+| Gap 3: `/create-channel` validation fix | ~15 minutes | None | High (code quality) |
+| Gap 4: Channel map overview command | ~2 hours | Low | Medium |
+| Gap 5: Channel cleanup on deletion | ~1 hour | Low | Medium |
+| **Total** | **~6 hours** | — | — |
 
-Add tests in `tests/` for each new command handler method:
-
-- `test_create_branch` — success, missing branch_name, invalid project
-- `test_checkout_branch` — success, branch not found, invalid project
-- `test_commit_changes` — success, nothing to commit, missing message
-- `test_push_branch` — success with explicit branch, success with current branch, push failure
-- `test_merge_branch` — success, conflict scenario, missing branch_name
-- `test_git_log` — success, custom count
-- `test_git_diff` — working tree diff, diff against base branch
-
-These tests should mock the `GitManager` and `Database` to test command handler logic in isolation.
-
-### 6b. Integration Test for `_resolve_repo_path`
-
-Test the resolution logic:
-- Project with linked repo → returns source_path
-- Project with cloned repo → returns checkout_base_path
-- Project with no repos → falls back to workspace_path
-- Invalid project → returns error
-- Invalid repo_id → returns error
+All five gaps are independently addressable. No gap blocks another, and none require changes to the core routing or storage architecture.
 
 ---
 
-## Summary of Changes by File
+## Conclusion
 
-| File | Changes |
-|------|---------|
-| `src/git/manager.py` | Add `checkout()` method |
-| `src/command_handler.py` | Add `_resolve_repo_path()` helper + 7 new `_cmd_*` methods |
-| `src/chat_agent.py` | Add 7 tool definitions to `TOOLS` list + update system prompt |
-| `src/discord/commands.py` | Add 7 new slash commands with formatting |
-| `tests/test_git_commands.py` | New test file for git command handler methods |
-
-### New Discord Slash Commands Summary
-
-| Command | Description | Required Params | Optional Params |
-|---------|-------------|-----------------|-----------------|
-| `/create-branch` | Create a new branch | `project_id`, `branch_name` | `repo_id` |
-| `/checkout-branch` | Switch to existing branch | `project_id`, `branch_name` | `repo_id` |
-| `/commit` | Stage all + commit | `project_id`, `message` | `repo_id` |
-| `/push` | Push branch to remote | `project_id` | `branch_name`, `repo_id` |
-| `/merge` | Merge branch into default | `project_id`, `branch_name` | `repo_id` |
-| `/git-log` | Show recent commits | `project_id` | `count`, `repo_id` |
-| `/git-diff` | Show working tree or branch diff | `project_id` | `base_branch`, `repo_id` |
-
-All commands integrate seamlessly with the existing three-layer architecture (CommandHandler → LLM Tools → Discord Slash Commands) and require no database schema changes.
+The per-project Discord channel system has **solid, production-grade infrastructure**. The storage schema, notification routing with fallback, orchestrator integration, slash commands, and LLM tool support all work correctly and cohesively. The five identified gaps are UX polish items — improving discoverability (setup wizard, channel map), removing dead code (NL parser), fixing a minor inefficiency (`/create-channel` validation), and adding lifecycle hygiene (cleanup on deletion). Closing all five gaps requires approximately 6 hours of additive development with no risk to existing functionality.
