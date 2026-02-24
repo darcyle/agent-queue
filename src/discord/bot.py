@@ -299,10 +299,20 @@ class AgentQueueBot(commands.Bot):
             await self._send_long_message(channel, text)
 
     async def _send_control_message(self, text: str, project_id: str | None = None) -> None:
-        """Send a message to the control channel (project-specific or global)."""
+        """Send a message to the control channel (project-specific or global).
+
+        Skips sending if the control channel is the same as the notifications
+        channel to avoid duplicate messages.
+        """
         channel = self._get_control_channel(project_id)
-        if channel:
-            await self._send_long_message(channel, text)
+        if not channel:
+            return
+        # Avoid duplicating messages when control and notifications target
+        # the same Discord channel.
+        notify_channel = self._get_notification_channel(project_id)
+        if channel.id == notify_channel.id if notify_channel else False:
+            return
+        await self._send_long_message(channel, text)
 
     async def _create_task_thread(
         self, thread_name: str, initial_message: str, project_id: str | None = None

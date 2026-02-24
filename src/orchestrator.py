@@ -1117,8 +1117,11 @@ class Orchestrator:
                         f"📋 **Auto-generated {len(generated)} task(s)** "
                         f"from plan in `{task.id}`:\n{task_list}"
                     )
-                    await _post(plan_msg)
-                    await _notify_brief(plan_msg)
+                    if thread_send:
+                        await thread_send(plan_msg)
+                        await _notify_brief(plan_msg)
+                    else:
+                        await self._notify_channel(plan_msg, project_id=action.project_id)
                     await self._control_channel_post(plan_msg, project_id=action.project_id)
             except Exception as e:
                 print(f"Auto-task generation error for task {task.id}: {e}")
