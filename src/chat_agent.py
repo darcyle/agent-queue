@@ -765,6 +765,25 @@ TOOLS = [
         },
     },
     {
+        "name": "git_diff",
+        "description": (
+            "Show the diff of the working tree (unstaged changes) or against a base branch. "
+            "Complements the task-scoped get_task_diff with project/repo-level diffs."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "repo_id": {"type": "string", "description": "Repository ID (optional, defaults to first repo in project)"},
+                "base_branch": {
+                    "type": "string",
+                    "description": "Branch to diff against. If omitted, shows unstaged working tree changes.",
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
         "name": "restart_daemon",
         "description": "Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect.",
         "input_schema": {"type": "object", "properties": {}},

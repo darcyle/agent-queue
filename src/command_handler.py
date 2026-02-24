@@ -1208,28 +1208,28 @@ class CommandHandler:
         }
 
     async def _cmd_git_diff(self, args: dict) -> dict:
-        """Show diff for a project repo against a base branch."""
+        """Show diff of the working tree or against a base branch."""
         checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
             return err
 
         git = self.orchestrator.git
+        base = args.get("base_branch")
 
-        # Determine base branch from repo config or fallback
-        default_branch = (repo.default_branch if repo else "main") or "main"
-        base = args.get("base_branch", default_branch)
-
-        current_branch = git.get_current_branch(checkout_path)
-        diff = git.get_diff(checkout_path, base)
-        changed_files = git.get_changed_files(checkout_path, base)
+        try:
+            if base:
+                diff = git.get_diff(checkout_path, base)
+            else:
+                # Working tree diff (unstaged changes)
+                diff = git._run(["diff"], cwd=checkout_path)
+        except Exception as e:
+            return {"error": f"Failed to get diff: {e}"}
 
         return {
             "project_id": args["project_id"],
-            "branch": current_branch,
-            "base_branch": base,
+            "repo_id": repo.id if repo else "(workspace)",
+            "base_branch": base or "(working tree)",
             "diff": diff or "(no changes)",
-            "changed_files": changed_files,
-            "file_count": len(changed_files),
         }
 
     async def _cmd_create_branch(self, args: dict) -> dict:
