@@ -1276,6 +1276,37 @@ class CommandHandler:
             "status": "checked_out",
         }
 
+    async def _cmd_commit_changes(self, args: dict) -> dict:
+        """Stage all changes and commit with a message."""
+        message = args.get("message")
+        if not message:
+            return {"error": "message is required"}
+
+        checkout_path, repo, err = await self._resolve_repo_path(args)
+        if err:
+            return err
+
+        git = self.orchestrator.git
+        try:
+            committed = git.commit_all(checkout_path, message)
+        except Exception as e:
+            return {"error": f"Failed to commit: {e}"}
+
+        if not committed:
+            return {
+                "project_id": args["project_id"],
+                "repo_id": repo.id if repo else "(workspace)",
+                "status": "nothing_to_commit",
+                "message": "No changes to commit",
+            }
+
+        return {
+            "project_id": args["project_id"],
+            "repo_id": repo.id if repo else "(workspace)",
+            "commit_message": message,
+            "status": "committed",
+        }
+
     # -----------------------------------------------------------------------
     # Hook commands
     # -----------------------------------------------------------------------
