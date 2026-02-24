@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import signal
 import sys
 
@@ -75,7 +76,9 @@ def main():
     restart = asyncio.run(run(config_path))
     if restart:
         print("Restart requested — exec'ing new process...")
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        # Resolve the entry point to an absolute path for execv
+        exe = shutil.which(sys.argv[0]) or os.path.abspath(sys.argv[0])
+        os.execv(exe, sys.argv)
 
 
 if __name__ == "__main__":

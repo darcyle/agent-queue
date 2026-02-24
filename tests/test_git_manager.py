@@ -7,8 +7,8 @@ from src.git.manager import GitManager
 def git_repo(tmp_path):
     """Create a bare remote + working clone for testing."""
     remote = tmp_path / "remote.git"
-    subprocess.run(["git", "init", "--bare", str(remote)], check=True,
-                   capture_output=True)
+    subprocess.run(["git", "init", "--bare", "--initial-branch=main", str(remote)],
+                   check=True, capture_output=True)
     clone = tmp_path / "clone"
     subprocess.run(["git", "clone", str(remote), str(clone)], check=True,
                    capture_output=True)
