@@ -1811,6 +1811,34 @@ def setup_commands(bot: commands.Bot) -> None:
         )
 
     @bot.tree.command(
+        name="create-branch",
+        description="Create a new git branch in a project's repo",
+    )
+    @app_commands.describe(
+        project_id="Project ID",
+        branch_name="Name for the new branch",
+        repo_id="Specific repo ID (optional)",
+    )
+    async def create_branch_command(
+        interaction: discord.Interaction,
+        project_id: str,
+        branch_name: str,
+        repo_id: str | None = None,
+    ):
+        args: dict = {"project_id": project_id, "branch_name": branch_name}
+        if repo_id:
+            args["repo_id"] = repo_id
+        result = await handler.execute("create_branch", args)
+        if "error" in result:
+            await interaction.response.send_message(
+                f"Error: {result['error']}", ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            f"🌿 Branch `{branch_name}` created in `{result.get('repo_id', project_id)}`"
+        )
+
+    @bot.tree.command(
         name="git-commit",
         description="Stage all changes and commit in a repository",
     )
