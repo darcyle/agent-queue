@@ -386,9 +386,10 @@ class CommandHandler:
         if task.status == TaskStatus.IN_PROGRESS:
             return {"error": "Task is currently in progress. Stop it first."}
         old_status = task.status.value
-        await self.db.update_task(
+        await self.db.transition_task(
             args["task_id"],
-            status=TaskStatus.READY.value,
+            TaskStatus.READY,
+            context="restart_task",
             retry_count=0,
             assigned_agent_id=None,
         )
@@ -415,9 +416,10 @@ class CommandHandler:
             return {"error": f"Task '{args['task_id']}' not found"}
         if task.status != TaskStatus.AWAITING_APPROVAL:
             return {"error": f"Task is not awaiting approval (status: {task.status.value})"}
-        await self.db.update_task(
+        await self.db.transition_task(
             args["task_id"],
-            status=TaskStatus.COMPLETED.value,
+            TaskStatus.COMPLETED,
+            context="approve_task",
         )
         await self.db.log_event(
             "task_completed",
@@ -433,7 +435,8 @@ class CommandHandler:
         if not task:
             return {"error": f"Task '{task_id}' not found"}
         old_status = task.status.value
-        await self.db.update_task(task_id, status=TaskStatus(new_status))
+        await self.db.transition_task(task_id, TaskStatus(new_status),
+                                      context="admin_set_status")
         return {
             "task_id": task_id,
             "old_status": old_status,

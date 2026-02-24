@@ -25,6 +25,9 @@ class TestTaskEvent:
             "RESUME_TIMER", "VERIFY_PASSED", "VERIFY_FAILED",
             "PR_CREATED", "PR_MERGED",
             "RETRY", "MAX_RETRIES",
+            # Administrative / recovery events
+            "ADMIN_SKIP", "ADMIN_STOP", "ADMIN_RESTART",
+            "PR_CLOSED", "TIMEOUT", "EXECUTION_ERROR", "RECOVERY",
         }
         assert {e.value for e in TaskEvent} == expected
 

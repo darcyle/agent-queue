@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 
@@ -10,6 +11,9 @@ from src.models import (
     Agent, AgentState, Hook, HookRun, Project, ProjectStatus, RepoConfig,
     RepoSourceType, Task, TaskStatus, VerificationType,
 )
+from src.state_machine import is_valid_status_transition
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -391,6 +395,53 @@ class Database:
             f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", vals
         )
         await self._db.commit()
+
+    async def transition_task(
+        self,
+        task_id: str,
+        new_status: TaskStatus,
+        *,
+        context: str = "",
+        **kwargs,
+    ) -> None:
+        """Update task status with state-machine validation.
+
+        Fetches the current status, checks it against the state machine, and
+        logs a warning if the transition is not formally valid.  The update
+        is **always applied** (logging-only mode) so that production behaviour
+        is not blocked by unexpected edge cases.
+
+        Any extra *kwargs* (e.g. ``assigned_agent_id``, ``retry_count``) are
+        forwarded to :meth:`update_task`.
+        """
+        task = await self.get_task(task_id)
+        if task is None:
+            logger.warning(
+                "transition_task: task '%s' not found, cannot validate", task_id
+            )
+            # Still attempt the update in case of a race condition
+            await self.update_task(task_id, status=new_status, **kwargs)
+            return
+
+        current_status = task.status
+
+        if current_status == new_status:
+            # Same-status "transition" — skip validation, just apply kwargs.
+            if kwargs:
+                await self.update_task(task_id, **kwargs)
+            return
+
+        if not is_valid_status_transition(current_status, new_status):
+            ctx = f" ({context})" if context else ""
+            logger.warning(
+                "Invalid task status transition: %s -> %s for task '%s'%s",
+                current_status.value,
+                new_status.value,
+                task_id,
+                ctx,
+            )
+
+        await self.update_task(task_id, status=new_status, **kwargs)
 
     async def delete_task(self, task_id: str) -> None:
         await self._db.execute("DELETE FROM task_results WHERE task_id = ?", [task_id])
@@ -896,6 +947,16 @@ class Database:
     # --- Atomic Operations ---
 
     async def assign_task_to_agent(self, task_id: str, agent_id: str) -> None:
+        # Validate the READY -> ASSIGNED transition
+        task = await self.get_task(task_id)
+        if task and not is_valid_status_transition(task.status, TaskStatus.ASSIGNED):
+            logger.warning(
+                "Invalid task status transition: %s -> ASSIGNED for task '%s' "
+                "(assign_task_to_agent)",
+                task.status.value,
+                task_id,
+            )
+
         now = time.time()
         await self._db.execute(
             "UPDATE tasks SET status = ?, assigned_agent_id = ?, updated_at = ? "

@@ -112,9 +112,10 @@ class Orchestrator:
                 [],
             )
 
-        await self.db.update_task(
+        await self.db.transition_task(
             task_id,
-            status=TaskStatus.COMPLETED.value,
+            TaskStatus.COMPLETED,
+            context="skip_task",
         )
         await self.db.log_event(
             "task_skipped",
@@ -164,8 +165,9 @@ class Orchestrator:
                 print(f"Error stopping adapter for agent {agent_id}: {e}")
 
         # Reset task and agent state
-        await self.db.update_task(task_id, status=TaskStatus.BLOCKED.value,
-                                  assigned_agent_id=None)
+        await self.db.transition_task(task_id, TaskStatus.BLOCKED,
+                                      context="stop_task",
+                                      assigned_agent_id=None)
         if agent_id:
             await self.db.update_agent(agent_id, state=AgentState.IDLE,
                                        current_task_id=None)
@@ -228,8 +230,9 @@ class Orchestrator:
         tasks = await self.db.list_tasks(status=TaskStatus.IN_PROGRESS)
         for t in tasks:
             print(f"Recovery: resetting task '{t.id}' ({t.title}) from IN_PROGRESS to READY")
-            await self.db.update_task(t.id, status=TaskStatus.READY.value,
-                                      assigned_agent_id=None)
+            await self.db.transition_task(t.id, TaskStatus.READY,
+                                          context="recovery",
+                                          assigned_agent_id=None)
 
     async def wait_for_running_tasks(self, timeout: float | None = None) -> None:
         """Wait for all background task executions to finish.
@@ -312,8 +315,9 @@ class Orchestrator:
                     await self._adapters[action.agent_id].stop()
                 except Exception:
                     pass
-            await self.db.update_task(
-                action.task_id, status=TaskStatus.BLOCKED.value,
+            await self.db.transition_task(
+                action.task_id, TaskStatus.BLOCKED,
+                context="timeout",
                 assigned_agent_id=None)
             await self.db.update_agent(
                 action.agent_id, state=AgentState.IDLE,
@@ -333,8 +337,9 @@ class Orchestrator:
             import traceback
             traceback.print_exc()
             try:
-                await self.db.update_task(
-                    action.task_id, status=TaskStatus.READY.value,
+                await self.db.transition_task(
+                    action.task_id, TaskStatus.READY,
+                    context="execution_error",
                     assigned_agent_id=None)
                 await self.db.update_agent(
                     action.agent_id, state=AgentState.IDLE,
@@ -353,8 +358,10 @@ class Orchestrator:
         now = time.time()
         for task in paused:
             if task.resume_after and task.resume_after <= now:
-                await self.db.update_task(task.id, status=TaskStatus.READY.value,
-                                          assigned_agent_id=None, resume_after=None)
+                await self.db.transition_task(task.id, TaskStatus.READY,
+                                              context="resume_paused",
+                                              assigned_agent_id=None,
+                                              resume_after=None)
 
     async def _check_defined_tasks(self) -> None:
         defined = await self.db.list_tasks(status=TaskStatus.DEFINED)
@@ -362,11 +369,13 @@ class Orchestrator:
             deps = await self.db.get_dependencies(task.id)
             if not deps:
                 # No dependencies — promote to READY
-                await self.db.update_task(task.id, status=TaskStatus.READY.value)
+                await self.db.transition_task(task.id, TaskStatus.READY,
+                                              context="deps_met_no_deps")
             else:
                 deps_met = await self.db.are_dependencies_met(task.id)
                 if deps_met:
-                    await self.db.update_task(task.id, status=TaskStatus.READY.value)
+                    await self.db.transition_task(task.id, TaskStatus.READY,
+                                                  context="deps_met")
 
     async def _check_stuck_defined_tasks(self) -> None:
         """Detect DEFINED tasks that have been waiting longer than the configured
@@ -904,8 +913,9 @@ class Orchestrator:
         # --- Auto-complete path ---------------------------------------------------
         if not task.requires_approval:
             if age >= self._NO_PR_AUTO_COMPLETE_GRACE:
-                await self.db.update_task(
-                    task.id, status=TaskStatus.COMPLETED.value)
+                await self.db.transition_task(
+                    task.id, TaskStatus.COMPLETED,
+                    context="auto_complete_no_pr")
                 await self.db.log_event(
                     "task_completed", project_id=task.project_id,
                     task_id=task.id,
@@ -969,8 +979,9 @@ class Orchestrator:
             return
 
         if merged is True:
-            await self.db.update_task(
-                task.id, status=TaskStatus.COMPLETED.value)
+            await self.db.transition_task(
+                task.id, TaskStatus.COMPLETED,
+                context="pr_merged")
             await self.db.log_event(
                 "task_completed", project_id=task.project_id,
                 task_id=task.id)
@@ -988,8 +999,9 @@ class Orchestrator:
                     pass  # branch cleanup is best-effort
         elif merged is None:
             # Closed without merge
-            await self.db.update_task(
-                task.id, status=TaskStatus.BLOCKED.value)
+            await self.db.transition_task(
+                task.id, TaskStatus.BLOCKED,
+                context="pr_closed")
             await self._notify_channel(
                 f"**PR Closed:** Task `{task.id}` — {task.title} "
                 f"was closed without merging. Marked as BLOCKED.",
@@ -1010,8 +1022,8 @@ class Orchestrator:
         await self.db.assign_task_to_agent(action.task_id, action.agent_id)
 
         # Start agent
-        await self.db.update_task(action.task_id,
-                                  status=TaskStatus.IN_PROGRESS.value)
+        await self.db.transition_task(action.task_id, TaskStatus.IN_PROGRESS,
+                                      context="agent_started")
         await self.db.update_agent(action.agent_id, state=AgentState.BUSY)
 
         task = await self.db.get_task(action.task_id)
@@ -1225,8 +1237,8 @@ class Orchestrator:
 
         # Handle result
         if output.result == AgentResult.COMPLETED:
-            await self.db.update_task(action.task_id,
-                                      status=TaskStatus.VERIFYING.value)
+            await self.db.transition_task(action.task_id, TaskStatus.VERIFYING,
+                                          context="agent_completed")
 
             # Post-completion: commit, merge or create PR
             pr_url = None
@@ -1239,9 +1251,10 @@ class Orchestrator:
 
             if pr_url:
                 # PR-based approval workflow
-                await self.db.update_task(
+                await self.db.transition_task(
                     action.task_id,
-                    status=TaskStatus.AWAITING_APPROVAL.value,
+                    TaskStatus.AWAITING_APPROVAL,
+                    context="pr_created",
                     pr_url=pr_url,
                 )
                 await self.db.log_event("pr_created",
@@ -1256,17 +1269,18 @@ class Orchestrator:
                 await self._control_channel_post(brief, project_id=action.project_id)
             elif task.requires_approval and not pr_url:
                 # Approval required but no PR (e.g. LINK repo) — wait for manual approval
-                await self.db.update_task(
+                await self.db.transition_task(
                     action.task_id,
-                    status=TaskStatus.AWAITING_APPROVAL.value,
+                    TaskStatus.AWAITING_APPROVAL,
+                    context="approval_required_no_pr",
                 )
                 brief = f"🔍 Awaiting manual approval: {task.title} (`{task.id}`)"
                 await _notify_brief(brief)
                 await self._control_channel_post(brief, project_id=action.project_id)
             else:
                 # No approval needed — mark completed
-                await self.db.update_task(action.task_id,
-                                          status=TaskStatus.COMPLETED.value)
+                await self.db.transition_task(action.task_id, TaskStatus.COMPLETED,
+                                              context="completed_no_approval")
                 await self.db.log_event("task_completed",
                                         project_id=action.project_id,
                                         task_id=action.task_id,
@@ -1326,18 +1340,18 @@ class Orchestrator:
         elif output.result == AgentResult.FAILED:
             new_retry = task.retry_count + 1
             if new_retry >= task.max_retries:
-                await self.db.update_task(action.task_id,
-                                          status=TaskStatus.BLOCKED.value,
-                                          retry_count=new_retry)
+                await self.db.transition_task(action.task_id, TaskStatus.BLOCKED,
+                                              context="max_retries",
+                                              retry_count=new_retry)
                 brief = (
                     f"🚫 Task blocked: {task.title} (`{task.id}`) — "
                     f"max retries ({task.max_retries}) exhausted"
                 )
             else:
-                await self.db.update_task(action.task_id,
-                                          status=TaskStatus.READY.value,
-                                          retry_count=new_retry,
-                                          assigned_agent_id=None)
+                await self.db.transition_task(action.task_id, TaskStatus.READY,
+                                              context="retry",
+                                              retry_count=new_retry,
+                                              assigned_agent_id=None)
                 brief = (
                     f"⚠️ Task failed: {task.title} (`{task.id}`) — "
                     f"retry {new_retry}/{task.max_retries}"
@@ -1390,9 +1404,9 @@ class Orchestrator:
                 if output.result == AgentResult.PAUSED_RATE_LIMIT
                 else self.config.pause_retry.token_exhaustion_retry_seconds
             )
-            await self.db.update_task(
-                action.task_id,
-                status=TaskStatus.PAUSED.value,
+            await self.db.transition_task(
+                action.task_id, TaskStatus.PAUSED,
+                context="tokens_exhausted",
                 resume_after=time.time() + retry_secs,
             )
             reason = "rate limit" if output.result == AgentResult.PAUSED_RATE_LIMIT else "token exhaustion"

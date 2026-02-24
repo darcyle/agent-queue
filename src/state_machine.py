@@ -11,6 +11,7 @@ class InvalidTransition(Exception):
 
 
 VALID_TASK_TRANSITIONS: dict[tuple[TaskStatus, TaskEvent], TaskStatus] = {
+    # --- Core lifecycle ---
     (TaskStatus.DEFINED, TaskEvent.DEPS_MET): TaskStatus.READY,
     (TaskStatus.READY, TaskEvent.ASSIGNED): TaskStatus.ASSIGNED,
     (TaskStatus.ASSIGNED, TaskEvent.AGENT_STARTED): TaskStatus.IN_PROGRESS,
@@ -27,14 +28,59 @@ VALID_TASK_TRANSITIONS: dict[tuple[TaskStatus, TaskEvent], TaskStatus] = {
     (TaskStatus.AWAITING_APPROVAL, TaskEvent.PR_MERGED): TaskStatus.COMPLETED,
     (TaskStatus.FAILED, TaskEvent.RETRY): TaskStatus.READY,
     (TaskStatus.FAILED, TaskEvent.MAX_RETRIES): TaskStatus.BLOCKED,
+    # --- Direct shortcuts (skip intermediate FAILED state) ---
+    (TaskStatus.IN_PROGRESS, TaskEvent.MAX_RETRIES): TaskStatus.BLOCKED,
+    (TaskStatus.IN_PROGRESS, TaskEvent.RETRY): TaskStatus.READY,
+    # --- Administrative operations ---
+    (TaskStatus.BLOCKED, TaskEvent.ADMIN_SKIP): TaskStatus.COMPLETED,
+    (TaskStatus.FAILED, TaskEvent.ADMIN_SKIP): TaskStatus.COMPLETED,
+    (TaskStatus.IN_PROGRESS, TaskEvent.ADMIN_STOP): TaskStatus.BLOCKED,
+    # Admin restart — from any non-IN_PROGRESS state
+    (TaskStatus.BLOCKED, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
+    (TaskStatus.FAILED, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
+    (TaskStatus.COMPLETED, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
+    (TaskStatus.PAUSED, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
+    (TaskStatus.DEFINED, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
+    (TaskStatus.ASSIGNED, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
+    (TaskStatus.AWAITING_APPROVAL, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
+    (TaskStatus.VERIFYING, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
+    (TaskStatus.WAITING_INPUT, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
+    # --- PR lifecycle ---
+    (TaskStatus.AWAITING_APPROVAL, TaskEvent.PR_CLOSED): TaskStatus.BLOCKED,
+    # --- Error / timeout ---
+    (TaskStatus.IN_PROGRESS, TaskEvent.TIMEOUT): TaskStatus.BLOCKED,
+    (TaskStatus.ASSIGNED, TaskEvent.TIMEOUT): TaskStatus.BLOCKED,
+    (TaskStatus.ASSIGNED, TaskEvent.EXECUTION_ERROR): TaskStatus.READY,
+    # --- Daemon recovery ---
+    (TaskStatus.IN_PROGRESS, TaskEvent.RECOVERY): TaskStatus.READY,
+    (TaskStatus.ASSIGNED, TaskEvent.RECOVERY): TaskStatus.READY,
+}
+
+# Derived set of valid (from_status, to_status) pairs for quick validation
+# without requiring a specific event.
+VALID_STATUS_TRANSITIONS: set[tuple[TaskStatus, TaskStatus]] = {
+    (from_status, to_status)
+    for (from_status, _event), to_status in VALID_TASK_TRANSITIONS.items()
 }
 
 
 def task_transition(current: TaskStatus, event: TaskEvent) -> TaskStatus:
+    """Look up the target status for a given (current_status, event) pair.
+
+    Raises ``InvalidTransition`` if no such transition is defined.
+    """
     key = (current, event)
     if key not in VALID_TASK_TRANSITIONS:
         raise InvalidTransition(current, event)
     return VALID_TASK_TRANSITIONS[key]
+
+
+def is_valid_status_transition(
+    from_status: TaskStatus, to_status: TaskStatus
+) -> bool:
+    """Return *True* if transitioning from *from_status* to *to_status* is
+    covered by at least one event in the state machine."""
+    return (from_status, to_status) in VALID_STATUS_TRANSITIONS
 
 
 class CyclicDependencyError(Exception):

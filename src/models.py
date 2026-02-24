@@ -35,6 +35,14 @@ class TaskEvent(Enum):
     PR_MERGED = "PR_MERGED"
     RETRY = "RETRY"
     MAX_RETRIES = "MAX_RETRIES"
+    # Administrative / recovery events
+    ADMIN_SKIP = "ADMIN_SKIP"
+    ADMIN_STOP = "ADMIN_STOP"
+    ADMIN_RESTART = "ADMIN_RESTART"
+    PR_CLOSED = "PR_CLOSED"
+    TIMEOUT = "TIMEOUT"
+    EXECUTION_ERROR = "EXECUTION_ERROR"
+    RECOVERY = "RECOVERY"
 
 
 class AgentState(Enum):

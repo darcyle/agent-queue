@@ -60,11 +60,19 @@ class TestTransitionTableCompleteness:
             outgoing = [e for e in ALL_EVENTS if (state, e) in VALID_TASK_TRANSITIONS]
             assert len(outgoing) > 0, f"{state} has no outgoing transitions"
 
-    def test_terminal_states_have_no_outgoing_transitions(self):
+    def test_terminal_states_have_only_admin_outgoing_transitions(self):
+        """Terminal states should only have admin/recovery outgoing transitions."""
         terminal = {TaskStatus.COMPLETED, TaskStatus.BLOCKED}
+        admin_events = {
+            TaskEvent.ADMIN_SKIP, TaskEvent.ADMIN_STOP,
+            TaskEvent.ADMIN_RESTART,
+        }
         for state in terminal:
             outgoing = [e for e in ALL_EVENTS if (state, e) in VALID_TASK_TRANSITIONS]
-            assert len(outgoing) == 0, f"Terminal {state} has outgoing transitions: {outgoing}"
+            non_admin = [e for e in outgoing if e not in admin_events]
+            assert len(non_admin) == 0, (
+                f"Terminal {state} has non-admin outgoing transitions: {non_admin}"
+            )
 
     def test_paused_always_leads_to_ready(self):
         """PAUSED must always have a path back to READY (deadlock prevention)."""
