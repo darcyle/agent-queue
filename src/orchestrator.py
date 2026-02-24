@@ -1300,6 +1300,11 @@ class Orchestrator:
             try:
                 generated = await self._generate_tasks_from_plan(task, workspace)
                 if generated:
+                    # Re-check DEFINED tasks so newly created subtasks whose
+                    # dependencies are already met get promoted to READY in
+                    # this same cycle rather than waiting for the next one.
+                    await self._check_defined_tasks()
+
                     task_list = ", ".join(
                         f"`{t.id}` ({t.title})" for t in generated
                     )

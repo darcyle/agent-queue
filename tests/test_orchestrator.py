@@ -212,11 +212,19 @@ Add comprehensive test suite.
         assert "Build API endpoints" in titles
         assert "Write tests" in titles
 
-        # Subtasks should be in DEFINED status
+        # After plan generation, _check_defined_tasks() is called immediately
+        # so the first subtask (no unmet dependencies) is promoted to READY
+        # while chained successors remain DEFINED.
         for st in subtasks:
-            assert st.status == TaskStatus.DEFINED
             assert st.parent_task_id == "t-1"
             assert st.project_id == "p-1"
+
+        by_title = {st.title: st for st in subtasks}
+        # First step has no dependencies → READY
+        assert by_title["Add database models"].status == TaskStatus.READY
+        # Subsequent steps depend on previous → still DEFINED
+        assert by_title["Build API endpoints"].status == TaskStatus.DEFINED
+        assert by_title["Write tests"].status == TaskStatus.DEFINED
 
     async def test_plan_tasks_have_chained_dependencies(self, orch_with_workspace):
         """Generated tasks should depend on the previous step."""
