@@ -1867,6 +1867,39 @@ def setup_commands(bot: commands.Bot) -> None:
         )
 
     @bot.tree.command(
+        name="commit",
+        description="Stage all changes and commit",
+    )
+    @app_commands.describe(
+        project_id="Project ID",
+        message="Commit message",
+        repo_id="Specific repo ID (optional)",
+    )
+    async def commit_command(
+        interaction: discord.Interaction,
+        project_id: str,
+        message: str,
+        repo_id: str | None = None,
+    ):
+        args: dict = {"project_id": project_id, "message": message}
+        if repo_id:
+            args["repo_id"] = repo_id
+        result = await handler.execute("commit_changes", args)
+        if "error" in result:
+            await interaction.response.send_message(
+                f"Error: {result['error']}", ephemeral=True,
+            )
+            return
+        if result.get("status") == "nothing_to_commit":
+            await interaction.response.send_message(
+                f"ℹ️ Nothing to commit in `{result.get('repo_id', project_id)}` — working tree clean."
+            )
+            return
+        await interaction.response.send_message(
+            f"✅ Committed in `{result.get('repo_id', project_id)}`: {message}"
+        )
+
+    @bot.tree.command(
         name="git-commit",
         description="Stage all changes and commit in a repository",
     )
