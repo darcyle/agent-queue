@@ -52,6 +52,18 @@ class GitManager:
             # Branch already exists — switch to it
             self._run(["checkout", branch_name], cwd=checkout_path)
 
+    def checkout_branch(self, checkout_path: str, branch_name: str) -> None:
+        """Switch to an existing branch."""
+        self._run(["checkout", branch_name], cwd=checkout_path)
+
+    def list_branches(self, checkout_path: str) -> list[str]:
+        """Return a list of local branch names. Current branch is prefixed with '*'."""
+        try:
+            output = self._run(["branch", "--list"], cwd=checkout_path)
+            return [line.strip() for line in output.split("\n") if line.strip()]
+        except GitError:
+            return []
+
     def prepare_for_task(
         self, checkout_path: str, branch_name: str,
         default_branch: str = "main",
