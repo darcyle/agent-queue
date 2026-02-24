@@ -591,6 +591,107 @@ TOOLS = [
         },
     },
     {
+        "name": "git_commit",
+        "description": "Stage all changes and create a commit in a repository.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo_id": {"type": "string", "description": "Repository ID"},
+                "message": {"type": "string", "description": "Commit message"},
+            },
+            "required": ["repo_id", "message"],
+        },
+    },
+    {
+        "name": "git_push",
+        "description": "Push a branch to the remote origin. Defaults to the current branch if not specified.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo_id": {"type": "string", "description": "Repository ID"},
+                "branch": {"type": "string", "description": "Branch name to push (defaults to current branch)"},
+            },
+            "required": ["repo_id"],
+        },
+    },
+    {
+        "name": "git_create_branch",
+        "description": "Create and switch to a new git branch in a repository.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo_id": {"type": "string", "description": "Repository ID"},
+                "branch_name": {"type": "string", "description": "Name for the new branch"},
+            },
+            "required": ["repo_id", "branch_name"],
+        },
+    },
+    {
+        "name": "git_merge",
+        "description": (
+            "Merge a branch into the default branch. Returns whether the merge "
+            "succeeded or had conflicts (conflicts are automatically aborted)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo_id": {"type": "string", "description": "Repository ID"},
+                "branch_name": {"type": "string", "description": "Branch to merge"},
+                "default_branch": {
+                    "type": "string",
+                    "description": "Target branch to merge into (defaults to repo's default branch)",
+                },
+            },
+            "required": ["repo_id", "branch_name"],
+        },
+    },
+    {
+        "name": "git_create_pr",
+        "description": "Create a GitHub pull request using the gh CLI. Requires gh to be authenticated.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo_id": {"type": "string", "description": "Repository ID"},
+                "title": {"type": "string", "description": "PR title"},
+                "body": {"type": "string", "description": "PR description body (optional)", "default": ""},
+                "branch": {"type": "string", "description": "Head branch (defaults to current branch)"},
+                "base": {"type": "string", "description": "Base branch (defaults to repo's default branch)"},
+            },
+            "required": ["repo_id", "title"],
+        },
+    },
+    {
+        "name": "git_changed_files",
+        "description": "List files changed compared to a base branch. Lighter than a full diff.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo_id": {"type": "string", "description": "Repository ID"},
+                "base_branch": {
+                    "type": "string",
+                    "description": "Branch to compare against (defaults to repo's default branch)",
+                },
+            },
+            "required": ["repo_id"],
+        },
+    },
+    {
+        "name": "git_log",
+        "description": "Show recent commit log (one-line format) for a repository.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo_id": {"type": "string", "description": "Repository ID"},
+                "count": {
+                    "type": "integer",
+                    "description": "Number of commits to show (default 10)",
+                    "default": 10,
+                },
+            },
+            "required": ["repo_id"],
+        },
+    },
+    {
         "name": "restart_daemon",
         "description": "Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect.",
         "input_schema": {"type": "object", "properties": {}},
@@ -658,6 +759,10 @@ You can directly (using your tools):
 - Retrieve task results (summary, files changed, errors, tokens) with `get_task_result`
 - Show git diffs for completed tasks with `get_task_diff`
 - Check the git status of a project's repos with `get_git_status`
+- Commit changes with `git_commit`, push branches with `git_push`
+- Create branches with `git_create_branch`, merge branches with `git_merge`
+- Create GitHub PRs with `git_create_pr`
+- List changed files with `git_changed_files`, view commit logs with `git_log`
 - Read files from workspaces with `read_file`
 - Run shell commands in workspaces with `run_command`
 - Search file contents or filenames with `search_files`

@@ -968,6 +968,221 @@ def setup_commands(bot: commands.Bot) -> None:
         full_message = header + "\n\n".join(sections)
         await _send_long(interaction, full_message, followup=True)
 
+    @bot.tree.command(
+        name="git-commit",
+        description="Stage all changes and commit in a repository",
+    )
+    @app_commands.describe(
+        repo_id="Repository ID",
+        message="Commit message",
+    )
+    async def git_commit_command(
+        interaction: discord.Interaction,
+        repo_id: str,
+        message: str,
+    ):
+        await interaction.response.defer()
+        result = await handler.execute("git_commit", {
+            "repo_id": repo_id,
+            "message": message,
+        })
+        if "error" in result:
+            await interaction.followup.send(f"Error: {result['error']}")
+            return
+        if result.get("committed"):
+            await interaction.followup.send(
+                f"✅ Committed in `{repo_id}`: {message}"
+            )
+        else:
+            await interaction.followup.send(
+                f"ℹ️ Nothing to commit in `{repo_id}` — working tree clean"
+            )
+
+    @bot.tree.command(
+        name="git-push",
+        description="Push a branch to remote origin",
+    )
+    @app_commands.describe(
+        repo_id="Repository ID",
+        branch="Branch name to push (defaults to current branch)",
+    )
+    async def git_push_command(
+        interaction: discord.Interaction,
+        repo_id: str,
+        branch: str | None = None,
+    ):
+        await interaction.response.defer()
+        args = {"repo_id": repo_id}
+        if branch:
+            args["branch"] = branch
+        result = await handler.execute("git_push", args)
+        if "error" in result:
+            await interaction.followup.send(f"Error: {result['error']}")
+            return
+        await interaction.followup.send(
+            f"✅ Pushed `{result['pushed']}` in `{repo_id}`"
+        )
+
+    @bot.tree.command(
+        name="git-branch",
+        description="Create and switch to a new git branch",
+    )
+    @app_commands.describe(
+        repo_id="Repository ID",
+        branch_name="Name for the new branch",
+    )
+    async def git_branch_command(
+        interaction: discord.Interaction,
+        repo_id: str,
+        branch_name: str,
+    ):
+        await interaction.response.defer()
+        result = await handler.execute("git_create_branch", {
+            "repo_id": repo_id,
+            "branch_name": branch_name,
+        })
+        if "error" in result:
+            await interaction.followup.send(f"Error: {result['error']}")
+            return
+        await interaction.followup.send(
+            f"✅ Created and switched to branch `{branch_name}` in `{repo_id}`"
+        )
+
+    @bot.tree.command(
+        name="git-merge",
+        description="Merge a branch into the default branch",
+    )
+    @app_commands.describe(
+        repo_id="Repository ID",
+        branch_name="Branch to merge",
+        default_branch="Target branch (defaults to repo's default branch)",
+    )
+    async def git_merge_command(
+        interaction: discord.Interaction,
+        repo_id: str,
+        branch_name: str,
+        default_branch: str | None = None,
+    ):
+        await interaction.response.defer()
+        args = {"repo_id": repo_id, "branch_name": branch_name}
+        if default_branch:
+            args["default_branch"] = default_branch
+        result = await handler.execute("git_merge", args)
+        if "error" in result:
+            await interaction.followup.send(f"Error: {result['error']}")
+            return
+        if result.get("merged"):
+            await interaction.followup.send(
+                f"✅ Merged `{branch_name}` into `{result['into']}` in `{repo_id}`"
+            )
+        else:
+            await interaction.followup.send(
+                f"⚠️ Merge conflict — `{branch_name}` could not be merged into "
+                f"`{result.get('into', 'default')}` in `{repo_id}`. Merge was aborted."
+            )
+
+    @bot.tree.command(
+        name="git-pr",
+        description="Create a GitHub pull request",
+    )
+    @app_commands.describe(
+        repo_id="Repository ID",
+        title="PR title",
+        body="PR description (optional)",
+        branch="Head branch (defaults to current)",
+        base="Base branch (defaults to repo default)",
+    )
+    async def git_pr_command(
+        interaction: discord.Interaction,
+        repo_id: str,
+        title: str,
+        body: str = "",
+        branch: str | None = None,
+        base: str | None = None,
+    ):
+        await interaction.response.defer()
+        args: dict = {"repo_id": repo_id, "title": title, "body": body}
+        if branch:
+            args["branch"] = branch
+        if base:
+            args["base"] = base
+        result = await handler.execute("git_create_pr", args)
+        if "error" in result:
+            await interaction.followup.send(f"Error: {result['error']}")
+            return
+        pr_url = result.get("pr_url", "")
+        await interaction.followup.send(
+            f"✅ PR created: {pr_url}\n"
+            f"**Branch:** `{result.get('branch', '?')}` → `{result.get('base', '?')}`"
+        )
+
+    @bot.tree.command(
+        name="git-files",
+        description="List files changed compared to a base branch",
+    )
+    @app_commands.describe(
+        repo_id="Repository ID",
+        base_branch="Branch to compare against (defaults to repo default)",
+    )
+    async def git_files_command(
+        interaction: discord.Interaction,
+        repo_id: str,
+        base_branch: str | None = None,
+    ):
+        await interaction.response.defer()
+        args = {"repo_id": repo_id}
+        if base_branch:
+            args["base_branch"] = base_branch
+        result = await handler.execute("git_changed_files", args)
+        if "error" in result:
+            await interaction.followup.send(f"Error: {result['error']}")
+            return
+        files = result.get("files", [])
+        count = result.get("count", 0)
+        base = result.get("base_branch", "main")
+        if not files:
+            await interaction.followup.send(
+                f"No files changed in `{repo_id}` vs `{base}`"
+            )
+            return
+        file_list = "\n".join(f"• `{f}`" for f in files[:50])
+        if count > 50:
+            file_list += f"\n_...and {count - 50} more_"
+        msg = (
+            f"## Changed Files: `{repo_id}` vs `{base}`\n"
+            f"**{count} file(s) changed:**\n{file_list}"
+        )
+        await _send_long(interaction, msg, followup=True)
+
+    @bot.tree.command(
+        name="git-log",
+        description="Show recent commit log for a repository",
+    )
+    @app_commands.describe(
+        repo_id="Repository ID",
+        count="Number of commits to show (default 10)",
+    )
+    async def git_log_command(
+        interaction: discord.Interaction,
+        repo_id: str,
+        count: int = 10,
+    ):
+        await interaction.response.defer()
+        result = await handler.execute("git_log", {
+            "repo_id": repo_id,
+            "count": count,
+        })
+        if "error" in result:
+            await interaction.followup.send(f"Error: {result['error']}")
+            return
+        branch = result.get("branch", "?")
+        log = result.get("log", "(no commits)")
+        msg = (
+            f"## Git Log: `{repo_id}` (branch: `{branch}`)\n"
+            f"```\n{log}\n```"
+        )
+        await _send_long(interaction, msg, followup=True)
+
     # ===================================================================
     # HOOK COMMANDS
     # ===================================================================

@@ -726,6 +726,157 @@ class CommandHandler:
             "repos": repo_statuses,
         }
 
+    async def _resolve_repo_path(self, repo_id: str) -> tuple[str | None, dict | None]:
+        """Resolve a repo_id to its checkout path.
+
+        Returns (path, None) on success, or (None, error_dict) on failure.
+        """
+        from src.git.manager import GitError
+        repo = await self.db.get_repo(repo_id)
+        if not repo:
+            return None, {"error": f"Repository '{repo_id}' not found"}
+        if repo.source_type == RepoSourceType.LINK and repo.source_path:
+            repo_path = repo.source_path
+        elif repo.source_type == RepoSourceType.CLONE and repo.checkout_base_path:
+            repo_path = repo.checkout_base_path
+        else:
+            return None, {"error": f"Repository '{repo_id}' has no usable path"}
+        if not os.path.isdir(repo_path):
+            return None, {"error": f"Path not found: {repo_path}"}
+        git = self.orchestrator.git
+        if not git.validate_checkout(repo_path):
+            return None, {"error": f"Not a valid git repository: {repo_path}"}
+        return repo_path, None
+
+    async def _cmd_git_commit(self, args: dict) -> dict:
+        """Stage all changes and create a commit in a repository."""
+        from src.git.manager import GitError
+        repo_id = args["repo_id"]
+        message = args["message"]
+        repo_path, err = await self._resolve_repo_path(repo_id)
+        if err:
+            return err
+        try:
+            committed = self.orchestrator.git.commit_all(repo_path, message)
+        except GitError as e:
+            return {"error": str(e)}
+        if not committed:
+            return {"repo_id": repo_id, "committed": False, "message": "Nothing to commit — working tree clean"}
+        return {"repo_id": repo_id, "committed": True, "commit_message": message}
+
+    async def _cmd_git_push(self, args: dict) -> dict:
+        """Push a branch to the remote origin."""
+        from src.git.manager import GitError
+        repo_id = args["repo_id"]
+        repo_path, err = await self._resolve_repo_path(repo_id)
+        if err:
+            return err
+        git = self.orchestrator.git
+        branch = args.get("branch") or git.get_current_branch(repo_path)
+        if not branch:
+            return {"error": "Could not determine current branch"}
+        try:
+            git.push_branch(repo_path, branch)
+        except GitError as e:
+            return {"error": str(e)}
+        return {"repo_id": repo_id, "pushed": branch}
+
+    async def _cmd_git_create_branch(self, args: dict) -> dict:
+        """Create and switch to a new git branch."""
+        from src.git.manager import GitError
+        repo_id = args["repo_id"]
+        branch_name = args["branch_name"]
+        repo_path, err = await self._resolve_repo_path(repo_id)
+        if err:
+            return err
+        try:
+            self.orchestrator.git.create_branch(repo_path, branch_name)
+        except GitError as e:
+            return {"error": str(e)}
+        return {"repo_id": repo_id, "created_branch": branch_name}
+
+    async def _cmd_git_merge(self, args: dict) -> dict:
+        """Merge a branch into the default branch."""
+        from src.git.manager import GitError
+        repo_id = args["repo_id"]
+        branch_name = args["branch_name"]
+        repo_path, err = await self._resolve_repo_path(repo_id)
+        if err:
+            return err
+        repo = await self.db.get_repo(repo_id)
+        default_branch = args.get("default_branch") or repo.default_branch or "main"
+        try:
+            success = self.orchestrator.git.merge_branch(repo_path, branch_name, default_branch)
+        except GitError as e:
+            return {"error": str(e)}
+        if not success:
+            return {
+                "repo_id": repo_id,
+                "merged": False,
+                "into": default_branch,
+                "message": f"Merge conflict — merge of '{branch_name}' into '{default_branch}' was aborted",
+            }
+        return {
+            "repo_id": repo_id,
+            "merged": True,
+            "branch": branch_name,
+            "into": default_branch,
+        }
+
+    async def _cmd_git_create_pr(self, args: dict) -> dict:
+        """Create a GitHub pull request using the gh CLI."""
+        from src.git.manager import GitError
+        repo_id = args["repo_id"]
+        title = args["title"]
+        body = args.get("body", "")
+        repo_path, err = await self._resolve_repo_path(repo_id)
+        if err:
+            return err
+        git = self.orchestrator.git
+        branch = args.get("branch") or git.get_current_branch(repo_path)
+        if not branch:
+            return {"error": "Could not determine current branch"}
+        repo = await self.db.get_repo(repo_id)
+        base = args.get("base") or repo.default_branch or "main"
+        try:
+            pr_url = git.create_pr(repo_path, branch, title, body, base)
+        except GitError as e:
+            return {"error": str(e)}
+        return {"repo_id": repo_id, "pr_url": pr_url, "branch": branch, "base": base}
+
+    async def _cmd_git_changed_files(self, args: dict) -> dict:
+        """List files changed compared to a base branch."""
+        repo_id = args["repo_id"]
+        repo_path, err = await self._resolve_repo_path(repo_id)
+        if err:
+            return err
+        repo = await self.db.get_repo(repo_id)
+        base_branch = args.get("base_branch") or repo.default_branch or "main"
+        files = self.orchestrator.git.get_changed_files(repo_path, base_branch)
+        return {
+            "repo_id": repo_id,
+            "base_branch": base_branch,
+            "files": files,
+            "count": len(files),
+        }
+
+    async def _cmd_git_log(self, args: dict) -> dict:
+        """Show recent commit log for a repository."""
+        repo_id = args["repo_id"]
+        count = args.get("count", 10)
+        repo_path, err = await self._resolve_repo_path(repo_id)
+        if err:
+            return err
+        git = self.orchestrator.git
+        branch = git.get_current_branch(repo_path)
+        log_output = git.get_recent_commits(repo_path, count=count)
+        return {
+            "repo_id": repo_id,
+            "branch": branch,
+            "log": log_output or "(no commits)",
+            "count": count,
+        }
+
     # -----------------------------------------------------------------------
     # Hook commands
     # -----------------------------------------------------------------------
