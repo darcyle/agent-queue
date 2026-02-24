@@ -61,6 +61,9 @@ class Orchestrator:
         self._create_thread: CreateThreadCallback | None = None
         self._paused: bool = False
         self._last_approval_check: float = 0.0
+        # Tracks the last time we sent a reminder for an AWAITING_APPROVAL
+        # task that has no PR URL (keyed by task_id).
+        self._no_pr_reminded_at: dict[str, float] = {}
         self.hooks: HookEngine | None = None
 
     def pause(self) -> None:
@@ -595,6 +598,16 @@ class Orchestrator:
 
         return created_tasks
 
+    # How often (seconds) to re-send reminders for tasks awaiting manual
+    # approval (no PR URL).
+    _NO_PR_REMINDER_INTERVAL: int = 3600      # 1 hour
+    # After this many seconds without approval, escalate the notification.
+    _NO_PR_ESCALATION_THRESHOLD: int = 86400  # 24 hours
+    # Tasks that don't require approval and have no PR URL are auto-completed
+    # after this grace period (seconds) to avoid races with the PR-creation
+    # path.  Set to 0 for immediate completion.
+    _NO_PR_AUTO_COMPLETE_GRACE: int = 120     # 2 minutes
+
     async def _check_awaiting_approval(self) -> None:
         """Poll PR status for tasks awaiting approval. Throttled to once per 60s."""
         now = time.time()
@@ -603,49 +616,117 @@ class Orchestrator:
         self._last_approval_check = now
 
         tasks = await self.db.list_tasks(status=TaskStatus.AWAITING_APPROVAL)
+
+        # Clean up reminder tracking for tasks that are no longer AWAITING_APPROVAL.
+        active_ids = {t.id for t in tasks}
+        for tid in list(self._no_pr_reminded_at):
+            if tid not in active_ids:
+                del self._no_pr_reminded_at[tid]
+
         for task in tasks:
             if not task.pr_url:
+                await self._handle_awaiting_no_pr(task, now)
                 continue
 
-            # Need a checkout path to run gh commands
-            checkout_path = None
-            if task.assigned_agent_id:
-                agent = await self.db.get_agent(task.assigned_agent_id)
-                if agent and agent.checkout_path:
-                    checkout_path = agent.checkout_path
-            if not checkout_path and task.repo_id:
-                repo = await self.db.get_repo(task.repo_id)
-                if repo and repo.source_path:
-                    checkout_path = repo.source_path
+            await self._check_pr_status(task)
 
-            if not checkout_path:
-                continue
+    async def _handle_awaiting_no_pr(self, task: Task, now: float) -> None:
+        """Handle an AWAITING_APPROVAL task that has no PR URL.
 
-            try:
-                merged = self.git.check_pr_merged(checkout_path, task.pr_url)
-            except Exception as e:
-                print(f"Error checking PR for task {task.id}: {e}")
-                continue
+        * If the task doesn't actually require approval, auto-complete it after
+          a short grace period (avoids a race with slow PR creation).
+        * If the task *does* require approval, send periodic reminders so it
+          doesn't rot silently.
+        """
+        updated_at = await self.db.get_task_updated_at(task.id)
+        age = (now - updated_at) if updated_at else 0
 
-            if merged is True:
+        # --- Auto-complete path ---------------------------------------------------
+        if not task.requires_approval:
+            if age >= self._NO_PR_AUTO_COMPLETE_GRACE:
                 await self.db.update_task(
                     task.id, status=TaskStatus.COMPLETED.value)
                 await self.db.log_event(
                     "task_completed", project_id=task.project_id,
-                    task_id=task.id)
+                    task_id=task.id,
+                    payload="auto-completed: no PR and approval not required")
                 await self._notify_channel(
-                    f"**PR Merged:** Task `{task.id}` — {task.title} is now COMPLETED.",
+                    f"**Auto-completed:** Task `{task.id}` — {task.title} "
+                    f"(no PR created, approval not required).",
                     project_id=task.project_id,
                 )
-            elif merged is None:
-                # Closed without merge
-                await self.db.update_task(
-                    task.id, status=TaskStatus.BLOCKED.value)
-                await self._notify_channel(
-                    f"**PR Closed:** Task `{task.id}` — {task.title} "
-                    f"was closed without merging. Marked as BLOCKED.",
-                    project_id=task.project_id,
-                )
+                self._no_pr_reminded_at.pop(task.id, None)
+            return
+
+        # --- Manual-approval path -------------------------------------------------
+        last_reminded = self._no_pr_reminded_at.get(task.id, 0.0)
+        if now - last_reminded < self._NO_PR_REMINDER_INTERVAL:
+            return  # throttle reminders
+
+        self._no_pr_reminded_at[task.id] = now
+
+        if age >= self._NO_PR_ESCALATION_THRESHOLD:
+            hours = int(age // 3600)
+            await self._notify_channel(
+                f"⚠️ **Stuck Task:** `{task.id}` — {task.title} has been "
+                f"AWAITING_APPROVAL for **{hours}h** with no PR URL.\n"
+                f"Use `approve_task {task.id}` to complete it or investigate "
+                f"why no PR was created.",
+                project_id=task.project_id,
+            )
+            await self.db.log_event(
+                "approval_stuck", project_id=task.project_id,
+                task_id=task.id,
+                payload=f"no_pr_url, age={hours}h")
+        else:
+            await self._notify_channel(
+                f"🔍 **Awaiting manual approval:** Task `{task.id}` — "
+                f"{task.title}\nNo PR URL — use `approve_task {task.id}` "
+                f"to complete.",
+                project_id=task.project_id,
+            )
+
+    async def _check_pr_status(self, task: Task) -> None:
+        """Check whether a PR-backed AWAITING_APPROVAL task has been merged."""
+        # Need a checkout path to run gh commands
+        checkout_path = None
+        if task.assigned_agent_id:
+            agent = await self.db.get_agent(task.assigned_agent_id)
+            if agent and agent.checkout_path:
+                checkout_path = agent.checkout_path
+        if not checkout_path and task.repo_id:
+            repo = await self.db.get_repo(task.repo_id)
+            if repo and repo.source_path:
+                checkout_path = repo.source_path
+
+        if not checkout_path:
+            return
+
+        try:
+            merged = self.git.check_pr_merged(checkout_path, task.pr_url)
+        except Exception as e:
+            print(f"Error checking PR for task {task.id}: {e}")
+            return
+
+        if merged is True:
+            await self.db.update_task(
+                task.id, status=TaskStatus.COMPLETED.value)
+            await self.db.log_event(
+                "task_completed", project_id=task.project_id,
+                task_id=task.id)
+            await self._notify_channel(
+                f"**PR Merged:** Task `{task.id}` — {task.title} is now COMPLETED.",
+                project_id=task.project_id,
+            )
+        elif merged is None:
+            # Closed without merge
+            await self.db.update_task(
+                task.id, status=TaskStatus.BLOCKED.value)
+            await self._notify_channel(
+                f"**PR Closed:** Task `{task.id}` — {task.title} "
+                f"was closed without merging. Marked as BLOCKED.",
+                project_id=task.project_id,
+            )
 
     async def _execute_task(self, action: AssignAction) -> None:
         if not self._adapter_factory:

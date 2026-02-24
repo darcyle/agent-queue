@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 
 import pytest
 from src.orchestrator import Orchestrator
@@ -614,3 +615,190 @@ Do the second thing.
 
         st2 = await orch.db.get_task(subtasks[1].id)
         assert st2.status == TaskStatus.COMPLETED
+
+
+class TestAwaitingApprovalNopr:
+    """Tests for handling AWAITING_APPROVAL tasks without a PR URL."""
+
+    async def test_auto_completes_no_approval_no_pr(self, orch):
+        """Task without requires_approval and no pr_url gets auto-completed
+        after the grace period."""
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_task(Task(
+            id="t-1", project_id="p-1", title="No-PR Task",
+            description="This task has no PR",
+            status=TaskStatus.AWAITING_APPROVAL,
+            requires_approval=False,
+            pr_url=None,
+        ))
+
+        # Backdate updated_at so the grace period has elapsed
+        await orch.db._db.execute(
+            "UPDATE tasks SET updated_at = ? WHERE id = ?",
+            (time.time() - 300, "t-1"),
+        )
+        await orch.db._db.commit()
+
+        # Reset throttle so _check_awaiting_approval actually runs
+        orch._last_approval_check = 0.0
+        await orch._check_awaiting_approval()
+
+        task = await orch.db.get_task("t-1")
+        assert task.status == TaskStatus.COMPLETED
+
+    async def test_no_auto_complete_within_grace_period(self, orch):
+        """Task without requires_approval should NOT be auto-completed while
+        still within the grace period."""
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_task(Task(
+            id="t-1", project_id="p-1", title="Fresh Task",
+            description="Just entered AWAITING_APPROVAL",
+            status=TaskStatus.AWAITING_APPROVAL,
+            requires_approval=False,
+            pr_url=None,
+        ))
+        # updated_at is set to now by create_task, so grace period hasn't elapsed
+
+        orch._last_approval_check = 0.0
+        await orch._check_awaiting_approval()
+
+        task = await orch.db.get_task("t-1")
+        assert task.status == TaskStatus.AWAITING_APPROVAL
+
+    async def test_sends_reminder_for_manual_approval(self, orch):
+        """Task with requires_approval=True and no pr_url should trigger
+        a notification."""
+        notifications = []
+
+        async def capture_notify(msg, project_id=None):
+            notifications.append(msg)
+
+        orch.set_notify_callback(capture_notify)
+
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_task(Task(
+            id="t-1", project_id="p-1", title="Manual Review",
+            description="Needs manual review",
+            status=TaskStatus.AWAITING_APPROVAL,
+            requires_approval=True,
+            pr_url=None,
+        ))
+
+        orch._last_approval_check = 0.0
+        await orch._check_awaiting_approval()
+
+        assert len(notifications) == 1
+        assert "approve_task t-1" in notifications[0]
+        assert "Manual Review" in notifications[0]
+
+    async def test_reminder_is_throttled(self, orch):
+        """The same task should not trigger a reminder on every cycle."""
+        notifications = []
+
+        async def capture_notify(msg, project_id=None):
+            notifications.append(msg)
+
+        orch.set_notify_callback(capture_notify)
+
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_task(Task(
+            id="t-1", project_id="p-1", title="Manual Review",
+            description="Needs manual review",
+            status=TaskStatus.AWAITING_APPROVAL,
+            requires_approval=True,
+            pr_url=None,
+        ))
+
+        # First call sends a reminder
+        orch._last_approval_check = 0.0
+        await orch._check_awaiting_approval()
+        assert len(notifications) == 1
+
+        # Second call within the reminder interval should NOT send another
+        orch._last_approval_check = 0.0
+        await orch._check_awaiting_approval()
+        assert len(notifications) == 1  # still 1
+
+    async def test_escalation_after_threshold(self, orch):
+        """After the escalation threshold, a stronger warning is sent."""
+        notifications = []
+
+        async def capture_notify(msg, project_id=None):
+            notifications.append(msg)
+
+        orch.set_notify_callback(capture_notify)
+
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_task(Task(
+            id="t-1", project_id="p-1", title="Old Task",
+            description="Been here a while",
+            status=TaskStatus.AWAITING_APPROVAL,
+            requires_approval=True,
+            pr_url=None,
+        ))
+
+        # Backdate so the task looks like it's been stuck for 25 hours
+        await orch.db._db.execute(
+            "UPDATE tasks SET updated_at = ? WHERE id = ?",
+            (time.time() - 25 * 3600, "t-1"),
+        )
+        await orch.db._db.commit()
+
+        orch._last_approval_check = 0.0
+        await orch._check_awaiting_approval()
+
+        assert len(notifications) == 1
+        assert "Stuck Task" in notifications[0]
+        assert "25h" in notifications[0]
+
+    async def test_cleanup_reminder_tracking_on_completion(self, orch):
+        """When a task leaves AWAITING_APPROVAL, its reminder entry is removed."""
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_task(Task(
+            id="t-1", project_id="p-1", title="Manual Review",
+            description="Needs manual review",
+            status=TaskStatus.AWAITING_APPROVAL,
+            requires_approval=True,
+            pr_url=None,
+        ))
+
+        async def noop_notify(msg, project_id=None):
+            pass
+        orch.set_notify_callback(noop_notify)
+
+        orch._last_approval_check = 0.0
+        await orch._check_awaiting_approval()
+        assert "t-1" in orch._no_pr_reminded_at
+
+        # Simulate manual approval (task is now COMPLETED)
+        await orch.db.update_task("t-1", status=TaskStatus.COMPLETED.value)
+
+        orch._last_approval_check = 0.0
+        await orch._check_awaiting_approval()
+        assert "t-1" not in orch._no_pr_reminded_at
+
+    async def test_pr_task_still_checked_normally(self, orch):
+        """Tasks WITH a pr_url should still go through the PR-check path."""
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_repo(RepoConfig(
+            id="repo-1", project_id="p-1",
+            source_type=RepoSourceType.INIT,
+            url="", default_branch="main",
+            source_path="/tmp/fake-checkout",
+        ))
+        await orch.db.create_task(Task(
+            id="t-1", project_id="p-1", title="PR Task",
+            description="Has a PR",
+            status=TaskStatus.AWAITING_APPROVAL,
+            pr_url="https://github.com/org/repo/pull/1",
+            repo_id="repo-1",
+        ))
+
+        # The git check will fail (no real checkout) but the task should not
+        # be auto-completed or reminded — only the PR path runs.
+        orch._last_approval_check = 0.0
+        await orch._check_awaiting_approval()
+
+        task = await orch.db.get_task("t-1")
+        assert task.status == TaskStatus.AWAITING_APPROVAL
+        assert "t-1" not in orch._no_pr_reminded_at

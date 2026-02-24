@@ -396,6 +396,14 @@ class Database:
         await self._db.execute("DELETE FROM tasks WHERE id = ?", [task_id])
         await self._db.commit()
 
+    async def get_task_updated_at(self, task_id: str) -> float | None:
+        """Return the ``updated_at`` timestamp for a task, or *None*."""
+        cursor = await self._db.execute(
+            "SELECT updated_at FROM tasks WHERE id = ?", (task_id,)
+        )
+        row = await cursor.fetchone()
+        return row["updated_at"] if row else None
+
     async def get_subtasks(self, parent_task_id: str) -> list[Task]:
         cursor = await self._db.execute(
             "SELECT * FROM tasks WHERE parent_task_id = ?", (parent_task_id,)
