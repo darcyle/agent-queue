@@ -18,8 +18,7 @@ class MockAdapter(AgentAdapter):
         self._tokens = tokens
 
     async def start(self, task): pass
-
-    async def wait(self, on_message: MessageCallback | None = None):
+    async def wait(self, on_message=None):
         return AgentOutput(result=self._result, summary="Done",
                            tokens_used=self._tokens)
 
@@ -63,6 +62,12 @@ async def orch(tmp_path):
     await o.shutdown()
 
 
+async def _run_cycle_and_wait(orch):
+    """Run one scheduling cycle and wait for all background task executions."""
+    await orch.run_one_cycle()
+    await orch.wait_for_running_tasks()
+
+
 class TestOrchestratorLifecycle:
     async def test_full_task_lifecycle(self, orch):
         """DEFINED → READY → ASSIGNED → IN_PROGRESS → VERIFYING → COMPLETED"""
@@ -74,8 +79,7 @@ class TestOrchestratorLifecycle:
             description="Do it", status=TaskStatus.READY,
         ))
 
-        await orch.run_one_cycle()
-        await _drain_running_tasks(orch)
+        await _run_cycle_and_wait(orch)
 
         task = await orch.db.get_task("t-1")
         assert task.status == TaskStatus.COMPLETED
@@ -91,8 +95,7 @@ class TestOrchestratorLifecycle:
             max_retries=2,
         ))
 
-        await orch.run_one_cycle()
-        await _drain_running_tasks(orch)
+        await _run_cycle_and_wait(orch)
 
         task = await orch.db.get_task("t-1")
         # Should be READY for retry (failed once, max 2)
@@ -111,8 +114,7 @@ class TestOrchestratorLifecycle:
             description="Do it", status=TaskStatus.READY,
         ))
 
-        await orch.run_one_cycle()
-        await _drain_running_tasks(orch)
+        await _run_cycle_and_wait(orch)
 
         task = await orch.db.get_task("t-1")
         assert task.status == TaskStatus.PAUSED
@@ -135,8 +137,7 @@ class TestOrchestratorLifecycle:
         # t-1 has no deps so it gets promoted to READY and executed.
         # t-2 depends on t-1 which is not yet COMPLETED at scheduling time,
         # so it stays DEFINED until the next cycle.
-        await orch.run_one_cycle()
-        await _drain_running_tasks(orch)
+        await _run_cycle_and_wait(orch)
 
         t1 = await orch.db.get_task("t-1")
         t2 = await orch.db.get_task("t-2")
@@ -195,8 +196,7 @@ Add comprehensive test suite.
             status=TaskStatus.READY,
         ))
 
-        await orch.run_one_cycle()
-        await _drain_running_tasks(orch)
+        await _run_cycle_and_wait(orch)
 
         # Original task should be completed
         task = await orch.db.get_task("t-1")
@@ -244,8 +244,7 @@ Third.
             description="Plan it", status=TaskStatus.READY,
         ))
 
-        await orch.run_one_cycle()
-        await _drain_running_tasks(orch)
+        await _run_cycle_and_wait(orch)
 
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 3
@@ -277,8 +276,7 @@ Third.
             description="Just do it", status=TaskStatus.READY,
         ))
 
-        await orch.run_one_cycle()
-        await _drain_running_tasks(orch)
+        await _run_cycle_and_wait(orch)
 
         task = await orch.db.get_task("t-1")
         assert task.status == TaskStatus.COMPLETED
@@ -312,8 +310,7 @@ Third.
             description="Plan it", status=TaskStatus.READY,
         ))
 
-        await orch.run_one_cycle()
-        await _drain_running_tasks(orch)
+        await _run_cycle_and_wait(orch)
 
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 0
@@ -337,8 +334,7 @@ Third.
             description="Plan it", status=TaskStatus.READY,
         ))
 
-        await orch.run_one_cycle()
-        await _drain_running_tasks(orch)
+        await _run_cycle_and_wait(orch)
 
         # Plan file should be deleted
         assert not plan_path.exists()
@@ -356,28 +352,18 @@ Third.
         await orch.db.create_project(Project(id="p-1", name="alpha"))
         await orch.db.create_repo(RepoConfig(
             id="repo-1", project_id="p-1",
-            source_type=RepoSourceType.INIT,
-            url="", default_branch="main",
-            checkout_base_path=str(workspace),
+            source_type=RepoSourceType.LINK, source_path="/tmp/repo",
+        ))
+        await orch.db.create_agent(Agent(id="a-1", name="claude-1",
+                                         agent_type="claude"))
+        await orch.db.create_task(Task(
+            id="t-1", project_id="p-1", title="Plan",
+            description="Plan it", status=TaskStatus.READY,
+            repo_id="repo-1",
         ))
 
-        # Create the parent task with repo_id set
-        parent = Task(
-            id="t-1", project_id="p-1", title="Plan",
-            description="Plan it", status=TaskStatus.COMPLETED,
-            repo_id="repo-1",
-        )
-        await orch.db.create_task(parent)
+        await _run_cycle_and_wait(orch)
 
-        # Call _generate_tasks_from_plan directly to test repo inheritance
-        # without going through the full execution flow (which would
-        # create a different workspace path for the repo checkout).
-        generated = await orch._generate_tasks_from_plan(parent, str(workspace))
-
-        assert len(generated) == 1
-        assert generated[0].repo_id == "repo-1"
-
-        # Verify the subtask was persisted in the database
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 1
         assert subtasks[0].repo_id == "repo-1"
@@ -410,8 +396,7 @@ Implement JWT-based sessions.
             status=TaskStatus.READY,
         ))
 
-        await orch.run_one_cycle()
-        await _drain_running_tasks(orch)
+        await _run_cycle_and_wait(orch)
 
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 2
@@ -448,8 +433,7 @@ Implement JWT-based sessions.
             description="Plan it", status=TaskStatus.READY,
         ))
 
-        await orch.run_one_cycle()
-        await _drain_running_tasks(orch)
+        await _run_cycle_and_wait(orch)
 
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 2
@@ -486,8 +470,7 @@ Implement JWT-based sessions.
             status=TaskStatus.READY,
         ))
 
-        await orch.run_one_cycle()
-        await _drain_running_tasks(orch)
+        await _run_cycle_and_wait(orch)
 
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 3
@@ -524,23 +507,20 @@ Do the second thing.
         ))
 
         # First cycle: execute t-1, generate subtasks
-        await orch.run_one_cycle()
-        await _drain_running_tasks(orch)
+        await _run_cycle_and_wait(orch)
 
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 2
         subtasks.sort(key=lambda t: t.priority)
 
         # Second cycle: first subtask should be promoted to READY and executed
-        await orch.run_one_cycle()
-        await _drain_running_tasks(orch)
+        await _run_cycle_and_wait(orch)
 
         st1 = await orch.db.get_task(subtasks[0].id)
         assert st1.status == TaskStatus.COMPLETED
 
         # Third cycle: second subtask should now have deps met
-        await orch.run_one_cycle()
-        await _drain_running_tasks(orch)
+        await _run_cycle_and_wait(orch)
 
         st2 = await orch.db.get_task(subtasks[1].id)
         assert st2.status == TaskStatus.COMPLETED

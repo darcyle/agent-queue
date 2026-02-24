@@ -164,7 +164,26 @@ class Orchestrator:
             await self.db.update_task(t.id, status=TaskStatus.READY.value,
                                       assigned_agent_id=None)
 
+    async def wait_for_running_tasks(self, timeout: float | None = None) -> None:
+        """Wait for all background task executions to finish.
+
+        This is primarily useful in tests where ``run_one_cycle`` fires off
+        background coroutines and the caller needs to wait for them to
+        complete before inspecting results.
+        """
+        if not self._running_tasks:
+            return
+        tasks = list(self._running_tasks.values())
+        if timeout is not None:
+            await asyncio.wait(tasks, timeout=timeout)
+        else:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def shutdown(self) -> None:
+        # Wait for any running task executions to finish before closing
+        # the database, otherwise they'll hit "Cannot operate on a closed
+        # database" errors.
+        await self.wait_for_running_tasks(timeout=10)
         if self.hooks:
             await self.hooks.shutdown()
         await self.db.close()
