@@ -4,7 +4,6 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "aiosqlite>=0.20.0",
-    "anthropic[vertex]>=0.40.0",
     "discord.py>=2.3.0",
     "claude-agent-sdk>=0.1.30",
     "pyyaml>=6.0",
@@ -19,10 +18,6 @@ dev = [
 
 [project.scripts]
 agent-queue = "src.main:main"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["src*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
