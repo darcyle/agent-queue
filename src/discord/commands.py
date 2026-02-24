@@ -688,6 +688,105 @@ def setup_commands(bot: commands.Bot) -> None:
         )
 
     @bot.tree.command(
+        name="create-channel-for-project",
+        description="Create (or reuse) a dedicated Discord channel for a project (idempotent)",
+    )
+    @app_commands.describe(
+        project_id="Project ID",
+        channel_name="Name for the channel (defaults to project ID)",
+        channel_type="Channel purpose: notifications (default) or control",
+        category="Category to create the channel in (optional)",
+    )
+    @app_commands.choices(channel_type=[
+        app_commands.Choice(name="notifications", value="notifications"),
+        app_commands.Choice(name="control", value="control"),
+    ])
+    async def create_channel_for_project_command(
+        interaction: discord.Interaction,
+        project_id: str,
+        channel_name: str | None = None,
+        channel_type: app_commands.Choice[str] | None = None,
+        category: discord.CategoryChannel | None = None,
+    ):
+        await interaction.response.defer()
+        ch_type = channel_type.value if channel_type else "notifications"
+        name = channel_name or project_id
+
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("Error: Not in a guild.", ephemeral=True)
+            return
+
+        # Build guild_channels list for idempotency lookup
+        guild_channels = [
+            {"id": ch.id, "name": ch.name}
+            for ch in guild.text_channels
+        ]
+
+        # Check if a channel with this name already exists
+        existing_channel: discord.TextChannel | None = None
+        for ch in guild.text_channels:
+            if ch.name == name:
+                existing_channel = ch
+                break
+
+        created_channel_id: str | None = None
+        if not existing_channel:
+            # No matching channel — create one
+            if ch_type == "notifications":
+                topic = f"Agent Queue notifications for project: {project_id}"
+            else:
+                topic = f"Agent Queue control channel for project: {project_id}"
+            try:
+                existing_channel = await guild.create_text_channel(
+                    name=name,
+                    category=category,
+                    topic=topic,
+                    reason=f"AgentQueue: {ch_type} channel for project {project_id}",
+                )
+                created_channel_id = str(existing_channel.id)
+            except discord.Forbidden:
+                await interaction.followup.send(
+                    "Error: Bot lacks permission to create channels.", ephemeral=True
+                )
+                return
+            except discord.HTTPException as e:
+                await interaction.followup.send(
+                    f"Error creating channel: {e}", ephemeral=True
+                )
+                return
+
+        # Delegate to the command handler for project validation + linking
+        result = await handler.execute("create_channel_for_project", {
+            "project_id": project_id,
+            "channel_name": name,
+            "channel_type": ch_type,
+            "guild_channels": guild_channels,
+            "_created_channel_id": created_channel_id,
+        })
+
+        if "error" in result:
+            await interaction.followup.send(
+                f"Error: {result['error']}", ephemeral=True
+            )
+            return
+
+        # Update the bot's channel cache immediately
+        bot.update_project_channel(project_id, existing_channel, ch_type)
+
+        action = result.get("action", "linked")
+        if action == "linked_existing":
+            await interaction.followup.send(
+                f"✅ Channel {existing_channel.mention} already exists — "
+                f"linked as {ch_type} channel for project `{project_id}`"
+            )
+        else:
+            await interaction.followup.send(
+                f"✅ Created {existing_channel.mention} as {ch_type} channel "
+                f"for project `{project_id}`"
+            )
+
+    @bot.tree.command(
         name="channel-map",
         description="Show all project-to-channel mappings",
     )

@@ -286,6 +286,95 @@ class CommandHandler:
             "control_channel_id": project.discord_control_channel_id,
         }
 
+    async def _cmd_create_channel_for_project(self, args: dict) -> dict:
+        """Create (or reuse) a dedicated Discord channel for a project.
+
+        **Idempotent:** If a channel with the target name already exists in
+        the guild it is linked to the project instead of creating a duplicate.
+
+        Required args:
+            project_id:   Project ID (or name) to link the channel to.
+        Optional args:
+            channel_name: Desired channel name (defaults to project ID).
+            channel_type: ``"notifications"`` (default) or ``"control"``.
+            category_id:  Discord category ID to place the channel in.
+            guild_channels: List of ``{id, name}`` dicts for idempotency
+                            lookup (injected by the Discord command layer).
+            _created_channel_id: Pre-created channel ID (set by the Discord
+                                 command layer when it had to create a new
+                                 channel because none matched).
+
+        Returns a dict with ``action`` = ``"linked_existing"`` or
+        ``"created"`` so callers can report what happened.
+        """
+        pid = args.get("project_id") or args.get("project_name")
+        if not pid:
+            return {"error": "project_id is required"}
+
+        project = await self.db.get_project(pid)
+        if not project:
+            return {"error": f"Project '{pid}' not found"}
+
+        channel_type = args.get("channel_type", "notifications")
+        if channel_type not in ("notifications", "control"):
+            return {"error": "channel_type must be 'notifications' or 'control'"}
+
+        channel_name = args.get("channel_name") or pid
+        # Normalise: strip leading '#' if the user included one.
+        channel_name = channel_name.lstrip("#").strip()
+
+        # --- Idempotency: check for an existing channel with this name ---
+        existing_channel_id: str | None = None
+        guild_channels = args.get("guild_channels")
+        if guild_channels:
+            for ch in guild_channels:
+                if ch["name"] == channel_name:
+                    existing_channel_id = str(ch["id"])
+                    break
+
+        if existing_channel_id:
+            # Channel already exists — link it (no creation needed).
+            link_result = await self._cmd_set_project_channel({
+                "project_id": pid,
+                "channel_id": existing_channel_id,
+                "channel_type": channel_type,
+            })
+            if "error" in link_result:
+                return link_result
+            return {
+                **link_result,
+                "action": "linked_existing",
+                "channel_name": channel_name,
+            }
+
+        # --- No existing channel: the Discord layer must create one ---
+        # If the caller already created it and passed the ID, link it.
+        created_channel_id: str | None = args.get("_created_channel_id")
+        if created_channel_id:
+            link_result = await self._cmd_set_project_channel({
+                "project_id": pid,
+                "channel_id": created_channel_id,
+                "channel_type": channel_type,
+            })
+            if "error" in link_result:
+                return link_result
+            return {
+                **link_result,
+                "action": "created",
+                "channel_name": channel_name,
+            }
+
+        # Called without guild context and without a pre-created channel.
+        # This happens when the LLM chat agent calls the tool (no Discord
+        # guild access).  Return an informative error.
+        return {
+            "error": (
+                "Cannot create a Discord channel without guild context. "
+                "Use this command from Discord, or use set_project_channel "
+                "with an existing channel_id instead."
+            )
+        }
+
     async def _cmd_delete_project(self, args: dict) -> dict:
         pid = args["project_id"]
         project = await self.db.get_project(pid)

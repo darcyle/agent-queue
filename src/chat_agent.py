@@ -130,6 +130,32 @@ TOOLS = [
         },
     },
     {
+        "name": "create_channel_for_project",
+        "description": (
+            "Create a dedicated Discord channel for a project, or reuse an existing "
+            "one if a channel with the same name already exists (idempotent). "
+            "After creation/lookup the channel is automatically linked to the project. "
+            "Must be invoked from Discord (requires guild context)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "channel_name": {
+                    "type": "string",
+                    "description": "Desired channel name (defaults to project ID if omitted)",
+                },
+                "channel_type": {
+                    "type": "string",
+                    "enum": ["notifications", "control"],
+                    "description": "Channel purpose: 'notifications' (default) or 'control'",
+                    "default": "notifications",
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
         "name": "list_tasks",
         "description": "List tasks, optionally filtered by project or status.",
         "input_schema": {
@@ -822,7 +848,7 @@ You can directly (using your tools):
 - Pause, resume, or check the orchestrator (task scheduler) with `orchestrator_control`
 - Manually override a task's status with `set_task_status` (bypasses state machine)
 - Inspect the last error for a task with `get_agent_error` (shows error classification and suggested fix)
-- Configure per-project Discord channels with `set_project_channel`, `set_control_interface`, and `get_project_channels`
+- Configure per-project Discord channels with `set_project_channel`, `set_control_interface`, `get_project_channels`, and `create_channel_for_project`
 
 Repository management — use the `add_repo` tool to connect repos to projects:
 - **clone**: Clone a git repo by URL. Agents get their own checkout. Use for remote repos.
