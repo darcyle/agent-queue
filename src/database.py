@@ -485,12 +485,24 @@ class Database:
         return all(r["status"] == TaskStatus.COMPLETED.value for r in rows)
 
     async def get_stuck_defined_tasks(self, threshold_seconds: int) -> list[Task]:
-        """Return DEFINED tasks whose created_at is older than *threshold_seconds* ago."""
-        cutoff = time.time() - threshold_seconds
+        """Return DEFINED tasks that are truly stuck — blocked by a dependency in
+        a terminal failure state (BLOCKED or FAILED).
+
+        A DEFINED task waiting on READY/IN_PROGRESS/DEFINED dependencies is normal
+        and will eventually be promoted once the upstream work completes.  Only tasks
+        whose dependency chain contains a BLOCKED or FAILED task are reported.
+        """
         cursor = await self._db.execute(
-            "SELECT * FROM tasks WHERE status = ? AND created_at < ? "
-            "ORDER BY created_at ASC",
-            (TaskStatus.DEFINED.value, cutoff),
+            "SELECT DISTINCT t.* FROM tasks t "
+            "JOIN task_dependencies d ON d.task_id = t.id "
+            "JOIN tasks dep ON dep.id = d.depends_on_task_id "
+            "WHERE t.status = ? AND dep.status IN (?, ?) "
+            "ORDER BY t.created_at ASC",
+            (
+                TaskStatus.DEFINED.value,
+                TaskStatus.BLOCKED.value,
+                TaskStatus.FAILED.value,
+            ),
         )
         rows = await cursor.fetchall()
         return [self._row_to_task(r) for r in rows]
