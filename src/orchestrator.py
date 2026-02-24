@@ -487,6 +487,11 @@ class Orchestrator:
 
         plan_path = find_plan_file(workspace, config.plan_file_patterns)
         if not plan_path:
+            print(
+                f"Auto-task: no plan file found for task {task.id} "
+                f"in workspace {workspace} "
+                f"(searched patterns: {config.plan_file_patterns})"
+            )
             return []
 
         try:
@@ -699,7 +704,13 @@ class Orchestrator:
             "When you have finished making changes, you MUST commit your work:\n"
             "1. `git add` the files you changed\n"
             "2. `git commit` with a descriptive message\n"
-            "Do NOT push — the system handles pushing and PR creation."
+            "Do NOT push — the system handles pushing and PR creation.\n"
+            "\n## Important: Writing Implementation Plans\n"
+            "If your task is to create an implementation plan (rather than implement code),\n"
+            "you MUST write the plan to `.claude/plan.md` or `plan.md` in the workspace root.\n"
+            "This is required for the system to automatically parse the plan into follow-up tasks.\n"
+            "Do NOT write plans to other locations like `docs/plans/` — they may not be detected.\n"
+            "The plan should use markdown with `## Section` headings for each step."
         )
 
         context_lines.append(f"\n## Task\n{task.description}")

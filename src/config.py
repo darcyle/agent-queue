@@ -49,6 +49,9 @@ class AutoTaskConfig:
     plan_file_patterns: list[str] = field(default_factory=lambda: [
         ".claude/plan.md",
         "plan.md",
+        "docs/plans/*.md",
+        "plans/*.md",
+        "docs/plan.md",
     ])
     inherit_repo: bool = True           # Subtasks inherit parent's repo_id
     inherit_approval: bool = True       # Subtasks inherit parent's requires_approval
@@ -204,6 +207,7 @@ def load_config(path: str) -> AppConfig:
             enabled=at.get("enabled", True),
             plan_file_patterns=at.get("plan_file_patterns", [
                 ".claude/plan.md", "plan.md",
+                "docs/plans/*.md", "plans/*.md", "docs/plan.md",
             ]),
             inherit_repo=at.get("inherit_repo", True),
             inherit_approval=at.get("inherit_approval", True),

@@ -62,6 +62,78 @@ class TestFindPlanFile:
 
         assert find_plan_file(str(tmp_path)) is None
 
+    def test_finds_docs_plans_glob(self, tmp_path):
+        """Plans written to docs/plans/*.md should be discovered."""
+        plans_dir = tmp_path / "docs" / "plans"
+        plans_dir.mkdir(parents=True)
+        plan = plans_dir / "2026-02-23-multi-channel-support.md"
+        plan.write_text("# Multi-Channel\n\n## Step 1\n\nContent.")
+
+        result = find_plan_file(str(tmp_path))
+        assert result == str(plan)
+
+    def test_finds_plans_glob(self, tmp_path):
+        """Plans in plans/*.md (without docs/ prefix) should be discovered."""
+        plans_dir = tmp_path / "plans"
+        plans_dir.mkdir()
+        plan = plans_dir / "my-plan.md"
+        plan.write_text("# Plan\n\n## Do it\n\nDetails.")
+
+        result = find_plan_file(str(tmp_path))
+        assert result == str(plan)
+
+    def test_glob_returns_newest_file(self, tmp_path):
+        """When multiple files match a glob, the most recently modified is returned."""
+        import time
+        plans_dir = tmp_path / "docs" / "plans"
+        plans_dir.mkdir(parents=True)
+
+        old_plan = plans_dir / "2026-01-01-old.md"
+        old_plan.write_text("# Old Plan")
+        # Ensure the second file has a different mtime
+        time.sleep(0.05)
+
+        new_plan = plans_dir / "2026-02-23-new.md"
+        new_plan.write_text("# New Plan")
+
+        result = find_plan_file(str(tmp_path))
+        assert result == str(new_plan)
+
+    def test_prefers_explicit_over_glob(self, tmp_path):
+        """Explicit patterns (.claude/plan.md, plan.md) take priority over globs."""
+        # Create both an explicit plan.md and a docs/plans/*.md
+        (tmp_path / "plan.md").write_text("# Root Plan")
+        plans_dir = tmp_path / "docs" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "detailed-plan.md").write_text("# Detailed Plan")
+
+        result = find_plan_file(str(tmp_path))
+        assert result == str(tmp_path / "plan.md")
+
+    def test_glob_ignores_directories_in_matches(self, tmp_path):
+        """Glob expansion should skip directories that happen to match."""
+        plans_dir = tmp_path / "docs" / "plans"
+        plans_dir.mkdir(parents=True)
+        # Create a directory that ends in .md (unusual but possible)
+        bad_dir = plans_dir / "not-a-file.md"
+        bad_dir.mkdir()
+        # Create a real file
+        real_plan = plans_dir / "real-plan.md"
+        real_plan.write_text("# Real")
+
+        result = find_plan_file(str(tmp_path))
+        assert result == str(real_plan)
+
+    def test_finds_docs_plan_md(self, tmp_path):
+        """A plan at docs/plan.md should be discovered."""
+        docs_dir = tmp_path / "docs"
+        docs_dir.mkdir()
+        plan = docs_dir / "plan.md"
+        plan.write_text("# Plan in docs")
+
+        result = find_plan_file(str(tmp_path))
+        assert result == str(plan)
+
 
 # ── read_plan_file ──────────────────────────────────────────────────────── #
 

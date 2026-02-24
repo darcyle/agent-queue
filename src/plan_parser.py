@@ -8,15 +8,20 @@ individual steps that can be turned into follow-up tasks.
 
 from __future__ import annotations
 
+import glob
 import os
 import re
 from dataclasses import dataclass, field
 
 
 # Default locations where agents write plan files (checked in order).
+# Entries containing glob characters (*, ?) are expanded via glob.glob().
 DEFAULT_PLAN_FILE_PATTERNS = [
     ".claude/plan.md",
     "plan.md",
+    "docs/plans/*.md",
+    "plans/*.md",
+    "docs/plan.md",
 ]
 
 
@@ -41,14 +46,28 @@ class ParsedPlan:
 def find_plan_file(workspace: str, patterns: list[str] | None = None) -> str | None:
     """Search for a plan file in the workspace directory.
 
-    Checks each candidate path in order and returns the first one that
-    exists, or ``None`` if no plan file is found.
+    Checks each candidate pattern in order.  Patterns that contain glob
+    characters (``*`` or ``?``) are expanded; the most-recently-modified
+    match is returned so that freshly written plans take priority.
+
+    For plain (non-glob) patterns the file is checked directly.
+
+    Returns the first match, or ``None`` if no plan file is found.
     """
     candidates = patterns or DEFAULT_PLAN_FILE_PATTERNS
     for pattern in candidates:
-        path = os.path.join(workspace, pattern)
-        if os.path.isfile(path):
-            return path
+        full_pattern = os.path.join(workspace, pattern)
+        if any(c in pattern for c in ("*", "?")):
+            # Glob pattern — expand and pick the newest match
+            matches = [p for p in glob.glob(full_pattern) if os.path.isfile(p)]
+            if matches:
+                # Return the most-recently-modified file so the latest plan
+                # wins when multiple plan files exist (e.g. date-prefixed).
+                matches.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+                return matches[0]
+        else:
+            if os.path.isfile(full_pattern):
+                return full_pattern
     return None
 
 
