@@ -292,7 +292,7 @@ class CommandHandler:
                     "priority": t.priority,
                     "assigned_agent": t.assigned_agent_id,
                 }
-                for t in tasks[:25]
+                for t in tasks[:200]
             ],
             "total": len(tasks),
         }

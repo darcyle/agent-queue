@@ -54,58 +54,192 @@ def setup_commands(bot: commands.Bot) -> None:
     # Interactive UI components for task lists
     # ---------------------------------------------------------------------------
 
-    # Discord hard limits: 5 rows × 5 buttons = 25 buttons per message.
-    _MAX_TASK_BUTTONS = 25
+    _STATUS_ORDER = [
+        "IN_PROGRESS", "ASSIGNED", "READY", "DEFINED",
+        "PAUSED", "WAITING_INPUT", "AWAITING_APPROVAL", "VERIFYING",
+        "FAILED", "BLOCKED", "COMPLETED",
+    ]
+    _STATUS_DISPLAY: dict[str, str] = {
+        "DEFINED": "Defined", "READY": "Ready", "ASSIGNED": "Assigned",
+        "IN_PROGRESS": "In Progress", "VERIFYING": "Verifying",
+        "COMPLETED": "Completed", "PAUSED": "Paused",
+        "WAITING_INPUT": "Waiting Input", "FAILED": "Failed",
+        "BLOCKED": "Blocked", "AWAITING_APPROVAL": "Awaiting Approval",
+    }
+    # Sections expanded by default (active/actionable states)
+    _DEFAULT_EXPANDED = {
+        "IN_PROGRESS", "ASSIGNED", "READY",
+        "FAILED", "BLOCKED", "PAUSED", "WAITING_INPUT", "AWAITING_APPROVAL",
+    }
+    _MAX_TASKS_PER_SECTION = 15
 
-    class TaskDetailButton(discord.ui.Button):
-        """Button that fetches and displays full task details when clicked."""
+    class StatusToggleButton(discord.ui.Button):
+        """Toggles a status section between expanded and collapsed."""
 
-        def __init__(self, task_id: str) -> None:
-            custom_id = f"task_detail:{task_id}"[:100]
-            super().__init__(
-                style=discord.ButtonStyle.secondary,
-                label="Details",
-                custom_id=custom_id,
+        def __init__(self, status: str, count: int, is_expanded: bool) -> None:
+            emoji = _STATUS_EMOJIS.get(status, "⚪")
+            display = _STATUS_DISPLAY.get(status, status)
+            label = f"{display} ({count})"
+            style = (
+                discord.ButtonStyle.primary if is_expanded
+                else discord.ButtonStyle.secondary
             )
-            self.task_id = task_id
+            super().__init__(style=style, label=label, emoji=emoji)
+            self.status = status
 
         async def callback(self, interaction: discord.Interaction) -> None:
+            view: TaskReportView = self.view
+            if self.status in view.expanded:
+                view.expanded.discard(self.status)
+            else:
+                view.expanded.add(self.status)
+            view._rebuild_components()
+            content = view.build_content()
+            await interaction.response.edit_message(content=content, view=view)
+
+    class TaskDetailSelect(discord.ui.Select):
+        """Dropdown to pick a task and view its full details."""
+
+        def __init__(self, options: list[discord.SelectOption]) -> None:
+            super().__init__(
+                placeholder="Select a task for details...",
+                options=options,
+            )
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            task_id = self.values[0]
             await interaction.response.defer(ephemeral=True)
-            detail = await _format_task_detail(self.task_id)
+            detail = await _format_task_detail(task_id)
             if detail is None:
                 await interaction.followup.send(
-                    f"Task `{self.task_id}` not found.", ephemeral=True
+                    f"Task `{task_id}` not found.", ephemeral=True
                 )
             else:
                 await interaction.followup.send(detail, ephemeral=True)
 
-    class TaskListView(discord.ui.View):
-        """Attaches one Details button per task (up to the Discord 25-button max)."""
+    class TaskReportView(discord.ui.View):
+        """Grouped task report with collapsible status sections and detail select."""
 
-        def __init__(self, task_dicts: list) -> None:
-            super().__init__(timeout=300)
-            for t in task_dicts[:_MAX_TASK_BUTTONS]:
-                self.add_item(TaskDetailButton(t["id"]))
+        def __init__(self, tasks_by_status: dict[str, list], total: int) -> None:
+            super().__init__(timeout=600)
+            self.tasks_by_status = tasks_by_status
+            self.total = total
+            self.expanded: set[str] = set()
+            for status in _DEFAULT_EXPANDED:
+                if status in tasks_by_status:
+                    self.expanded.add(status)
+            # If nothing expanded, expand the first non-empty section
+            if not self.expanded:
+                for status in _STATUS_ORDER:
+                    if status in tasks_by_status:
+                        self.expanded.add(status)
+                        break
+            self._rebuild_components()
+
+        def _rebuild_components(self) -> None:
+            self.clear_items()
+            # Toggle buttons for each status that has tasks
+            for status in _STATUS_ORDER:
+                if status not in self.tasks_by_status:
+                    continue
+                count = len(self.tasks_by_status[status])
+                is_expanded = status in self.expanded
+                self.add_item(StatusToggleButton(status, count, is_expanded))
+            # Select dropdown with tasks from expanded sections
+            options: list[discord.SelectOption] = []
+            for status in _STATUS_ORDER:
+                if status not in self.expanded:
+                    continue
+                for t in self.tasks_by_status.get(status, []):
+                    if len(options) >= 25:
+                        break
+                    title = t["title"]
+                    if len(title) > 95:
+                        title = title[:92] + "..."
+                    options.append(discord.SelectOption(
+                        label=title,
+                        value=t["id"],
+                        description=t["id"],
+                    ))
+                if len(options) >= 25:
+                    break
+            if options:
+                self.add_item(TaskDetailSelect(options))
+
+        def build_content(self) -> str:
+            lines: list[str] = []
+            for status in _STATUS_ORDER:
+                if status not in self.tasks_by_status:
+                    continue
+                tasks = self.tasks_by_status[status]
+                emoji = _STATUS_EMOJIS.get(status, "⚪")
+                display = _STATUS_DISPLAY.get(status, status)
+                count = len(tasks)
+                if status in self.expanded:
+                    lines.append(f"### {emoji} {display} ({count})")
+                    shown = tasks[:_MAX_TASKS_PER_SECTION]
+                    for t in shown:
+                        lines.append(f"**{t['title']}** `{t['id']}`")
+                    if count > _MAX_TASKS_PER_SECTION:
+                        lines.append(
+                            f"_...and {count - _MAX_TASKS_PER_SECTION} more_"
+                        )
+                    lines.append("")
+                else:
+                    lines.append(f"{emoji} **{display}** ({count})")
+            content = "\n".join(lines)
+            # Trim if over Discord's 2000-char message limit
+            if len(content) > 1950:
+                lines = []
+                for status in _STATUS_ORDER:
+                    if status not in self.tasks_by_status:
+                        continue
+                    tasks = self.tasks_by_status[status]
+                    emoji = _STATUS_EMOJIS.get(status, "⚪")
+                    display = _STATUS_DISPLAY.get(status, status)
+                    count = len(tasks)
+                    if status in self.expanded:
+                        cap = 8
+                        lines.append(f"### {emoji} {display} ({count})")
+                        for t in tasks[:cap]:
+                            lines.append(f"**{t['title']}** `{t['id']}`")
+                        if count > cap:
+                            lines.append(f"_...and {count - cap} more_")
+                        lines.append("")
+                    else:
+                        lines.append(f"{emoji} **{display}** ({count})")
+                content = "\n".join(lines)
+            return content
 
     # ---------------------------------------------------------------------------
     # Shared formatting helpers
     # ---------------------------------------------------------------------------
 
     _STATUS_COLORS: dict[str, int] = {
-        TaskStatus.DEFINED.value:     0x95a5a6,
-        TaskStatus.READY.value:       0x3498db,
-        TaskStatus.IN_PROGRESS.value: 0xf39c12,
-        TaskStatus.COMPLETED.value:   0x2ecc71,
-        TaskStatus.FAILED.value:      0xe74c3c,
-        TaskStatus.BLOCKED.value:     0x992d22,
+        TaskStatus.DEFINED.value:            0x95a5a6,
+        TaskStatus.READY.value:              0x3498db,
+        TaskStatus.ASSIGNED.value:           0x9b59b6,
+        TaskStatus.IN_PROGRESS.value:        0xf39c12,
+        TaskStatus.WAITING_INPUT.value:      0x1abc9c,
+        TaskStatus.PAUSED.value:             0x7f8c8d,
+        TaskStatus.VERIFYING.value:          0x2980b9,
+        TaskStatus.AWAITING_APPROVAL.value:  0xe67e22,
+        TaskStatus.COMPLETED.value:          0x2ecc71,
+        TaskStatus.FAILED.value:             0xe74c3c,
+        TaskStatus.BLOCKED.value:            0x992d22,
     }
     _STATUS_EMOJIS: dict[str, str] = {
-        TaskStatus.DEFINED.value:     "⚪",
-        TaskStatus.READY.value:       "🔵",
-        TaskStatus.IN_PROGRESS.value: "🟡",
-        TaskStatus.COMPLETED.value:   "🟢",
-        TaskStatus.FAILED.value:      "🔴",
-        TaskStatus.BLOCKED.value:     "⛔",
+        TaskStatus.DEFINED.value:            "⚪",
+        TaskStatus.READY.value:              "🔵",
+        TaskStatus.ASSIGNED.value:           "📋",
+        TaskStatus.IN_PROGRESS.value:        "🟡",
+        TaskStatus.WAITING_INPUT.value:      "💬",
+        TaskStatus.PAUSED.value:             "⏸️",
+        TaskStatus.VERIFYING.value:          "🔍",
+        TaskStatus.AWAITING_APPROVAL.value:  "⏳",
+        TaskStatus.COMPLETED.value:          "🟢",
+        TaskStatus.FAILED.value:             "🔴",
+        TaskStatus.BLOCKED.value:            "⛔",
     }
 
     async def _send_long(interaction, text: str, *, followup: bool = False):
@@ -590,15 +724,14 @@ def setup_commands(bot: commands.Bot) -> None:
         if not tasks:
             await interaction.response.send_message("No tasks found.")
             return
-        shown_tasks = tasks[:_MAX_TASK_BUTTONS]
-        lines = []
-        for t in shown_tasks:
-            lines.append(f"• `{t['id']}` **{t['title']}** — {t['status']}")
+        # Group tasks by status
+        tasks_by_status: dict[str, list] = {}
+        for t in tasks:
+            tasks_by_status.setdefault(t["status"], []).append(t)
         total = result.get("total", len(tasks))
-        if total > len(shown_tasks):
-            lines.append(f"_...and {total - len(shown_tasks)} more_")
-        view = TaskListView(shown_tasks)
-        await interaction.response.send_message("\n".join(lines), view=view)
+        view = TaskReportView(tasks_by_status, total)
+        content = view.build_content()
+        await interaction.response.send_message(content, view=view)
 
     @bot.tree.command(name="task", description="Show full details of a task")
     @app_commands.describe(task_id="Task ID")
