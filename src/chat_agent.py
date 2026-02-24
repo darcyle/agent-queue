@@ -750,37 +750,93 @@ TOOLS = [
     },
     {
         "name": "git_log",
-        "description": "Show recent commit log (one-line format) for a repository.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "repo_id": {"type": "string", "description": "Repository ID"},
-                "count": {
-                    "type": "integer",
-                    "description": "Number of commits to show (default 10)",
-                    "default": 10,
-                },
-            },
-            "required": ["repo_id"],
-        },
-    },
-    {
-        "name": "git_diff",
-        "description": (
-            "Show the diff of the working tree (unstaged changes) or against a base branch. "
-            "Complements the task-scoped get_task_diff with project/repo-level diffs."
-        ),
+        "description": "Show recent git commits for a project's repository.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {"type": "string", "description": "Project ID"},
-                "repo_id": {"type": "string", "description": "Repository ID (optional, defaults to first repo in project)"},
-                "base_branch": {
-                    "type": "string",
-                    "description": "Branch to diff against. If omitted, shows unstaged working tree changes.",
-                },
+                "count": {"type": "integer", "description": "Number of commits to show (default 10)", "default": 10},
+                "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
             },
             "required": ["project_id"],
+        },
+    },
+    {
+        "name": "git_diff",
+        "description": "Show the git diff for a project's repository. Without base_branch shows working tree changes; with base_branch shows diff against that branch.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "base_branch": {"type": "string", "description": "Base branch to diff against (optional — shows working tree diff if omitted)"},
+                "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "create_branch",
+        "description": "Create a new git branch in a project's repository.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "branch_name": {"type": "string", "description": "Name for the new branch"},
+                "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
+            },
+            "required": ["project_id", "branch_name"],
+        },
+    },
+    {
+        "name": "checkout_branch",
+        "description": "Switch to an existing git branch in a project's repository.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "branch_name": {"type": "string", "description": "Branch name to check out"},
+                "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
+            },
+            "required": ["project_id", "branch_name"],
+        },
+    },
+    {
+        "name": "commit_changes",
+        "description": "Stage all changes and create a git commit in a project's repository.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "message": {"type": "string", "description": "Commit message"},
+                "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
+            },
+            "required": ["project_id", "message"],
+        },
+    },
+    {
+        "name": "push_branch",
+        "description": "Push a branch to the remote origin in a project's repository.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "branch_name": {"type": "string", "description": "Branch to push (optional — pushes current branch if omitted)"},
+                "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "merge_branch",
+        "description": "Merge a branch into the default branch (e.g., main). Aborts if there are conflicts.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "branch_name": {"type": "string", "description": "Branch to merge into the default branch"},
+                "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
+            },
+            "required": ["project_id", "branch_name"],
         },
     },
     {
@@ -855,6 +911,10 @@ You can directly (using your tools):
 - Create branches with `git_create_branch`, merge branches with `git_merge`
 - Create GitHub PRs with `git_create_pr`
 - List changed files with `git_changed_files`, view commit logs with `git_log`
+- Create branches with `create_branch`, switch branches with `checkout_branch`
+- Commit changes with `commit_changes`, push branches with `push_branch`
+- Merge branches with `merge_branch`
+- View commit history with `git_log`, see diffs with `git_diff`
 - Read files from workspaces with `read_file`
 - Run shell commands in workspaces with `run_command`
 - Search file contents or filenames with `search_files`
