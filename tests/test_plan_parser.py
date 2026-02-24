@@ -67,7 +67,7 @@ class TestFindPlanFile:
         plans_dir = tmp_path / "docs" / "plans"
         plans_dir.mkdir(parents=True)
         plan = plans_dir / "2026-02-23-multi-channel-support.md"
-        plan.write_text("# Multi-Channel\n\n## Step 1\n\nContent.")
+        plan.write_text("# Multi-Channel\n\n## Step 1\n\nImplement multi-channel support for Discord notifications.")
 
         result = find_plan_file(str(tmp_path))
         assert result == str(plan)
@@ -199,11 +199,11 @@ Details about second task.
     def test_removes_step_prefix(self):
         content = """## Step 1: Setup database
 
-Content.
+Create the initial database schema with all required tables and indexes.
 
 ## Step 2: Add migrations
 
-More content.
+Write migration scripts for the new columns and constraints.
 """
         plan = parse_plan(content)
         assert plan.steps[0].title == "Setup database"
@@ -212,11 +212,11 @@ More content.
     def test_removes_phase_prefix(self):
         content = """## Phase 1 - Foundation
 
-Content.
+Set up the project foundation including dependencies and configuration files.
 
 ## Phase 2 - Implementation
 
-More content.
+Implement the core features and business logic for the application.
 """
         plan = parse_plan(content)
         assert plan.steps[0].title == "Foundation"
@@ -225,11 +225,11 @@ More content.
     def test_removes_bold_markdown(self):
         content = """## **Setup the project**
 
-Content here.
+Initialize the project structure with all required configuration files.
 
 ## **Deploy the service**
 
-More content.
+Deploy the service to the staging environment and verify it works.
 """
         plan = parse_plan(content)
         assert plan.steps[0].title == "Setup the project"
@@ -248,7 +248,8 @@ from bcrypt import hashpw
 
 ## Update frontend
 
-- Add login form
+- Add login form component with username and password fields
+- Add form validation and error display
 """
         plan = parse_plan(content)
         assert len(plan.steps) == 2
@@ -259,15 +260,15 @@ from bcrypt import hashpw
     def test_priority_hints_are_sequential(self):
         content = """## A
 
-Desc.
+Implement the first component with all required functionality and tests.
 
 ## B
 
-Desc.
+Implement the second component with all required functionality and tests.
 
 ## C
 
-Desc.
+Implement the third component with all required functionality and tests.
 """
         plan = parse_plan(content)
         assert [s.priority_hint for s in plan.steps] == [0, 1, 2]
@@ -344,12 +345,12 @@ It has multiple lines but no structured steps.
     def test_heading_based_takes_priority_over_numbered(self):
         content = """## Task A
 
-1. Sub-item under A
-2. Another sub-item
+1. Sub-item under A with enough detail to be actionable
+2. Another sub-item with implementation notes and context
 
 ## Task B
 
-Some description.
+Some description of the task with enough detail to pass filters.
 """
         plan = parse_plan(content)
         # Heading-based should win
@@ -358,22 +359,25 @@ Some description.
         assert plan.steps[1].title == "Task B"
 
     def test_source_file_is_preserved(self):
-        plan = parse_plan("## Step\nContent.", source_file="/path/plan.md")
+        plan = parse_plan(
+            "## Step\nImplement changes to the database schema for the new feature.",
+            source_file="/path/plan.md",
+        )
         assert plan.source_file == "/path/plan.md"
 
     def test_raw_content_is_preserved(self):
-        content = "## Step\nContent."
+        content = "## Step\nImplement changes to the database schema for the new feature."
         plan = parse_plan(content)
         assert plan.raw_content == content
 
     def test_skips_empty_headings(self):
         content = """##
 
-Nothing here.
+Nothing here that is meaningful enough.
 
 ## Real step
 
-Content.
+Implement the real step with all the necessary changes to the codebase.
 """
         plan = parse_plan(content)
         # The empty heading should be skipped
@@ -454,3 +458,112 @@ class TestBuildTaskDescription:
         assert "Infrastructure setup" in desc
         assert "K8s cluster" in desc
         assert "kubectl" in desc
+
+
+# ── Non-actionable heading filter ──────────────────────────────────────── #
+
+class TestNonActionableHeadingFilter:
+    def test_skips_overview_and_summary(self):
+        content = """## Overview
+
+This document describes the implementation plan for the feature.
+
+## Add user authentication
+
+Implement JWT-based auth with login and logout endpoints.
+
+## Summary
+
+This plan covers authentication implementation.
+"""
+        plan = parse_plan(content)
+        assert len(plan.steps) == 1
+        assert plan.steps[0].title == "Add user authentication"
+
+    def test_skips_background_and_context(self):
+        content = """## Background
+
+The system currently lacks proper error handling throughout.
+
+## Context
+
+We need to improve reliability for production workloads.
+
+## Implement retry logic
+
+Add exponential backoff retry logic to all HTTP client calls.
+
+## Conclusion
+
+These changes will improve system reliability significantly.
+"""
+        plan = parse_plan(content)
+        assert len(plan.steps) == 1
+        assert plan.steps[0].title == "Implement retry logic"
+
+    def test_case_insensitive_filter(self):
+        content = """## OVERVIEW
+
+A detailed overview of the project and its goals.
+
+## Build the API layer
+
+Create REST endpoints for all CRUD operations with validation.
+"""
+        plan = parse_plan(content)
+        assert len(plan.steps) == 1
+        assert plan.steps[0].title == "Build the API layer"
+
+    def test_skips_short_body_under_20_chars(self):
+        content = """## Real task
+
+Implement the feature with comprehensive test coverage and documentation.
+
+## Stub task
+
+Too short.
+"""
+        plan = parse_plan(content)
+        assert len(plan.steps) == 1
+        assert plan.steps[0].title == "Real task"
+
+
+# ── Max steps cap ──────────────────────────────────────────────────────── #
+
+class TestMaxStepsCap:
+    def test_max_steps_caps_output(self):
+        sections = []
+        for i in range(30):
+            sections.append(f"## Step {i}: Do thing {i}\n\nImplement component {i} with all required changes and tests.\n")
+        content = "\n".join(sections)
+        plan = parse_plan(content, max_steps=5)
+        assert len(plan.steps) == 5
+
+    def test_default_max_steps_is_20(self):
+        sections = []
+        for i in range(25):
+            sections.append(f"## Task {i}: Implement feature {i}\n\nAdd feature {i} with validation, error handling, and tests.\n")
+        content = "\n".join(sections)
+        plan = parse_plan(content)
+        assert len(plan.steps) == 20
+
+    def test_max_steps_does_not_affect_small_plans(self):
+        content = """## Add models
+
+Create database models for users and posts with all fields.
+
+## Add endpoints
+
+Build REST API endpoints for CRUD operations on the models.
+"""
+        plan = parse_plan(content, max_steps=10)
+        assert len(plan.steps) == 2
+
+
+# ── NON_ACTIONABLE_HEADINGS constant ──────────────────────────────────── #
+
+class TestNonActionableHeadingsConstant:
+    def test_all_entries_are_lowercase(self):
+        from src.plan_parser import NON_ACTIONABLE_HEADINGS
+        for heading in NON_ACTIONABLE_HEADINGS:
+            assert heading == heading.lower(), f"Entry '{heading}' should be lowercase"

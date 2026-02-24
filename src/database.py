@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     resume_after REAL,
     requires_approval INTEGER NOT NULL DEFAULT 0,
     pr_url TEXT,
+    plan_source TEXT,
+    is_plan_subtask INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -199,6 +201,8 @@ class Database:
             "ALTER TABLE tasks ADD COLUMN pr_url TEXT",
             "ALTER TABLE projects ADD COLUMN discord_channel_id TEXT",
             "ALTER TABLE projects ADD COLUMN discord_control_channel_id TEXT",
+            "ALTER TABLE tasks ADD COLUMN plan_source TEXT",
+            "ALTER TABLE tasks ADD COLUMN is_plan_subtask INTEGER NOT NULL DEFAULT 0",
         ]:
             try:
                 await self._db.execute(migration)
@@ -330,13 +334,15 @@ class Database:
             "INSERT INTO tasks (id, project_id, parent_task_id, repo_id, title, "
             "description, priority, status, verification_type, retry_count, "
             "max_retries, assigned_agent_id, branch_name, resume_after, "
-            "requires_approval, pr_url, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "requires_approval, pr_url, plan_source, is_plan_subtask, "
+            "created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (task.id, task.project_id, task.parent_task_id, task.repo_id,
              task.title, task.description, task.priority, task.status.value,
              task.verification_type.value, task.retry_count, task.max_retries,
              task.assigned_agent_id, task.branch_name, task.resume_after,
-             int(task.requires_approval), task.pr_url, now, now),
+             int(task.requires_approval), task.pr_url, task.plan_source,
+             int(task.is_plan_subtask), now, now),
         )
         await self._db.commit()
 
@@ -430,6 +436,8 @@ class Database:
             resume_after=row["resume_after"],
             requires_approval=bool(row["requires_approval"]) if "requires_approval" in keys else False,
             pr_url=row["pr_url"] if "pr_url" in keys else None,
+            plan_source=row["plan_source"] if "plan_source" in keys else None,
+            is_plan_subtask=bool(row["is_plan_subtask"]) if "is_plan_subtask" in keys else False,
         )
 
     # --- Dependencies ---

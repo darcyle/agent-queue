@@ -226,15 +226,15 @@ Add comprehensive test suite.
         claude_dir.mkdir()
         (claude_dir / "plan.md").write_text("""## Step A
 
-First.
+First step: set up database schema and run initial migrations.
 
 ## Step B
 
-Second.
+Second step: implement the core API endpoints and handlers.
 
 ## Step C
 
-Third.
+Third step: write comprehensive tests for all components.
 """)
 
         await orch.db.create_project(Project(id="p-1", name="alpha"))
@@ -301,7 +301,7 @@ Third.
         # Create a plan file
         claude_dir = workspace / ".claude"
         claude_dir.mkdir()
-        (claude_dir / "plan.md").write_text("## Step\n\nContent.\n")
+        (claude_dir / "plan.md").write_text("## Step\n\nImplement the changes described in the plan file.\n")
 
         await orch.db.create_project(Project(id="p-1", name="alpha"))
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
@@ -318,14 +318,14 @@ Third.
 
         await orch.shutdown()
 
-    async def test_plan_file_is_cleaned_up(self, orch_with_workspace):
-        """Plan file should be removed after tasks are generated."""
+    async def test_plan_file_is_archived(self, orch_with_workspace):
+        """Plan file should be archived (not deleted) after tasks are generated."""
         orch, workspace = orch_with_workspace
 
         claude_dir = workspace / ".claude"
         claude_dir.mkdir()
         plan_path = claude_dir / "plan.md"
-        plan_path.write_text("## Task\n\nDo something.\n")
+        plan_path.write_text("## Task\n\nDo something interesting here.\n")
 
         await orch.db.create_project(Project(id="p-1", name="alpha"))
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
@@ -337,8 +337,12 @@ Third.
 
         await _run_cycle_and_wait(orch)
 
-        # Plan file should be deleted
+        # Original plan file should be moved
         assert not plan_path.exists()
+        # Archived plan should exist
+        archived = workspace / ".claude" / "plans" / "t-1-plan.md"
+        assert archived.exists()
+        assert "something interesting" in archived.read_text()
 
     async def test_subtasks_inherit_repo_id(self, orch_with_workspace):
         """When inherit_repo is True, subtasks should have the parent's repo_id."""
@@ -348,7 +352,7 @@ Third.
         # an agent that wrote a plan in its checkout directory).
         claude_dir = workspace / ".claude"
         claude_dir.mkdir()
-        (claude_dir / "plan.md").write_text("## Build it\n\nDo the build.\n")
+        (claude_dir / "plan.md").write_text("## Build it\n\nBuild the project artifacts and run the compilation step.\n")
 
         await orch.db.create_project(Project(id="p-1", name="alpha"))
         await orch.db.create_repo(RepoConfig(
@@ -424,7 +428,7 @@ Implement JWT-based sessions.
 
         claude_dir = workspace / ".claude"
         claude_dir.mkdir()
-        (claude_dir / "plan.md").write_text("## A\n\nFirst.\n\n## B\n\nSecond.\n")
+        (claude_dir / "plan.md").write_text("## A\n\nFirst step: implement the core module and add dependencies.\n\n## B\n\nSecond step: add integration tests and documentation.\n")
 
         await orch.db.create_project(Project(id="p-1", name="alpha"))
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
@@ -467,7 +471,9 @@ Implement JWT-based sessions.
         claude_dir = workspace / ".claude"
         claude_dir.mkdir()
         (claude_dir / "plan.md").write_text(
-            "## Step A\n\nFirst.\n\n## Step B\n\nSecond.\n\n## Step C\n\nThird.\n"
+            "## Step A\n\nFirst step: set up database schema and migrations.\n\n"
+            "## Step B\n\nSecond step: implement the API endpoints and handlers.\n\n"
+            "## Step C\n\nThird step: write tests and update documentation.\n"
         )
 
         await orch.db.create_project(Project(id="p-1", name="alpha"))
@@ -514,7 +520,8 @@ Implement JWT-based sessions.
         claude_dir = workspace / ".claude"
         claude_dir.mkdir()
         (claude_dir / "plan.md").write_text(
-            "## Step A\n\nFirst.\n\n## Step B\n\nSecond.\n"
+            "## Step A\n\nFirst step: set up database schema and migrations.\n\n"
+            "## Step B\n\nSecond step: implement the API endpoints and handlers.\n"
         )
 
         await orch.db.create_project(Project(id="p-1", name="alpha"))
@@ -582,11 +589,11 @@ Implement JWT-based sessions.
         claude_dir.mkdir()
         (claude_dir / "plan.md").write_text("""## First step
 
-Do the first thing.
+Implement the first component with database schema changes and migrations.
 
 ## Second step
 
-Do the second thing.
+Implement the second component with API endpoints and request handlers.
 """)
 
         await orch.db.create_project(Project(id="p-1", name="alpha"))
@@ -802,3 +809,213 @@ class TestAwaitingApprovalNopr:
         task = await orch.db.get_task("t-1")
         assert task.status == TaskStatus.AWAITING_APPROVAL
         assert "t-1" not in orch._no_pr_reminded_at
+
+
+class TestPlanSubtaskFlags:
+    """Tests for is_plan_subtask and plan_source on generated tasks."""
+
+    @pytest.fixture
+    async def orch_with_workspace(self, tmp_path):
+        workspace = tmp_path / "workspaces"
+        workspace.mkdir()
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(workspace),
+        )
+        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        await o.initialize()
+        yield o, workspace
+        await _drain_running_tasks(o)
+        await o.shutdown()
+
+    async def test_subtasks_have_is_plan_subtask_flag(self, orch_with_workspace):
+        """Generated subtasks should have is_plan_subtask=True."""
+        orch, workspace = orch_with_workspace
+
+        claude_dir = workspace / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "plan.md").write_text(
+            "## Add models\n\nCreate the user and post models in models.py with all fields.\n"
+        )
+
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        parent = Task(
+            id="t-1", project_id="p-1", title="Plan",
+            description="Create plan", status=TaskStatus.COMPLETED,
+        )
+        await orch.db.create_task(parent)
+
+        generated = await orch._generate_tasks_from_plan(parent, str(workspace))
+        assert len(generated) == 1
+        assert generated[0].is_plan_subtask is True
+
+        # Verify persisted in DB
+        db_task = await orch.db.get_task(generated[0].id)
+        assert db_task.is_plan_subtask is True
+
+    async def test_subtasks_have_plan_source(self, orch_with_workspace):
+        """Generated subtasks should have plan_source pointing to archived file."""
+        orch, workspace = orch_with_workspace
+
+        claude_dir = workspace / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "plan.md").write_text(
+            "## Build API\n\nCreate REST endpoints for user CRUD operations.\n"
+        )
+
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        parent = Task(
+            id="t-1", project_id="p-1", title="Plan",
+            description="Create plan", status=TaskStatus.COMPLETED,
+        )
+        await orch.db.create_task(parent)
+
+        generated = await orch._generate_tasks_from_plan(parent, str(workspace))
+        assert len(generated) == 1
+        assert generated[0].plan_source is not None
+        assert "t-1-plan.md" in generated[0].plan_source
+
+
+class TestRecursionGuard:
+    """Tests for preventing recursive plan explosion."""
+
+    @pytest.fixture
+    async def orch_with_workspace(self, tmp_path):
+        workspace = tmp_path / "workspaces"
+        workspace.mkdir()
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(workspace),
+        )
+        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        await o.initialize()
+        yield o, workspace
+        await _drain_running_tasks(o)
+        await o.shutdown()
+
+    async def test_subtask_does_not_generate_more_tasks(self, orch_with_workspace):
+        """A plan subtask should NOT generate further tasks even if a plan file exists."""
+        orch, workspace = orch_with_workspace
+
+        claude_dir = workspace / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "plan.md").write_text(
+            "## Sub-sub task\n\nThis should never be generated as a task.\n"
+        )
+
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+
+        # Create parent task first (FK constraint)
+        await orch.db.create_task(Task(
+            id="t-parent", project_id="p-1", title="Parent",
+            description="Parent task", status=TaskStatus.COMPLETED,
+        ))
+
+        # Create a subtask (is_plan_subtask=True)
+        subtask = Task(
+            id="t-sub", project_id="p-1", title="Subtask",
+            description="I am a subtask", status=TaskStatus.COMPLETED,
+            parent_task_id="t-parent",
+            is_plan_subtask=True,
+        )
+        await orch.db.create_task(subtask)
+
+        generated = await orch._generate_tasks_from_plan(subtask, str(workspace))
+        assert len(generated) == 0
+
+    async def test_root_task_still_generates_tasks(self, orch_with_workspace):
+        """A root task (is_plan_subtask=False) should still generate tasks."""
+        orch, workspace = orch_with_workspace
+
+        claude_dir = workspace / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "plan.md").write_text(
+            "## Real subtask\n\nThis should be created as a new task from the plan.\n"
+        )
+
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+
+        root = Task(
+            id="t-root", project_id="p-1", title="Root Task",
+            description="I am a root task", status=TaskStatus.COMPLETED,
+            is_plan_subtask=False,
+        )
+        await orch.db.create_task(root)
+
+        generated = await orch._generate_tasks_from_plan(root, str(workspace))
+        assert len(generated) == 1
+
+
+class TestIsLastSubtask:
+    """Tests for the _is_last_subtask helper."""
+
+    @pytest.fixture
+    async def orch_with_workspace(self, tmp_path):
+        workspace = tmp_path / "workspaces"
+        workspace.mkdir()
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(workspace),
+        )
+        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        await o.initialize()
+        yield o
+        await _drain_running_tasks(o)
+        await o.shutdown()
+
+    async def test_single_subtask_is_last(self, orch_with_workspace):
+        orch = orch_with_workspace
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_task(Task(
+            id="t-parent", project_id="p-1", title="Parent",
+            description="Parent task", status=TaskStatus.COMPLETED,
+        ))
+        sub = Task(
+            id="t-sub-1", project_id="p-1", title="Only Sub",
+            description="The only subtask", status=TaskStatus.COMPLETED,
+            parent_task_id="t-parent", is_plan_subtask=True,
+        )
+        await orch.db.create_task(sub)
+        assert await orch._is_last_subtask(sub) is True
+
+    async def test_not_last_when_sibling_incomplete(self, orch_with_workspace):
+        orch = orch_with_workspace
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_task(Task(
+            id="t-parent", project_id="p-1", title="Parent",
+            description="Parent task", status=TaskStatus.COMPLETED,
+        ))
+        sub1 = Task(
+            id="t-sub-1", project_id="p-1", title="Sub 1",
+            description="First subtask", status=TaskStatus.COMPLETED,
+            parent_task_id="t-parent", is_plan_subtask=True,
+        )
+        sub2 = Task(
+            id="t-sub-2", project_id="p-1", title="Sub 2",
+            description="Second subtask", status=TaskStatus.DEFINED,
+            parent_task_id="t-parent", is_plan_subtask=True,
+        )
+        await orch.db.create_task(sub1)
+        await orch.db.create_task(sub2)
+        assert await orch._is_last_subtask(sub1) is False
+
+    async def test_is_last_when_all_siblings_completed(self, orch_with_workspace):
+        orch = orch_with_workspace
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_task(Task(
+            id="t-parent", project_id="p-1", title="Parent",
+            description="Parent task", status=TaskStatus.COMPLETED,
+        ))
+        sub1 = Task(
+            id="t-sub-1", project_id="p-1", title="Sub 1",
+            description="First subtask", status=TaskStatus.COMPLETED,
+            parent_task_id="t-parent", is_plan_subtask=True,
+        )
+        sub2 = Task(
+            id="t-sub-2", project_id="p-1", title="Sub 2",
+            description="Second subtask", status=TaskStatus.COMPLETED,
+            parent_task_id="t-parent", is_plan_subtask=True,
+        )
+        await orch.db.create_task(sub1)
+        await orch.db.create_task(sub2)
+        assert await orch._is_last_subtask(sub2) is True

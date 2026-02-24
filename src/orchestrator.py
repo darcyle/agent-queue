@@ -22,6 +22,7 @@ from src.hooks import HookEngine
 from src.plan_parser import (
     find_plan_file, read_plan_file, parse_plan, build_task_description,
 )
+from src.plan_parser_llm import parse_plan_with_llm
 from src.scheduler import AssignAction, Scheduler, SchedulerState
 from src.task_names import generate_task_id
 from src.tokens.budget import BudgetManager
@@ -61,6 +62,14 @@ class Orchestrator:
         self._create_thread: CreateThreadCallback | None = None
         self._paused: bool = False
         self._last_approval_check: float = 0.0
+        # Chat provider for LLM-based plan parsing
+        self._chat_provider = None
+        if config.auto_task.use_llm_parser:
+            try:
+                from src.chat_providers import create_chat_provider
+                self._chat_provider = create_chat_provider(config.chat_provider)
+            except Exception:
+                pass
         # Tracks the last time we sent a reminder for an AWAITING_APPROVAL
         # task that has no PR URL (keyed by task_id).
         self._no_pr_reminded_at: dict[str, float] = {}
@@ -353,7 +362,13 @@ class Orchestrator:
             )
             return None
 
-        branch_name = GitManager.make_branch_name(task.id, task.title)
+        # Subtasks reuse the parent's branch to accumulate commits
+        if task.is_plan_subtask and task.parent_task_id:
+            parent = await self.db.get_task(task.parent_task_id)
+            branch_name = (parent.branch_name if parent and parent.branch_name
+                           else GitManager.make_branch_name(task.id, task.title))
+        else:
+            branch_name = GitManager.make_branch_name(task.id, task.title)
         agent_checkout = os.path.join(repo.checkout_base_path, agent.name)
         # Derive repo name from url or source_path
         if repo.url:
@@ -364,11 +379,17 @@ class Orchestrator:
             repo_name = repo.id
         workspace = os.path.join(agent_checkout, repo_name)
 
+        # Determine whether to create a new branch or switch to an existing one
+        reuse_branch = task.is_plan_subtask and task.parent_task_id
+
         if repo.source_type == RepoSourceType.CLONE:
             if not self.git.validate_checkout(workspace):
                 os.makedirs(agent_checkout, exist_ok=True)
                 self.git.create_checkout(repo.url, workspace)
-            self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
+            if reuse_branch:
+                self.git.switch_to_branch(workspace, branch_name)
+            else:
+                self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
 
         elif repo.source_type == RepoSourceType.LINK:
             if not os.path.isdir(repo.source_path):
@@ -381,7 +402,10 @@ class Orchestrator:
             # Work directly in the source directory (preserves .env, venv, etc.)
             workspace = repo.source_path
             if self.git.validate_checkout(workspace):
-                self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
+                if reuse_branch:
+                    self.git.switch_to_branch(workspace, branch_name)
+                else:
+                    self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
             else:
                 # Not a git repo — just use the directory as-is
                 pass
@@ -389,7 +413,10 @@ class Orchestrator:
         elif repo.source_type == RepoSourceType.INIT:
             if not self.git.validate_checkout(workspace):
                 self.git.init_repo(workspace)
-            self.git.create_branch(workspace, branch_name)
+            if reuse_branch:
+                self.git.switch_to_branch(workspace, branch_name)
+            else:
+                self.git.create_branch(workspace, branch_name)
 
         # Update task and agent in DB
         await self.db.update_task(task.id, branch_name=branch_name)
@@ -420,6 +447,18 @@ class Orchestrator:
         repo_id = task.repo_id or agent.repo_id
         repo = await self.db.get_repo(repo_id) if repo_id else None
 
+        # For plan subtasks: just commit, don't merge/push unless this is
+        # the final subtask in the chain.
+        if task.is_plan_subtask:
+            is_last = await self._is_last_subtask(task)
+            if is_last and repo:
+                parent = await self.db.get_task(task.parent_task_id)
+                if parent and parent.requires_approval:
+                    return await self._create_pr_for_task(task, repo, workspace)
+                else:
+                    await self._merge_and_push(task, repo, workspace)
+            return None
+
         if repo and task.requires_approval:
             return await self._create_pr_for_task(task, repo, workspace)
         elif repo:
@@ -429,6 +468,18 @@ class Orchestrator:
         # No repo config — changes are committed on the branch but
         # no merge/push/PR is attempted (e.g. local-only workspace)
         return None
+
+    async def _is_last_subtask(self, task: Task) -> bool:
+        """Check if all sibling subtasks (same parent) are COMPLETED except this one."""
+        if not task.parent_task_id:
+            return True
+        siblings = await self.db.get_subtasks(task.parent_task_id)
+        for sibling in siblings:
+            if sibling.id == task.id:
+                continue
+            if sibling.status != TaskStatus.COMPLETED:
+                return False
+        return True
 
     async def _merge_and_push(self, task: Task, repo: RepoConfig, workspace: str) -> None:
         """Merge the task branch into default and push (clone repos only)."""
@@ -507,6 +558,11 @@ class Orchestrator:
         if not config.enabled:
             return []
 
+        # Prevent recursive plan explosion: subtasks must not generate
+        # further sub-plans.
+        if task.is_plan_subtask:
+            return []
+
         plan_path = find_plan_file(workspace, config.plan_file_patterns)
         if not plan_path:
             print(
@@ -522,7 +578,24 @@ class Orchestrator:
             print(f"Auto-task: failed to read plan file {plan_path}: {e}")
             return []
 
-        plan = parse_plan(raw, source_file=plan_path)
+        if config.use_llm_parser and self._chat_provider:
+            try:
+                plan = await parse_plan_with_llm(
+                    raw, self._chat_provider,
+                    source_file=plan_path,
+                    max_steps=config.max_steps_per_plan,
+                )
+            except Exception as e:
+                print(f"LLM plan parser failed, falling back to regex: {e}")
+                plan = parse_plan(
+                    raw, source_file=plan_path,
+                    max_steps=config.max_steps_per_plan,
+                )
+        else:
+            plan = parse_plan(
+                raw, source_file=plan_path,
+                max_steps=config.max_steps_per_plan,
+            )
         if not plan.steps:
             print(f"Auto-task: plan file {plan_path} parsed but contained no steps")
             return []
@@ -531,6 +604,17 @@ class Orchestrator:
             f"Auto-task: found {len(plan.steps)} steps in plan file "
             f"{plan_path} for task {task.id}"
         )
+
+        # Archive the plan file for traceability (so it won't be re-processed
+        # if the workspace is reused for another task).
+        archived_path = None
+        try:
+            plans_dir = os.path.join(workspace, ".claude", "plans")
+            os.makedirs(plans_dir, exist_ok=True)
+            archived_path = os.path.join(plans_dir, f"{task.id}-plan.md")
+            os.rename(plan_path, archived_path)
+        except OSError:
+            pass
 
         # Extract any preamble text before the first step as shared context
         plan_context = ""
@@ -578,6 +662,8 @@ class Orchestrator:
                 parent_task_id=task.id,
                 repo_id=task.repo_id if config.inherit_repo else None,
                 requires_approval=step_requires_approval,
+                plan_source=archived_path,
+                is_plan_subtask=True,
             )
 
             await self.db.create_task(new_task)
@@ -588,13 +674,6 @@ class Orchestrator:
 
             created_tasks.append(new_task)
             prev_task_id = new_id
-
-        # Clean up the plan file so it won't be re-processed if the workspace
-        # is reused for another task.
-        try:
-            os.remove(plan_path)
-        except OSError:
-            pass
 
         return created_tasks
 
@@ -807,23 +886,41 @@ class Orchestrator:
         if task.branch_name:
             context_lines.append(f"- Git branch: {task.branch_name}")
 
-        context_lines.append(
-            "\n## Important: Execution Rules\n"
-            "You are running autonomously — there is NO interactive user to approve plans.\n"
-            "Do NOT use plan mode or EnterPlanMode. Implement the changes DIRECTLY.\n"
-            "If the task description contains a plan, execute it immediately — do not re-plan.\n"
-            "\n## Important: Committing Your Work\n"
-            "When you have finished making changes, you MUST commit your work:\n"
-            "1. `git add` the files you changed\n"
-            "2. `git commit` with a descriptive message\n"
-            "Do NOT push — the system handles pushing and PR creation.\n"
-            "\n## Important: Writing Implementation Plans\n"
-            "If your task is to create an implementation plan (rather than implement code),\n"
-            "you MUST write the plan to `.claude/plan.md` or `plan.md` in the workspace root.\n"
-            "This is required for the system to automatically parse the plan into follow-up tasks.\n"
-            "Do NOT write plans to other locations like `docs/plans/` — they may not be detected.\n"
-            "The plan should use markdown with `## Section` headings for each step."
-        )
+        if task.is_plan_subtask:
+            # Subtask prompt: implement directly, no re-planning
+            context_lines.append(
+                "\n## Important: Execution Rules\n"
+                "You are running autonomously — there is NO interactive user.\n"
+                "Do NOT use plan mode or EnterPlanMode.\n"
+                "Do NOT write implementation plans or plan files.\n"
+                "Your task is one step of an existing implementation plan — write code, not plans.\n"
+                "Implement the changes described below DIRECTLY.\n"
+                "If you encounter ambiguity, make reasonable decisions and document in code comments.\n"
+                "\n## Important: Committing Your Work\n"
+                "When you have finished, you MUST commit your work:\n"
+                "1. `git add` the files you changed\n"
+                "2. `git commit` with a descriptive message\n"
+                "Do NOT push — the system handles pushing and PR creation."
+            )
+        else:
+            # Root task prompt: may write plans
+            context_lines.append(
+                "\n## Important: Execution Rules\n"
+                "You are running autonomously — there is NO interactive user to approve plans.\n"
+                "Do NOT use plan mode or EnterPlanMode. Implement the changes DIRECTLY.\n"
+                "If the task description contains a plan, execute it immediately — do not re-plan.\n"
+                "\n## Important: Committing Your Work\n"
+                "When you have finished making changes, you MUST commit your work:\n"
+                "1. `git add` the files you changed\n"
+                "2. `git commit` with a descriptive message\n"
+                "Do NOT push — the system handles pushing and PR creation.\n"
+                "\n## Important: Writing Implementation Plans\n"
+                "If your task is to create an implementation plan (rather than implement code),\n"
+                "you MUST write the plan to `.claude/plan.md` or `plan.md` in the workspace root.\n"
+                "This is required for the system to automatically parse the plan into follow-up tasks.\n"
+                "Do NOT write plans to other locations like `docs/plans/` — they may not be detected.\n"
+                "The plan should use markdown with `## Section` headings for each step."
+            )
 
         context_lines.append(f"\n## Task\n{task.description}")
 
@@ -1023,27 +1120,6 @@ class Orchestrator:
                     await _post(plan_msg)
                     await _notify_brief(plan_msg)
                     await self._control_channel_post(plan_msg, project_id=action.project_id)
-            except Exception as e:
-                print(f"Auto-task generation error for task {task.id}: {e}")
-                import traceback
-                traceback.print_exc()
-
-            # --- Auto-task generation from implementation plans ---
-            # After any successful completion path, check for plan files
-            # in the workspace and generate follow-up tasks.
-            try:
-                generated = await self._generate_tasks_from_plan(task, workspace)
-                if generated:
-                    task_list = ", ".join(
-                        f"`{t.id}` ({t.title})" for t in generated
-                    )
-                    plan_msg = (
-                        f"📋 **Auto-generated {len(generated)} task(s)** "
-                        f"from plan in `{task.id}`:\n{task_list}"
-                    )
-                    await _post(plan_msg)
-                    await _notify_brief(plan_msg)
-                    await self._control_channel_post(plan_msg)
             except Exception as e:
                 print(f"Auto-task generation error for task {task.id}: {e}")
                 import traceback

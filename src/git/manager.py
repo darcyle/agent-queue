@@ -46,7 +46,11 @@ class GitManager:
             return False
 
     def create_branch(self, checkout_path: str, branch_name: str) -> None:
-        self._run(["checkout", "-b", branch_name], cwd=checkout_path)
+        try:
+            self._run(["checkout", "-b", branch_name], cwd=checkout_path)
+        except GitError:
+            # Branch already exists — switch to it
+            self._run(["checkout", branch_name], cwd=checkout_path)
 
     def prepare_for_task(
         self, checkout_path: str, branch_name: str,
@@ -73,7 +77,29 @@ class GitManager:
                 self._run(["pull", "origin", default_branch], cwd=checkout_path)
             except GitError:
                 pass  # may fail if no upstream tracking
-            self._run(["checkout", "-b", branch_name], cwd=checkout_path)
+            try:
+                self._run(["checkout", "-b", branch_name], cwd=checkout_path)
+            except GitError:
+                # Branch already exists (e.g. task retried after restart) —
+                # switch to it instead of failing.
+                self._run(["checkout", branch_name], cwd=checkout_path)
+
+    def switch_to_branch(self, checkout_path: str, branch_name: str) -> None:
+        """Switch to an existing branch, pulling latest if available on remote."""
+        try:
+            self._run(["fetch", "origin"], cwd=checkout_path)
+        except GitError:
+            pass  # may fail if no remote configured
+        try:
+            self._run(["checkout", branch_name], cwd=checkout_path)
+        except GitError:
+            # Branch may not exist locally yet — try tracking remote
+            self._run(["checkout", "-b", branch_name, f"origin/{branch_name}"],
+                       cwd=checkout_path)
+        try:
+            self._run(["pull", "origin", branch_name], cwd=checkout_path)
+        except GitError:
+            pass  # may fail if no upstream tracking
 
     def push_branch(self, checkout_path: str, branch_name: str) -> None:
         self._run(["push", "origin", branch_name], cwd=checkout_path)

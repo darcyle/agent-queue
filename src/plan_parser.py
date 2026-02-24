@@ -14,6 +14,21 @@ import re
 from dataclasses import dataclass, field
 
 
+# Headings that are informational/structural and should not become tasks.
+NON_ACTIONABLE_HEADINGS = {
+    "overview", "summary", "background", "context", "introduction",
+    "conclusion", "notes", "references", "appendix", "prerequisites",
+    "requirements", "assumptions", "risks", "open questions",
+    "future work", "out of scope", "glossary", "table of contents",
+    "motivation", "goals", "non-goals", "success criteria",
+    "files modified", "files to modify", "file changes",
+    "testing strategy", "testing notes", "rollback plan",
+    "implementation order", "dependency graph", "design decisions",
+    "key decisions", "additional observations", "identified gaps",
+    "verdict", "executive summary", "problem statement",
+    "data flow", "file change summary", "user workflow examples",
+}
+
 # Default locations where agents write plan files (checked in order).
 # Entries containing glob characters (*, ?) are expanded via glob.glob().
 DEFAULT_PLAN_FILE_PATTERNS = [
@@ -77,7 +92,9 @@ def read_plan_file(path: str) -> str:
         return f.read()
 
 
-def parse_plan(content: str, source_file: str = "") -> ParsedPlan:
+def parse_plan(
+    content: str, source_file: str = "", max_steps: int = 20,
+) -> ParsedPlan:
     """Parse plan markdown content into structured steps.
 
     Supports several common plan formats:
@@ -92,6 +109,11 @@ def parse_plan(content: str, source_file: str = "") -> ParsedPlan:
     3. **Mixed** — If both heading sections and numbered lists are present,
        heading sections take priority.
 
+    Args:
+        content: Raw markdown content of the plan file.
+        source_file: Path to the plan file (for traceability).
+        max_steps: Maximum number of steps to return (truncated if exceeded).
+
     Returns a ``ParsedPlan`` containing the ordered list of steps.
     """
     result = ParsedPlan(source_file=source_file, raw_content=content)
@@ -102,13 +124,13 @@ def parse_plan(content: str, source_file: str = "") -> ParsedPlan:
     # Try heading-based parsing first
     steps = _parse_heading_sections(content)
     if steps:
-        result.steps = steps
+        result.steps = steps[:max_steps]
         return result
 
     # Fall back to numbered-list parsing
     steps = _parse_numbered_list(content)
     if steps:
-        result.steps = steps
+        result.steps = steps[:max_steps]
         return result
 
     # Final fallback: treat the entire content as a single step
@@ -140,15 +162,23 @@ def _parse_heading_sections(content: str) -> list[PlanStep]:
         if not title:
             continue
 
+        # Skip non-actionable headings (overviews, summaries, etc.)
+        if title.lower() in NON_ACTIONABLE_HEADINGS:
+            continue
+
         # Extract body between this heading and the next (or end of file)
         start = match.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
         body = content[start:end].strip()
 
+        # Skip steps with too little content to be actionable
+        if len(body) < 20:
+            continue
+
         steps.append(PlanStep(
             title=title,
             description=body,
-            priority_hint=i,
+            priority_hint=len(steps),
         ))
 
     return steps

@@ -113,6 +113,8 @@ class Task:
     resume_after: float | None = None  # unix timestamp
     requires_approval: bool = False
     pr_url: str | None = None
+    plan_source: str | None = None       # path to archived plan file that generated this task
+    is_plan_subtask: bool = False         # True if auto-generated from a plan
 
 
 @dataclass
