@@ -1900,6 +1900,37 @@ def setup_commands(bot: commands.Bot) -> None:
         )
 
     @bot.tree.command(
+        name="push",
+        description="Push a branch to the remote",
+    )
+    @app_commands.describe(
+        project_id="Project ID",
+        branch_name="Branch to push (optional — pushes current branch)",
+        repo_id="Specific repo ID (optional)",
+    )
+    async def push_command(
+        interaction: discord.Interaction,
+        project_id: str,
+        branch_name: str | None = None,
+        repo_id: str | None = None,
+    ):
+        args: dict = {"project_id": project_id}
+        if branch_name:
+            args["branch_name"] = branch_name
+        if repo_id:
+            args["repo_id"] = repo_id
+        result = await handler.execute("push_branch", args)
+        if "error" in result:
+            await interaction.response.send_message(
+                f"Error: {result['error']}", ephemeral=True,
+            )
+            return
+        pushed_branch = result.get("branch", branch_name or "current")
+        await interaction.response.send_message(
+            f"🚀 Pushed `{pushed_branch}` in `{result.get('repo_id', project_id)}`"
+        )
+
+    @bot.tree.command(
         name="git-commit",
         description="Stage all changes and commit in a repository",
     )
