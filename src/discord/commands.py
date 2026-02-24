@@ -7,7 +7,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from src.models import Project, ProjectStatus, Task, TaskStatus
+from src.models import Project, ProjectStatus, RepoSourceType, Task, TaskStatus
 from src.discord.notifications import classify_error
 from src.task_names import generate_task_id
 
@@ -554,3 +554,129 @@ def setup_commands(bot: commands.Bot) -> None:
         desc_preview = description if len(description) <= 1024 else description[:1021] + "..."
         embed.add_field(name="Description", value=desc_preview, inline=False)
         await interaction.response.send_message(embed=embed)
+
+    # ---------------------------------------------------------------------------
+    # /git-status — report the git status of a project's repository
+    # ---------------------------------------------------------------------------
+
+    @bot.tree.command(
+        name="git-status",
+        description="Show the git status of a project's repository",
+    )
+    @app_commands.describe(project_id="Project ID to check git status for")
+    async def git_status_command(
+        interaction: discord.Interaction, project_id: str
+    ) -> None:
+        await interaction.response.defer()
+        db = bot.orchestrator.db
+        git = bot.orchestrator.git
+
+        project = await db.get_project(project_id)
+        if not project:
+            await interaction.followup.send(
+                f"Project `{project_id}` not found.", ephemeral=True
+            )
+            return
+
+        # Collect git status from all repos registered to this project,
+        # and fall back to the project workspace if no repos are registered.
+        repos = await db.list_repos(project_id=project_id)
+        sections: list[str] = []
+
+        if repos:
+            for repo in repos:
+                # Determine the working directory for this repo
+                if repo.source_type == RepoSourceType.LINK and repo.source_path:
+                    repo_path = repo.source_path
+                elif repo.source_type == RepoSourceType.CLONE and repo.checkout_base_path:
+                    # For clone repos, use the checkout base path directly
+                    # (agents may have sub-checkouts, but show the base)
+                    repo_path = repo.checkout_base_path
+                else:
+                    continue
+
+                if not os.path.isdir(repo_path):
+                    sections.append(
+                        f"### Repo: `{repo.id}`\n"
+                        f"⚠️ Path not found: `{repo_path}`"
+                    )
+                    continue
+
+                if not git.validate_checkout(repo_path):
+                    sections.append(
+                        f"### Repo: `{repo.id}`\n"
+                        f"⚠️ Not a valid git repository: `{repo_path}`"
+                    )
+                    continue
+
+                branch = git.get_current_branch(repo_path)
+                status_output = git.get_status(repo_path)
+                recent_commits = git.get_recent_commits(repo_path, count=5)
+
+                lines = [f"### Repo: `{repo.id}`"]
+                lines.append(f"**Path:** `{repo_path}`")
+                if branch:
+                    lines.append(f"**Branch:** `{branch}`")
+                lines.append(f"\n**Status:**\n```\n{status_output or '(clean)'}\n```")
+                if recent_commits:
+                    lines.append(f"**Recent commits:**\n```\n{recent_commits}\n```")
+
+                sections.append("\n".join(lines))
+        else:
+            # No repos registered — try using the project workspace directly
+            workspace = project.workspace_path
+            if not workspace or not os.path.isdir(workspace):
+                await interaction.followup.send(
+                    f"Project `{project_id}` has no repos and no valid workspace path."
+                )
+                return
+
+            if not git.validate_checkout(workspace):
+                await interaction.followup.send(
+                    f"Project workspace `{workspace}` is not a git repository."
+                )
+                return
+
+            branch = git.get_current_branch(workspace)
+            status_output = git.get_status(workspace)
+            recent_commits = git.get_recent_commits(workspace, count=5)
+
+            lines = [f"### Workspace: `{workspace}`"]
+            if branch:
+                lines.append(f"**Branch:** `{branch}`")
+            lines.append(f"\n**Status:**\n```\n{status_output or '(clean)'}\n```")
+            if recent_commits:
+                lines.append(f"**Recent commits:**\n```\n{recent_commits}\n```")
+            sections.append("\n".join(lines))
+
+        header = f"## Git Status: {project.name} (`{project_id}`)\n"
+        full_message = header + "\n\n".join(sections)
+
+        # Handle Discord's 2000-char limit
+        if len(full_message) <= 2000:
+            await interaction.followup.send(full_message)
+        elif len(full_message) <= 6000:
+            # Split into multiple messages
+            chunks: list[str] = []
+            current = header
+            for section in sections:
+                candidate = current + "\n\n" + section
+                if len(candidate) > 2000:
+                    if current.strip():
+                        chunks.append(current)
+                    current = section
+                else:
+                    current = candidate
+            if current.strip():
+                chunks.append(current)
+            for chunk in chunks:
+                await interaction.followup.send(chunk)
+        else:
+            # Very long — send as file attachment
+            import io
+            file = discord.File(
+                fp=io.BytesIO(full_message.encode("utf-8")),
+                filename="git-status.md",
+            )
+            preview = full_message[:300].rstrip() + "\n\n*Full output attached.*"
+            await interaction.followup.send(preview, file=file)

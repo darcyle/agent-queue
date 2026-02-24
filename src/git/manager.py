@@ -178,6 +178,29 @@ class GitManager:
         # CLOSED without merge
         return None
 
+    def get_status(self, checkout_path: str) -> str:
+        """Return the output of `git status` for the given repository path."""
+        try:
+            return self._run(["status"], cwd=checkout_path)
+        except GitError:
+            return ""
+
+    def get_current_branch(self, checkout_path: str) -> str:
+        """Return the current branch name."""
+        try:
+            return self._run(["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout_path)
+        except GitError:
+            return ""
+
+    def get_recent_commits(self, checkout_path: str, count: int = 5) -> str:
+        """Return recent commit log (one-line format)."""
+        try:
+            return self._run(
+                ["log", f"--oneline", f"-{count}"], cwd=checkout_path
+            )
+        except GitError:
+            return ""
+
     @staticmethod
     def slugify(text: str) -> str:
         text = text.lower().strip()

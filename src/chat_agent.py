@@ -544,6 +544,24 @@ TOOLS = [
             "required": ["project_id", "title"],
         },
     },
+    {
+        "name": "get_git_status",
+        "description": (
+            "Get the git status of a project's repository. Shows current branch, "
+            "working tree status, and recent commits. Reports status for all repos "
+            "registered to the project, or falls back to the project workspace."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to check git status for",
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
 ]
 
 SYSTEM_PROMPT_TEMPLATE = """\
@@ -564,6 +582,7 @@ You can directly (using your tools):
 - Pause/resume projects
 - Retrieve task results (summary, files changed, errors, tokens) with `get_task_result`
 - Show git diffs for completed tasks with `get_task_diff`
+- Check the git status of a project's repos with `get_git_status`
 - Read files from workspaces with `read_file`
 - Run shell commands in workspaces with `run_command`
 - Search file contents or filenames with `search_files`
@@ -1547,6 +1566,82 @@ class ChatAgent:
                     return {"error": f"Note '{input_data['title']}' not found"}
                 os.remove(fpath)
                 return {"deleted": fpath, "title": input_data["title"]}
+
+            elif name == "get_git_status":
+                project_id = input_data["project_id"]
+                project = await db.get_project(project_id)
+                if not project:
+                    return {"error": f"Project '{project_id}' not found"}
+
+                git = self.orchestrator.git
+                repos = await db.list_repos(project_id=project_id)
+                repo_statuses = []
+
+                if repos:
+                    for repo in repos:
+                        # Determine the working directory for this repo
+                        if repo.source_type == RepoSourceType.LINK and repo.source_path:
+                            repo_path = repo.source_path
+                        elif repo.source_type == RepoSourceType.CLONE and repo.checkout_base_path:
+                            repo_path = repo.checkout_base_path
+                        else:
+                            continue
+
+                        if not os.path.isdir(repo_path):
+                            repo_statuses.append({
+                                "repo_id": repo.id,
+                                "error": f"Path not found: {repo_path}",
+                            })
+                            continue
+
+                        if not git.validate_checkout(repo_path):
+                            repo_statuses.append({
+                                "repo_id": repo.id,
+                                "error": f"Not a valid git repository: {repo_path}",
+                            })
+                            continue
+
+                        branch = git.get_current_branch(repo_path)
+                        status_output = git.get_status(repo_path)
+                        recent_commits = git.get_recent_commits(repo_path, count=5)
+
+                        repo_statuses.append({
+                            "repo_id": repo.id,
+                            "path": repo_path,
+                            "branch": branch,
+                            "status": status_output or "(clean)",
+                            "recent_commits": recent_commits,
+                        })
+                else:
+                    # No repos — try project workspace
+                    workspace = project.workspace_path
+                    if not workspace or not os.path.isdir(workspace):
+                        return {
+                            "error": f"Project '{project_id}' has no repos and no valid workspace path"
+                        }
+
+                    if not git.validate_checkout(workspace):
+                        return {
+                            "error": f"Project workspace '{workspace}' is not a git repository"
+                        }
+
+                    branch = git.get_current_branch(workspace)
+                    status_output = git.get_status(workspace)
+                    recent_commits = git.get_recent_commits(workspace, count=5)
+
+                    repo_statuses.append({
+                        "repo_id": "(workspace)",
+                        "path": workspace,
+                        "branch": branch,
+                        "status": status_output or "(clean)",
+                        "recent_commits": recent_commits,
+                    })
+
+                return {
+                    "project_id": project_id,
+                    "project_name": project.name,
+                    "repos": repo_statuses,
+                }
 
             else:
                 return {"error": f"Unknown tool: {name}"}
