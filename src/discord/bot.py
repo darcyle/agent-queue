@@ -34,6 +34,8 @@ class AgentQueueBot(commands.Bot):
         # Per-project channel caches: project_id -> channel
         self._project_channels: dict[str, discord.TextChannel] = {}
         self._project_control_channels: dict[str, discord.TextChannel] = {}
+        # Reverse lookup: channel_id -> project_id (covers both notification and control channels)
+        self._channel_to_project: dict[int, str] = {}
         self._processed_messages: set[int] = set()
         self._channel_summaries: dict[int, tuple[int, str]] = {}  # channel_id -> (up_to_message_id, summary)
         self._channel_locks: dict[int, asyncio.Lock] = {}  # prevent concurrent LLM calls per channel
@@ -74,11 +76,22 @@ class AgentQueueBot(commands.Bot):
 
         Called after ``/set-channel`` or ``/create-channel`` commands so the
         bot immediately routes to the new channel without requiring a restart.
+        Also maintains the reverse ``_channel_to_project`` mapping.
         """
         if channel_type == "control":
+            # Remove stale reverse entry for old control channel, if any
+            old_ch = self._project_control_channels.get(project_id)
+            if old_ch is not None and old_ch.id != channel.id:
+                self._channel_to_project.pop(old_ch.id, None)
             self._project_control_channels[project_id] = channel
         else:
+            # Remove stale reverse entry for old notification channel, if any
+            old_ch = self._project_channels.get(project_id)
+            if old_ch is not None and old_ch.id != channel.id:
+                self._channel_to_project.pop(old_ch.id, None)
             self._project_channels[project_id] = channel
+        # Always update the reverse mapping
+        self._channel_to_project[channel.id] = project_id
 
     def clear_project_channels(self, project_id: str) -> None:
         """Remove all cached channels for a project.
@@ -95,9 +108,11 @@ class AgentQueueBot(commands.Bot):
         ch = self._project_channels.pop(project_id, None)
         if ch is not None:
             stale_channel_ids.add(ch.id)
+            self._channel_to_project.pop(ch.id, None)
         ch = self._project_control_channels.pop(project_id, None)
         if ch is not None:
             stale_channel_ids.add(ch.id)
+            self._channel_to_project.pop(ch.id, None)
 
         # Remove notes-thread mappings that point to the deleted project.
         # These are also persisted to disk, so we re-save afterwards.
@@ -114,6 +129,14 @@ class AgentQueueBot(commands.Bot):
         for cid in stale_channel_ids:
             self._channel_summaries.pop(cid, None)
             self._channel_locks.pop(cid, None)
+
+    def get_project_for_channel(self, channel_id: int) -> str | None:
+        """Return the project_id associated with a Discord channel, or ``None``.
+
+        Performs an O(1) lookup against the reverse mapping that covers
+        both notification and control channels for every project.
+        """
+        return self._channel_to_project.get(channel_id)
 
     async def setup_hook(self) -> None:
         from src.discord.commands import setup_commands
@@ -253,6 +276,7 @@ class AgentQueueBot(commands.Bot):
                 ch = self._guild.get_channel(int(project.discord_channel_id))
                 if ch and isinstance(ch, discord.TextChannel):
                     self._project_channels[project.id] = ch
+                    self._channel_to_project[ch.id] = project.id
                     print(f"Project '{project.id}' notifications: #{ch.name}")
                 else:
                     print(
@@ -266,6 +290,7 @@ class AgentQueueBot(commands.Bot):
                 ch = self._guild.get_channel(int(project.discord_control_channel_id))
                 if ch and isinstance(ch, discord.TextChannel):
                     self._project_control_channels[project.id] = ch
+                    self._channel_to_project[ch.id] = project.id
                     print(f"Project '{project.id}' control: #{ch.name}")
                 else:
                     print(
@@ -387,12 +412,14 @@ class AgentQueueBot(commands.Bot):
             self._control_channel
             and message.channel.id == self._control_channel.id
         )
-        # Check if this is a per-project control channel
+        # Check if this is a per-project control channel (O(1) reverse lookup)
         project_control_id: str | None = None
-        for pid, ch in self._project_control_channels.items():
-            if message.channel.id == ch.id:
-                project_control_id = pid
-                break
+        channel_project_id = self._channel_to_project.get(message.channel.id)
+        if channel_project_id is not None:
+            # Verify it's specifically a control channel for this project
+            ctrl_ch = self._project_control_channels.get(channel_project_id)
+            if ctrl_ch is not None and ctrl_ch.id == message.channel.id:
+                project_control_id = channel_project_id
         is_project_control = project_control_id is not None
 
         is_mentioned = self.user in message.mentions
