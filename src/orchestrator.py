@@ -1248,9 +1248,7 @@ class Orchestrator:
                                         payload=pr_url)
                 await _post(format_pr_created(task, pr_url))
                 brief = f"🔍 PR created for review: {task.title} (`{task.id}`)\n{pr_url}"
-                if thread_send:
-                    await _notify_brief(brief)
-                await self._notify_channel(brief, project_id=action.project_id)
+                await _notify_brief(brief)
             elif task.requires_approval and not pr_url:
                 # Approval required but no PR (e.g. LINK repo) — wait for manual approval
                 await self.db.transition_task(
@@ -1260,7 +1258,6 @@ class Orchestrator:
                 )
                 brief = f"🔍 Awaiting manual approval: {task.title} (`{task.id}`)"
                 await _notify_brief(brief)
-                await self._notify_channel(brief, project_id=action.project_id)
             else:
                 # No approval needed — mark completed
                 await self.db.transition_task(action.task_id, TaskStatus.COMPLETED,
@@ -1288,9 +1285,7 @@ class Orchestrator:
                         project_id=action.project_id,
                     )
                 brief = f"✅ Task completed: {task.title} (`{task.id}`)"
-                if thread_send:
-                    await _notify_brief(brief)
-                await self._notify_channel(brief, project_id=action.project_id)
+                await _notify_brief(brief)
 
             # --- Auto-task generation from implementation plans ---
             # After any successful completion path, check for plan files
@@ -1312,10 +1307,7 @@ class Orchestrator:
                     )
                     if thread_send:
                         await thread_send(plan_msg)
-                        await _notify_brief(plan_msg)
-                    else:
-                        await self._notify_channel(plan_msg, project_id=action.project_id)
-                    await self._notify_channel(plan_msg, project_id=action.project_id)
+                    await _notify_brief(plan_msg)
             except Exception as e:
                 print(f"Auto-task generation error for task {task.id}: {e}")
                 import traceback
@@ -1371,10 +1363,8 @@ class Orchestrator:
                         format_task_failed(task, agent, output),
                         project_id=action.project_id,
                     )
-            # Brief notification → main channel (reply to thread) + control channel
-            if thread_send:
-                await _notify_brief(brief)
-            await self._notify_channel(brief, project_id=action.project_id)
+            # Brief notification → main channel (reply to thread or standalone)
+            await _notify_brief(brief)
 
             # Check if this blocked task breaks a dependency chain
             if new_retry >= task.max_retries:
