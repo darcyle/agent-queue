@@ -663,6 +663,54 @@ class CommandHandler:
         await self.db.delete_task(args["task_id"])
         return {"deleted": args["task_id"], "title": task.title}
 
+    async def _cmd_provide_input(self, args: dict) -> dict:
+        """Provide a human reply to an agent question (WAITING_INPUT → READY).
+
+        The agent's question is answered by appending the human's response to the
+        task description so the agent sees it on re-execution.  The task is
+        transitioned to READY so the scheduler picks it up in the next cycle.
+
+        Required args: task_id, input (the human's response text).
+        """
+        task_id = args.get("task_id")
+        input_text = args.get("input", "").strip()
+        if not task_id:
+            return {"error": "task_id is required"}
+        if not input_text:
+            return {"error": "input text is required"}
+
+        task = await self.db.get_task(task_id)
+        if not task:
+            return {"error": f"Task '{task_id}' not found"}
+        if task.status != TaskStatus.WAITING_INPUT:
+            return {
+                "error": f"Task is not waiting for input (status: {task.status.value})"
+            }
+
+        # Append the human reply to the task description so the agent sees it
+        # when the task is re-executed.
+        separator = "\n\n---\n**Human Reply:**\n"
+        updated_description = task.description + separator + input_text
+        await self.db.update_task(task_id, description=updated_description)
+
+        # Transition WAITING_INPUT → READY so the scheduler re-runs the task.
+        await self.db.transition_task(
+            task_id,
+            TaskStatus.READY,
+            context="human_replied",
+        )
+        await self.db.log_event(
+            "human_replied",
+            project_id=task.project_id,
+            task_id=task_id,
+            payload=input_text[:500],
+        )
+        return {
+            "task_id": task_id,
+            "title": task.title,
+            "status": "READY",
+        }
+
     async def _cmd_approve_task(self, args: dict) -> dict:
         task = await self.db.get_task(args["task_id"])
         if not task:

@@ -9,9 +9,10 @@ rich Discord presentation — color-coded by severity, with structured fields fo
 task metadata.  The orchestrator passes both versions through the notification
 callback so the bot can choose the appropriate format.
 
-**Interactive views** (``TaskFailedView``, ``TaskApprovalView``) attach action
-buttons to notification embeds so users can retry, skip, or approve tasks
-directly from Discord without memorizing slash commands.
+**Interactive views** (``TaskFailedView``, ``TaskApprovalView``,
+``AgentQuestionView``) attach action buttons to notification embeds so users
+can retry, skip, approve tasks, or reply to agent questions directly from
+Discord without memorizing slash commands.
 
 ``classify_error`` pattern-matches raw error messages against known failure modes
 and returns an actionable fix suggestion -- this turns opaque stack traces into
@@ -692,6 +693,106 @@ class TaskBlockedView(discord.ui.View):
             for child in self.children:
                 child.disabled = True
             await interaction.message.edit(view=self)
+
+    @discord.ui.button(
+        label="Skip Task",
+        style=discord.ButtonStyle.secondary,
+        emoji="⏭️",
+    )
+    async def skip_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not self._handler:
+            await interaction.response.send_message(
+                "Handler not available.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute(
+            "skip_task", {"task_id": self.task_id}
+        )
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not skip: {result['error']}", ephemeral=True
+            )
+        else:
+            unblocked = result.get("unblocked_count", 0)
+            msg = f"⏭️ Task `{self.task_id}` skipped."
+            if unblocked:
+                msg += f" {unblocked} task(s) unblocked."
+            await interaction.followup.send(msg, ephemeral=True)
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+
+
+class AgentQuestionModal(discord.ui.Modal, title="Reply to Agent"):
+    """Modal dialog for typing a reply to an agent question.
+
+    Opened when the user clicks the "Reply" button on an agent question
+    notification.  On submit, calls ``CommandHandler.execute("provide_input", ...)``
+    to transition the task from WAITING_INPUT → READY with the user's reply
+    appended to the task description.
+    """
+
+    answer = discord.ui.TextInput(
+        label="Your reply",
+        style=discord.TextStyle.long,
+        placeholder="Type your answer to the agent's question…",
+        required=True,
+        max_length=2000,
+    )
+
+    def __init__(self, task_id: str, handler=None) -> None:
+        super().__init__()
+        self.task_id = task_id
+        self._handler = handler
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not self._handler:
+            await interaction.response.send_message(
+                "Handler not available.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute(
+            "provide_input",
+            {"task_id": self.task_id, "input": self.answer.value},
+        )
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not submit reply: {result['error']}", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"💬 Reply sent for task `{self.task_id}` — task re-queued.",
+                ephemeral=True,
+            )
+
+
+class AgentQuestionView(discord.ui.View):
+    """Action buttons attached to agent question notifications.
+
+    Provides a one-click "Reply" button that opens a modal text input so the
+    user can answer the agent's question without memorizing slash commands.
+    A secondary "Skip Task" button allows skipping the task entirely.
+    """
+
+    def __init__(self, task_id: str, handler=None) -> None:
+        super().__init__(timeout=86400)  # 24 hours
+        self.task_id = task_id
+        self._handler = handler
+
+    @discord.ui.button(
+        label="Reply",
+        style=discord.ButtonStyle.primary,
+        emoji="💬",
+    )
+    async def reply_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        modal = AgentQuestionModal(self.task_id, handler=self._handler)
+        await interaction.response.send_modal(modal)
 
     @discord.ui.button(
         label="Skip Task",

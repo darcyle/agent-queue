@@ -38,7 +38,7 @@ from src.discord.notifications import (
     format_pr_created_embed, format_agent_question_embed,
     format_chain_stuck_embed, format_stuck_defined_task_embed,
     format_budget_warning_embed,
-    TaskFailedView, TaskApprovalView, TaskBlockedView,
+    TaskFailedView, TaskApprovalView, TaskBlockedView, AgentQuestionView,
 )
 from src.event_bus import EventBus
 from src.git.manager import GitManager
@@ -1841,6 +1841,9 @@ class Orchestrator:
             )
             msg = format_agent_question(task, agent, question_text)
             embed = format_agent_question_embed(task, agent, question_text)
+            question_view = AgentQuestionView(
+                task.id, handler=self._get_handler()
+            )
             if thread_send:
                 await thread_send(msg)
             else:
@@ -1848,6 +1851,7 @@ class Orchestrator:
                     msg,
                     project_id=action.project_id,
                     embed=embed,
+                    view=question_view,
                 )
             brief = f"❓ Agent question on: {task.title} (`{task.id}`)"
             await _notify_brief(brief, embed=embed)
