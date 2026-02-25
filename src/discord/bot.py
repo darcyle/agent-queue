@@ -178,13 +178,19 @@ class AgentQueueBot(commands.Bot):
 
                 if self._channel:
                     print(f"Bot channel: #{self._channel.name}")
-                    self.orchestrator.set_notify_callback(self._send_message)
-                    self.orchestrator.set_create_thread_callback(self._create_task_thread)
                 else:
                     print(f"Warning: bot channel '{channel_name}' not found")
 
                 # Resolve per-project channels from database
                 await self._resolve_project_channels()
+
+                # Register orchestrator callbacks if we have any usable channel
+                # (global or per-project).  Previously these were only set when
+                # the global channel existed, which meant projects with dedicated
+                # channels but no global channel never got threads or notifications.
+                if self._channel or self._project_channels:
+                    self.orchestrator.set_notify_callback(self._send_message)
+                    self.orchestrator.set_create_thread_callback(self._create_task_thread)
 
         # Initialize LLM client via ChatAgent
         try:

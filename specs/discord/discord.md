@@ -54,9 +54,9 @@ If `guild_id` is configured, commands are copied to the guild and synced immedia
 `on_ready` performs startup tasks:
 
 1. Records `_boot_time` as the current UTC timestamp.
-2. Resolves the global channel by scanning `guild.text_channels` for the configured name.
-3. If the global channel is found, registers orchestrator callbacks: `set_notify_callback(self._send_message)` and `set_create_thread_callback(self._create_task_thread)`. If the channel is not found, a warning is logged and callbacks are not registered.
-4. Calls `_resolve_project_channels()` to populate the per-project channel cache from the database.
+2. Resolves the global channel by scanning `guild.text_channels` for the configured name. If not found, a warning is logged.
+3. Calls `_resolve_project_channels()` to populate the per-project channel cache from the database.
+4. Registers orchestrator callbacks (`set_notify_callback` and `set_create_thread_callback`) if any usable channel exists — either the global channel or at least one per-project channel. This allows projects with dedicated channels to receive notifications and task threads even when no global channel is configured.
 5. Initializes the `ChatAgent` LLM client, logging whether credentials were found.
 
 ### 2.4 Authorization

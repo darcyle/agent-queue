@@ -459,7 +459,9 @@ def setup_commands(bot: commands.Bot) -> None:
                             view_channel=False
                         )
                         cat_overwrites[guild.me] = discord.PermissionOverwrite(
-                            view_channel=True, send_messages=True
+                            view_channel=True, send_messages=True,
+                            create_public_threads=True,
+                            send_messages_in_threads=True,
                         )
                     category = await guild.create_category(
                         ppc.category_name,
@@ -489,7 +491,9 @@ def setup_commands(bot: commands.Bot) -> None:
                         view_channel=False
                     )
                     overwrites[guild.me] = discord.PermissionOverwrite(
-                        view_channel=True, send_messages=True
+                        view_channel=True, send_messages=True,
+                        create_public_threads=True,
+                        send_messages_in_threads=True,
                     )
                 new_ch = await guild.create_text_channel(
                     name=channel_name,
@@ -897,7 +901,9 @@ def setup_commands(bot: commands.Bot) -> None:
                     view_channel=False
                 )
                 overwrites[guild.me] = discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True
+                    view_channel=True, send_messages=True,
+                    create_public_threads=True,
+                    send_messages_in_threads=True,
                 )
             try:
                 existing_channel = await guild.create_text_channel(
@@ -1807,16 +1813,20 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Create a new git branch in a project's repo",
     )
     @app_commands.describe(
-        project_id="Project ID",
         branch_name="Name for the new branch",
+        project_id="Project ID (auto-detected from channel)",
         repo_id="Specific repo ID (optional)",
     )
     async def create_branch_command(
         interaction: discord.Interaction,
-        project_id: str,
         branch_name: str,
+        project_id: str | None = None,
         repo_id: str | None = None,
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            return
         args: dict = {"project_id": project_id, "branch_name": branch_name}
         if repo_id:
             args["repo_id"] = repo_id
@@ -1835,16 +1845,20 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Switch to an existing git branch",
     )
     @app_commands.describe(
-        project_id="Project ID",
         branch_name="Branch name to check out",
+        project_id="Project ID (auto-detected from channel)",
         repo_id="Specific repo ID (optional)",
     )
     async def checkout_branch_command(
         interaction: discord.Interaction,
-        project_id: str,
         branch_name: str,
+        project_id: str | None = None,
         repo_id: str | None = None,
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            return
         args: dict = {"project_id": project_id, "branch_name": branch_name}
         if repo_id:
             args["repo_id"] = repo_id
@@ -1864,16 +1878,20 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Stage all changes and commit",
     )
     @app_commands.describe(
-        project_id="Project ID",
         message="Commit message",
+        project_id="Project ID (auto-detected from channel)",
         repo_id="Specific repo ID (optional)",
     )
     async def commit_command(
         interaction: discord.Interaction,
-        project_id: str,
         message: str,
+        project_id: str | None = None,
         repo_id: str | None = None,
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            return
         args: dict = {"project_id": project_id, "message": message}
         if repo_id:
             args["repo_id"] = repo_id
@@ -1898,16 +1916,20 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Push a branch to the remote",
     )
     @app_commands.describe(
-        project_id="Project ID",
+        project_id="Project ID (auto-detected from channel)",
         branch_name="Branch to push (optional — pushes current branch)",
         repo_id="Specific repo ID (optional)",
     )
     async def push_command(
         interaction: discord.Interaction,
-        project_id: str,
+        project_id: str | None = None,
         branch_name: str | None = None,
         repo_id: str | None = None,
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            return
         args: dict = {"project_id": project_id}
         if branch_name:
             args["branch_name"] = branch_name
@@ -1929,16 +1951,20 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Merge a branch into the default branch",
     )
     @app_commands.describe(
-        project_id="Project ID",
         branch_name="Branch to merge",
+        project_id="Project ID (auto-detected from channel)",
         repo_id="Specific repo ID (optional)",
     )
     async def merge_command(
         interaction: discord.Interaction,
-        project_id: str,
         branch_name: str,
+        project_id: str | None = None,
         repo_id: str | None = None,
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            return
         args: dict = {"project_id": project_id, "branch_name": branch_name}
         if repo_id:
             args["repo_id"] = repo_id
@@ -1965,29 +1991,35 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Stage all changes and commit in a repository",
     )
     @app_commands.describe(
-        repo_id="Repository ID",
         message="Commit message",
+        project_id="Project ID (auto-detected from channel)",
+        repo_id="Repository ID (optional — uses first repo if omitted)",
     )
     async def git_commit_command(
         interaction: discord.Interaction,
-        repo_id: str,
         message: str,
+        project_id: str | None = None,
+        repo_id: str | None = None,
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
         await interaction.response.defer()
-        result = await handler.execute("git_commit", {
-            "repo_id": repo_id,
-            "message": message,
-        })
+        args: dict = {"message": message}
+        if project_id:
+            args["project_id"] = project_id
+        if repo_id:
+            args["repo_id"] = repo_id
+        result = await handler.execute("git_commit", args)
         if "error" in result:
             await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
+        label = result.get("repo_id", project_id or "repo")
         if result.get("committed"):
             await interaction.followup.send(
-                f"✅ Committed in `{repo_id}`: {message}"
+                f"✅ Committed in `{label}`: {message}"
             )
         else:
             await interaction.followup.send(
-                f"ℹ️ Nothing to commit in `{repo_id}` — working tree clean"
+                f"ℹ️ Nothing to commit in `{label}` — working tree clean"
             )
 
     @bot.tree.command(
@@ -1995,24 +2027,32 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Push a branch to remote origin",
     )
     @app_commands.describe(
-        repo_id="Repository ID",
+        project_id="Project ID (auto-detected from channel)",
+        repo_id="Repository ID (optional — uses first repo if omitted)",
         branch="Branch name to push (defaults to current branch)",
     )
     async def git_push_command(
         interaction: discord.Interaction,
-        repo_id: str,
+        project_id: str | None = None,
+        repo_id: str | None = None,
         branch: str | None = None,
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
         await interaction.response.defer()
-        args = {"repo_id": repo_id}
+        args: dict = {}
+        if project_id:
+            args["project_id"] = project_id
+        if repo_id:
+            args["repo_id"] = repo_id
         if branch:
             args["branch"] = branch
         result = await handler.execute("git_push", args)
         if "error" in result:
             await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
+        label = result.get("repo_id", project_id or "repo")
         await interaction.followup.send(
-            f"✅ Pushed `{result['pushed']}` in `{repo_id}`"
+            f"✅ Pushed `{result['pushed']}` in `{label}`"
         )
 
     @bot.tree.command(
@@ -2020,24 +2060,30 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Create and switch to a new git branch",
     )
     @app_commands.describe(
-        repo_id="Repository ID",
         branch_name="Name for the new branch",
+        project_id="Project ID (auto-detected from channel)",
+        repo_id="Repository ID (optional — uses first repo if omitted)",
     )
     async def git_branch_command(
         interaction: discord.Interaction,
-        repo_id: str,
         branch_name: str,
+        project_id: str | None = None,
+        repo_id: str | None = None,
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
         await interaction.response.defer()
-        result = await handler.execute("git_create_branch", {
-            "repo_id": repo_id,
-            "branch_name": branch_name,
-        })
+        args: dict = {"branch_name": branch_name}
+        if project_id:
+            args["project_id"] = project_id
+        if repo_id:
+            args["repo_id"] = repo_id
+        result = await handler.execute("git_create_branch", args)
         if "error" in result:
             await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
+        label = result.get("repo_id", project_id or "repo")
         await interaction.followup.send(
-            f"✅ Created and switched to branch `{branch_name}` in `{repo_id}`"
+            f"✅ Created and switched to branch `{branch_name}` in `{label}`"
         )
 
     @bot.tree.command(
@@ -2045,32 +2091,40 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Merge a branch into the default branch",
     )
     @app_commands.describe(
-        repo_id="Repository ID",
         branch_name="Branch to merge",
+        project_id="Project ID (auto-detected from channel)",
+        repo_id="Repository ID (optional — uses first repo if omitted)",
         default_branch="Target branch (defaults to repo's default branch)",
     )
     async def git_merge_command(
         interaction: discord.Interaction,
-        repo_id: str,
         branch_name: str,
+        project_id: str | None = None,
+        repo_id: str | None = None,
         default_branch: str | None = None,
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
         await interaction.response.defer()
-        args = {"repo_id": repo_id, "branch_name": branch_name}
+        args: dict = {"branch_name": branch_name}
+        if project_id:
+            args["project_id"] = project_id
+        if repo_id:
+            args["repo_id"] = repo_id
         if default_branch:
             args["default_branch"] = default_branch
         result = await handler.execute("git_merge", args)
         if "error" in result:
             await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
+        label = result.get("repo_id", project_id or "repo")
         if result.get("merged"):
             await interaction.followup.send(
-                f"✅ Merged `{branch_name}` into `{result['into']}` in `{repo_id}`"
+                f"✅ Merged `{branch_name}` into `{result['into']}` in `{label}`"
             )
         else:
             await interaction.followup.send(
                 f"⚠️ Merge conflict — `{branch_name}` could not be merged into "
-                f"`{result.get('into', 'default')}` in `{repo_id}`. Merge was aborted."
+                f"`{result.get('into', 'default')}` in `{label}`. Merge was aborted."
             )
 
     @bot.tree.command(
@@ -2078,22 +2132,29 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Create a GitHub pull request",
     )
     @app_commands.describe(
-        repo_id="Repository ID",
         title="PR title",
+        project_id="Project ID (auto-detected from channel)",
+        repo_id="Repository ID (optional — uses first repo if omitted)",
         body="PR description (optional)",
         branch="Head branch (defaults to current)",
         base="Base branch (defaults to repo default)",
     )
     async def git_pr_command(
         interaction: discord.Interaction,
-        repo_id: str,
         title: str,
+        project_id: str | None = None,
+        repo_id: str | None = None,
         body: str = "",
         branch: str | None = None,
         base: str | None = None,
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
         await interaction.response.defer()
-        args: dict = {"repo_id": repo_id, "title": title, "body": body}
+        args: dict = {"title": title, "body": body}
+        if project_id:
+            args["project_id"] = project_id
+        if repo_id:
+            args["repo_id"] = repo_id
         if branch:
             args["branch"] = branch
         if base:
@@ -2113,35 +2174,43 @@ def setup_commands(bot: commands.Bot) -> None:
         description="List files changed compared to a base branch",
     )
     @app_commands.describe(
-        repo_id="Repository ID",
+        project_id="Project ID (auto-detected from channel)",
+        repo_id="Repository ID (optional — uses first repo if omitted)",
         base_branch="Branch to compare against (defaults to repo default)",
     )
     async def git_files_command(
         interaction: discord.Interaction,
-        repo_id: str,
+        project_id: str | None = None,
+        repo_id: str | None = None,
         base_branch: str | None = None,
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
         await interaction.response.defer()
-        args = {"repo_id": repo_id}
+        args: dict = {}
+        if project_id:
+            args["project_id"] = project_id
+        if repo_id:
+            args["repo_id"] = repo_id
         if base_branch:
             args["base_branch"] = base_branch
         result = await handler.execute("git_changed_files", args)
         if "error" in result:
             await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
+        label = result.get("repo_id", project_id or "repo")
         files = result.get("files", [])
         count = result.get("count", 0)
         base = result.get("base_branch", "main")
         if not files:
             await interaction.followup.send(
-                f"No files changed in `{repo_id}` vs `{base}`"
+                f"No files changed in `{label}` vs `{base}`"
             )
             return
         file_list = "\n".join(f"• `{f}`" for f in files[:50])
         if count > 50:
             file_list += f"\n_...and {count - 50} more_"
         msg = (
-            f"## Changed Files: `{repo_id}` vs `{base}`\n"
+            f"## Changed Files: `{label}` vs `{base}`\n"
             f"**{count} file(s) changed:**\n{file_list}"
         )
         await _send_long(interaction, msg, followup=True)
@@ -2151,16 +2220,20 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Show recent git commits",
     )
     @app_commands.describe(
-        project_id="Project ID",
+        project_id="Project ID (auto-detected from channel)",
         count="Number of commits to show (default 10)",
         repo_id="Specific repo ID (optional)",
     )
     async def git_log_command(
         interaction: discord.Interaction,
-        project_id: str,
+        project_id: str | None = None,
         count: int = 10,
         repo_id: str | None = None,
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            return
         args: dict = {"project_id": project_id, "count": count}
         if repo_id:
             args["repo_id"] = repo_id
@@ -2179,16 +2252,20 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Show git diff for a project's repo",
     )
     @app_commands.describe(
-        project_id="Project ID",
+        project_id="Project ID (auto-detected from channel)",
         base_branch="Base branch to diff against (optional — shows working tree diff)",
         repo_id="Specific repo ID (optional)",
     )
     async def git_diff_command(
         interaction: discord.Interaction,
-        project_id: str,
+        project_id: str | None = None,
         base_branch: str | None = None,
         repo_id: str | None = None,
     ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        if not project_id:
+            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            return
         args: dict = {"project_id": project_id}
         if base_branch:
             args["base_branch"] = base_branch
