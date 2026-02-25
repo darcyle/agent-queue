@@ -138,9 +138,38 @@ class AgentQueueBot(commands.Bot):
         """
         return self._channel_to_project.get(channel_id)
 
+    def _is_authorized(self, user_id: int | str) -> bool:
+        """Check whether a Discord user is allowed to interact with the bot.
+
+        If ``authorized_users`` is empty (the default), all users are
+        permitted.  Otherwise only the listed user IDs may use commands
+        or send messages to the bot.
+        """
+        allowed = self.config.discord.authorized_users
+        if not allowed:
+            return True  # no restriction configured
+        return str(user_id) in allowed
+
     async def setup_hook(self) -> None:
         from src.discord.commands import setup_commands
         setup_commands(self)
+
+        # Global authorization guard for all slash commands.
+        # Runs before every interaction — unauthorized users receive an
+        # ephemeral rejection and the command is silently dropped.
+        original_interaction_check = self.tree.interaction_check
+
+        async def _auth_interaction_check(interaction: discord.Interaction) -> bool:
+            if not self._is_authorized(interaction.user.id):
+                await interaction.response.send_message(
+                    "You don't have permission to use this command.",
+                    ephemeral=True,
+                )
+                return False
+            return await original_interaction_check(interaction)
+
+        self.tree.interaction_check = _auth_interaction_check
+
         if self.config.discord.guild_id:
             guild = discord.Object(id=int(self.config.discord.guild_id))
             self.tree.copy_global_to(guild=guild)
@@ -438,6 +467,10 @@ class AgentQueueBot(commands.Bot):
     async def on_message(self, message: discord.Message) -> None:
         # Ignore own messages
         if message.author == self.user:
+            return
+
+        # Authorization guard — silently ignore unauthorized users
+        if not self._is_authorized(message.author.id):
             return
 
         # Dedup guard — prevent processing the same message twice

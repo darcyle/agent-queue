@@ -404,3 +404,58 @@ class TestPrependProjectTag:
 
         result = AgentQueueBot._prepend_project_tag("**Bold** text", "p-1")
         assert result == "[`p-1`] **Bold** text"
+
+
+class TestIsAuthorized:
+    """Tests for _is_authorized() — user authorization guard."""
+
+    def _make_bot_with_auth(self, authorized_users: list[str]):
+        """Return a minimal namespace mimicking the bot's config for auth."""
+        config = type("C", (), {
+            "discord": type("D", (), {
+                "authorized_users": authorized_users,
+            })(),
+        })()
+        return type("B", (), {"config": config})()
+
+    def test_empty_list_allows_everyone(self):
+        from src.discord.bot import AgentQueueBot
+
+        bot = self._make_bot_with_auth([])
+        assert AgentQueueBot._is_authorized(bot, 123456789) is True
+        assert AgentQueueBot._is_authorized(bot, 987654321) is True
+
+    def test_authorized_user_allowed(self):
+        from src.discord.bot import AgentQueueBot
+
+        bot = self._make_bot_with_auth(["123456789", "111222333"])
+        assert AgentQueueBot._is_authorized(bot, 123456789) is True
+
+    def test_unauthorized_user_denied(self):
+        from src.discord.bot import AgentQueueBot
+
+        bot = self._make_bot_with_auth(["123456789"])
+        assert AgentQueueBot._is_authorized(bot, 987654321) is False
+
+    def test_user_id_as_string(self):
+        from src.discord.bot import AgentQueueBot
+
+        bot = self._make_bot_with_auth(["123456789"])
+        assert AgentQueueBot._is_authorized(bot, "123456789") is True
+        assert AgentQueueBot._is_authorized(bot, "999999999") is False
+
+    def test_user_id_as_int_matches_string_config(self):
+        """Config stores IDs as strings; int user IDs should still match."""
+        from src.discord.bot import AgentQueueBot
+
+        bot = self._make_bot_with_auth(["123456789"])
+        assert AgentQueueBot._is_authorized(bot, 123456789) is True
+
+    def test_multiple_authorized_users(self):
+        from src.discord.bot import AgentQueueBot
+
+        bot = self._make_bot_with_auth(["111", "222", "333"])
+        assert AgentQueueBot._is_authorized(bot, 111) is True
+        assert AgentQueueBot._is_authorized(bot, 222) is True
+        assert AgentQueueBot._is_authorized(bot, 333) is True
+        assert AgentQueueBot._is_authorized(bot, 444) is False
