@@ -29,11 +29,13 @@ from src.config import AppConfig
 from src.llm_logger import LLMLogger
 from src.database import Database
 from src.discord.notifications import (
-    format_task_completed, format_task_failed, format_task_blocked,
-    format_pr_created, format_chain_stuck, format_stuck_defined_task,
-    format_task_completed_embed, format_task_failed_embed,
-    format_task_blocked_embed, format_pr_created_embed,
-    format_chain_stuck_embed, format_stuck_defined_task_embed,
+    format_task_started, format_task_completed, format_task_failed,
+    format_task_blocked, format_pr_created, format_chain_stuck,
+    format_stuck_defined_task,
+    format_task_started_embed, format_task_completed_embed,
+    format_task_failed_embed, format_task_blocked_embed,
+    format_pr_created_embed, format_chain_stuck_embed,
+    format_stuck_defined_task_embed,
     TaskFailedView, TaskApprovalView, TaskBlockedView,
 )
 from src.event_bus import EventBus
@@ -1350,12 +1352,12 @@ class Orchestrator:
         agent = await self.db.get_agent(action.agent_id)
 
         # Notify that work is starting
-        start_msg = (
-            f"**Task Started:** `{task.id}` — {task.title}\n"
-            f"Agent: {agent.name}"
-            + (f"\nBranch: `{task.branch_name}`" if task.branch_name else "")
+        start_msg = format_task_started(task, agent)
+        await self._notify_channel(
+            start_msg,
+            project_id=action.project_id,
+            embed=format_task_started_embed(task, agent),
         )
-        await self._notify_channel(start_msg, project_id=action.project_id)
 
         # Create a thread for streaming agent output
         thread_send: ThreadSendCallback | None = None

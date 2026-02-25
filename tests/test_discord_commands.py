@@ -3,6 +3,7 @@ from src.models import (
     Task, Agent, AgentOutput, AgentResult, TaskStatus, AgentState,
 )
 from src.discord.notifications import (
+    format_task_started,
     format_task_completed,
     format_task_failed,
     format_task_blocked,
@@ -11,9 +12,61 @@ from src.discord.notifications import (
     format_pr_created,
     format_chain_stuck,
     format_stuck_defined_task,
+    format_task_started_embed,
 )
 
 class TestNotificationFormatting:
+    def test_format_task_started(self):
+        task = Task(id="t-1", project_id="p-1", title="Add feature",
+                    description="D", branch_name="feat/add-feature")
+        agent = Agent(id="a-1", name="claude-1", agent_type="claude")
+        result = format_task_started(task, agent)
+        assert "Task Started" in result
+        assert "t-1" in result
+        assert "Add feature" in result
+        assert "p-1" in result
+        assert "claude-1" in result
+        assert "feat/add-feature" in result
+        assert "IN_PROGRESS" in result
+
+    def test_format_task_started_no_branch(self):
+        task = Task(id="t-2", project_id="p-1", title="Quick fix", description="D")
+        agent = Agent(id="a-1", name="claude-2", agent_type="claude")
+        result = format_task_started(task, agent)
+        assert "Task Started" in result
+        assert "t-2" in result
+        assert "claude-2" in result
+        assert "Branch" not in result
+
+    def test_format_task_started_embed(self):
+        task = Task(id="t-1", project_id="p-1", title="Add feature",
+                    description="D", branch_name="feat/add-feature")
+        agent = Agent(id="a-1", name="claude-1", agent_type="claude")
+        embed = format_task_started_embed(task, agent)
+        assert embed is not None
+        assert "Task Started" in embed.title
+        assert "Add feature" in embed.title
+        # Verify fields contain expected values
+        field_names = [f.name for f in embed.fields]
+        field_values = [f.value for f in embed.fields]
+        assert "Task ID" in field_names
+        assert "Agent" in field_names
+        assert "Status" in field_names
+        assert "Branch" in field_names
+        assert "`t-1`" in field_values
+        assert "claude-1" in field_values
+        assert "`feat/add-feature`" in field_values
+        # Verify IN_PROGRESS status color (amber = 0xF39C12)
+        assert embed.color.value == 0xF39C12
+
+    def test_format_task_started_embed_no_branch(self):
+        task = Task(id="t-2", project_id="p-1", title="Quick fix", description="D")
+        agent = Agent(id="a-1", name="claude-2", agent_type="claude")
+        embed = format_task_started_embed(task, agent)
+        field_names = [f.name for f in embed.fields]
+        assert "Branch" not in field_names
+        assert len(embed.fields) == 4  # Task ID, Project, Agent, Status
+
     def test_format_task_completed(self):
         task = Task(id="t-1", project_id="p-1", title="Fix bug", description="D")
         agent = Agent(id="a-1", name="claude-1", agent_type="claude")
