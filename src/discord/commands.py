@@ -48,12 +48,99 @@ class _NoteDismissButton(discord.ui.Button):
         await interaction.message.delete()
 
 
-class NoteContentView(discord.ui.View):
-    """View attached to a note content message with a Dismiss button."""
+class _NoteDeleteButton(discord.ui.Button):
+    """Delete button that deletes the actual note file and removes the message."""
 
-    def __init__(self, project_id: str, note_slug: str, bot=None) -> None:
+    def __init__(self, project_id: str, note_slug: str, handler, bot) -> None:
+        super().__init__(
+            style=discord.ButtonStyle.danger,
+            label="Delete",
+            custom_id=f"notes:{project_id}:delete:{note_slug}",
+        )
+        self._project_id = project_id
+        self._slug = note_slug
+        self._handler = handler
+        self._bot = bot
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        handler = self._handler
+        if not handler:
+            await interaction.response.send_message("Not available.", ephemeral=True)
+            return
+
+        title = self._slug.replace("-", " ").title()
+        await interaction.response.defer(ephemeral=True)
+
+        result = await handler.execute("delete_note", {
+            "project_id": self._project_id,
+            "title": title,
+        })
+        if "error" in result:
+            await interaction.followup.send(
+                f"Error: {result['error']}", ephemeral=True,
+            )
+            return
+
+        # Clean up note_viewers tracking
+        bot = self._bot
+        fname = f"{self._slug}.md"
+        if bot:
+            thread_id = interaction.channel_id
+            note_viewers = getattr(bot, "_note_viewers", {})
+            if thread_id in note_viewers:
+                note_viewers[thread_id].pop(fname, None)
+
+        # Delete the note-viewing message
+        try:
+            await interaction.message.delete()
+        except Exception:
+            pass
+
+        # Send ephemeral confirmation
+        await interaction.followup.send(
+            f"🗑️ Note **{title}** deleted.", ephemeral=True,
+        )
+
+        # Auto-refresh notes TOC if available
+        if bot:
+            await self._refresh_toc(bot, interaction.channel_id)
+
+    async def _refresh_toc(self, bot, thread_id: int) -> None:
+        """Try to refresh the notes TOC message after deletion."""
+        toc_messages = getattr(bot, "_notes_toc_messages", {})
+        toc_msg_id = toc_messages.get(thread_id)
+        if not toc_msg_id:
+            return
+        try:
+            handler = self._handler
+            result = await handler.execute("list_notes", {
+                "project_id": self._project_id,
+            })
+            if "error" in result:
+                return
+            notes = result.get("notes", [])
+            thread = bot.get_channel(thread_id)
+            if not thread:
+                return
+            toc_msg = await thread.fetch_message(toc_msg_id)
+            view = NotesView(
+                self._project_id, notes,
+                handler=handler, bot=bot,
+            )
+            await toc_msg.edit(
+                content=view.build_content(), view=view,
+            )
+        except Exception:
+            pass
+
+
+class NoteContentView(discord.ui.View):
+    """View attached to a note content message with Dismiss and Delete buttons."""
+
+    def __init__(self, project_id: str, note_slug: str, handler=None, bot=None) -> None:
         super().__init__(timeout=None)
         self.add_item(_NoteDismissButton(project_id, note_slug, bot))
+        self.add_item(_NoteDeleteButton(project_id, note_slug, handler, bot))
 
 
 class _NoteViewButton(discord.ui.Button):
@@ -103,8 +190,8 @@ class _NoteViewButton(discord.ui.Button):
                 except Exception:
                     pass
 
-        # Send note content with dismiss button
-        dismiss_view = NoteContentView(self._project_id, self._slug, bot=bot)
+        # Send note content with dismiss and delete buttons
+        dismiss_view = NoteContentView(self._project_id, self._slug, handler=handler, bot=bot)
         if len(content) <= 1900:
             msg = await interaction.followup.send(
                 f"### 📄 {result['title']}\n```md\n{content}\n```",

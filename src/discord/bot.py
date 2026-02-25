@@ -152,15 +152,13 @@ class AgentQueueBot(commands.Bot):
                         except Exception:
                             pass
                         # Send updated content
-                        from src.discord.commands import setup_commands
+                        from src.discord.commands import NoteContentView
                         content = result["content"]
                         slug = note_filename[:-3]
-                        view = discord.ui.View(timeout=None)
-                        view.add_item(discord.ui.Button(
-                            style=discord.ButtonStyle.danger,
-                            label="Dismiss",
-                            custom_id=f"notes:{project_id}:dismiss:{slug}",
-                        ))
+                        view = NoteContentView(
+                            project_id, slug,
+                            handler=self.agent.handler, bot=self,
+                        )
                         if len(content) <= 1900:
                             msg = await thread.send(
                                 f"### 📄 {result['title']} *(updated)*\n"
@@ -557,15 +555,20 @@ class AgentQueueBot(commands.Bot):
             except Exception as e:
                 print(f"Thread send error: {e}")
 
-        async def notify_main_channel(text: str) -> None:
+        async def notify_main_channel(
+            text: str, *, embed: discord.Embed | None = None
+        ) -> None:
             """Reply to the thread-root message with a brief notification."""
             try:
-                await msg.reply(text)
+                kwargs = {}
+                if embed is not None:
+                    kwargs["embed"] = embed
+                await msg.reply(text, **kwargs)
             except Exception as e:
                 print(f"Main channel notify error: {e}")
                 # Fallback: plain message in the notifications channel
                 try:
-                    await channel.send(text)
+                    await channel.send(text, **kwargs)
                 except Exception as e2:
                     print(f"Fallback notify error: {e2}")
 
