@@ -729,7 +729,7 @@ Call `_notify_stuck_chain(task)`.
 
 Runs every cycle.  Lists all PAUSED tasks.  For each task where
 `task.resume_after <= time.time()`:
-`db.transition_task(id, READY, context="resume_paused", resume_after=None)`.
+`db.transition_task(id, READY, context="resume_paused", assigned_agent_id=None, resume_after=None)`.
 
 ### How tasks become PAUSED
 
