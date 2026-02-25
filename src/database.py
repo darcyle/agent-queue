@@ -272,27 +272,81 @@ class Database:
         """Migrate existing agent.checkout_path/repo_id into agent_workspaces.
 
         Idempotent: uses INSERT OR IGNORE so it's safe to re-run on every startup.
-        Only migrates agents that have a checkout_path set and a current_task_id
-        (so we can determine the project_id).
+
+        Two strategies for determining project_id:
+        1. From the agent's current_task_id (if still set from a previous run)
+        2. From the agent's most recent task result (for IDLE agents)
         """
         try:
+            # Check if checkout_path column still exists
+            cursor = await self._db.execute("PRAGMA table_info(agents)")
+            columns = {row["name"] for row in await cursor.fetchall()}
+            if "checkout_path" not in columns:
+                return  # Column already dropped, nothing to migrate
+
             cursor = await self._db.execute(
-                "SELECT a.id, a.checkout_path, a.repo_id, t.project_id "
-                "FROM agents a "
-                "LEFT JOIN tasks t ON t.id = a.current_task_id "
-                "WHERE a.checkout_path IS NOT NULL AND a.checkout_path != ''"
+                "SELECT id, checkout_path, repo_id, current_task_id "
+                "FROM agents "
+                "WHERE checkout_path IS NOT NULL AND checkout_path != ''"
             )
-            rows = await cursor.fetchall()
-            for row in rows:
-                project_id = row["project_id"]
+            agents = await cursor.fetchall()
+            for agent_row in agents:
+                agent_id = agent_row["id"]
+                checkout_path = agent_row["checkout_path"]
+                repo_id = agent_row["repo_id"]
+
+                # Strategy 1: from current_task_id
+                project_id = None
+                if agent_row["current_task_id"]:
+                    task_cursor = await self._db.execute(
+                        "SELECT project_id FROM tasks WHERE id = ?",
+                        (agent_row["current_task_id"],),
+                    )
+                    task_row = await task_cursor.fetchone()
+                    if task_row:
+                        project_id = task_row["project_id"]
+
+                # Strategy 2: from most recent task result
                 if not project_id:
+                    result_cursor = await self._db.execute(
+                        "SELECT t.project_id FROM task_results tr "
+                        "JOIN tasks t ON t.id = tr.task_id "
+                        "WHERE tr.agent_id = ? "
+                        "ORDER BY tr.created_at DESC LIMIT 1",
+                        (agent_id,),
+                    )
+                    result_row = await result_cursor.fetchone()
+                    if result_row:
+                        project_id = result_row["project_id"]
+
+                # Strategy 3: from most recent assigned task
+                if not project_id:
+                    assigned_cursor = await self._db.execute(
+                        "SELECT project_id FROM tasks "
+                        "WHERE assigned_agent_id = ? "
+                        "ORDER BY updated_at DESC LIMIT 1",
+                        (agent_id,),
+                    )
+                    assigned_row = await assigned_cursor.fetchone()
+                    if assigned_row:
+                        project_id = assigned_row["project_id"]
+
+                if not project_id:
+                    logger.debug(
+                        "Migration: skipping agent '%s' — cannot determine project_id",
+                        agent_id,
+                    )
                     continue
+
                 await self._db.execute(
                     "INSERT OR IGNORE INTO agent_workspaces "
                     "(agent_id, project_id, workspace_path, repo_id, created_at) "
                     "VALUES (?, ?, ?, ?, ?)",
-                    (row["id"], project_id, row["checkout_path"],
-                     row["repo_id"], time.time()),
+                    (agent_id, project_id, checkout_path, repo_id, time.time()),
+                )
+                logger.info(
+                    "Migration: agent '%s' workspace for project '%s' -> '%s'",
+                    agent_id, project_id, checkout_path,
                 )
         except Exception as e:
             logger.debug("Agent workspace migration (benign if columns removed): %s", e)
