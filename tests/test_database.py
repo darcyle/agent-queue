@@ -1,7 +1,7 @@
 import pytest
 from src.database import Database
 from src.models import (
-    Project, Task, Agent, TaskStatus, AgentState,
+    Project, Task, Agent, AgentWorkspace, TaskStatus, AgentState,
     ProjectStatus, VerificationType,
 )
 
@@ -202,3 +202,70 @@ class TestAtomicTransition:
         assert task.assigned_agent_id == "a-1"
         assert agent.state == AgentState.STARTING
         assert agent.current_task_id == "t-1"
+
+
+class TestAgentWorkspaces:
+    async def test_set_and_get_workspace(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.set_agent_workspace("a-1", "p-1", "/tmp/workspace")
+        ws = await db.get_agent_workspace("a-1", "p-1")
+        assert ws is not None
+        assert ws.workspace_path == "/tmp/workspace"
+        assert ws.agent_id == "a-1"
+        assert ws.project_id == "p-1"
+
+    async def test_get_nonexistent_workspace_returns_none(self, db):
+        ws = await db.get_agent_workspace("no-agent", "no-project")
+        assert ws is None
+
+    async def test_upsert_workspace(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.set_agent_workspace("a-1", "p-1", "/tmp/old")
+        await db.set_agent_workspace("a-1", "p-1", "/tmp/new")
+        ws = await db.get_agent_workspace("a-1", "p-1")
+        assert ws.workspace_path == "/tmp/new"
+
+    async def test_list_workspaces_by_agent(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_project(Project(id="p-2", name="beta"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.set_agent_workspace("a-1", "p-1", "/tmp/ws1")
+        await db.set_agent_workspace("a-1", "p-2", "/tmp/ws2")
+        workspaces = await db.list_agent_workspaces(agent_id="a-1")
+        assert len(workspaces) == 2
+
+    async def test_delete_workspace_for_project(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_project(Project(id="p-2", name="beta"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.set_agent_workspace("a-1", "p-1", "/tmp/ws1")
+        await db.set_agent_workspace("a-1", "p-2", "/tmp/ws2")
+        await db.delete_agent_workspaces("a-1", project_id="p-1")
+        ws = await db.get_agent_workspace("a-1", "p-1")
+        assert ws is None
+        ws2 = await db.get_agent_workspace("a-1", "p-2")
+        assert ws2 is not None
+
+    async def test_delete_all_workspaces_for_agent(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_project(Project(id="p-2", name="beta"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.set_agent_workspace("a-1", "p-1", "/tmp/ws1")
+        await db.set_agent_workspace("a-1", "p-2", "/tmp/ws2")
+        await db.delete_agent_workspaces("a-1")
+        workspaces = await db.list_agent_workspaces(agent_id="a-1")
+        assert len(workspaces) == 0
+
+    async def test_workspace_with_repo_id(self, db):
+        from src.models import RepoConfig, RepoSourceType
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_repo(RepoConfig(
+            id="repo-1", project_id="p-1",
+            source_type=RepoSourceType.LINK, source_path="/tmp/repo",
+        ))
+        await db.set_agent_workspace("a-1", "p-1", "/tmp/repo", repo_id="repo-1")
+        ws = await db.get_agent_workspace("a-1", "p-1")
+        assert ws.repo_id == "repo-1"

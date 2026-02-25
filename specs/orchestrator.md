@@ -371,11 +371,11 @@ In both cases, remove the task from `_running_tasks` in a `finally` block.
 
 **Step 4 — Prepare workspace.**
 `project = db.get_project(project_id)`.
-`fallback_workspace = project.workspace_path or config.workspace_dir`.
-Call `_prepare_workspace(task, agent)` inside a try/except.  On exception, send a
-"Workspace Error" Discord notification via `_notify_channel` and fall back to
-`fallback_workspace`.  Re-fetch `task` and `agent` after workspace preparation because
-`_prepare_workspace` may have updated `branch_name` and `checkout_path`.
+Call `_prepare_workspace(task, agent)` inside a try/except.  `_prepare_workspace` always
+returns a path.  On exception, send a "Workspace Error" Discord notification via
+`_notify_channel` and fall back to `project.workspace_path or config.workspace_dir`.
+Re-fetch `task` and `agent` after workspace preparation because `_prepare_workspace` may
+have updated `branch_name`.
 
 **Step 5 — Notify start.**
 Send a "Task Started" message to `_notify_channel` including the task ID, title, agent
@@ -502,26 +502,27 @@ If `output.tokens_used > 0`: `db.record_token_usage(project_id, agent_id, task_i
 
 ## 10. Workspace Preparation
 
-`_prepare_workspace(task, agent) -> str | None`
+`_prepare_workspace(task, agent) -> str`
 
-Returns the absolute path to the workspace directory, or `None` if no repo is configured
-(the caller falls back to the project workspace).
+Always returns the absolute path to the workspace directory (never None).
 
-**Repo resolution.**  Use `task.repo_id` if set; otherwise fall back to `agent.repo_id`.
-If neither is set, return `None`.  Fetch the `RepoConfig` record; if not found, send a
-Discord warning notification via `_notify_channel` and return `None`.
+**Workspace resolution chain:**
+
+1. **agent_workspaces lookup** — `db.get_agent_workspace(agent.id, task.project_id)`.
+   If found, use the cached `workspace_path`.
+2. **Auto-populate from repo config** — If no cached workspace:
+   - Use `task.repo_id` if set, otherwise the project's first repo.
+   - Compute workspace path from repo source type:
+     - LINK: `workspace = repo.source_path`
+     - CLONE/INIT: `workspace = {config.workspace_dir}/{project_id}/{agent.name}/{repo_name}`
+   - Save to `agent_workspaces` for future lookups.
+3. **Fallback** — No repo at all: use `project.workspace_path` or `config.workspace_dir`.
 
 **Branch name.**
 - For plan subtasks that have a parent task: reuse the parent's `branch_name` (to
   accumulate all subtask commits on the same branch).  If the parent has no branch name,
   generate one from the subtask ID and title.
 - For all other tasks: generate a fresh branch name with `GitManager.make_branch_name(task.id, task.title)`.
-
-**Path construction.**
-`agent_checkout = os.path.join(repo.checkout_base_path, agent.name)`
-`repo_name` = last path segment of `repo.url` (stripped of `.git`), or the basename of
-`repo.source_path`, or `repo.id` as a final fallback.
-`workspace = os.path.join(agent_checkout, repo_name)`
 
 **`reuse_branch` flag.**  True when `task.is_plan_subtask and task.parent_task_id` is set.
 
@@ -537,9 +538,8 @@ Discord warning notification via `_notify_channel` and return `None`.
   named `branch_name` (or switches to it if it already exists from a previous attempt).
 
 *LINK repos:*
-- If `repo.source_path` does not exist as a directory: send a Discord warning notification
-  via `_notify_channel` and return `None`.
-- Override `workspace = repo.source_path` (work directly in the linked directory).
+- If `workspace` does not exist as a directory: send a Discord warning notification
+  via `_notify_channel` and return the path as-is.
 - If the directory is a git repo (`validate_checkout` passes): apply the same branch logic
   as CLONE (`switch_to_branch` or `prepare_for_task`).
 - If not a git repo: use the directory as-is (no git operations).
@@ -553,7 +553,6 @@ Discord warning notification via `_notify_channel` and return `None`.
 
 **Database updates.**  After the git operations:
 `db.update_task(task.id, branch_name=branch_name)`
-`db.update_agent(agent.id, checkout_path=workspace)`
 
 ---
 
@@ -564,8 +563,9 @@ Discord warning notification via `_notify_channel` and return `None`.
 Called after the adapter signals `COMPLETED`.  Returns a PR URL if one was created,
 otherwise `None`.
 
-**Preconditions.**  If `agent.checkout_path` is missing or is not a valid git checkout,
-or if `task.branch_name` is not set, return `None` immediately.
+**Preconditions.**  Look up the workspace via `db.get_agent_workspace(agent.id, task.project_id)`.
+If no workspace is found or it is not a valid git checkout, or if `task.branch_name` is not set,
+return `None` immediately.
 
 **Commit.**  Call `git.commit_all(workspace, "agent: {title}\n\nTask-Id: {id}")`.  If
 nothing was committed, log a message (not an error).
@@ -703,7 +703,7 @@ Compute `updated_at = db.get_task_updated_at(task.id)` and
 
 ### `_check_pr_status(task)`
 
-Resolves a checkout path by checking `task.assigned_agent_id -> agent.checkout_path`,
+Resolves a checkout path by checking `db.get_agent_workspace(agent_id, project_id)`,
 then falling back to `task.repo_id -> repo.source_path`.  If no path is found, return.
 
 Call `git.check_pr_merged(checkout_path, task.pr_url)`:

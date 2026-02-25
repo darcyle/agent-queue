@@ -141,6 +141,10 @@ class RepoConfig:
 
     The GitManager uses this to clone, link, or initialize the repo and to
     create per-task worktrees branching from default_branch.
+
+    Repos are purely git config (URL, default branch, source type) — they
+    no longer determine filesystem layout. Workspace paths are managed by
+    the agent_workspaces table instead.
     """
 
     id: str
@@ -149,7 +153,6 @@ class RepoConfig:
     url: str = ""
     source_path: str = ""
     default_branch: str = "main"
-    checkout_base_path: str = ""
 
 
 @dataclass
@@ -209,8 +212,8 @@ class Agent:
     """Represents a registered agent process (e.g., a Claude Code instance).
 
     The orchestrator tracks agent state, heartbeats, and token usage. When an
-    agent is IDLE, the scheduler may assign it a task. The checkout_path and
-    repo_id indicate which worktree the agent is currently operating in.
+    agent is IDLE, the scheduler may assign it a task. Per-project workspace
+    paths are stored in the agent_workspaces table (see AgentWorkspace).
     """
 
     id: str
@@ -218,12 +221,25 @@ class Agent:
     agent_type: str  # "claude", "codex", "cursor", "aider"
     state: AgentState = AgentState.IDLE
     current_task_id: str | None = None
-    checkout_path: str | None = None
-    repo_id: str | None = None
     pid: int | None = None
     last_heartbeat: float | None = None
     total_tokens_used: int = 0
     session_tokens_used: int = 0
+
+
+@dataclass
+class AgentWorkspace:
+    """Maps an (agent_id, project_id) pair to a workspace directory.
+
+    Replaces the old Agent.checkout_path (single value) and Agent.repo_id
+    fields. Each agent can have a different workspace for each project it
+    works on.
+    """
+
+    agent_id: str
+    project_id: str
+    workspace_path: str
+    repo_id: str | None = None  # which repo config governs git ops
 
 
 @dataclass

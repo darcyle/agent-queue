@@ -365,7 +365,7 @@ Third step: write comprehensive tests for all components.
         await orch.db.create_project(Project(id="p-1", name="alpha"))
         await orch.db.create_repo(RepoConfig(
             id="repo-1", project_id="p-1",
-            source_type=RepoSourceType.LINK, source_path="/tmp/repo",
+            source_type=RepoSourceType.LINK, source_path=str(workspace),
         ))
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
                                          agent_type="claude"))

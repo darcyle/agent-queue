@@ -311,7 +311,7 @@ TOOLS = [
     },
     {
         "name": "create_agent",
-        "description": "Register a new agent that can work on tasks. Optionally assign a repo so the agent works in that directory.",
+        "description": "Register a new agent that can work on tasks.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -321,12 +321,28 @@ TOOLS = [
                     "description": "Agent type (claude, codex, cursor, aider)",
                     "default": "claude",
                 },
-                "repo_id": {
-                    "type": "string",
-                    "description": "Repo ID to assign as this agent's workspace (optional)",
-                },
             },
             "required": ["name"],
+        },
+    },
+    {
+        "name": "set_agent_workspace",
+        "description": "Set the workspace directory for an agent in a specific project. Use this to tell the agent where to work for a given project.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID"},
+                "project_id": {"type": "string", "description": "Project ID"},
+                "workspace_path": {
+                    "type": "string",
+                    "description": "Absolute path to the workspace directory",
+                },
+                "repo_id": {
+                    "type": "string",
+                    "description": "Repo ID that governs git operations for this workspace (optional)",
+                },
+            },
+            "required": ["agent_id", "project_id", "workspace_path"],
         },
     },
     {
@@ -1027,15 +1043,13 @@ preserving the existing environment (.env, venv, node_modules, etc.). Use when \
 the user says to "link", "connect", "use", or "point to" an existing directory/repo.
 - **init**: Create a new empty git repo. Use when starting from scratch.
 
-Agent workspaces — agents can be assigned a repo as their permanent workspace:
-- Use `create_agent` with `repo_id` to assign a linked repo to an agent.
-- When a task doesn't specify a repo_id, the agent uses its assigned repo automatically.
-- For parallel work, link multiple checkouts of the same project as separate repos, then \
-assign each agent to its own checkout. Each agent works in a fully-configured directory \
-with its own .env, packages, etc.
-- Example setup: link ~/project as "checkout-1", link ~/project-2 as "checkout-2", \
-create Agent-1 with repo checkout-1, create Agent-2 with repo checkout-2.
-- When creating tasks, you don't need to specify repo_id — each agent uses its assigned workspace.
+Agent workspaces — each agent has a per-project workspace directory:
+- Use `set_agent_workspace` to explicitly set where an agent works for a specific project.
+- When a task runs, the system checks agent_workspaces for the (agent, project) pair first.
+- If no workspace is set, the system auto-populates from the project's repo config.
+- For parallel work, set each agent to its own checkout directory for the same project.
+- Example: `set_agent_workspace agent-1 my-project /home/dev/project-checkout-1`
+- Workspaces are cached per (agent, project) pair and reused across tasks.
 
 Notes management — use notes to build up project knowledge:
 - Use `list_notes` to see what notes exist for a project

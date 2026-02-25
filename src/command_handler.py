@@ -722,25 +722,29 @@ class CommandHandler:
         task = await self.db.get_task(args["task_id"])
         if not task:
             return {"error": f"Task '{args['task_id']}' not found"}
-        if not task.repo_id:
-            return {"error": "Task has no associated repository"}
-        repo = await self.db.get_repo(task.repo_id)
-        if not repo:
-            return {"error": f"Repository '{task.repo_id}' not found"}
         if not task.branch_name:
             return {"error": "Task has no branch name"}
 
+        # Resolve checkout path from agent_workspaces
         checkout_path = None
         if task.assigned_agent_id:
-            agent = await self.db.get_agent(task.assigned_agent_id)
-            if agent and agent.checkout_path:
-                checkout_path = agent.checkout_path
-        if not checkout_path and repo.source_path:
+            ws = await self.db.get_agent_workspace(
+                task.assigned_agent_id, task.project_id,
+            )
+            if ws:
+                checkout_path = ws.workspace_path
+
+        # Fallback: repo source_path
+        repo = None
+        if task.repo_id:
+            repo = await self.db.get_repo(task.repo_id)
+        if not checkout_path and repo and repo.source_path:
             checkout_path = repo.source_path
         if not checkout_path:
             return {"error": "Could not determine checkout path for diff"}
 
-        diff = self.orchestrator.git.get_diff(checkout_path, repo.default_branch)
+        default_branch = repo.default_branch if repo else "main"
+        diff = self.orchestrator.git.get_diff(checkout_path, default_branch)
         if not diff:
             return {"diff": "(no changes)", "branch": task.branch_name}
         return {"diff": diff, "branch": task.branch_name}
@@ -802,19 +806,40 @@ class CommandHandler:
 
     async def _cmd_create_agent(self, args: dict) -> dict:
         agent_id = args["name"].lower().replace(" ", "-")
-        repo_id = args.get("repo_id")
-        if repo_id:
-            repo = await self.db.get_repo(repo_id)
-            if not repo:
-                return {"error": f"Repo '{repo_id}' not found"}
         agent = Agent(
             id=agent_id,
             name=args["name"],
             agent_type=args.get("agent_type", "claude"),
-            repo_id=repo_id,
         )
         await self.db.create_agent(agent)
-        result = {"created": agent_id, "name": agent.name}
+        return {"created": agent_id, "name": agent.name}
+
+    async def _cmd_set_agent_workspace(self, args: dict) -> dict:
+        """Set the workspace path for an agent in a specific project."""
+        agent_id = args["agent_id"]
+        project_id = args["project_id"]
+        workspace_path = args["workspace_path"]
+        repo_id = args.get("repo_id")
+
+        agent = await self.db.get_agent(agent_id)
+        if not agent:
+            return {"error": f"Agent '{agent_id}' not found"}
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"error": f"Project '{project_id}' not found"}
+        if repo_id:
+            repo = await self.db.get_repo(repo_id)
+            if not repo:
+                return {"error": f"Repo '{repo_id}' not found"}
+
+        await self.db.set_agent_workspace(
+            agent_id, project_id, workspace_path, repo_id=repo_id,
+        )
+        result = {
+            "agent_id": agent_id,
+            "project_id": project_id,
+            "workspace_path": workspace_path,
+        }
         if repo_id:
             result["repo_id"] = repo_id
         return result
@@ -855,9 +880,6 @@ class CommandHandler:
                 repo_name = f"{project_id}-repo"
 
         repo_id = repo_name.lower().replace(" ", "-")
-        checkout_base = os.path.join(
-            project.workspace_path or self.config.workspace_dir, "repos", repo_name
-        )
 
         repo = RepoConfig(
             id=repo_id,
@@ -866,14 +888,12 @@ class CommandHandler:
             url=url,
             source_path=path,
             default_branch=default_branch,
-            checkout_base_path=checkout_base,
         )
         await self.db.create_repo(repo)
         return {
             "created": repo_id,
             "name": repo_name,
             "source_type": source,
-            "checkout_base_path": checkout_base,
         }
 
     async def _cmd_list_repos(self, args: dict) -> dict:

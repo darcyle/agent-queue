@@ -34,8 +34,8 @@ from src.discord.notifications import (
 from src.event_bus import EventBus
 from src.git.manager import GitManager
 from src.models import (
-    AgentOutput, AgentResult, AgentState, RepoConfig, RepoSourceType,
-    Task, TaskStatus, TaskContext,
+    AgentOutput, AgentResult, AgentState, AgentWorkspace, RepoConfig,
+    RepoSourceType, Task, TaskStatus, TaskContext,
 )
 from src.hooks import HookEngine
 from src.plan_parser import (
@@ -599,36 +599,95 @@ class Orchestrator:
 
         return Scheduler.schedule(state)
 
-    async def _prepare_workspace(self, task: Task, agent) -> str | None:
-        """Prepare a git workspace for the task. Returns the workspace path, or None for fallback.
+    def _get_task_repo_id(self, task: Task) -> str | None:
+        """Return the repo_id for a task — task.repo_id if set, else None."""
+        return task.repo_id
+
+    def _compute_workspace_path(
+        self, agent, project_id: str, repo: RepoConfig,
+    ) -> str:
+        """Derive workspace path from repo source type.
+
+        - LINK: workspace = repo.source_path (shared by all agents)
+        - CLONE: workspace = {workspace_dir}/{project_id}/{agent.name}/{repo_name}
+        - INIT: same as CLONE
+        """
+        if repo.source_type == RepoSourceType.LINK:
+            return repo.source_path
+
+        # Derive repo name from url or source_path
+        if repo.url:
+            repo_name = repo.url.rstrip("/").split("/")[-1].replace(".git", "")
+        elif repo.source_path:
+            repo_name = os.path.basename(repo.source_path.rstrip("/"))
+        else:
+            repo_name = repo.id
+
+        return os.path.join(
+            self.config.workspace_dir, project_id, agent.name, repo_name,
+        )
+
+    async def _prepare_workspace(self, task: Task, agent) -> str:
+        """Prepare a git workspace for the task. Always returns a path.
+
+        Resolution chain:
+        1. agent_workspaces lookup for (agent_id, task.project_id) → cached path
+        2. If not found, auto-populate from project's repo config
+        3. No repo at all: project.workspace_path or config.workspace_dir
 
         Handles three repo source types:
+        * **CLONE** — cloned into per-agent directory, branch created
+        * **LINK** — use existing directory directly
+        * **INIT** — create new git repo in per-agent directory
 
-        * **CLONE** — a remote repo URL.  Cloned into the agent's checkout
-          directory, then a fresh branch is created from the default branch.
-        * **LINK** — an existing local directory (e.g. a developer's working
-          copy).  We work directly in that directory to preserve .env files,
-          venvs, etc.  If the directory is a git repo we create a branch;
-          otherwise we use it as-is.
-        * **INIT** — create a new bare git repo in the agent's checkout dir.
-
-        For plan subtasks, we reuse the parent task's branch name so that
-        all steps in a plan accumulate commits on a single branch, which
-        eventually becomes one PR.
+        For plan subtasks, reuses the parent task's branch name so all steps
+        accumulate commits on a single branch.
         """
-        # Use task's repo, or fall back to agent's assigned repo
-        repo_id = task.repo_id or agent.repo_id
-        if not repo_id:
-            return None  # No repo — use project workspace
+        # 1. Check agent_workspaces cache
+        ws = await self.db.get_agent_workspace(agent.id, task.project_id)
+        repo = None
 
-        repo = await self.db.get_repo(repo_id)
+        if not ws:
+            # 2. Auto-populate from repo config
+            repo_id = self._get_task_repo_id(task)
+            if not repo_id:
+                # Try project's first repo
+                repos = await self.db.list_repos(project_id=task.project_id)
+                if repos:
+                    repo_id = repos[0].id
+
+            if repo_id:
+                repo = await self.db.get_repo(repo_id)
+
+            if repo:
+                workspace_path = self._compute_workspace_path(
+                    agent, task.project_id, repo,
+                )
+                await self.db.set_agent_workspace(
+                    agent.id, task.project_id, workspace_path, repo_id=repo.id,
+                )
+                ws = AgentWorkspace(
+                    agent_id=agent.id, project_id=task.project_id,
+                    workspace_path=workspace_path, repo_id=repo.id,
+                )
+            else:
+                # 3. No repo — use project.workspace_path or config.workspace_dir
+                project = await self.db.get_project(task.project_id)
+                fallback = (project.workspace_path if project and project.workspace_path
+                            else self.config.workspace_dir)
+                await self.db.set_agent_workspace(
+                    agent.id, task.project_id, fallback,
+                )
+                return fallback
+
+        workspace = ws.workspace_path
+
+        # Load repo if not already loaded (for git operations)
+        if not repo and ws.repo_id:
+            repo = await self.db.get_repo(ws.repo_id)
+
         if not repo:
-            await self._notify_channel(
-                f"**Warning:** Repo `{task.repo_id}` not found for task `{task.id}`. "
-                f"Falling back to project workspace.",
-                project_id=task.project_id,
-            )
-            return None
+            return workspace  # No repo config — just use directory as-is
 
         # Subtasks reuse the parent's branch to accumulate commits
         if task.is_plan_subtask and task.parent_task_id:
@@ -637,22 +696,12 @@ class Orchestrator:
                            else GitManager.make_branch_name(task.id, task.title))
         else:
             branch_name = GitManager.make_branch_name(task.id, task.title)
-        agent_checkout = os.path.join(repo.checkout_base_path, agent.name)
-        # Derive repo name from url or source_path
-        if repo.url:
-            repo_name = repo.url.rstrip("/").split("/")[-1].replace(".git", "")
-        elif repo.source_path:
-            repo_name = os.path.basename(repo.source_path.rstrip("/"))
-        else:
-            repo_name = repo.id
-        workspace = os.path.join(agent_checkout, repo_name)
 
-        # Determine whether to create a new branch or switch to an existing one
         reuse_branch = task.is_plan_subtask and task.parent_task_id
 
         if repo.source_type == RepoSourceType.CLONE:
             if not self.git.validate_checkout(workspace):
-                os.makedirs(agent_checkout, exist_ok=True)
+                os.makedirs(os.path.dirname(workspace), exist_ok=True)
                 self.git.create_checkout(repo.url, workspace)
             if reuse_branch:
                 self.git.switch_to_branch(workspace, branch_name)
@@ -660,23 +709,17 @@ class Orchestrator:
                 self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
 
         elif repo.source_type == RepoSourceType.LINK:
-            if not os.path.isdir(repo.source_path):
+            if not os.path.isdir(workspace):
                 await self._notify_channel(
-                    f"**Warning:** Linked repo path `{repo.source_path}` does not exist. "
-                    f"Falling back to project workspace.",
+                    f"**Warning:** Linked repo path `{workspace}` does not exist.",
                     project_id=task.project_id,
                 )
-                return None
-            # Work directly in the source directory (preserves .env, venv, etc.)
-            workspace = repo.source_path
+                return workspace
             if self.git.validate_checkout(workspace):
                 if reuse_branch:
                     self.git.switch_to_branch(workspace, branch_name)
                 else:
                     self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
-            else:
-                # Not a git repo — just use the directory as-is
-                pass
 
         elif repo.source_type == RepoSourceType.INIT:
             if not self.git.validate_checkout(workspace):
@@ -686,9 +729,8 @@ class Orchestrator:
             else:
                 self.git.create_branch(workspace, branch_name)
 
-        # Update task and agent in DB
+        # Update task branch in DB
         await self.db.update_task(task.id, branch_name=branch_name)
-        await self.db.update_agent(agent.id, checkout_path=workspace)
 
         return workspace
 
@@ -708,7 +750,9 @@ class Orchestrator:
 
         Returns a PR URL if one was created, otherwise None.
         """
-        workspace = agent.checkout_path
+        # Look up workspace from agent_workspaces
+        ws = await self.db.get_agent_workspace(agent.id, task.project_id)
+        workspace = ws.workspace_path if ws else None
         if not workspace or not self.git.validate_checkout(workspace):
             return None
 
@@ -722,8 +766,8 @@ class Orchestrator:
         if not committed:
             print(f"Task {task.id}: no changes to commit on branch {task.branch_name}")
 
-        # Resolve repo config (task's repo or agent's assigned repo)
-        repo_id = task.repo_id or agent.repo_id
+        # Resolve repo config
+        repo_id = ws.repo_id if ws else task.repo_id
         repo = await self.db.get_repo(repo_id) if repo_id else None
 
         # For plan subtasks: just commit, don't merge/push unless this is
@@ -1115,9 +1159,11 @@ class Orchestrator:
         # Need a checkout path to run gh commands
         checkout_path = None
         if task.assigned_agent_id:
-            agent = await self.db.get_agent(task.assigned_agent_id)
-            if agent and agent.checkout_path:
-                checkout_path = agent.checkout_path
+            ws = await self.db.get_agent_workspace(
+                task.assigned_agent_id, task.project_id,
+            )
+            if ws:
+                checkout_path = ws.workspace_path
         if not checkout_path and task.repo_id:
             repo = await self.db.get_repo(task.repo_id)
             if repo and repo.source_path:
@@ -1206,12 +1252,11 @@ class Orchestrator:
 
         # Prepare workspace (repo checkout/worktree/init)
         project = await self.db.get_project(action.project_id)
-        fallback_workspace = (project.workspace_path if project and project.workspace_path
-                              else self.config.workspace_dir)
         try:
-            repo_workspace = await self._prepare_workspace(task, agent)
-            workspace = repo_workspace or fallback_workspace
+            workspace = await self._prepare_workspace(task, agent)
         except Exception as e:
+            fallback_workspace = (project.workspace_path if project and project.workspace_path
+                                  else self.config.workspace_dir)
             await self._notify_channel(
                 f"**Workspace Error:** Task `{task.id}` — {e}\n"
                 f"Falling back to project workspace.",

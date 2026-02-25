@@ -29,8 +29,8 @@ import uuid
 import aiosqlite
 
 from src.models import (
-    Agent, AgentState, Hook, HookRun, Project, ProjectStatus, RepoConfig,
-    RepoSourceType, Task, TaskStatus, VerificationType,
+    Agent, AgentState, AgentWorkspace, Hook, HookRun, Project, ProjectStatus,
+    RepoConfig, RepoSourceType, Task, TaskStatus, VerificationType,
 )
 from src.state_machine import is_valid_status_transition
 
@@ -174,6 +174,15 @@ CREATE TABLE IF NOT EXISTS system_config (
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS agent_workspaces (
+    agent_id TEXT NOT NULL REFERENCES agents(id),
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    workspace_path TEXT NOT NULL,
+    repo_id TEXT REFERENCES repos(id),
+    created_at REAL NOT NULL,
+    PRIMARY KEY (agent_id, project_id)
+);
+
 CREATE TABLE IF NOT EXISTS hooks (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -251,11 +260,42 @@ class Database:
                 await self._db.execute(migration)
             except Exception:
                 pass  # Column already exists
+        # Migrate existing agent checkout_path/repo_id into agent_workspaces
+        await self._migrate_agent_workspaces()
         await self._db.commit()
 
     async def close(self) -> None:
         if self._db:
             await self._db.close()
+
+    async def _migrate_agent_workspaces(self) -> None:
+        """Migrate existing agent.checkout_path/repo_id into agent_workspaces.
+
+        Idempotent: uses INSERT OR IGNORE so it's safe to re-run on every startup.
+        Only migrates agents that have a checkout_path set and a current_task_id
+        (so we can determine the project_id).
+        """
+        try:
+            cursor = await self._db.execute(
+                "SELECT a.id, a.checkout_path, a.repo_id, t.project_id "
+                "FROM agents a "
+                "LEFT JOIN tasks t ON t.id = a.current_task_id "
+                "WHERE a.checkout_path IS NOT NULL AND a.checkout_path != ''"
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                project_id = row["project_id"]
+                if not project_id:
+                    continue
+                await self._db.execute(
+                    "INSERT OR IGNORE INTO agent_workspaces "
+                    "(agent_id, project_id, workspace_path, repo_id, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (row["id"], project_id, row["checkout_path"],
+                     row["repo_id"], time.time()),
+                )
+        except Exception as e:
+            logger.debug("Agent workspace migration (benign if columns removed): %s", e)
 
     # --- Projects ---
     # CRUD for the projects table. Each project has a credit_weight that
@@ -341,7 +381,7 @@ class Database:
             "checkout_base_path, source_type, source_path) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (repo.id, repo.project_id, repo.url, repo.default_branch,
-             repo.checkout_base_path, repo.source_type.value, repo.source_path),
+             "", repo.source_type.value, repo.source_path),
         )
         await self._db.commit()
 
@@ -376,7 +416,6 @@ class Database:
             url=row["url"],
             source_path=row["source_path"] if "source_path" in row.keys() else "",
             default_branch=row["default_branch"],
-            checkout_base_path=row["checkout_base_path"],
         )
 
     # --- Tasks ---
@@ -680,12 +719,12 @@ class Database:
     async def create_agent(self, agent: Agent) -> None:
         await self._db.execute(
             "INSERT INTO agents (id, name, agent_type, state, current_task_id, "
-            "checkout_path, repo_id, pid, last_heartbeat, total_tokens_used, "
+            "pid, last_heartbeat, total_tokens_used, "
             "session_tokens_used, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (agent.id, agent.name, agent.agent_type,
              agent.state.value, agent.current_task_id,
-             agent.checkout_path, agent.repo_id, agent.pid, agent.last_heartbeat,
+             agent.pid, agent.last_heartbeat,
              agent.total_tokens_used, agent.session_tokens_used, time.time()),
         )
         await self._db.commit()
@@ -732,13 +771,91 @@ class Database:
             agent_type=row["agent_type"],
             state=AgentState(row["state"]),
             current_task_id=row["current_task_id"],
-            checkout_path=row["checkout_path"],
-            repo_id=row["repo_id"] if "repo_id" in row.keys() else None,
             pid=row["pid"],
             last_heartbeat=row["last_heartbeat"],
             total_tokens_used=row["total_tokens_used"],
             session_tokens_used=row["session_tokens_used"],
         )
+
+    # --- Agent Workspaces ---
+    # Per-project workspace paths for agents. Replaces the old agent.checkout_path
+    # (single value) and agent.repo_id fields.
+
+    async def set_agent_workspace(
+        self, agent_id: str, project_id: str, workspace_path: str,
+        repo_id: str | None = None,
+    ) -> None:
+        """Set or update the workspace path for an agent in a specific project."""
+        await self._db.execute(
+            "INSERT INTO agent_workspaces (agent_id, project_id, workspace_path, "
+            "repo_id, created_at) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(agent_id, project_id) DO UPDATE SET "
+            "workspace_path = excluded.workspace_path, "
+            "repo_id = excluded.repo_id",
+            (agent_id, project_id, workspace_path, repo_id, time.time()),
+        )
+        await self._db.commit()
+
+    async def get_agent_workspace(
+        self, agent_id: str, project_id: str,
+    ) -> AgentWorkspace | None:
+        """Get the workspace for an agent in a specific project."""
+        cursor = await self._db.execute(
+            "SELECT * FROM agent_workspaces WHERE agent_id = ? AND project_id = ?",
+            (agent_id, project_id),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return AgentWorkspace(
+            agent_id=row["agent_id"],
+            project_id=row["project_id"],
+            workspace_path=row["workspace_path"],
+            repo_id=row["repo_id"],
+        )
+
+    async def list_agent_workspaces(
+        self, agent_id: str | None = None, project_id: str | None = None,
+    ) -> list[AgentWorkspace]:
+        """List agent workspaces, optionally filtered by agent or project."""
+        conditions = []
+        vals = []
+        if agent_id:
+            conditions.append("agent_id = ?")
+            vals.append(agent_id)
+        if project_id:
+            conditions.append("project_id = ?")
+            vals.append(project_id)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = await self._db.execute(
+            f"SELECT * FROM agent_workspaces {where}", vals
+        )
+        rows = await cursor.fetchall()
+        return [
+            AgentWorkspace(
+                agent_id=r["agent_id"],
+                project_id=r["project_id"],
+                workspace_path=r["workspace_path"],
+                repo_id=r["repo_id"],
+            )
+            for r in rows
+        ]
+
+    async def delete_agent_workspaces(
+        self, agent_id: str, project_id: str | None = None,
+    ) -> None:
+        """Delete workspace(s) for an agent, optionally scoped to a project."""
+        if project_id:
+            await self._db.execute(
+                "DELETE FROM agent_workspaces WHERE agent_id = ? AND project_id = ?",
+                (agent_id, project_id),
+            )
+        else:
+            await self._db.execute(
+                "DELETE FROM agent_workspaces WHERE agent_id = ?",
+                (agent_id,),
+            )
+        await self._db.commit()
 
     # --- Token Ledger ---
     # Append-only log of token consumption. Each entry records which project,
@@ -851,6 +968,7 @@ class Database:
         await self._db.execute("DELETE FROM hooks WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM token_ledger WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM tasks WHERE project_id = ?", (project_id,))
+        await self._db.execute("DELETE FROM agent_workspaces WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM repos WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM events WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM projects WHERE id = ?", (project_id,))
