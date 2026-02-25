@@ -8,3 +8,6 @@ __pycache__/
 *.db-shm
 *.db-wal
 spin_utility.log
+
+# Documentation build output
+docs_out/

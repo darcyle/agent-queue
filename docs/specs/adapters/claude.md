@@ -1,0 +1,1 @@
+../../../specs/adapters/claude.md

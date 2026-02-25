@@ -1,0 +1,1 @@
+../../../specs/chat-providers/providers.md
