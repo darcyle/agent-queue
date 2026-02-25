@@ -1617,38 +1617,49 @@ def setup_commands(bot: commands.Bot) -> None:
         show_completed: bool = False,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
-        args = {}
+        args: dict = {"include_completed": show_completed}
         if project_id:
             args["project_id"] = project_id
         result = await handler.execute("list_tasks", args)
-        all_tasks = result.get("tasks", [])
-        if not all_tasks:
+        tasks = result.get("tasks", [])
+        if not tasks:
+            # When filtering to active-only and nothing returned, check if
+            # there are completed tasks the user could reveal.
+            if not show_completed:
+                all_result = await handler.execute(
+                    "list_tasks",
+                    {**args, "include_completed": True},
+                )
+                completed_count = len(all_result.get("tasks", []))
+                if completed_count:
+                    await interaction.response.send_message(
+                        embed=success_embed(
+                            "All Tasks Completed",
+                            description=(
+                                f"All {completed_count} task(s) are completed. "
+                                f"Use `/tasks show_completed:True` to view them."
+                            ),
+                        ),
+                    )
+                    return
             await interaction.response.send_message(
                 embed=info_embed("No Tasks", description="No tasks found for this project."),
             )
             return
-        # Filter out completed tasks by default (active-only filter)
-        if show_completed:
-            tasks = all_tasks
-        else:
-            tasks = [t for t in all_tasks if t["status"] != "COMPLETED"]
-            if not tasks:
-                completed_count = len(all_tasks)
-                await interaction.response.send_message(
-                    embed=success_embed(
-                        "All Tasks Completed",
-                        description=(
-                            f"All {completed_count} task(s) are completed. "
-                            f"Use `/tasks show_completed:True` to view them."
-                        ),
-                    ),
-                )
-                return
         # Group tasks by status
         tasks_by_status: dict[str, list] = {}
         for t in tasks:
             tasks_by_status.setdefault(t["status"], []).append(t)
-        total = result.get("total", len(all_tasks))
+        total = result.get("total", len(tasks))
+        # Fetch all tasks (including completed) for the full-view report widget
+        if not show_completed:
+            all_result = await handler.execute(
+                "list_tasks",
+                {**args, "include_completed": True},
+            )
+            all_tasks = all_result.get("tasks", [])
+        else:
+            all_tasks = tasks
         view = TaskReportView(tasks_by_status, total, all_tasks=all_tasks)
         content = view.build_content()
         await interaction.response.send_message(content, view=view)

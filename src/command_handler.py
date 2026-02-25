@@ -482,13 +482,43 @@ class CommandHandler:
     # diagnostics for dependency graphs.
     # -----------------------------------------------------------------------
 
+    # Statuses considered "finished" for the include_completed / completed_only
+    # filters.  BLOCKED is included because blocked tasks are not actionable
+    # until their dependencies are resolved — callers interested in the active
+    # work queue typically want these hidden.
+    _FINISHED_STATUSES: frozenset[TaskStatus] = frozenset({
+        TaskStatus.COMPLETED,
+        TaskStatus.FAILED,
+        TaskStatus.BLOCKED,
+    })
+
     async def _cmd_list_tasks(self, args: dict) -> dict:
         kwargs = {}
         if "project_id" in args:
             kwargs["project_id"] = args["project_id"]
-        if "status" in args:
+
+        # An explicit `status` filter takes precedence over the convenience
+        # boolean flags — the caller is asking for a specific status.
+        explicit_status = "status" in args
+        if explicit_status:
             kwargs["status"] = TaskStatus(args["status"])
+
         tasks = await self.db.list_tasks(**kwargs)
+
+        # Apply include_completed / completed_only filtering only when no
+        # explicit status filter was provided.
+        if not explicit_status:
+            include_completed: bool = args.get("include_completed", False)
+            completed_only: bool = args.get("completed_only", False)
+
+            if completed_only:
+                # Show only finished tasks.
+                tasks = [t for t in tasks if t.status in self._FINISHED_STATUSES]
+            elif not include_completed:
+                # Default: hide finished tasks so the list shows active work.
+                tasks = [t for t in tasks if t.status not in self._FINISHED_STATUSES]
+            # else: include_completed=True — return everything unfiltered.
+
         return {
             "tasks": [
                 {

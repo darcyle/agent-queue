@@ -208,7 +208,12 @@ TOOLS = [
     },
     {
         "name": "list_tasks",
-        "description": "List tasks, optionally filtered by project or status.",
+        "description": (
+            "List tasks, optionally filtered by project or status. "
+            "By default only active (non-completed/failed/blocked) tasks are "
+            "returned. Use include_completed or completed_only to change this. "
+            "An explicit status filter overrides these convenience flags."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -218,7 +223,25 @@ TOOLS = [
                 },
                 "status": {
                     "type": "string",
-                    "description": "Filter by status: DEFINED, READY, IN_PROGRESS, COMPLETED, etc.",
+                    "description": (
+                        "Filter by exact status: DEFINED, READY, IN_PROGRESS, "
+                        "COMPLETED, etc. When provided, include_completed and "
+                        "completed_only are ignored."
+                    ),
+                },
+                "include_completed": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, return all tasks including completed/failed/"
+                        "blocked. Default false (active tasks only)."
+                    ),
+                },
+                "completed_only": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, return only finished tasks (completed/failed/"
+                        "blocked). Default false."
+                    ),
                 },
             },
         },
