@@ -371,7 +371,7 @@ TOOLS = [
     },
     {
         "name": "create_agent",
-        "description": "Register a new agent that can work on tasks.",
+        "description": "Register a new agent. Agents start in STARTING state and won't receive tasks until activated. Pass project_id and workspace_path to set the workspace and activate in one step, or call set_agent_workspace or activate_agent separately.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -380,6 +380,14 @@ TOOLS = [
                     "type": "string",
                     "description": "Agent type (claude, codex, cursor, aider)",
                     "default": "claude",
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "Project to set workspace for (activates agent immediately)",
+                },
+                "workspace_path": {
+                    "type": "string",
+                    "description": "Absolute path to workspace directory for the project",
                 },
             },
             "required": ["name"],
@@ -403,6 +411,17 @@ TOOLS = [
                 },
             },
             "required": ["agent_id", "project_id", "workspace_path"],
+        },
+    },
+    {
+        "name": "activate_agent",
+        "description": "Activate an agent (transition from STARTING to IDLE) so it can receive tasks. Use this after creating an agent if you didn't provide workspace_path during creation.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID to activate"},
+            },
+            "required": ["agent_id"],
         },
     },
     {
@@ -1175,11 +1194,15 @@ the user says to "link", "connect", "use", or "point to" an existing directory/r
 - **init**: Create a new empty git repo. Use when starting from scratch.
 
 Agent workspaces — each agent has a per-project workspace directory:
-- Use `set_agent_workspace` to explicitly set where an agent works for a specific project.
+- **New agents start in STARTING state** and won't receive tasks until activated.
+- **Best practice:** Pass `project_id` and `workspace_path` when calling `create_agent` to \
+set the workspace and activate in one step.
+- Alternatively, call `set_agent_workspace` (which also activates the agent) or \
+`activate_agent` after creation.
 - When a task runs, the system checks agent_workspaces for the (agent, project) pair first.
 - If no workspace is set, the system auto-populates from the project's repo config.
 - For parallel work, set each agent to its own checkout directory for the same project.
-- Example: `set_agent_workspace agent-1 my-project /home/dev/project-checkout-1`
+- Example: `create_agent name="Agent-2" project_id="my-project" workspace_path="/dev/checkout-2"`
 - Workspaces are cached per (agent, project) pair and reused across tasks.
 
 Notes management — use notes to build up project knowledge:

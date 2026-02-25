@@ -2078,6 +2078,8 @@ def setup_commands(bot: commands.Bot) -> None:
         name="Agent display name",
         agent_type="Agent type (claude, codex, cursor, aider)",
         repo_id="Repository ID to assign as workspace (optional)",
+        project_id="Project to set workspace for (activates agent immediately)",
+        workspace_path="Workspace directory path (requires project_id)",
     )
     @app_commands.choices(agent_type=[
         app_commands.Choice(name="claude", value="claude"),
@@ -2090,12 +2092,18 @@ def setup_commands(bot: commands.Bot) -> None:
         name: str,
         agent_type: app_commands.Choice[str] | None = None,
         repo_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
     ):
         args: dict = {"name": name}
         if agent_type:
             args["agent_type"] = agent_type.value
         if repo_id:
             args["repo_id"] = repo_id
+        if project_id:
+            args["project_id"] = project_id
+        if workspace_path:
+            args["workspace_path"] = workspace_path
         result = await handler.execute("create_agent", args)
         if "error" in result:
             await _send_error(interaction, result['error'])
@@ -2104,10 +2112,32 @@ def setup_commands(bot: commands.Bot) -> None:
             ("Name", name, True),
             ("ID", f"`{result['created']}`", True),
             ("Type", args.get("agent_type", "claude"), True),
+            ("State", result.get("state", "STARTING"), True),
         ]
         if repo_id:
             agent_fields.append(("Repo", f"`{repo_id}`", True))
+        if result.get("workspace_path"):
+            agent_fields.append(("Workspace", f"`{result['workspace_path']}`", False))
         embed = success_embed("Agent Registered", fields=agent_fields)
+        await interaction.response.send_message(embed=embed)
+
+    @bot.tree.command(
+        name="activate-agent",
+        description="Activate a STARTING agent so it can receive tasks",
+    )
+    @app_commands.describe(agent_id="Agent ID to activate")
+    async def activate_agent_command(
+        interaction: discord.Interaction,
+        agent_id: str,
+    ):
+        result = await handler.execute("activate_agent", {"agent_id": agent_id})
+        if "error" in result:
+            await _send_error(interaction, result['error'])
+            return
+        embed = success_embed(
+            "Agent Activated",
+            description=f"Agent `{agent_id}` is now IDLE and ready to receive tasks.",
+        )
         await interaction.response.send_message(embed=embed)
 
     # ===================================================================

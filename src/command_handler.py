@@ -29,7 +29,7 @@ from src.config import AppConfig
 from src.discord.notifications import classify_error
 from src.git.manager import GitError
 from src.models import (
-    Agent, Hook, Project, ProjectStatus, RepoConfig, RepoSourceType,
+    Agent, AgentState, Hook, Project, ProjectStatus, RepoConfig, RepoSourceType,
     Task, TaskStatus,
 )
 from src.orchestrator import Orchestrator
@@ -987,16 +987,49 @@ class CommandHandler:
 
     async def _cmd_create_agent(self, args: dict) -> dict:
         agent_id = args["name"].lower().replace(" ", "-")
+        project_id = args.get("project_id")
+        workspace_path = args.get("workspace_path")
+
+        # Start in STARTING state to prevent the scheduler from assigning
+        # tasks before workspace configuration is complete.  The agent
+        # transitions to IDLE when set_agent_workspace or activate_agent
+        # is called — or immediately below when workspace_path is provided.
         agent = Agent(
             id=agent_id,
             name=args["name"],
             agent_type=args.get("agent_type", "claude"),
+            state=AgentState.STARTING,
         )
         await self.db.create_agent(agent)
-        return {"created": agent_id, "name": agent.name}
+
+        result = {"created": agent_id, "name": agent.name, "state": "STARTING"}
+
+        # If workspace provided, set it atomically and activate the agent
+        if project_id and workspace_path:
+            project = await self.db.get_project(project_id)
+            if not project:
+                return {"error": f"Project '{project_id}' not found"}
+            repo_id = args.get("repo_id")
+            if repo_id:
+                repo = await self.db.get_repo(repo_id)
+                if not repo:
+                    return {"error": f"Repo '{repo_id}' not found"}
+            await self.db.set_agent_workspace(
+                agent_id, project_id, workspace_path, repo_id=repo_id,
+            )
+            await self.db.update_agent(agent_id, state=AgentState.IDLE)
+            result["state"] = "IDLE"
+            result["workspace_path"] = workspace_path
+            result["project_id"] = project_id
+        return result
 
     async def _cmd_set_agent_workspace(self, args: dict) -> dict:
-        """Set the workspace path for an agent in a specific project."""
+        """Set the workspace path for an agent in a specific project.
+
+        Also activates the agent (STARTING → IDLE) so it can receive tasks.
+        This prevents the race condition where the scheduler assigns a task
+        before the workspace is configured.
+        """
         agent_id = args["agent_id"]
         project_id = args["project_id"]
         workspace_path = args["workspace_path"]
@@ -1016,14 +1049,32 @@ class CommandHandler:
         await self.db.set_agent_workspace(
             agent_id, project_id, workspace_path, repo_id=repo_id,
         )
+
+        # Activate agent if it was waiting for workspace configuration
+        if agent.state == AgentState.STARTING:
+            await self.db.update_agent(agent_id, state=AgentState.IDLE)
+
         result = {
             "agent_id": agent_id,
             "project_id": project_id,
             "workspace_path": workspace_path,
         }
+        if agent.state == AgentState.STARTING:
+            result["activated"] = True
         if repo_id:
             result["repo_id"] = repo_id
         return result
+
+    async def _cmd_activate_agent(self, args: dict) -> dict:
+        """Transition an agent from STARTING to IDLE so it can receive tasks."""
+        agent_id = args["agent_id"]
+        agent = await self.db.get_agent(agent_id)
+        if not agent:
+            return {"error": f"Agent '{agent_id}' not found"}
+        if agent.state != AgentState.STARTING:
+            return {"error": f"Agent '{agent_id}' is {agent.state.value}, not STARTING"}
+        await self.db.update_agent(agent_id, state=AgentState.IDLE)
+        return {"agent_id": agent_id, "state": "IDLE"}
 
     # -----------------------------------------------------------------------
     # Repo commands -- register repositories for projects.
