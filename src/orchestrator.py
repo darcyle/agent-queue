@@ -1438,11 +1438,39 @@ class Orchestrator:
                 "phases will produce low-quality task splits."
             )
 
+        # Inject results from direct upstream dependencies
+        dep_ids = await self.db.get_dependencies(task.id)
+        if dep_ids:
+            dep_sections = []
+            for dep_id in sorted(dep_ids):
+                dep_task = await self.db.get_task(dep_id)
+                dep_result = await self.db.get_task_result(dep_id)
+                if not dep_task or not dep_result:
+                    continue
+                title = dep_task.title or dep_id
+                summary = dep_result.get("summary") or "(no summary recorded)"
+                if len(summary) > 2000:
+                    summary = summary[:2000] + "... [truncated]"
+                files = dep_result.get("files_changed") or []
+                section = f"### {title}\n**Summary:** {summary}"
+                if files:
+                    file_list = "\n".join(f"  - `{f}`" for f in files)
+                    section += f"\n**Files changed:**\n{file_list}"
+                dep_sections.append(section)
+            if dep_sections:
+                context_lines.append(
+                    "\n## Completed Upstream Work\n"
+                    "The following tasks were direct dependencies of your task "
+                    "and have already been completed:\n\n"
+                    + "\n\n".join(dep_sections)
+                )
+
         context_lines.append(f"\n## Task\n{task.description}")
 
         full_description = "\n".join(context_lines)
 
         ctx = TaskContext(
+            task_id=task.id,
             description=full_description,
             checkout_path=workspace,
             branch_name=task.branch_name or "",
@@ -1547,7 +1575,7 @@ class Orchestrator:
         # channel message when no thread is available.
         async def _notify_brief(msg: str, *, embed: Any = None) -> None:
             if thread_main_notify:
-                await thread_main_notify(msg)
+                await thread_main_notify(msg, embed=embed)
             else:
                 await self._notify_channel(msg, project_id=action.project_id, embed=embed)
 
@@ -1632,7 +1660,12 @@ class Orchestrator:
                         embed=format_task_completed_embed(task, agent, output),
                     )
                 brief = f"✅ Task completed: {task.title} (`{task.id}`)"
-                await _notify_brief(brief)
+                from datetime import datetime, timezone as _tz
+                log_date = datetime.now(_tz.utc).strftime("%Y-%m-%d")
+                log_path = f"logs/llm/{log_date}/tasks/{task.id}.jsonl"
+                brief_embed = format_task_completed_embed(task, agent, output)
+                brief_embed.set_footer(text=f"Log: {log_path}")
+                await _notify_brief(brief, embed=brief_embed)
 
             # --- Auto-task generation from implementation plans ---
             # After any successful completion path, check for plan files

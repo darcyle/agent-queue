@@ -255,6 +255,7 @@ class TaskContext:
     """
 
     description: str
+    task_id: str = ""
     acceptance_criteria: list[str] = field(default_factory=list)
     test_commands: list[str] = field(default_factory=list)
     checkout_path: str = ""

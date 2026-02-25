@@ -358,13 +358,7 @@ class ClaudeAdapter(AgentAdapter):
         if not self._llm_logger:
             return
         duration_ms = int((time_mod.monotonic() - start) * 1000)
-        task_id = ""
-        if self._task and self._task.description:
-            # Extract task ID from the description context if available
-            import re
-            match = re.search(r"Task-Id:\s*(\S+)", self._task.description)
-            if match:
-                task_id = match.group(1)
+        task_id = self._task.task_id if self._task else ""
         self._llm_logger.log_agent_session(
             task_id=task_id,
             session_id=self._session_id,

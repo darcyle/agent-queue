@@ -130,6 +130,9 @@ class LLMLogger:
         }
 
         self._append("claude_agent.jsonl", entry)
+        # Also write to per-task log file if task_id is provided
+        if task_id:
+            self._append(f"tasks/{task_id}.jsonl", entry)
 
     def cleanup_old_logs(self) -> int:
         """Delete date directories older than retention_days.
@@ -161,9 +164,9 @@ class LLMLogger:
         """Append a single JSON line to a date-organized file."""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         dir_path = os.path.join(self._base_dir, today)
-        os.makedirs(dir_path, exist_ok=True)
 
         file_path = os.path.join(dir_path, filename)
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
         line = json.dumps(entry, default=str, ensure_ascii=False) + "\n"
 
         with open(file_path, "a", encoding="utf-8") as f:
