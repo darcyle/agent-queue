@@ -298,19 +298,13 @@ Works with whatever Claude backend you have:
 - A Discord bot token ([create one here](https://discord.com/developers/applications))
 - Claude Code installed and configured
 
-### Install
+### Install & Setup
+
+Clone the repo and run the setup wizard — it installs dependencies and walks you through Discord configuration, API keys, and getting your first agent running:
 
 ```bash
-git clone https://github.com/yourusername/agent-queue.git
+git clone https://github.com/ElectricJack/agent-queue.git
 cd agent-queue
-pip install -e ".[dev]"
-```
-
-### Setup Wizard
-
-Run the interactive setup wizard — it walks you through Discord configuration, API keys, and getting your first agent running:
-
-```bash
 python setup_wizard.py
 ```
 
@@ -348,9 +342,7 @@ export ANTHROPIC_API_KEY="your-api-key"
 ### Run
 
 ```bash
-agent-queue
-# or with a custom config path:
-agent-queue /path/to/config.yaml
+./run.sh start
 ```
 
 ### First Steps in Discord

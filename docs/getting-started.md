@@ -15,13 +15,7 @@ git clone https://github.com/ElectricJack/agent-queue.git
 cd agent-queue
 ```
 
-### 2. Install Dependencies
-
-```bash
-pip install -e ".[dev]"
-```
-
-### 3. Run the Setup Wizard
+### 2. Run the Setup Wizard
 
 The interactive setup wizard will walk you through configuration:
 
@@ -31,16 +25,19 @@ python setup_wizard.py
 
 This creates a configuration file at `~/.agent-queue/config.yaml` with your Discord bot token, guild ID, and project settings.
 
-### 4. Start the Daemon
+### 3. Start the Daemon
 
 ```bash
-agent-queue
+./run.sh start
 ```
 
-Or with a custom config path:
+Other useful commands:
 
 ```bash
-agent-queue /path/to/config.yaml
+./run.sh status   # check if the daemon is running
+./run.sh logs     # tail the daemon log
+./run.sh stop     # stop the daemon
+./run.sh restart  # restart the daemon
 ```
 
 ## Configuration
