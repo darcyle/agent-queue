@@ -127,6 +127,7 @@ class ChatProviderConfig:
     provider: str = "anthropic"  # "anthropic" or "ollama"
     model: str = ""              # Empty = provider default
     base_url: str = ""           # For Ollama
+    keep_alive: str = "1h"       # Ollama: how long to keep model loaded after last request
 
 
 @dataclass
@@ -294,6 +295,7 @@ def load_config(path: str) -> AppConfig:
             provider=cp.get("provider", "anthropic"),
             model=cp.get("model", ""),
             base_url=cp.get("base_url", ""),
+            keep_alive=cp.get("keep_alive", "1h"),
         )
 
     if "hook_engine" in raw:
