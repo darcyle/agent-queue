@@ -34,6 +34,7 @@ from src.discord.notifications import (
     format_task_completed_embed, format_task_failed_embed,
     format_task_blocked_embed, format_pr_created_embed,
     format_chain_stuck_embed, format_stuck_defined_task_embed,
+    TaskFailedView, TaskApprovalView, TaskBlockedView,
 )
 from src.event_bus import EventBus
 from src.git.manager import GitManager
@@ -135,6 +136,18 @@ class Orchestrator:
         # each task (keyed by task_id) to rate-limit alerts.
         self._stuck_notified_at: dict[str, float] = {}
         self.hooks: HookEngine | None = None
+        # Reference to the command handler, set by the bot after initialization.
+        # Used to pass handler references to interactive Discord views (e.g.
+        # Retry/Skip buttons on failed task notifications).
+        self._command_handler: Any = None
+
+    def set_command_handler(self, handler: Any) -> None:
+        """Store a reference to the command handler for interactive views."""
+        self._command_handler = handler
+
+    def _get_handler(self) -> Any:
+        """Return the command handler or None. Used by interactive views."""
+        return self._command_handler
 
     def pause(self) -> None:
         self._paused = True
@@ -254,6 +267,7 @@ class Orchestrator:
         project_id: str | None = None,
         *,
         embed: Any = None,
+        view: Any = None,
     ) -> None:
         """Send a notification if a callback is set.
 
@@ -263,13 +277,21 @@ class Orchestrator:
 
         When *embed* is provided the callback can use it for rich Discord
         rendering while still keeping *message* for logging/fallback.
+
+        When *view* is provided, interactive buttons are attached to the embed
+        message (e.g. Retry/Skip buttons on failed task notifications).
         """
         if self._notify:
             try:
-                # Only pass embed kwarg when set to maintain backward
-                # compatibility with callbacks that don't accept it.
+                # Only pass embed/view kwargs when set to maintain backward
+                # compatibility with callbacks that don't accept them.
+                kwargs: dict[str, Any] = {}
                 if embed is not None:
-                    await self._notify(message, project_id, embed=embed)
+                    kwargs["embed"] = embed
+                if view is not None:
+                    kwargs["view"] = view
+                if kwargs:
+                    await self._notify(message, project_id, **kwargs)
                 else:
                     await self._notify(message, project_id)
             except Exception as e:
@@ -1556,10 +1578,21 @@ class Orchestrator:
                                         task_id=action.task_id,
                                         agent_id=action.agent_id,
                                         payload=pr_url)
-                await _post(
-                    format_pr_created(task, pr_url),
-                    embed=format_pr_created_embed(task, pr_url),
+                # Attach approval buttons when not in a thread (thread_send
+                # doesn't support views/embeds; the main channel notification
+                # already includes the embed).
+                approval_view = TaskApprovalView(
+                    task.id, handler=self._get_handler()
                 )
+                if thread_send:
+                    await thread_send(format_pr_created(task, pr_url))
+                else:
+                    await self._notify_channel(
+                        format_pr_created(task, pr_url),
+                        project_id=action.project_id,
+                        embed=format_pr_created_embed(task, pr_url),
+                        view=approval_view,
+                    )
                 brief = f"🔍 PR created for review: {task.title} (`{task.id}`)\n{pr_url}"
                 await _notify_brief(brief)
             elif task.requires_approval and not pr_url:
@@ -1667,17 +1700,20 @@ class Orchestrator:
                     fail_lines.append(f"\n**Summary:**\n{output.summary}")
                 await thread_send("\n".join(fail_lines))
             else:
+                handler_ref = self._get_handler()
                 if new_retry >= task.max_retries:
                     await self._notify_channel(
                         format_task_blocked(task, last_error=output.error_message),
                         project_id=action.project_id,
                         embed=format_task_blocked_embed(task, last_error=output.error_message),
+                        view=TaskBlockedView(task.id, handler=handler_ref),
                     )
                 else:
                     await self._notify_channel(
                         format_task_failed(task, agent, output),
                         project_id=action.project_id,
                         embed=format_task_failed_embed(task, agent, output),
+                        view=TaskFailedView(task.id, handler=handler_ref),
                     )
             # Brief notification → main channel (reply to thread or standalone)
             await _notify_brief(brief)

@@ -112,6 +112,117 @@ _DEFAULT_FOOTER = "AgentQueue"
 _ELLIPSIS = "\u2026"
 
 # ---------------------------------------------------------------------------
+# Type tags for task display
+# ---------------------------------------------------------------------------
+
+# Maps task properties to display tags shown before task titles in list views.
+# These help users quickly identify what kind of work item they're looking at.
+TYPE_TAGS: dict[str, str] = {
+    "plan_subtask": "📋",     # Auto-generated from a plan
+    "has_subtasks": "📦",     # Parent task with children
+    "has_pr": "🔗",           # Has an associated pull request
+    "approval_required": "🔒",  # Requires human approval
+}
+
+
+# ---------------------------------------------------------------------------
+# Progress bar rendering
+# ---------------------------------------------------------------------------
+
+
+def progress_bar(
+    completed: int,
+    total: int,
+    *,
+    width: int = 10,
+    filled: str = "█",
+    empty: str = "░",
+) -> str:
+    """Render a text-based progress bar for Discord display.
+
+    Parameters
+    ----------
+    completed:
+        Number of completed items.
+    total:
+        Total number of items.  If zero, returns a bar showing 0%.
+    width:
+        Number of characters in the bar (default 10).
+    filled:
+        Character for completed portions (default ``█``).
+    empty:
+        Character for remaining portions (default ``░``).
+
+    Returns
+    -------
+    str
+        e.g. ``████░░░░░░ 40% (4/10)``
+
+    >>> progress_bar(4, 10)
+    '████░░░░░░ 40% (4/10)'
+    >>> progress_bar(0, 0)
+    '░░░░░░░░░░ 0% (0/0)'
+    """
+    if total <= 0:
+        pct = 0.0
+    else:
+        pct = completed / total * 100
+    fill_count = round(pct / 100 * width)
+    bar = filled * fill_count + empty * (width - fill_count)
+    return f"{bar} {pct:.0f}% ({completed}/{total})"
+
+
+# ---------------------------------------------------------------------------
+# Tree view helpers
+# ---------------------------------------------------------------------------
+
+# Unicode box-drawing characters for tree rendering
+TREE_BRANCH = "├── "   # Non-last child
+TREE_LAST   = "└── "   # Last child
+TREE_PIPE   = "│   "   # Continuation pipe
+TREE_SPACE  = "    "    # No continuation
+
+
+def format_tree_task(
+    title: str,
+    task_id: str,
+    *,
+    is_last: bool = True,
+    depth: int = 0,
+    prefix: str = "",
+    type_tag: str = "",
+) -> str:
+    """Format a single task line in tree-view style.
+
+    Parameters
+    ----------
+    title:
+        The task title.
+    task_id:
+        The task identifier to show inline.
+    is_last:
+        Whether this is the last sibling at this level.
+    depth:
+        Nesting depth (0 = root task).
+    prefix:
+        The continuation prefix built by the parent formatter.
+    type_tag:
+        Optional type emoji tag to prepend (e.g. ``"📋"``).
+
+    Returns
+    -------
+    str
+        A formatted line like ``├── 📋 **Task Title** `task-id```
+    """
+    if depth == 0:
+        tag = f"{type_tag} " if type_tag else ""
+        return f"{tag}**{title}** `{task_id}`"
+    connector = TREE_LAST if is_last else TREE_BRANCH
+    tag = f"{type_tag} " if type_tag else ""
+    return f"{prefix}{connector}{tag}**{title}** `{task_id}`"
+
+
+# ---------------------------------------------------------------------------
 # Text-safety utilities
 # ---------------------------------------------------------------------------
 

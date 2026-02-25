@@ -344,6 +344,9 @@ class AgentQueueBot(commands.Bot):
                 if self._channel or self._project_channels:
                     self.orchestrator.set_notify_callback(self._send_message)
                     self.orchestrator.set_create_thread_callback(self._create_task_thread)
+                    # Pass command handler ref so interactive views
+                    # (Retry/Skip/Approve buttons) can execute commands.
+                    self.orchestrator.set_command_handler(self.agent.handler)
 
         # Initialize LLM client via ChatAgent
         try:
@@ -481,11 +484,13 @@ class AgentQueueBot(commands.Bot):
         project_id: str | None = None,
         *,
         embed: discord.Embed | None = None,
+        view: discord.ui.View | None = None,
     ) -> None:
         """Send a message to the project's channel (or the global channel).
 
         When *embed* is provided the message is sent as a rich embed; the
         plain *text* is kept as a fallback (and remains useful for logging).
+        When *view* is provided, interactive buttons are attached to the embed.
         When the message is routed to the **global** channel (because the
         project has no dedicated channel), a ``[project-id]`` tag is prepended
         to the text version so users can tell which project it belongs to.
@@ -495,7 +500,10 @@ class AgentQueueBot(commands.Bot):
             if project_id and self._is_global_channel(channel, project_id):
                 text = self._prepend_project_tag(text, project_id)
             if embed is not None:
-                await channel.send(embed=embed)
+                kwargs = {"embed": embed}
+                if view is not None:
+                    kwargs["view"] = view
+                await channel.send(**kwargs)
             else:
                 await self._send_long_message(channel, text)
 
