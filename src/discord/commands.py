@@ -10,6 +10,7 @@ logic lives here -- see ``src/command_handler.py`` for that.
 from __future__ import annotations
 
 import io
+import re
 
 import discord
 from discord import app_commands
@@ -388,6 +389,59 @@ class NotesView(discord.ui.View):
         if self.total_pages > 1:
             lines.append(f"\n_Page {self.page + 1}/{self.total_pages}_")
         return "\n".join(lines)
+
+
+def _split_display_text(text: str, limit: int) -> list[str]:
+    """Split *text* into chunks of at most *limit* characters.
+
+    Splits on line boundaries so individual task lines are never broken
+    mid-line.  If the text starts or ends with a code-block fence (````` ```
+    `````) each chunk is wrapped in its own fence pair so Discord renders
+    them correctly.
+
+    Returns a list with at least one element.
+    """
+    is_code_block = text.lstrip().startswith("```")
+    # Determine the fence marker (e.g. "```\n" / "\n```")
+    fence_open = ""
+    fence_close = ""
+    inner = text
+    if is_code_block:
+        # Extract the opening fence (e.g. "```\n" or "```py\n")
+        first_nl = text.index("\n")
+        fence_open = text[: first_nl + 1]
+        # The closing fence is always "```" possibly preceded by a newline
+        fence_close = "\n```"
+        # Strip outer fences so we can split the inner content
+        inner = text[first_nl + 1 :]
+        if inner.rstrip().endswith("```"):
+            inner = inner.rstrip()[: -3].rstrip("\n")
+
+    # Budget per chunk: subtract fence overhead
+    overhead = len(fence_open) + len(fence_close)
+    chunk_limit = limit - overhead
+
+    lines = inner.split("\n")
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    for line in lines:
+        # +1 for the newline character
+        line_cost = len(line) + 1
+        if current and current_len + line_cost > chunk_limit:
+            body = "\n".join(current)
+            chunks.append(f"{fence_open}{body}{fence_close}" if is_code_block else body)
+            current = []
+            current_len = 0
+        current.append(line)
+        current_len += line_cost
+
+    if current:
+        body = "\n".join(current)
+        chunks.append(f"{fence_open}{body}{fence_close}" if is_code_block else body)
+
+    return chunks or [text]
 
 
 def setup_commands(bot: commands.Bot) -> None:
@@ -1609,23 +1663,37 @@ def setup_commands(bot: commands.Bot) -> None:
     @bot.tree.command(name="tasks", description="List tasks for a project")
     @app_commands.describe(
         show_completed="Include completed tasks (default: hide completed)",
+        view="Display format: list (default interactive), tree (hierarchy), compact (summary)",
     )
+    @app_commands.choices(view=[
+        app_commands.Choice(name="list",    value="list"),
+        app_commands.Choice(name="tree",    value="tree"),
+        app_commands.Choice(name="compact", value="compact"),
+    ])
     async def tasks_command(
         interaction: discord.Interaction,
         show_completed: bool = False,
+        view: app_commands.Choice[str] | None = None,
     ):
+        view_mode = view.value if view else "list"
         project_id = await _resolve_project_from_context(interaction, None)
-        args = {}
+        args: dict = {}
         if project_id:
             args["project_id"] = project_id
         # Delegate active/completed filtering to CommandHandler
         args["include_completed"] = show_completed
+        # Map the view choice to the command handler display_mode parameter.
+        # "list" uses "flat" (the default interactive grouped view handled here).
+        if view_mode in ("tree", "compact"):
+            args["display_mode"] = view_mode
         result = await handler.execute("list_tasks", args)
         tasks = result.get("tasks", [])
         if not tasks:
             if not show_completed:
                 # Check if there are completed/terminal tasks being hidden
                 check_args = {**args, "include_completed": True}
+                # Always use flat mode for the hidden-tasks check
+                check_args.pop("display_mode", None)
                 check_result = await handler.execute("list_tasks", check_args)
                 total_count = check_result.get("total", 0)
                 if total_count > 0:
@@ -1643,14 +1711,61 @@ def setup_commands(bot: commands.Bot) -> None:
                 embed=info_embed("No Tasks", description="No tasks found for this project."),
             )
             return
+
+        # ----- Tree / compact display modes --------------------------------
+        if view_mode in ("tree", "compact"):
+            display_text = result.get("display", "")
+            total = result.get("total", len(tasks))
+            title = "Task Tree" if view_mode == "tree" else "Tasks (Compact)"
+
+            # Tree mode uses a code block for monospace alignment;
+            # compact mode uses regular markdown.
+            if view_mode == "tree":
+                # Strip Discord markdown (bold **) for monospace code blocks
+                # since they don't render inside ```.
+                clean = re.sub(r"\*\*(.+?)\*\*", r"\1", display_text)
+                formatted = f"```\n{clean}\n```"
+            else:
+                formatted = display_text
+
+            # Paginate: if the output exceeds Discord's 4096-char embed
+            # description limit, split into multiple embeds.
+            _EMBED_DESC_LIMIT = 4000  # leave headroom below the 4096 hard cap
+
+            if len(formatted) <= _EMBED_DESC_LIMIT:
+                embed = info_embed(
+                    title,
+                    description=f"{formatted}\n\n**Total:** {total} task(s)",
+                )
+                await interaction.response.send_message(embed=embed)
+            else:
+                # Split the display text into chunks, respecting line
+                # boundaries so we don't break mid-task.
+                chunks = _split_display_text(formatted, _EMBED_DESC_LIMIT)
+                # First chunk goes as the initial response
+                first_embed = info_embed(
+                    title,
+                    description=chunks[0],
+                )
+                await interaction.response.send_message(embed=first_embed)
+                # Remaining chunks sent as followup messages
+                for i, chunk in enumerate(chunks[1:], start=2):
+                    followup_embed = info_embed(
+                        f"{title} (page {i}/{len(chunks)})",
+                        description=chunk,
+                    )
+                    await interaction.followup.send(embed=followup_embed)
+            return
+
+        # ----- Default list view (interactive grouped report) ---------------
         # Group tasks by status
         tasks_by_status: dict[str, list] = {}
         for t in tasks:
             tasks_by_status.setdefault(t["status"], []).append(t)
         total = result.get("total", len(tasks))
-        view = TaskReportView(tasks_by_status, total, all_tasks=tasks)
-        content = view.build_content()
-        await interaction.response.send_message(content, view=view)
+        view_widget = TaskReportView(tasks_by_status, total, all_tasks=tasks)
+        content = view_widget.build_content()
+        await interaction.response.send_message(content, view=view_widget)
 
     @bot.tree.command(
         name="active-tasks",
