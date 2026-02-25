@@ -23,9 +23,9 @@ import discord
 
 from src.discord.embeds import (
     success_embed, error_embed, warning_embed, info_embed, critical_embed,
-    truncate, LIMIT_FIELD_VALUE,
+    status_embed, truncate, LIMIT_FIELD_VALUE,
 )
-from src.models import Task, Agent, AgentOutput
+from src.models import Task, Agent, AgentOutput, TaskStatus
 
 # ---------------------------------------------------------------------------
 # Error classification helpers
@@ -115,6 +115,17 @@ def classify_error(error_message: str | None) -> tuple[str, str]:
         if keyword.lower() in lowered:
             return label, suggestion
     return "Unexpected error", "Check daemon logs (`~/.agent-queue/daemon.log`) for full details."
+
+
+def format_task_started(task: Task, agent: Agent) -> str:
+    lines = [
+        f"**Task Started:** `{task.id}` — {task.title}",
+        f"Project: `{task.project_id}` | Agent: {agent.name}",
+    ]
+    if task.branch_name:
+        lines.append(f"Branch: `{task.branch_name}`")
+    lines.append("Status: IN_PROGRESS")
+    return "\n".join(lines)
 
 
 def format_task_completed(task: Task, agent: Agent, output: AgentOutput) -> str:
@@ -230,6 +241,27 @@ def format_budget_warning(project_name: str, usage: int, limit: int) -> str:
 # Each function mirrors a string formatter above and returns a
 # ``discord.Embed`` for richer Discord presentation.  The string versions
 # are preserved for logging, testing, and fallback.
+
+
+def format_task_started_embed(task: Task, agent: Agent) -> discord.Embed:
+    """Rich embed version of :func:`format_task_started`.
+
+    Uses the IN_PROGRESS status color (amber) to visually indicate that
+    the task is now actively being worked on by an agent.
+    """
+    fields: list[tuple[str, str, bool]] = [
+        ("Task ID", f"`{task.id}`", True),
+        ("Project", f"`{task.project_id}`", True),
+        ("Agent", agent.name, True),
+        ("Status", "\U0001F7E1 IN_PROGRESS", True),
+    ]
+    if task.branch_name:
+        fields.append(("Branch", f"`{task.branch_name}`", True))
+    return status_embed(
+        TaskStatus.IN_PROGRESS.value,
+        f"Task Started — {task.title}",
+        fields=fields,
+    )
 
 
 def format_task_completed_embed(
