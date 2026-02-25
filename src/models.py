@@ -98,12 +98,15 @@ class AgentResult(Enum):
     straightforward; PAUSED_TOKENS and PAUSED_RATE_LIMIT cause the task to
     enter PAUSED with a resume_after timestamp, allowing the orchestrator to
     automatically retry once the rate limit window or token budget resets.
+    WAITING_INPUT indicates the agent is blocked on a human question —
+    the task transitions to WAITING_INPUT and a notification is sent.
     """
 
     COMPLETED = "completed"
     FAILED = "failed"
     PAUSED_TOKENS = "paused_tokens"
     PAUSED_RATE_LIMIT = "paused_rate_limit"
+    WAITING_INPUT = "waiting_input"
 
 
 class ProjectStatus(Enum):
@@ -272,7 +275,8 @@ class AgentOutput:
     The orchestrator uses result to determine the next state transition,
     summary for Discord notifications, files_changed for commit/PR decisions,
     and tokens_used for budget tracking. On failure, error_message provides
-    context for retry logic.
+    context for retry logic. When result is WAITING_INPUT, question contains
+    the agent's question for human review.
     """
 
     result: AgentResult
@@ -280,6 +284,7 @@ class AgentOutput:
     files_changed: list[str] = field(default_factory=list)
     tokens_used: int = 0
     error_message: str | None = None
+    question: str | None = None
 
 
 @dataclass

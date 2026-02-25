@@ -30,12 +30,14 @@ from src.llm_logger import LLMLogger
 from src.database import Database
 from src.discord.notifications import (
     format_task_started, format_task_completed, format_task_failed,
-    format_task_blocked, format_pr_created, format_chain_stuck,
-    format_stuck_defined_task,
+    format_task_blocked, format_pr_created, format_agent_question,
+    format_chain_stuck, format_stuck_defined_task,
+    format_budget_warning,
     format_task_started_embed, format_task_completed_embed,
     format_task_failed_embed, format_task_blocked_embed,
-    format_pr_created_embed, format_chain_stuck_embed,
-    format_stuck_defined_task_embed,
+    format_pr_created_embed, format_agent_question_embed,
+    format_chain_stuck_embed, format_stuck_defined_task_embed,
+    format_budget_warning_embed,
     TaskFailedView, TaskApprovalView, TaskBlockedView,
 )
 from src.event_bus import EventBus
@@ -142,6 +144,10 @@ class Orchestrator:
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).
         self._command_handler: Any = None
+        # Tracks per-project budget warning thresholds already sent so we
+        # don't spam the same warning.  Keyed by project_id, value is the
+        # highest threshold percentage (e.g. 80, 95) already notified.
+        self._budget_warned_at: dict[str, int] = {}
 
     def set_command_handler(self, handler: Any) -> None:
         """Store a reference to the command handler for interactive views."""
@@ -631,6 +637,47 @@ class Orchestrator:
             payload=f"stuck_count={len(stuck)}, "
                     f"stuck_ids={[t.id for t in stuck[:20]]}",
         )
+
+    # Budget warning thresholds — notify once per threshold crossing.
+    _BUDGET_THRESHOLDS: list[int] = [80, 95]
+
+    async def _check_budget_warning(
+        self, project_id: str, tokens_added: int,
+    ) -> None:
+        """Send a budget warning if a project crosses a spending threshold.
+
+        Called after recording token usage.  Each threshold (80%, 95%) fires
+        at most once per project; the ``_budget_warned_at`` dict tracks the
+        highest threshold already notified to avoid duplicate alerts.
+        """
+        project = await self.db.get_project(project_id)
+        if not project or project.budget_limit is None or project.budget_limit <= 0:
+            return
+
+        usage = await self.db.get_project_token_usage(project_id)
+        pct = usage / project.budget_limit * 100
+
+        prev_threshold = self._budget_warned_at.get(project_id, 0)
+
+        for threshold in self._BUDGET_THRESHOLDS:
+            if pct >= threshold > prev_threshold:
+                msg = format_budget_warning(
+                    project.name, usage, project.budget_limit,
+                )
+                embed = format_budget_warning_embed(
+                    project.name, usage, project.budget_limit,
+                )
+                await self._notify_channel(
+                    msg,
+                    project_id=project_id,
+                    embed=embed,
+                )
+                await self.db.log_event(
+                    "budget_warning",
+                    project_id=project_id,
+                    payload=f"threshold={threshold}%, usage={usage:,}/{project.budget_limit:,}",
+                )
+                self._budget_warned_at[project_id] = threshold
 
     async def _schedule(self) -> list[AssignAction]:
         projects = await self.db.list_projects()
@@ -1545,12 +1592,13 @@ class Orchestrator:
             # Re-initialise the adapter so the next call starts a fresh query.
             await adapter.start(ctx)
 
-        # Record tokens
+        # Record tokens and check budget warnings
         if output.tokens_used > 0:
             await self.db.record_token_usage(
                 action.project_id, action.agent_id,
                 action.task_id, output.tokens_used,
             )
+            await self._check_budget_warning(action.project_id, output.tokens_used)
 
         # Persist task result
         try:
@@ -1775,6 +1823,34 @@ class Orchestrator:
                 f"**Task Paused:** `{task.id}` — {task.title}\n"
                 f"Reason: {reason}. Will retry in {retry_secs}s."
             )
+
+        elif output.result == AgentResult.WAITING_INPUT:
+            # Agent is blocked on a question — transition to WAITING_INPUT
+            # and notify so a human can respond.
+            question_text = output.question or output.summary or "(no question text)"
+            await self.db.transition_task(
+                action.task_id, TaskStatus.WAITING_INPUT,
+                context="agent_question",
+            )
+            await self.db.log_event(
+                "agent_question",
+                project_id=action.project_id,
+                task_id=action.task_id,
+                agent_id=action.agent_id,
+                payload=question_text[:500],
+            )
+            msg = format_agent_question(task, agent, question_text)
+            embed = format_agent_question_embed(task, agent, question_text)
+            if thread_send:
+                await thread_send(msg)
+            else:
+                await self._notify_channel(
+                    msg,
+                    project_id=action.project_id,
+                    embed=embed,
+                )
+            brief = f"❓ Agent question on: {task.title} (`{task.id}`)"
+            await _notify_brief(brief, embed=embed)
 
         # Free agent
         await self.db.update_agent(action.agent_id,
