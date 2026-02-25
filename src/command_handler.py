@@ -482,13 +482,30 @@ class CommandHandler:
     # diagnostics for dependency graphs.
     # -----------------------------------------------------------------------
 
+    # Terminal statuses hidden by default when include_completed is False.
+    _TERMINAL_STATUSES = {TaskStatus.COMPLETED, TaskStatus.FAILED}
+
     async def _cmd_list_tasks(self, args: dict) -> dict:
         kwargs = {}
         if "project_id" in args:
             kwargs["project_id"] = args["project_id"]
         if "status" in args:
             kwargs["status"] = TaskStatus(args["status"])
-        tasks = await self.db.list_tasks(**kwargs)
+        all_tasks = await self.db.list_tasks(**kwargs)
+
+        # Filtering: by default, hide completed/failed (terminal) tasks.
+        # - include_completed=True  → show everything (no filtering)
+        # - include_completed=False → hide COMPLETED and FAILED (default)
+        # When an explicit "status" filter is provided, skip filtering so
+        # the caller gets exactly what they asked for.
+        include_completed = args.get("include_completed", False)
+        if not include_completed and "status" not in args:
+            tasks = [t for t in all_tasks if t.status not in self._TERMINAL_STATUSES]
+            hidden_count = len(all_tasks) - len(tasks)
+        else:
+            tasks = all_tasks
+            hidden_count = 0
+
         return {
             "tasks": [
                 {
@@ -502,6 +519,8 @@ class CommandHandler:
                 for t in tasks[:200]
             ],
             "total": len(tasks),
+            "hidden_completed": hidden_count,
+            "filtered": not include_completed and "status" not in args,
         }
 
     async def _cmd_create_task(self, args: dict) -> dict:

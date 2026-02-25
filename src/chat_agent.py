@@ -208,7 +208,15 @@ TOOLS = [
     },
     {
         "name": "list_tasks",
-        "description": "List tasks, optionally filtered by project or status.",
+        "description": (
+            "List tasks, optionally filtered by project or status. "
+            "By default, completed and failed tasks are hidden — only active "
+            "tasks are returned. Set include_completed to true to see all tasks "
+            "including terminal ones. When reporting results with the default "
+            "filter, say 'N active tasks' (not just 'N tasks'). The response "
+            "includes hidden_completed (count of hidden terminal tasks) so you "
+            "can mention them if relevant, e.g. 'plus N completed'."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -218,7 +226,20 @@ TOOLS = [
                 },
                 "status": {
                     "type": "string",
-                    "description": "Filter by status: DEFINED, READY, IN_PROGRESS, COMPLETED, etc.",
+                    "description": (
+                        "Filter by a specific status: DEFINED, READY, IN_PROGRESS, "
+                        "COMPLETED, FAILED, BLOCKED, etc. When set, the "
+                        "include_completed flag is ignored — you get exactly the "
+                        "status you asked for."
+                    ),
+                },
+                "include_completed": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, include completed and failed tasks in the "
+                        "results. Defaults to false (only active tasks)."
+                    ),
+                    "default": False,
                 },
             },
         },
@@ -1185,6 +1206,11 @@ with NO plan mode — it cannot plan and wait for approval. The task description
 plan. Include specific file paths, code changes, new files to create, and step-by-step \
 implementation instructions. The more detailed the description, the better the agent \
 will execute. Never create a task with just a summary — include the complete plan.
+
+Task listing — `list_tasks` hides completed/failed tasks by default. When \
+reporting results with the default filter, say "N active tasks" (not "N tasks"). \
+If hidden_completed > 0, you may mention it, e.g. "3 active tasks (plus 5 completed)". \
+Use include_completed=true only when the user explicitly asks to see finished tasks.
 
 Be concise in Discord messages. Use markdown formatting. When a user asks you to \
 do something, use the available tools to do it — don't just tell them to use slash commands.
