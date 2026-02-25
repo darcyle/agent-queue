@@ -12,8 +12,7 @@ class PerProjectChannelsConfig:
     """Configuration for automatic per-project Discord channel management."""
 
     auto_create: bool = False
-    naming_convention: str = "{project_id}-notifications"
-    control_naming_convention: str = "{project_id}-control"
+    naming_convention: str = "{project_id}"
     category_name: str = ""  # Discord category to group project channels (optional)
 
 
@@ -22,8 +21,7 @@ class DiscordConfig:
     bot_token: str = ""
     guild_id: str = ""
     channels: dict[str, str] = field(default_factory=lambda: {
-        "control": "control",
-        "notifications": "notifications",
+        "channel": "agent-queue",
         "agent_questions": "agent-questions",
     })
     authorized_users: list[str] = field(default_factory=list)
@@ -181,17 +179,24 @@ def load_config(path: str) -> AppConfig:
             ppc = PerProjectChannelsConfig(
                 auto_create=pp.get("auto_create", False),
                 naming_convention=pp.get(
-                    "naming_convention", "{project_id}-notifications"
-                ),
-                control_naming_convention=pp.get(
-                    "control_naming_convention", "{project_id}-control"
+                    "naming_convention", "{project_id}"
                 ),
                 category_name=pp.get("category_name", ""),
             )
+        # Backward compat: if old config has separate control/notifications,
+        # merge into single "channel" entry (prefer control since that's where
+        # the bot listens for chat).
+        raw_channels = d.get("channels", config.discord.channels)
+        if "channel" not in raw_channels and ("control" in raw_channels or "notifications" in raw_channels):
+            merged_name = raw_channels.get("control") or raw_channels.get("notifications", "agent-queue")
+            raw_channels = {
+                "channel": merged_name,
+                "agent_questions": raw_channels.get("agent_questions", "agent-questions"),
+            }
         config.discord = DiscordConfig(
             bot_token=d.get("bot_token", ""),
             guild_id=d.get("guild_id", ""),
-            channels=d.get("channels", config.discord.channels),
+            channels=raw_channels,
             authorized_users=d.get("authorized_users", []),
             per_project_channels=ppc,
         )

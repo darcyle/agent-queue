@@ -5,7 +5,6 @@ Covers:
 - New channel creation: _created_channel_id path
 - Missing project -> error
 - Missing project_id -> error
-- Invalid channel_type -> error
 - No guild context -> error
 - Channel name defaults to project ID
 - Channel name normalisation (leading '#' stripped)
@@ -69,29 +68,12 @@ class TestIdempotentExistingChannel:
         assert result["action"] == "linked_existing"
         assert result["project_id"] == "my-project"
         assert result["channel_id"] == "222222222222222222"
-        assert result["channel_type"] == "notifications"
         assert result["channel_name"] == "my-project"
         assert result["status"] == "linked"
 
         # Verify the DB was updated.
         project = await db.get_project("my-project")
         assert project.discord_channel_id == "222222222222222222"
-
-    async def test_links_existing_channel_as_control(self, handler, db):
-        await db.create_project(Project(id="my-project", name="My Project"))
-
-        result = await handler.execute("create_channel_for_project", {
-            "project_id": "my-project",
-            "channel_type": "control",
-            "guild_channels": GUILD_CHANNELS,
-        })
-
-        assert "error" not in result
-        assert result["action"] == "linked_existing"
-        assert result["channel_type"] == "control"
-
-        project = await db.get_project("my-project")
-        assert project.discord_control_channel_id == "222222222222222222"
 
     async def test_existing_channel_with_custom_name(self, handler, db):
         await db.create_project(Project(id="p-1", name="Alpha"))
@@ -149,23 +131,6 @@ class TestNewChannelCreation:
         project = await db.get_project("new-project")
         assert project.discord_channel_id == "444444444444444444"
 
-    async def test_created_control_channel(self, handler, db):
-        await db.create_project(Project(id="new-project", name="New Project"))
-
-        result = await handler.execute("create_channel_for_project", {
-            "project_id": "new-project",
-            "channel_type": "control",
-            "guild_channels": GUILD_CHANNELS,
-            "_created_channel_id": "555555555555555555",
-        })
-
-        assert "error" not in result
-        assert result["action"] == "created"
-        assert result["channel_type"] == "control"
-
-        project = await db.get_project("new-project")
-        assert project.discord_control_channel_id == "555555555555555555"
-
 
 class TestErrorCases:
     """Test various error conditions."""
@@ -186,18 +151,6 @@ class TestErrorCases:
 
         assert "error" in result
         assert "project_id" in result["error"].lower()
-
-    async def test_invalid_channel_type(self, handler, db):
-        await db.create_project(Project(id="p-1", name="Alpha"))
-
-        result = await handler.execute("create_channel_for_project", {
-            "project_id": "p-1",
-            "channel_type": "invalid",
-            "guild_channels": GUILD_CHANNELS,
-        })
-
-        assert "error" in result
-        assert "channel_type" in result["error"].lower()
 
     async def test_no_guild_context(self, handler, db):
         """Without guild_channels or _created_channel_id, returns an error."""
@@ -270,7 +223,7 @@ class TestToolDefinition:
         assert schema["type"] == "object"
         assert "project_id" in schema["properties"]
         assert "channel_name" in schema["properties"]
-        assert "channel_type" in schema["properties"]
+        assert "channel_type" not in schema["properties"]
         assert "project_id" in schema["required"]
         # channel_name is optional (defaults to project_id)
         assert "channel_name" not in schema["required"]

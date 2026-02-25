@@ -363,13 +363,8 @@ def setup_commands(bot: commands.Bot) -> None:
         lines = []
         for p in projects:
             line = f"• **{p['name']}** (`{p['id']}`) — {p['status']}, weight={p['credit_weight']}"
-            channel_parts = []
             if p.get("discord_channel_id"):
-                channel_parts.append(f"<#{p['discord_channel_id']}>")
-            if p.get("discord_control_channel_id"):
-                channel_parts.append(f"ctrl: <#{p['discord_control_channel_id']}>")
-            if channel_parts:
-                line += f" | {', '.join(channel_parts)}"
+                line += f" | <#{p['discord_channel_id']}>"
             lines.append(line)
         await interaction.response.send_message("\n".join(lines))
 
@@ -437,14 +432,14 @@ def setup_commands(bot: commands.Bot) -> None:
         project_id: str,
         ppc,
     ) -> list[dict]:
-        """Auto-create per-project Discord channels based on config.
+        """Auto-create a per-project Discord channel based on config.
 
         Uses the ``create_channel_for_project`` command handler for the actual
         creation, which is idempotent (reuses existing channels with matching
         names).
 
         Returns a list of result dicts with keys:
-            channel_type, channel_name, display (for embed formatting).
+            channel_name, display (for embed formatting).
         """
         results: list[dict] = []
         guild_channels = [{"id": ch.id, "name": ch.name} for ch in guild.text_channels]
@@ -465,65 +460,57 @@ def setup_commands(bot: commands.Bot) -> None:
                 except (discord.Forbidden, discord.HTTPException):
                     pass  # Fall through — channels will be created without a category
 
-        for ch_type, convention in [
-            ("notifications", ppc.naming_convention),
-            ("control", ppc.control_naming_convention),
-        ]:
-            channel_name = convention.format(project_id=project_id)
+        channel_name = ppc.naming_convention.format(project_id=project_id)
 
-            # Check if channel already exists
-            existing_id = None
-            for ch in guild_channels:
-                if ch["name"] == channel_name:
-                    existing_id = str(ch["id"])
-                    break
+        # Check if channel already exists
+        existing_id = None
+        for ch in guild_channels:
+            if ch["name"] == channel_name:
+                existing_id = str(ch["id"])
+                break
 
-            created_channel_id = None
-            if not existing_id:
-                # Create the channel in Discord
-                try:
-                    topic = f"AgentQueue {ch_type} for project: {project_id}"
-                    new_ch = await guild.create_text_channel(
-                        name=channel_name,
-                        category=category,
-                        topic=topic,
-                        reason=f"AgentQueue: auto-created {ch_type} channel for {project_id}",
-                    )
-                    created_channel_id = str(new_ch.id)
-                    guild_channels.append({"id": new_ch.id, "name": new_ch.name})
-                except (discord.Forbidden, discord.HTTPException):
-                    results.append({
-                        "channel_type": ch_type,
-                        "channel_name": channel_name,
-                        "display": f"⚠️ Failed to create #{channel_name}",
-                    })
-                    continue
+        created_channel_id = None
+        if not existing_id:
+            # Create the channel in Discord
+            try:
+                topic = f"AgentQueue channel for project: {project_id}"
+                new_ch = await guild.create_text_channel(
+                    name=channel_name,
+                    category=category,
+                    topic=topic,
+                    reason=f"AgentQueue: auto-created channel for {project_id}",
+                )
+                created_channel_id = str(new_ch.id)
+                guild_channels.append({"id": new_ch.id, "name": new_ch.name})
+            except (discord.Forbidden, discord.HTTPException):
+                results.append({
+                    "channel_name": channel_name,
+                    "display": f"⚠️ Failed to create #{channel_name}",
+                })
+                return results
 
-            # Delegate to command handler for project linking (idempotent)
-            link_result = await cmd_handler.execute("create_channel_for_project", {
-                "project_id": project_id,
+        # Delegate to command handler for project linking (idempotent)
+        link_result = await cmd_handler.execute("create_channel_for_project", {
+            "project_id": project_id,
+            "channel_name": channel_name,
+            "guild_channels": guild_channels,
+            "_created_channel_id": created_channel_id,
+        })
+
+        if "error" in link_result:
+            results.append({
                 "channel_name": channel_name,
-                "channel_type": ch_type,
-                "guild_channels": guild_channels,
-                "_created_channel_id": created_channel_id,
+                "display": f"⚠️ #{channel_name} ({link_result['error']})",
             })
-
-            if "error" in link_result:
-                results.append({
-                    "channel_type": ch_type,
-                    "channel_name": channel_name,
-                    "display": f"⚠️ #{channel_name} ({link_result['error']})",
-                })
-            else:
-                action = link_result.get("action", "linked")
-                ch_id = link_result.get("channel_id", "")
-                mention = f"<#{ch_id}>" if ch_id else f"#{channel_name}"
-                label = "linked" if action == "linked_existing" else "created"
-                results.append({
-                    "channel_type": ch_type,
-                    "channel_name": channel_name,
-                    "display": f"{mention} ({label})",
-                })
+        else:
+            action = link_result.get("action", "linked")
+            ch_id = link_result.get("channel_id", "")
+            mention = f"<#{ch_id}>" if ch_id else f"#{channel_name}"
+            label = "linked" if action == "linked_existing" else "created"
+            results.append({
+                "channel_name": channel_name,
+                "display": f"{mention} ({label})",
+            })
 
         # Refresh the bot's channel cache after creating new channels
         if hasattr(bot, '_resolve_project_channels'):
@@ -595,7 +582,7 @@ def setup_commands(bot: commands.Bot) -> None:
             )
             for cr in channel_results:
                 embed.add_field(
-                    name=f"📢 {cr['channel_type'].title()} Channel",
+                    name="📢 Channel",
                     value=cr["display"],
                     inline=True,
                 )
@@ -697,28 +684,20 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(
         name="set-channel",
-        description="Link a Discord channel to a project for notifications or control",
+        description="Link a Discord channel to a project",
     )
     @app_commands.describe(
         project_id="Project ID",
         channel="The Discord channel to link",
-        channel_type="Channel purpose: notifications (default) or control",
     )
-    @app_commands.choices(channel_type=[
-        app_commands.Choice(name="notifications", value="notifications"),
-        app_commands.Choice(name="control", value="control"),
-    ])
     async def set_channel_command(
         interaction: discord.Interaction,
         project_id: str,
         channel: discord.TextChannel,
-        channel_type: app_commands.Choice[str] | None = None,
     ):
-        ch_type = channel_type.value if channel_type else "notifications"
         result = await handler.execute("set_project_channel", {
             "project_id": project_id,
             "channel_id": str(channel.id),
-            "channel_type": ch_type,
         })
         if "error" in result:
             await interaction.response.send_message(
@@ -726,18 +705,18 @@ def setup_commands(bot: commands.Bot) -> None:
             )
             return
         # Update the bot's channel cache immediately
-        bot.update_project_channel(project_id, channel, ch_type)
+        bot.update_project_channel(project_id, channel)
         await interaction.response.send_message(
-            f"✅ Project `{project_id}` {ch_type} channel set to {channel.mention}"
+            f"✅ Project `{project_id}` channel set to {channel.mention}"
         )
 
     @bot.tree.command(
         name="set-control-interface",
-        description="Set a project's control channel by name",
+        description="Set a project's channel by name (alias for /set-channel)",
     )
     @app_commands.describe(
         project_id="Project ID",
-        channel_name="Name of the Discord channel to use as the control interface",
+        channel_name="Name of the Discord channel to link",
     )
     async def set_control_interface_command(
         interaction: discord.Interaction,
@@ -779,9 +758,9 @@ def setup_commands(bot: commands.Bot) -> None:
             )
             return
         # Update the bot's channel cache immediately
-        bot.update_project_channel(project_id, matched_channel, "control")
+        bot.update_project_channel(project_id, matched_channel)
         await interaction.response.send_message(
-            f"✅ Project `{project_id}` control channel set to {matched_channel.mention}"
+            f"✅ Project `{project_id}` channel set to {matched_channel.mention}"
         )
 
     @bot.tree.command(
@@ -791,22 +770,15 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         project_id="Project ID",
         channel_name="Name for the new channel (defaults to project ID)",
-        channel_type="Channel purpose: notifications (default) or control",
         category="Category to create the channel in (optional)",
     )
-    @app_commands.choices(channel_type=[
-        app_commands.Choice(name="notifications", value="notifications"),
-        app_commands.Choice(name="control", value="control"),
-    ])
     async def create_channel_command(
         interaction: discord.Interaction,
         project_id: str,
         channel_name: str | None = None,
-        channel_type: app_commands.Choice[str] | None = None,
         category: discord.CategoryChannel | None = None,
     ):
         await interaction.response.defer()
-        ch_type = channel_type.value if channel_type else "notifications"
 
         # Validate project exists (direct lookup)
         project_check = await handler.execute("get_project_channels", {"project_id": project_id})
@@ -823,17 +795,14 @@ def setup_commands(bot: commands.Bot) -> None:
             await interaction.followup.send("Error: Not in a guild.", ephemeral=True)
             return
 
-        if ch_type == "notifications":
-            topic = f"Agent Queue notifications for project: {project_id}"
-        else:
-            topic = f"Agent Queue control channel for project: {project_id}"
+        topic = f"Agent Queue channel for project: {project_id}"
 
         try:
             new_channel = await guild.create_text_channel(
                 name=name,
                 category=category,
                 topic=topic,
-                reason=f"AgentQueue: {ch_type} channel for project {project_id}",
+                reason=f"AgentQueue: channel for project {project_id}",
             )
         except discord.Forbidden:
             await interaction.followup.send(
@@ -850,7 +819,6 @@ def setup_commands(bot: commands.Bot) -> None:
         result = await handler.execute("set_project_channel", {
             "project_id": project_id,
             "channel_id": str(new_channel.id),
-            "channel_type": ch_type,
         })
         if "error" in result:
             await interaction.followup.send(
@@ -859,9 +827,9 @@ def setup_commands(bot: commands.Bot) -> None:
             return
 
         # Update the bot's channel cache immediately
-        bot.update_project_channel(project_id, new_channel, ch_type)
+        bot.update_project_channel(project_id, new_channel)
         await interaction.followup.send(
-            f"✅ Created {new_channel.mention} as {ch_type} channel for project `{project_id}`"
+            f"✅ Created {new_channel.mention} as channel for project `{project_id}`"
         )
 
     @bot.tree.command(
@@ -871,22 +839,15 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         project_id="Project ID",
         channel_name="Name for the channel (defaults to project ID)",
-        channel_type="Channel purpose: notifications (default) or control",
         category="Category to create the channel in (optional)",
     )
-    @app_commands.choices(channel_type=[
-        app_commands.Choice(name="notifications", value="notifications"),
-        app_commands.Choice(name="control", value="control"),
-    ])
     async def create_channel_for_project_command(
         interaction: discord.Interaction,
         project_id: str,
         channel_name: str | None = None,
-        channel_type: app_commands.Choice[str] | None = None,
         category: discord.CategoryChannel | None = None,
     ):
         await interaction.response.defer()
-        ch_type = channel_type.value if channel_type else "notifications"
         name = channel_name or project_id
 
         guild = interaction.guild
@@ -910,16 +871,13 @@ def setup_commands(bot: commands.Bot) -> None:
         created_channel_id: str | None = None
         if not existing_channel:
             # No matching channel — create one
-            if ch_type == "notifications":
-                topic = f"Agent Queue notifications for project: {project_id}"
-            else:
-                topic = f"Agent Queue control channel for project: {project_id}"
+            topic = f"Agent Queue channel for project: {project_id}"
             try:
                 existing_channel = await guild.create_text_channel(
                     name=name,
                     category=category,
                     topic=topic,
-                    reason=f"AgentQueue: {ch_type} channel for project {project_id}",
+                    reason=f"AgentQueue: channel for project {project_id}",
                 )
                 created_channel_id = str(existing_channel.id)
             except discord.Forbidden:
@@ -937,7 +895,6 @@ def setup_commands(bot: commands.Bot) -> None:
         result = await handler.execute("create_channel_for_project", {
             "project_id": project_id,
             "channel_name": name,
-            "channel_type": ch_type,
             "guild_channels": guild_channels,
             "_created_channel_id": created_channel_id,
         })
@@ -949,17 +906,17 @@ def setup_commands(bot: commands.Bot) -> None:
             return
 
         # Update the bot's channel cache immediately
-        bot.update_project_channel(project_id, existing_channel, ch_type)
+        bot.update_project_channel(project_id, existing_channel)
 
         action = result.get("action", "linked")
         if action == "linked_existing":
             await interaction.followup.send(
                 f"✅ Channel {existing_channel.mention} already exists — "
-                f"linked as {ch_type} channel for project `{project_id}`"
+                f"linked to project `{project_id}`"
             )
         else:
             await interaction.followup.send(
-                f"✅ Created {existing_channel.mention} as {ch_type} channel "
+                f"✅ Created {existing_channel.mention} as channel "
                 f"for project `{project_id}`"
             )
 
@@ -980,15 +937,11 @@ def setup_commands(bot: commands.Bot) -> None:
         unassigned = []
 
         for p in projects:
-            notif_id = p.get("discord_channel_id")
-            ctrl_id = p.get("discord_control_channel_id")
-            if notif_id or ctrl_id:
-                parts = [f"**{p['name']}** (`{p['id']}`)"]
-                if notif_id:
-                    parts.append(f"  notifications: <#{notif_id}>")
-                if ctrl_id:
-                    parts.append(f"  control: <#{ctrl_id}>")
-                assigned.append("\n".join(parts))
+            channel_id = p.get("discord_channel_id")
+            if channel_id:
+                assigned.append(
+                    f"**{p['name']}** (`{p['id']}`) → <#{channel_id}>"
+                )
             else:
                 unassigned.append(f"`{p['id']}`")
 

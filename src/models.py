@@ -99,8 +99,7 @@ class Project:
     total_tokens_used: int = 0
     budget_limit: int | None = None
     workspace_path: str | None = None
-    discord_channel_id: str | None = None          # Per-project notifications channel
-    discord_control_channel_id: str | None = None   # Per-project control channel (optional)
+    discord_channel_id: str | None = None          # Per-project Discord channel
 
 
 @dataclass

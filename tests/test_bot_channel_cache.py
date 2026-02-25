@@ -4,13 +4,12 @@ Tests the in-memory channel caching layer independently of Discord API calls.
 Uses lightweight mock objects for discord.TextChannel since we only need id and name.
 
 Covers:
-- update_project_channel() for notifications and control
+- update_project_channel() — single channel per project
 - get_project_for_channel() reverse lookup (O(1))
 - clear_project_channels() cleanup
 - Stale entry removal on update
-- _get_notification_channel() with project-specific and global fallback
-- _get_control_channel() with project-specific and global fallback
-- _is_global_notification_channel() and _is_global_control_channel()
+- _get_channel() with project-specific and global fallback
+- _is_global_channel()
 - _prepend_project_tag() static helper
 """
 
@@ -33,75 +32,45 @@ class TestUpdateProjectChannel:
         class BotCaches:
             def __init__(self):
                 self._project_channels = {}
-                self._project_control_channels = {}
                 self._channel_to_project = {}
 
         return BotCaches()
 
-    def test_update_notification_channel(self):
+    def test_update_channel(self):
         from src.discord.bot import AgentQueueBot
 
-        # We test the method logic directly using a patched instance.
-        # Create a lightweight object with the needed attributes.
         caches = self._make_bot_caches()
-        ch = FakeChannel(id=100, name="proj-notifications")
+        ch = FakeChannel(id=100, name="proj-channel")
 
-        # Call the method as if it were on the bot.
-        AgentQueueBot.update_project_channel(caches, "proj-1", ch, "notifications")
+        AgentQueueBot.update_project_channel(caches, "proj-1", ch)
 
         assert caches._project_channels["proj-1"] is ch
         assert caches._channel_to_project[100] == "proj-1"
 
-    def test_update_control_channel(self):
+    def test_stale_entry_removed(self):
+        """Replacing a channel clears the old reverse mapping."""
         from src.discord.bot import AgentQueueBot
 
         caches = self._make_bot_caches()
-        ch = FakeChannel(id=200, name="proj-control")
+        old_ch = FakeChannel(id=100, name="old-channel")
+        new_ch = FakeChannel(id=101, name="new-channel")
 
-        AgentQueueBot.update_project_channel(caches, "proj-1", ch, "control")
-
-        assert caches._project_control_channels["proj-1"] is ch
-        assert caches._channel_to_project[200] == "proj-1"
-
-    def test_stale_notification_entry_removed(self):
-        """Replacing a notification channel clears the old reverse mapping."""
-        from src.discord.bot import AgentQueueBot
-
-        caches = self._make_bot_caches()
-        old_ch = FakeChannel(id=100, name="old-notifications")
-        new_ch = FakeChannel(id=101, name="new-notifications")
-
-        AgentQueueBot.update_project_channel(caches, "proj-1", old_ch, "notifications")
+        AgentQueueBot.update_project_channel(caches, "proj-1", old_ch)
         assert caches._channel_to_project[100] == "proj-1"
 
-        AgentQueueBot.update_project_channel(caches, "proj-1", new_ch, "notifications")
+        AgentQueueBot.update_project_channel(caches, "proj-1", new_ch)
         assert 100 not in caches._channel_to_project
         assert caches._channel_to_project[101] == "proj-1"
-
-    def test_stale_control_entry_removed(self):
-        """Replacing a control channel clears the old reverse mapping."""
-        from src.discord.bot import AgentQueueBot
-
-        caches = self._make_bot_caches()
-        old_ch = FakeChannel(id=200, name="old-control")
-        new_ch = FakeChannel(id=201, name="new-control")
-
-        AgentQueueBot.update_project_channel(caches, "proj-1", old_ch, "control")
-        assert caches._channel_to_project[200] == "proj-1"
-
-        AgentQueueBot.update_project_channel(caches, "proj-1", new_ch, "control")
-        assert 200 not in caches._channel_to_project
-        assert caches._channel_to_project[201] == "proj-1"
 
     def test_same_channel_no_stale_removal(self):
         """Re-setting the same channel doesn't remove the mapping."""
         from src.discord.bot import AgentQueueBot
 
         caches = self._make_bot_caches()
-        ch = FakeChannel(id=100, name="notifications")
+        ch = FakeChannel(id=100, name="channel")
 
-        AgentQueueBot.update_project_channel(caches, "proj-1", ch, "notifications")
-        AgentQueueBot.update_project_channel(caches, "proj-1", ch, "notifications")
+        AgentQueueBot.update_project_channel(caches, "proj-1", ch)
+        AgentQueueBot.update_project_channel(caches, "proj-1", ch)
 
         assert caches._channel_to_project[100] == "proj-1"
 
@@ -109,7 +78,7 @@ class TestUpdateProjectChannel:
 class TestGetProjectForChannel:
     """Tests for get_project_for_channel() — O(1) reverse lookup."""
 
-    def test_finds_project_by_notification_channel(self):
+    def test_finds_project_by_channel(self):
         from src.discord.bot import AgentQueueBot
 
         caches = type("C", (), {
@@ -136,7 +105,6 @@ class TestClearProjectChannels:
         class BotCaches:
             def __init__(self):
                 self._project_channels = {}
-                self._project_control_channels = {}
                 self._channel_to_project = {}
                 self._notes_threads = {}
                 self._channel_summaries = {}
@@ -148,7 +116,7 @@ class TestClearProjectChannels:
 
         return BotCaches()
 
-    def test_clears_notification_channel(self):
+    def test_clears_channel(self):
         from src.discord.bot import AgentQueueBot
 
         caches = self._make_bot_caches()
@@ -160,37 +128,6 @@ class TestClearProjectChannels:
 
         assert "proj-1" not in caches._project_channels
         assert 100 not in caches._channel_to_project
-
-    def test_clears_control_channel(self):
-        from src.discord.bot import AgentQueueBot
-
-        caches = self._make_bot_caches()
-        ch = FakeChannel(id=200)
-        caches._project_control_channels["proj-1"] = ch
-        caches._channel_to_project[200] = "proj-1"
-
-        AgentQueueBot.clear_project_channels(caches, "proj-1")
-
-        assert "proj-1" not in caches._project_control_channels
-        assert 200 not in caches._channel_to_project
-
-    def test_clears_both_channels(self):
-        from src.discord.bot import AgentQueueBot
-
-        caches = self._make_bot_caches()
-        notify_ch = FakeChannel(id=100)
-        control_ch = FakeChannel(id=200)
-        caches._project_channels["proj-1"] = notify_ch
-        caches._project_control_channels["proj-1"] = control_ch
-        caches._channel_to_project[100] = "proj-1"
-        caches._channel_to_project[200] = "proj-1"
-
-        AgentQueueBot.clear_project_channels(caches, "proj-1")
-
-        assert "proj-1" not in caches._project_channels
-        assert "proj-1" not in caches._project_control_channels
-        assert 100 not in caches._channel_to_project
-        assert 200 not in caches._channel_to_project
 
     def test_clears_notes_threads(self):
         from src.discord.bot import AgentQueueBot
@@ -249,108 +186,77 @@ class TestClearProjectChannels:
         assert caches._channel_to_project[200] == "proj-2"
 
 
-class TestGetNotificationChannel:
-    """Tests for _get_notification_channel() fallback logic."""
+class TestGetChannel:
+    """Tests for _get_channel() fallback logic."""
 
     def test_returns_project_specific_channel(self):
         from src.discord.bot import AgentQueueBot
 
-        global_ch = FakeChannel(id=1, name="global-notifications")
-        proj_ch = FakeChannel(id=100, name="proj-notifications")
+        global_ch = FakeChannel(id=1, name="global")
+        proj_ch = FakeChannel(id=100, name="proj-channel")
 
         caches = type("C", (), {
             "_project_channels": {"proj-1": proj_ch},
-            "_notifications_channel": global_ch,
+            "_channel": global_ch,
         })()
 
-        result = AgentQueueBot._get_notification_channel(caches, "proj-1")
+        result = AgentQueueBot._get_channel(caches, "proj-1")
         assert result is proj_ch
 
     def test_falls_back_to_global(self):
         from src.discord.bot import AgentQueueBot
 
-        global_ch = FakeChannel(id=1, name="global-notifications")
+        global_ch = FakeChannel(id=1, name="global")
 
         caches = type("C", (), {
             "_project_channels": {},
-            "_notifications_channel": global_ch,
+            "_channel": global_ch,
         })()
 
-        result = AgentQueueBot._get_notification_channel(caches, "proj-1")
+        result = AgentQueueBot._get_channel(caches, "proj-1")
         assert result is global_ch
 
     def test_no_project_returns_global(self):
         from src.discord.bot import AgentQueueBot
 
-        global_ch = FakeChannel(id=1, name="global-notifications")
+        global_ch = FakeChannel(id=1, name="global")
 
         caches = type("C", (), {
             "_project_channels": {},
-            "_notifications_channel": global_ch,
+            "_channel": global_ch,
         })()
 
-        result = AgentQueueBot._get_notification_channel(caches, None)
-        assert result is global_ch
-
-
-class TestGetControlChannel:
-    """Tests for _get_control_channel() fallback logic."""
-
-    def test_returns_project_specific_control(self):
-        from src.discord.bot import AgentQueueBot
-
-        global_ch = FakeChannel(id=2, name="global-control")
-        proj_ch = FakeChannel(id=200, name="proj-control")
-
-        caches = type("C", (), {
-            "_project_control_channels": {"proj-1": proj_ch},
-            "_control_channel": global_ch,
-        })()
-
-        result = AgentQueueBot._get_control_channel(caches, "proj-1")
-        assert result is proj_ch
-
-    def test_falls_back_to_global(self):
-        from src.discord.bot import AgentQueueBot
-
-        global_ch = FakeChannel(id=2, name="global-control")
-
-        caches = type("C", (), {
-            "_project_control_channels": {},
-            "_control_channel": global_ch,
-        })()
-
-        result = AgentQueueBot._get_control_channel(caches, "proj-1")
+        result = AgentQueueBot._get_channel(caches, None)
         assert result is global_ch
 
 
 class TestIsGlobalChannel:
-    """Tests for _is_global_notification_channel and _is_global_control_channel."""
+    """Tests for _is_global_channel."""
 
-    def test_is_global_notification_when_no_project_channel(self):
+    def test_is_global_when_no_project_channel(self):
         from src.discord.bot import AgentQueueBot
 
         global_ch = FakeChannel(id=1, name="global")
 
         caches = type("C", (), {
-            "_notifications_channel": global_ch,
+            "_channel": global_ch,
             "_project_channels": {},
         })()
 
-        assert AgentQueueBot._is_global_notification_channel(caches, global_ch, "proj-1") is True
+        assert AgentQueueBot._is_global_channel(caches, global_ch, "proj-1") is True
 
     def test_not_global_when_project_has_channel(self):
         from src.discord.bot import AgentQueueBot
 
         global_ch = FakeChannel(id=1, name="global")
-        proj_ch = FakeChannel(id=100, name="proj-notifications")
+        proj_ch = FakeChannel(id=100, name="proj-channel")
 
         caches = type("C", (), {
-            "_notifications_channel": global_ch,
+            "_channel": global_ch,
             "_project_channels": {"proj-1": proj_ch},
         })()
 
-        assert AgentQueueBot._is_global_notification_channel(caches, global_ch, "proj-1") is False
+        assert AgentQueueBot._is_global_channel(caches, global_ch, "proj-1") is False
 
     def test_not_global_when_project_id_is_none(self):
         from src.discord.bot import AgentQueueBot
@@ -358,36 +264,11 @@ class TestIsGlobalChannel:
         global_ch = FakeChannel(id=1, name="global")
 
         caches = type("C", (), {
-            "_notifications_channel": global_ch,
+            "_channel": global_ch,
             "_project_channels": {},
         })()
 
-        assert AgentQueueBot._is_global_notification_channel(caches, global_ch, None) is False
-
-    def test_is_global_control_when_no_project_channel(self):
-        from src.discord.bot import AgentQueueBot
-
-        global_ch = FakeChannel(id=2, name="global-control")
-
-        caches = type("C", (), {
-            "_control_channel": global_ch,
-            "_project_control_channels": {},
-        })()
-
-        assert AgentQueueBot._is_global_control_channel(caches, global_ch, "proj-1") is True
-
-    def test_not_global_control_when_project_has_channel(self):
-        from src.discord.bot import AgentQueueBot
-
-        global_ch = FakeChannel(id=2, name="global-control")
-        proj_ch = FakeChannel(id=200, name="proj-control")
-
-        caches = type("C", (), {
-            "_control_channel": global_ch,
-            "_project_control_channels": {"proj-1": proj_ch},
-        })()
-
-        assert AgentQueueBot._is_global_control_channel(caches, global_ch, "proj-1") is False
+        assert AgentQueueBot._is_global_channel(caches, global_ch, None) is False
 
 
 class TestPrependProjectTag:

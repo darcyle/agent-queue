@@ -1,8 +1,7 @@
 """Tests for the get_project_for_channel command (reverse lookup).
 
 Covers:
-- Finds project via notifications channel
-- Finds project via control channel
+- Finds project via its channel
 - Returns nulls when no project matches
 - Missing channel_id -> error
 - Channel ID is normalised to string
@@ -41,10 +40,10 @@ async def handler(db, config):
     return CommandHandler(orchestrator, config)
 
 
-class TestReverseLookupNotifications:
-    """Find a project by its notifications channel."""
+class TestReverseLookup:
+    """Find a project by its channel."""
 
-    async def test_finds_project_by_notification_channel(self, handler, db):
+    async def test_finds_project_by_channel(self, handler, db):
         await db.create_project(Project(id="p-1", name="Alpha"))
         await db.update_project("p-1", discord_channel_id="111111111111111111")
 
@@ -55,39 +54,7 @@ class TestReverseLookupNotifications:
         assert "error" not in result
         assert result["project_id"] == "p-1"
         assert result["project_name"] == "Alpha"
-        assert result["channel_type"] == "notifications"
         assert result["channel_id"] == "111111111111111111"
-
-
-class TestReverseLookupControl:
-    """Find a project by its control channel."""
-
-    async def test_finds_project_by_control_channel(self, handler, db):
-        await db.create_project(Project(id="p-1", name="Alpha"))
-        await db.update_project("p-1", discord_control_channel_id="222222222222222222")
-
-        result = await handler.execute("get_project_for_channel", {
-            "channel_id": "222222222222222222",
-        })
-
-        assert "error" not in result
-        assert result["project_id"] == "p-1"
-        assert result["project_name"] == "Alpha"
-        assert result["channel_type"] == "control"
-
-    async def test_notifications_takes_precedence_over_control(self, handler, db):
-        """If a project has the same channel for both types, notifications wins."""
-        await db.create_project(Project(id="p-1", name="Alpha"))
-        await db.update_project("p-1", discord_channel_id="111111111111111111")
-        await db.update_project("p-1", discord_control_channel_id="111111111111111111")
-
-        result = await handler.execute("get_project_for_channel", {
-            "channel_id": "111111111111111111",
-        })
-
-        assert "error" not in result
-        assert result["project_id"] == "p-1"
-        assert result["channel_type"] == "notifications"
 
 
 class TestReverseLookupNoMatch:
@@ -104,7 +71,6 @@ class TestReverseLookupNoMatch:
         assert "error" not in result
         assert result["project_id"] is None
         assert result["project_name"] is None
-        assert result["channel_type"] is None
         assert result["channel_id"] == "999999999999999999"
 
     async def test_returns_nulls_when_no_projects_exist(self, handler):
@@ -125,21 +91,19 @@ class TestReverseLookupMultipleProjects:
         await db.create_project(Project(id="p-3", name="Gamma"))
         await db.update_project("p-1", discord_channel_id="111111111111111111")
         await db.update_project("p-2", discord_channel_id="222222222222222222")
-        await db.update_project("p-3", discord_control_channel_id="333333333333333333")
+        await db.update_project("p-3", discord_channel_id="333333333333333333")
 
-        # Find p-2 by notifications channel
+        # Find p-2 by its channel
         result = await handler.execute("get_project_for_channel", {
             "channel_id": "222222222222222222",
         })
         assert result["project_id"] == "p-2"
-        assert result["channel_type"] == "notifications"
 
-        # Find p-3 by control channel
+        # Find p-3 by its channel
         result = await handler.execute("get_project_for_channel", {
             "channel_id": "333333333333333333",
         })
         assert result["project_id"] == "p-3"
-        assert result["channel_type"] == "control"
 
 
 class TestReverseLookupErrors:

@@ -148,8 +148,6 @@ class CommandHandler:
             }
             if p.discord_channel_id:
                 info["discord_channel_id"] = p.discord_channel_id
-            if p.discord_control_channel_id:
-                info["discord_control_channel_id"] = p.discord_control_channel_id
             result.append(info)
         return {"projects": result}
 
@@ -217,34 +215,26 @@ class CommandHandler:
         return {"updated": pid, "fields": list(updates.keys())}
 
     async def _cmd_set_project_channel(self, args: dict) -> dict:
-        """Link an existing Discord channel to a project for notifications or control."""
+        """Link an existing Discord channel to a project."""
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
             return {"error": f"Project '{pid}' not found"}
 
         channel_id = args["channel_id"]
-        channel_type = args.get("channel_type", "notifications")
-        if channel_type not in ("notifications", "control"):
-            return {"error": "channel_type must be 'notifications' or 'control'"}
-
-        if channel_type == "control":
-            await self.db.update_project(pid, discord_control_channel_id=channel_id)
-        else:
-            await self.db.update_project(pid, discord_channel_id=channel_id)
+        await self.db.update_project(pid, discord_channel_id=channel_id)
 
         return {
             "project_id": pid,
             "channel_id": channel_id,
-            "channel_type": channel_type,
             "status": "linked",
         }
 
     async def _cmd_set_control_interface(self, args: dict) -> dict:
-        """Set a project's control channel by channel *name* (string lookup).
+        """Set a project's channel by channel *name* (string lookup).
 
         Resolves the channel name within the guild, then delegates to
-        ``_cmd_set_project_channel`` with ``channel_type='control'``.
+        ``_cmd_set_project_channel``.
         Requires ``guild_channels`` to be supplied by the caller (the Discord
         command layer passes the guild's text channels so this layer stays
         Discord-import-free).
@@ -288,28 +278,25 @@ class CommandHandler:
         return await self._cmd_set_project_channel({
             "project_id": pid,
             "channel_id": channel_id,
-            "channel_type": "control",
         })
 
     async def _cmd_get_project_channels(self, args: dict) -> dict:
-        """Return the Discord channel IDs configured for a project."""
+        """Return the Discord channel ID configured for a project."""
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
             return {"error": f"Project '{pid}' not found"}
         return {
             "project_id": pid,
-            "notifications_channel_id": project.discord_channel_id,
-            "control_channel_id": project.discord_control_channel_id,
+            "channel_id": project.discord_channel_id,
         }
 
     async def _cmd_get_project_for_channel(self, args: dict) -> dict:
         """Reverse lookup: find which project a Discord channel belongs to.
 
-        Scans all projects and checks both ``discord_channel_id``
-        (notifications) and ``discord_control_channel_id`` (control)
-        fields.  Returns the first match with the channel type, or
-        ``project_id: null`` if no project is linked to the channel.
+        Scans all projects and checks ``discord_channel_id``.
+        Returns the first match, or ``project_id: null`` if no project
+        is linked to the channel.
         """
         channel_id = args.get("channel_id")
         if not channel_id:
@@ -323,21 +310,12 @@ class CommandHandler:
                     "channel_id": channel_id,
                     "project_id": project.id,
                     "project_name": project.name,
-                    "channel_type": "notifications",
-                }
-            if project.discord_control_channel_id == channel_id:
-                return {
-                    "channel_id": channel_id,
-                    "project_id": project.id,
-                    "project_name": project.name,
-                    "channel_type": "control",
                 }
 
         return {
             "channel_id": channel_id,
             "project_id": None,
             "project_name": None,
-            "channel_type": None,
         }
 
     async def _cmd_create_channel_for_project(self, args: dict) -> dict:
@@ -350,7 +328,6 @@ class CommandHandler:
             project_id:   Project ID (or name) to link the channel to.
         Optional args:
             channel_name: Desired channel name (defaults to project ID).
-            channel_type: ``"notifications"`` (default) or ``"control"``.
             category_id:  Discord category ID to place the channel in.
             guild_channels: List of ``{id, name}`` dicts for idempotency
                             lookup (injected by the Discord command layer).
@@ -368,10 +345,6 @@ class CommandHandler:
         project = await self.db.get_project(pid)
         if not project:
             return {"error": f"Project '{pid}' not found"}
-
-        channel_type = args.get("channel_type", "notifications")
-        if channel_type not in ("notifications", "control"):
-            return {"error": "channel_type must be 'notifications' or 'control'"}
 
         channel_name = args.get("channel_name") or pid
         # Normalise: strip leading '#' if the user included one.
@@ -391,7 +364,6 @@ class CommandHandler:
             link_result = await self._cmd_set_project_channel({
                 "project_id": pid,
                 "channel_id": existing_channel_id,
-                "channel_type": channel_type,
             })
             if "error" in link_result:
                 return link_result
@@ -408,7 +380,6 @@ class CommandHandler:
             link_result = await self._cmd_set_project_channel({
                 "project_id": pid,
                 "channel_id": created_channel_id,
-                "channel_type": channel_type,
             })
             if "error" in link_result:
                 return link_result
@@ -441,12 +412,10 @@ class CommandHandler:
                          "Stop them first."
             }
 
-        # Capture channel IDs before the DB cascade removes them.
+        # Capture channel ID before the DB cascade removes it.
         channel_ids: dict[str, str] = {}
         if project.discord_channel_id:
-            channel_ids["notifications"] = project.discord_channel_id
-        if project.discord_control_channel_id:
-            channel_ids["control"] = project.discord_control_channel_id
+            channel_ids["channel"] = project.discord_channel_id
 
         await self.db.delete_project(pid)
 

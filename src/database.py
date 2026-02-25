@@ -224,13 +224,13 @@ class Database:
         await self._db.execute(
             "INSERT INTO projects (id, name, credit_weight, max_concurrent_agents, "
             "status, total_tokens_used, budget_limit, workspace_path, "
-            "discord_channel_id, discord_control_channel_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "discord_channel_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (project.id, project.name, project.credit_weight,
              project.max_concurrent_agents, project.status.value,
              project.total_tokens_used, project.budget_limit,
              project.workspace_path, project.discord_channel_id,
-             project.discord_control_channel_id, time.time()),
+             time.time()),
         )
         await self._db.commit()
 
@@ -271,6 +271,11 @@ class Database:
 
     def _row_to_project(self, row) -> Project:
         keys = row.keys()
+        # Backward compat: if discord_channel_id is NULL but discord_control_channel_id
+        # has a value, use that as the single channel.
+        channel_id = row["discord_channel_id"] if "discord_channel_id" in keys else None
+        if not channel_id and "discord_control_channel_id" in keys:
+            channel_id = row["discord_control_channel_id"]
         return Project(
             id=row["id"],
             name=row["name"],
@@ -280,8 +285,7 @@ class Database:
             total_tokens_used=row["total_tokens_used"],
             budget_limit=row["budget_limit"],
             workspace_path=row["workspace_path"] if "workspace_path" in keys else None,
-            discord_channel_id=row["discord_channel_id"] if "discord_channel_id" in keys else None,
-            discord_control_channel_id=row["discord_control_channel_id"] if "discord_control_channel_id" in keys else None,
+            discord_channel_id=channel_id,
         )
 
     # --- Repos ---

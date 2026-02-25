@@ -25,8 +25,7 @@ class TestStepPerProjectChannelsDecline:
             result = _step_per_project_channels({}, discord_ok=False)
 
         assert result["auto_create"] is False
-        assert result["naming_convention"] == "{project_id}-notifications"
-        assert result["control_naming_convention"] == "{project_id}-control"
+        assert result["naming_convention"] == "{project_id}"
         assert result["category_name"] == ""
 
     def test_decline_preserves_existing_naming(self):
@@ -37,7 +36,6 @@ class TestStepPerProjectChannelsDecline:
                     "per_project_channels": {
                         "auto_create": True,  # Was previously enabled
                         "naming_convention": "aq-{project_id}",
-                        "control_naming_convention": "aq-{project_id}-ctrl",
                         "category_name": "My Category",
                     }
                 }
@@ -49,7 +47,6 @@ class TestStepPerProjectChannelsDecline:
         assert result["auto_create"] is False
         # Preserves existing conventions even when declining
         assert result["naming_convention"] == "aq-{project_id}"
-        assert result["control_naming_convention"] == "aq-{project_id}-ctrl"
         assert result["category_name"] == "My Category"
 
 
@@ -58,22 +55,20 @@ class TestStepPerProjectChannelsAccept:
 
     def test_accept_with_all_defaults(self):
         """User accepts and takes all defaults."""
-        # Inputs: yes to enable, enter for notify convention, enter for ctrl, enter for category
-        inputs = iter(["y", "", "", ""])
+        # Inputs: yes to enable, enter for convention, enter for category
+        inputs = iter(["y", "", ""])
         with patch("builtins.input", lambda _: next(inputs)):
             result = _step_per_project_channels({}, discord_ok=False)
 
         assert result["auto_create"] is True
-        assert result["naming_convention"] == "{project_id}-notifications"
-        assert result["control_naming_convention"] == "{project_id}-control"
+        assert result["naming_convention"] == "{project_id}"
         assert result["category_name"] == ""
 
     def test_accept_with_custom_naming(self):
-        """User provides custom naming conventions."""
+        """User provides custom naming convention."""
         inputs = iter([
             "y",                      # Enable auto-create
-            "aq-{project_id}",        # Custom notifications convention
-            "aq-{project_id}-ctrl",   # Custom control convention
+            "aq-{project_id}",        # Custom convention
             "Bot Channels",           # Category name
         ])
         with patch("builtins.input", lambda _: next(inputs)):
@@ -81,12 +76,11 @@ class TestStepPerProjectChannelsAccept:
 
         assert result["auto_create"] is True
         assert result["naming_convention"] == "aq-{project_id}"
-        assert result["control_naming_convention"] == "aq-{project_id}-ctrl"
         assert result["category_name"] == "Bot Channels"
 
     def test_accept_no_category(self):
         """User accepts but leaves category blank."""
-        inputs = iter(["y", "", "", ""])
+        inputs = iter(["y", "", ""])
         with patch("builtins.input", lambda _: next(inputs)):
             result = _step_per_project_channels({}, discord_ok=True)
 
@@ -97,31 +91,17 @@ class TestStepPerProjectChannelsAccept:
 class TestStepPerProjectChannelsValidation:
     """Invalid input handling."""
 
-    def test_missing_project_id_in_notify_resets(self):
+    def test_missing_project_id_in_convention_resets(self):
         """If naming convention lacks {project_id}, it resets to default."""
         inputs = iter([
             "y",
             "invalid-pattern",          # Missing {project_id}
-            "{project_id}-control",     # Valid
             "",                         # No category
         ])
         with patch("builtins.input", lambda _: next(inputs)):
             result = _step_per_project_channels({}, discord_ok=False)
 
-        assert result["naming_convention"] == "{project_id}-notifications"
-
-    def test_missing_project_id_in_control_resets(self):
-        """If control naming convention lacks {project_id}, it resets to default."""
-        inputs = iter([
-            "y",
-            "{project_id}-notifications",  # Valid
-            "invalid-ctrl",                # Missing {project_id}
-            "",                            # No category
-        ])
-        with patch("builtins.input", lambda _: next(inputs)):
-            result = _step_per_project_channels({}, discord_ok=False)
-
-        assert result["control_naming_convention"] == "{project_id}-control"
+        assert result["naming_convention"] == "{project_id}"
 
 
 class TestStepPerProjectChannelsExistingConfig:
@@ -135,27 +115,25 @@ class TestStepPerProjectChannelsExistingConfig:
                     "per_project_channels": {
                         "auto_create": True,
                         "naming_convention": "custom-{project_id}",
-                        "control_naming_convention": "custom-{project_id}-ctrl",
                         "category_name": "Projects",
                     }
                 }
             }
         }
         # User accepts everything with defaults (empty inputs)
-        inputs = iter(["", "", "", ""])
+        inputs = iter(["", "", ""])
         with patch("builtins.input", lambda _: next(inputs)):
             result = _step_per_project_channels(existing, discord_ok=False)
 
         assert result["auto_create"] is True
         assert result["naming_convention"] == "custom-{project_id}"
-        assert result["control_naming_convention"] == "custom-{project_id}-ctrl"
         assert result["category_name"] == "Projects"
 
     def test_empty_existing_config(self):
         """Empty existing config uses standard defaults."""
-        inputs = iter(["y", "", "", ""])
+        inputs = iter(["y", "", ""])
         with patch("builtins.input", lambda _: next(inputs)):
             result = _step_per_project_channels({"_yaml": {}}, discord_ok=False)
 
         assert result["auto_create"] is True
-        assert result["naming_convention"] == "{project_id}-notifications"
+        assert result["naming_convention"] == "{project_id}"

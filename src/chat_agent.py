@@ -19,8 +19,8 @@ TOOLS = [
     {
         "name": "create_project",
         "description": (
-            "Create a new project.  Optionally auto-create dedicated Discord "
-            "channels (notifications + control) for the project.  When "
+            "Create a new project.  Optionally auto-create a dedicated Discord "
+            "channel for the project.  When "
             "auto_create_channels is omitted the behaviour is determined by "
             "the per_project_channels.auto_create config flag."
         ),
@@ -90,9 +90,9 @@ TOOLS = [
     {
         "name": "set_project_channel",
         "description": (
-            "Link a Discord channel to a project for per-project notifications or control. "
-            "When set, task updates and threads for this project will be routed to its "
-            "dedicated channel instead of the global notifications channel."
+            "Link a Discord channel to a project. "
+            "When set, task updates, threads, and chat for this project will be routed to its "
+            "dedicated channel instead of the global channel."
         ),
         "input_schema": {
             "type": "object",
@@ -102,12 +102,6 @@ TOOLS = [
                     "type": "string",
                     "description": "Discord channel ID to link",
                 },
-                "channel_type": {
-                    "type": "string",
-                    "enum": ["notifications", "control"],
-                    "description": "Channel purpose: 'notifications' (task updates, threads) or 'control' (commands, chat)",
-                    "default": "notifications",
-                },
             },
             "required": ["project_id", "channel_id"],
         },
@@ -115,10 +109,10 @@ TOOLS = [
     {
         "name": "set_control_interface",
         "description": (
-            "Set a project's control channel by channel name (string). "
+            "Set a project's channel by channel name (string). "
             "Looks up the Discord channel by name in the current server and "
-            "links it as the project's control channel. "
-            "This is a convenience wrapper around set_project_channel with channel_type='control'."
+            "links it to the project. "
+            "This is a convenience wrapper around set_project_channel."
         ),
         "input_schema": {
             "type": "object",
@@ -126,7 +120,7 @@ TOOLS = [
                 "project_id": {"type": "string", "description": "Project ID (or project name)"},
                 "channel_name": {
                     "type": "string",
-                    "description": "Discord channel name to set as the control interface (e.g. 'my-project-control')",
+                    "description": "Discord channel name to link (e.g. 'my-project')",
                 },
             },
             "required": ["project_id", "channel_name"],
@@ -134,7 +128,7 @@ TOOLS = [
     },
     {
         "name": "get_project_channels",
-        "description": "Get the Discord channel IDs configured for a project (notifications and control).",
+        "description": "Get the Discord channel ID configured for a project.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -147,8 +141,7 @@ TOOLS = [
         "name": "get_project_for_channel",
         "description": (
             "Reverse lookup: given a Discord channel ID, find which project it belongs to. "
-            "Checks both notifications and control channel mappings across all projects. "
-            "Returns the project ID and channel type, or null if no project is linked."
+            "Returns the project ID, or null if no project is linked."
         ),
         "input_schema": {
             "type": "object",
@@ -176,12 +169,6 @@ TOOLS = [
                 "channel_name": {
                     "type": "string",
                     "description": "Desired channel name (defaults to project ID if omitted)",
-                },
-                "channel_type": {
-                    "type": "string",
-                    "enum": ["notifications", "control"],
-                    "description": "Channel purpose: 'notifications' (default) or 'control'",
-                    "default": "notifications",
                 },
             },
             "required": ["project_id"],
@@ -1001,20 +988,18 @@ and `{{event}}`, `{{event.task_id}}` for event data.
 - Example: A test-watcher hook runs `pytest`, skips LLM if tests pass, otherwise asks LLM to create \
 tasks for failures.
 
-Per-project Discord channels — route notifications to dedicated channels:
-- By default, all projects share the global #notifications and #control channels.
-- Use `set_project_channel` to link a Discord channel to a project for notifications or control.
-- Use `set_control_interface` to set a project's control channel by name (string lookup).
+Per-project Discord channels — route notifications and chat to dedicated channels:
+- By default, all projects share the global channel.
+- Use `set_project_channel` to link a Discord channel to a project.
+- Use `set_control_interface` to set a project's channel by name (string lookup).
 - Use `create_channel_for_project` to create (or reuse) a dedicated Discord channel for a \
 project — idempotent, so calling it twice with the same name links the existing channel.
-- When a project has a dedicated notifications channel, task threads, status updates, and \
-completion notices for that project are routed there automatically.
-- When a project has a dedicated control channel, the bot responds to messages in that \
-channel with project context, similar to the global control channel.
+- When a project has a dedicated channel, task threads, status updates, completion notices, \
+and chat for that project are all routed there automatically.
 - Use the `/set-channel` or `/create-channel` Discord commands to manage channels interactively.
-- Use `get_project_channels` to see which channels are configured for a project.
+- Use `get_project_channels` to see which channel is configured for a project.
 - Use `get_project_for_channel` for reverse lookup — given a channel ID, find which project \
-it belongs to and whether it is a notifications or control channel.
+it belongs to.
 
 IMPORTANT — You are a dispatcher, not a worker. You CANNOT write code, edit files, \
 run commands, or do technical work yourself. When a user asks you to DO something \

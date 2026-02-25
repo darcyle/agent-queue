@@ -26,8 +26,7 @@ class TestPerProjectChannelsDefaults:
         ppc = PerProjectChannelsConfig()
 
         assert ppc.auto_create is False
-        assert ppc.naming_convention == "{project_id}-notifications"
-        assert ppc.control_naming_convention == "{project_id}-control"
+        assert ppc.naming_convention == "{project_id}"
         assert ppc.category_name == ""
 
     def test_default_when_not_in_yaml(self, config_dir):
@@ -42,8 +41,7 @@ class TestPerProjectChannelsDefaults:
 
         ppc = config.discord.per_project_channels
         assert ppc.auto_create is False
-        assert ppc.naming_convention == "{project_id}-notifications"
-        assert ppc.control_naming_convention == "{project_id}-control"
+        assert ppc.naming_convention == "{project_id}"
         assert ppc.category_name == ""
 
 
@@ -59,7 +57,6 @@ class TestPerProjectChannelsFromYAML:
                 "per_project_channels": {
                     "auto_create": True,
                     "naming_convention": "aq-{project_id}",
-                    "control_naming_convention": "aq-{project_id}-ctrl",
                     "category_name": "Agent Queue Projects",
                 },
             }
@@ -69,7 +66,6 @@ class TestPerProjectChannelsFromYAML:
         ppc = config.discord.per_project_channels
         assert ppc.auto_create is True
         assert ppc.naming_convention == "aq-{project_id}"
-        assert ppc.control_naming_convention == "aq-{project_id}-ctrl"
         assert ppc.category_name == "Agent Queue Projects"
 
     def test_partial_config_auto_create_only(self, config_dir):
@@ -88,8 +84,7 @@ class TestPerProjectChannelsFromYAML:
         ppc = config.discord.per_project_channels
         assert ppc.auto_create is True
         # Other fields should use defaults
-        assert ppc.naming_convention == "{project_id}-notifications"
-        assert ppc.control_naming_convention == "{project_id}-control"
+        assert ppc.naming_convention == "{project_id}"
         assert ppc.category_name == ""
 
     def test_partial_config_custom_naming(self, config_dir):
@@ -109,8 +104,6 @@ class TestPerProjectChannelsFromYAML:
         ppc = config.discord.per_project_channels
         assert ppc.auto_create is False
         assert ppc.naming_convention == "{project_id}-notify"
-        # Others default
-        assert ppc.control_naming_convention == "{project_id}-control"
 
     def test_empty_per_project_channels_section(self, config_dir):
         config_file = config_dir / "config.yaml"
@@ -125,7 +118,7 @@ class TestPerProjectChannelsFromYAML:
 
         ppc = config.discord.per_project_channels
         assert ppc.auto_create is False
-        assert ppc.naming_convention == "{project_id}-notifications"
+        assert ppc.naming_convention == "{project_id}"
 
 
 class TestNamingConventionUsage:
@@ -133,13 +126,10 @@ class TestNamingConventionUsage:
 
     def test_default_convention_formats_correctly(self):
         ppc = PerProjectChannelsConfig()
-        assert ppc.naming_convention.format(project_id="my-app") == "my-app-notifications"
-        assert ppc.control_naming_convention.format(project_id="my-app") == "my-app-control"
+        assert ppc.naming_convention.format(project_id="my-app") == "my-app"
 
     def test_custom_convention_formats_correctly(self):
         ppc = PerProjectChannelsConfig(
             naming_convention="aq-{project_id}",
-            control_naming_convention="aq-{project_id}-ctrl",
         )
         assert ppc.naming_convention.format(project_id="web") == "aq-web"
-        assert ppc.control_naming_convention.format(project_id="web") == "aq-web-ctrl"

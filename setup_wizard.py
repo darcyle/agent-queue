@@ -333,8 +333,7 @@ def _step_per_project_channels(existing: dict, discord_ok: bool) -> dict:
 
     Returns a dict with per-project channel settings:
         auto_create: bool — auto-create channels when projects are created
-        naming_convention: str — channel name pattern for notifications
-        control_naming_convention: str — channel name pattern for control
+        naming_convention: str — channel name pattern
         category_name: str — Discord category name for project channels
     """
     yaml_cfg = existing.get("_yaml", {})
@@ -344,18 +343,15 @@ def _step_per_project_channels(existing: dict, discord_ok: bool) -> dict:
     defaults = {
         "auto_create": existing_ppc.get("auto_create", False),
         "naming_convention": existing_ppc.get(
-            "naming_convention", "{project_id}-notifications"
-        ),
-        "control_naming_convention": existing_ppc.get(
-            "control_naming_convention", "{project_id}-control"
+            "naming_convention", "{project_id}"
         ),
         "category_name": existing_ppc.get("category_name", ""),
     }
 
     print()
     print(f"  {BOLD}Per-Project Channels{RESET}")
-    info("Each project can have its own dedicated Discord channel(s) for")
-    info("notifications and control, instead of sharing the global channels.")
+    info("Each project can have its own dedicated Discord channel")
+    info("instead of sharing the global channel.")
     print()
 
     if not prompt_yes_no(
@@ -373,7 +369,6 @@ def _step_per_project_channels(existing: dict, discord_ok: bool) -> dict:
         return {
             "auto_create": False,
             "naming_convention": defaults["naming_convention"],
-            "control_naming_convention": defaults["control_naming_convention"],
             "category_name": defaults["category_name"],
         }
 
@@ -381,26 +376,17 @@ def _step_per_project_channels(existing: dict, discord_ok: bool) -> dict:
     print()
     info("Channel naming convention uses {project_id} as a placeholder.")
     info("Examples: for a project 'my-app',")
-    info("  '{project_id}-notifications'  →  #my-app-notifications")
-    info("  '{project_id}-notify'         →  #my-app-notify")
-    info("  'aq-{project_id}'             →  #aq-my-app")
+    info("  '{project_id}'       →  #my-app")
+    info("  'aq-{project_id}'    →  #aq-my-app")
     print()
 
-    notify_convention = prompt(
-        "Notifications channel pattern",
+    naming_convention = prompt(
+        "Channel name pattern",
         defaults["naming_convention"],
     )
-    if "{project_id}" not in notify_convention:
+    if "{project_id}" not in naming_convention:
         warn("Pattern must contain {project_id} — resetting to default")
-        notify_convention = "{project_id}-notifications"
-
-    control_convention = prompt(
-        "Control channel pattern",
-        defaults["control_naming_convention"],
-    )
-    if "{project_id}" not in control_convention:
-        warn("Pattern must contain {project_id} — resetting to default")
-        control_convention = "{project_id}-control"
+        naming_convention = "{project_id}"
 
     # ── Category ──
     print()
@@ -417,8 +403,7 @@ def _step_per_project_channels(existing: dict, discord_ok: bool) -> dict:
     print()
     success("Per-project channel configuration:")
     info(f"  Auto-create:         enabled")
-    info(f"  Notifications:       {notify_convention}")
-    info(f"  Control:             {control_convention}")
+    info(f"  Channel pattern:     {naming_convention}")
     if category_name:
         info(f"  Category:            {category_name}")
     else:
@@ -434,8 +419,7 @@ def _step_per_project_channels(existing: dict, discord_ok: bool) -> dict:
 
     return {
         "auto_create": True,
-        "naming_convention": notify_convention,
-        "control_naming_convention": control_convention,
+        "naming_convention": naming_convention,
         "category_name": category_name,
     }
 
@@ -1120,9 +1104,7 @@ def step_write_config(
         yaml_lines.append("  per_project_channels:")
         yaml_lines.append(f"    auto_create: true")
         yaml_lines.append(f"    naming_convention: \"{ppc['naming_convention']}\"")
-        yaml_lines.append(
-            f"    control_naming_convention: \"{ppc['control_naming_convention']}\""
-        )
+
         if ppc.get("category_name"):
             yaml_lines.append(f"    category_name: \"{ppc['category_name']}\"")
 

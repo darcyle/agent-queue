@@ -2,9 +2,7 @@
 
 Covers:
 - discord_channel_id is included when set
-- discord_control_channel_id is included when set
 - Neither field is included when unset
-- Both fields appear together
 - Multiple projects with different channel configurations
 """
 
@@ -52,9 +50,8 @@ class TestListProjectsChannelFields:
         assert len(projects) == 1
         p = projects[0]
         assert "discord_channel_id" not in p
-        assert "discord_control_channel_id" not in p
 
-    async def test_notifications_channel_included(self, handler, db):
+    async def test_channel_included(self, handler, db):
         await db.create_project(Project(id="p-1", name="Alpha"))
         await db.update_project("p-1", discord_channel_id="111111111111111111")
 
@@ -62,28 +59,6 @@ class TestListProjectsChannelFields:
 
         p = result["projects"][0]
         assert p["discord_channel_id"] == "111111111111111111"
-        assert "discord_control_channel_id" not in p
-
-    async def test_control_channel_included(self, handler, db):
-        await db.create_project(Project(id="p-1", name="Alpha"))
-        await db.update_project("p-1", discord_control_channel_id="222222222222222222")
-
-        result = await handler.execute("list_projects", {})
-
-        p = result["projects"][0]
-        assert "discord_channel_id" not in p
-        assert p["discord_control_channel_id"] == "222222222222222222"
-
-    async def test_both_channels_included(self, handler, db):
-        await db.create_project(Project(id="p-1", name="Alpha"))
-        await db.update_project("p-1", discord_channel_id="111111111111111111")
-        await db.update_project("p-1", discord_control_channel_id="222222222222222222")
-
-        result = await handler.execute("list_projects", {})
-
-        p = result["projects"][0]
-        assert p["discord_channel_id"] == "111111111111111111"
-        assert p["discord_control_channel_id"] == "222222222222222222"
 
     async def test_mixed_projects(self, handler, db):
         """Multiple projects with different channel configurations."""
@@ -91,18 +66,13 @@ class TestListProjectsChannelFields:
         await db.create_project(Project(id="p-2", name="Beta"))
         await db.create_project(Project(id="p-3", name="Gamma"))
         await db.update_project("p-1", discord_channel_id="111111111111111111")
-        await db.update_project("p-2", discord_control_channel_id="222222222222222222")
-        # p-3 has no channels
+        await db.update_project("p-2", discord_channel_id="222222222222222222")
+        # p-3 has no channel
 
         result = await handler.execute("list_projects", {})
 
         projects_by_id = {p["id"]: p for p in result["projects"]}
 
         assert projects_by_id["p-1"]["discord_channel_id"] == "111111111111111111"
-        assert "discord_control_channel_id" not in projects_by_id["p-1"]
-
-        assert "discord_channel_id" not in projects_by_id["p-2"]
-        assert projects_by_id["p-2"]["discord_control_channel_id"] == "222222222222222222"
-
+        assert projects_by_id["p-2"]["discord_channel_id"] == "222222222222222222"
         assert "discord_channel_id" not in projects_by_id["p-3"]
-        assert "discord_control_channel_id" not in projects_by_id["p-3"]

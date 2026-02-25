@@ -69,12 +69,11 @@ class TestSetControlInterfaceValidProject:
         assert "error" not in result
         assert result["project_id"] == "p-1"
         assert result["channel_id"] == "222222222222222222"
-        assert result["channel_type"] == "control"
         assert result["status"] == "linked"
 
         # Verify the DB was actually updated.
         project = await db.get_project("p-1")
-        assert project.discord_control_channel_id == "222222222222222222"
+        assert project.discord_channel_id == "222222222222222222"
 
     async def test_channel_name_with_hash_prefix(self, handler, db):
         """Leading '#' in channel_name should be stripped automatically."""
@@ -101,7 +100,6 @@ class TestSetControlInterfaceValidProject:
 
         assert "error" not in result
         assert result["channel_id"] == "999999999999999999"
-        assert result["channel_type"] == "control"
 
 
 class TestSetControlInterfaceMissingChannel:

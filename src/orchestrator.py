@@ -58,7 +58,6 @@ class Orchestrator:
         self._adapters: dict[str, object] = {}  # agent_id -> adapter
         self._running_tasks: dict[str, asyncio.Task] = {}  # task_id -> asyncio.Task
         self._notify: NotifyCallback | None = None
-        self._control_notify: NotifyCallback | None = None
         self._create_thread: CreateThreadCallback | None = None
         self._paused: bool = False
         self._last_approval_check: float = 0.0
@@ -87,10 +86,6 @@ class Orchestrator:
     def set_notify_callback(self, callback: NotifyCallback) -> None:
         """Set a callback for sending notifications (e.g. to Discord)."""
         self._notify = callback
-
-    def set_control_callback(self, callback: NotifyCallback) -> None:
-        """Set a callback for posting full summaries to the control channel."""
-        self._control_notify = callback
 
     def set_create_thread_callback(self, callback: CreateThreadCallback) -> None:
         """Set a callback for creating per-task threads."""
@@ -193,17 +188,6 @@ class Orchestrator:
                 await self._notify(message, project_id)
             except Exception as e:
                 print(f"Notification error: {e}")
-
-    async def _control_channel_post(self, message: str, project_id: str | None = None) -> None:
-        """Post a message to the control channel if a callback is set.
-
-        Routing follows the same per-project logic as ``_notify_channel``.
-        """
-        if self._control_notify:
-            try:
-                await self._control_notify(message, project_id)
-            except Exception as e:
-                print(f"Control channel notification error: {e}")
 
     async def initialize(self) -> None:
         await self.db.initialize()
@@ -478,7 +462,7 @@ class Orchestrator:
 
         msg = format_chain_stuck(blocked_task, stuck)
         await self._notify_channel(msg, project_id=blocked_task.project_id)
-        await self._control_channel_post(msg, project_id=blocked_task.project_id)
+        await self._notify_channel(msg, project_id=blocked_task.project_id)
         await self.db.log_event(
             "chain_stuck",
             project_id=blocked_task.project_id,
@@ -1266,7 +1250,7 @@ class Orchestrator:
                 brief = f"🔍 PR created for review: {task.title} (`{task.id}`)\n{pr_url}"
                 if thread_send:
                     await _notify_brief(brief)
-                await self._control_channel_post(brief, project_id=action.project_id)
+                await self._notify_channel(brief, project_id=action.project_id)
             elif task.requires_approval and not pr_url:
                 # Approval required but no PR (e.g. LINK repo) — wait for manual approval
                 await self.db.transition_task(
@@ -1276,7 +1260,7 @@ class Orchestrator:
                 )
                 brief = f"🔍 Awaiting manual approval: {task.title} (`{task.id}`)"
                 await _notify_brief(brief)
-                await self._control_channel_post(brief, project_id=action.project_id)
+                await self._notify_channel(brief, project_id=action.project_id)
             else:
                 # No approval needed — mark completed
                 await self.db.transition_task(action.task_id, TaskStatus.COMPLETED,
@@ -1306,7 +1290,7 @@ class Orchestrator:
                 brief = f"✅ Task completed: {task.title} (`{task.id}`)"
                 if thread_send:
                     await _notify_brief(brief)
-                await self._control_channel_post(brief, project_id=action.project_id)
+                await self._notify_channel(brief, project_id=action.project_id)
 
             # --- Auto-task generation from implementation plans ---
             # After any successful completion path, check for plan files
@@ -1331,7 +1315,7 @@ class Orchestrator:
                         await _notify_brief(plan_msg)
                     else:
                         await self._notify_channel(plan_msg, project_id=action.project_id)
-                    await self._control_channel_post(plan_msg, project_id=action.project_id)
+                    await self._notify_channel(plan_msg, project_id=action.project_id)
             except Exception as e:
                 print(f"Auto-task generation error for task {task.id}: {e}")
                 import traceback
@@ -1390,7 +1374,7 @@ class Orchestrator:
             # Brief notification → main channel (reply to thread) + control channel
             if thread_send:
                 await _notify_brief(brief)
-            await self._control_channel_post(brief, project_id=action.project_id)
+            await self._notify_channel(brief, project_id=action.project_id)
 
             # Check if this blocked task breaks a dependency chain
             if new_retry >= task.max_retries:

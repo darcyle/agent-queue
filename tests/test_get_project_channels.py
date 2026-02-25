@@ -1,8 +1,8 @@
 """Tests for the get_project_channels command.
 
 Covers:
-- Returns both channel IDs for a project with both set
-- Returns None for unset channels
+- Returns channel_id for a project with it set
+- Returns None for unset channel
 - Project not found -> error
 - Returns correct structure with all expected keys
 """
@@ -39,53 +39,30 @@ async def handler(db, config):
     return CommandHandler(orchestrator, config)
 
 
-class TestGetProjectChannelsBothSet:
-    """When both notifications and control channels are set."""
+class TestGetProjectChannelsSet:
+    """When the channel is set."""
 
-    async def test_returns_both_channel_ids(self, handler, db):
+    async def test_returns_channel_id(self, handler, db):
         await db.create_project(Project(id="p-1", name="Alpha"))
         await db.update_project("p-1", discord_channel_id="111111111111111111")
-        await db.update_project("p-1", discord_control_channel_id="222222222222222222")
 
         result = await handler.execute("get_project_channels", {"project_id": "p-1"})
 
         assert "error" not in result
         assert result["project_id"] == "p-1"
-        assert result["notifications_channel_id"] == "111111111111111111"
-        assert result["control_channel_id"] == "222222222222222222"
+        assert result["channel_id"] == "111111111111111111"
 
 
-class TestGetProjectChannelsPartial:
-    """When only some channels are set."""
+class TestGetProjectChannelsUnset:
+    """When no channel is set."""
 
-    async def test_only_notifications_set(self, handler, db):
-        await db.create_project(Project(id="p-1", name="Alpha"))
-        await db.update_project("p-1", discord_channel_id="111111111111111111")
-
-        result = await handler.execute("get_project_channels", {"project_id": "p-1"})
-
-        assert "error" not in result
-        assert result["notifications_channel_id"] == "111111111111111111"
-        assert result["control_channel_id"] is None
-
-    async def test_only_control_set(self, handler, db):
-        await db.create_project(Project(id="p-1", name="Alpha"))
-        await db.update_project("p-1", discord_control_channel_id="222222222222222222")
-
-        result = await handler.execute("get_project_channels", {"project_id": "p-1"})
-
-        assert "error" not in result
-        assert result["notifications_channel_id"] is None
-        assert result["control_channel_id"] == "222222222222222222"
-
-    async def test_no_channels_set(self, handler, db):
+    async def test_no_channel_set(self, handler, db):
         await db.create_project(Project(id="p-1", name="Alpha"))
 
         result = await handler.execute("get_project_channels", {"project_id": "p-1"})
 
         assert "error" not in result
-        assert result["notifications_channel_id"] is None
-        assert result["control_channel_id"] is None
+        assert result["channel_id"] is None
 
 
 class TestGetProjectChannelsErrors:

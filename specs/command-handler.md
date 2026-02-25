@@ -1,0 +1,1843 @@
+# CommandHandler Specification
+
+## 1. Overview
+
+`CommandHandler` is the unified execution layer for all operational commands in AgentQueue. It is the single code path through which every operation must pass — both Discord slash commands and the LLM chat agent tools delegate their business logic here. Presentation and formatting are handled by the callers; this layer concerns itself only with execution and returning structured results.
+
+The handler holds a reference to an `Orchestrator` instance (which provides database access and git operations) and an `AppConfig`. It also maintains a small amount of conversational state: an optional `_active_project_id` (the currently focused project), and an optional `_on_project_deleted` callback that external layers (e.g. the Discord bot) can register to react to project deletions.
+
+The `db` property is a convenience accessor that returns `self.orchestrator.db`.
+
+---
+
+## Source Files
+- `src/command_handler.py`
+
+---
+
+## 2. Architecture
+
+### Command Dispatch
+
+All commands are executed through a single public method:
+
+```python
+async def execute(self, name: str, args: dict) -> dict
+```
+
+Internally, `execute` looks up a method named `_cmd_{name}` on the instance using `getattr`. If found, the method is called with `args` and its return value is returned. If no such method exists, `{"error": "Unknown command: {name}"}` is returned. Any unhandled exception raised inside a command method is caught and returned as `{"error": str(e)}`.
+
+### Command Registration
+
+Commands are registered implicitly: any instance method named `_cmd_<command_name>` becomes a callable command. There is no explicit registry or decorator. Adding a new command means defining a new `_cmd_` method.
+
+### Constructor Signature
+
+```python
+CommandHandler(orchestrator: Orchestrator, config: AppConfig)
+```
+
+After construction, callers may set `handler._on_project_deleted = callback` to register a post-deletion hook (signature: `callback(project_id: str) -> None`).
+
+---
+
+## 3. Return Format
+
+Every command returns a `dict`. The conventions are:
+
+- **Success:** A dict containing the relevant data. The exact keys vary by command. No `"success"` key is used explicitly; the absence of an `"error"` key signals success.
+- **Error:** A dict with a single key `"error"` whose value is a human-readable string describing what went wrong.
+
+Examples:
+```python
+{"created": "my-project", "name": "My Project", "workspace": "/path/to/workspace"}
+{"error": "Project 'foo' not found"}
+```
+
+Some commands include both a primary result and an optional `"warning"` key when a non-fatal concern exists (e.g. IN_PROGRESS tasks during a destructive git operation).
+
+---
+
+## 4. Command Categories
+
+### Status
+
+---
+
+#### `get_status`
+
+Returns a system-wide snapshot of the orchestrator state.
+
+**Parameters:** None.
+
+**Behavior:** Queries all projects, agents, and tasks. For each agent that has a current task, the task's title, project, and status are included. Tasks are filtered into `in_progress` and `ready_to_work` lists.
+
+**Returns on success:**
+```python
+{
+    "projects": <int: total project count>,
+    "agents": [
+        {
+            "id": <str>,
+            "name": <str>,
+            "state": <str: agent state value>,
+            "working_on": {             # present only if agent has a current task
+                "task_id": <str>,
+                "title": <str>,
+                "project_id": <str>,
+                "status": <str>,
+            }
+        },
+        ...
+    ],
+    "tasks": {
+        "total": <int>,
+        "by_status": {<status_value>: <count>, ...},
+        "in_progress": [{"id": <str>, "title": <str>, "project_id": <str>, "assigned_agent": <str|None>}, ...],
+        "ready_to_work": [{"id": <str>, "title": <str>, "project_id": <str>}, ...],
+    },
+    "orchestrator_paused": <bool>,
+}
+```
+
+**Errors:** None expected.
+
+---
+
+### Projects
+
+---
+
+#### `list_projects`
+
+Returns all projects.
+
+**Parameters:** None.
+
+**Behavior:** Fetches all projects from the database and returns their core fields. If a project has a Discord channel linked, `discord_channel_id` is included.
+
+**Returns on success:**
+```python
+{
+    "projects": [
+        {
+            "id": <str>,
+            "name": <str>,
+            "status": <str>,
+            "credit_weight": <float>,
+            "max_concurrent_agents": <int>,
+            "workspace": <str>,
+            "discord_channel_id": <str>,   # present only if set
+        },
+        ...
+    ]
+}
+```
+
+**Errors:** None expected.
+
+---
+
+#### `create_project`
+
+Creates a new project and its workspace directory.
+
+**Parameters:**
+- `name` (required): Human-readable project name. The project ID is derived by lowercasing and replacing spaces with hyphens.
+- `credit_weight` (optional, default `1.0`): Scheduler weight for this project.
+- `max_concurrent_agents` (optional, default `2`): Maximum agents that can work on this project simultaneously.
+- `auto_create_channels` (optional): Boolean override for whether the Discord layer should auto-create a channel. If not provided, falls back to `config.discord.per_project_channels.auto_create`.
+
+**Behavior:** Derives the project ID from the name. Creates the workspace directory at `{config.workspace_dir}/{project_id}`. Saves the project to the database.
+
+**Returns on success:**
+```python
+{
+    "created": <str: project_id>,
+    "name": <str>,
+    "workspace": <str: path>,
+    "auto_create_channels": <bool>,
+}
+```
+
+**Errors:** None expected (directory creation errors will propagate as uncaught exceptions).
+
+---
+
+#### `pause_project`
+
+Sets a project's status to PAUSED.
+
+**Parameters:**
+- `project_id` (required)
+
+**Returns on success:**
+```python
+{"paused": <str: project_id>, "name": <str>}
+```
+
+**Errors:**
+- Project not found.
+
+---
+
+#### `resume_project`
+
+Sets a project's status to ACTIVE.
+
+**Parameters:**
+- `project_id` (required)
+
+**Returns on success:**
+```python
+{"resumed": <str: project_id>, "name": <str>}
+```
+
+**Errors:**
+- Project not found.
+
+---
+
+#### `edit_project`
+
+Updates one or more mutable fields on a project.
+
+**Parameters:**
+- `project_id` (required)
+- `name` (optional): New display name.
+- `credit_weight` (optional): New scheduler weight.
+- `max_concurrent_agents` (optional): New concurrency limit.
+
+At least one optional field must be supplied.
+
+**Returns on success:**
+```python
+{"updated": <str: project_id>, "fields": [<list of updated field names>]}
+```
+
+**Errors:**
+- Project not found.
+- No updatable fields provided.
+
+---
+
+#### `delete_project`
+
+Deletes a project and all associated database records (cascade). Fires `_on_project_deleted` callback if registered.
+
+**Parameters:**
+- `project_id` (required)
+- `archive_channels` (optional, default `False`): Passed through to the caller in the response so the Discord layer can act on it. This handler does not archive channels itself.
+
+**Behavior:** Checks whether any tasks are currently IN_PROGRESS and refuses deletion if so. Captures the project's Discord channel ID before deletion. After the database cascade completes, calls `_on_project_deleted(project_id)` if the callback is registered.
+
+**Returns on success:**
+```python
+{
+    "deleted": <str: project_id>,
+    "name": <str>,
+    "channel_ids": {"channel": <str>},   # present only if a channel was linked
+    "archive_channels": True,            # present only if archive_channels=True was passed
+}
+```
+
+**Errors:**
+- Project not found.
+- One or more tasks are IN_PROGRESS (caller must stop them first).
+
+---
+
+### Channels
+
+---
+
+#### `set_project_channel`
+
+Links an existing Discord channel to a project by storing the channel ID on the project record.
+
+**Parameters:**
+- `project_id` (required)
+- `channel_id` (required): The Discord channel ID (as a string).
+
+**Returns on success:**
+```python
+{
+    "project_id": <str>,
+    "channel_id": <str>,
+    "status": "linked",
+}
+```
+
+**Errors:**
+- Project not found.
+
+---
+
+#### `set_control_interface`
+
+Sets a project's channel by resolving a channel *name* to an ID, then delegating to `set_project_channel`.
+
+**Parameters:**
+- `project_id` (required; also accepted as `project_name`)
+- `channel_name` (required): The Discord channel name (leading `#` is stripped).
+- `_resolved_channel_id` (optional): If the caller (e.g. Discord slash command layer) has already resolved the channel ID, it may pass it here to skip the name-lookup step.
+- `guild_channels` (optional): A list of `{"id": <str/int>, "name": <str>}` dicts representing all text channels in the guild. Required if `_resolved_channel_id` is not provided.
+
+**Behavior:** Strips `#` from `channel_name`. Uses `_resolved_channel_id` if present; otherwise iterates `guild_channels` looking for a name match. If no match is found, returns an error. On success, delegates to `_cmd_set_project_channel`.
+
+**Returns on success:** Same as `set_project_channel`.
+
+**Errors:**
+- `project_id` or `channel_name` not provided.
+- Channel name not found in `guild_channels`.
+- No guild context available to resolve the name (neither `_resolved_channel_id` nor `guild_channels` was supplied).
+- Project not found (from delegated call).
+
+---
+
+#### `get_project_channels`
+
+Returns the Discord channel ID configured for a project.
+
+**Parameters:**
+- `project_id` (required)
+
+**Returns on success:**
+```python
+{
+    "project_id": <str>,
+    "channel_id": <str | None>,
+}
+```
+
+**Errors:**
+- Project not found.
+
+---
+
+#### `get_project_for_channel`
+
+Reverse lookup: given a Discord channel ID, returns the project linked to it.
+
+**Parameters:**
+- `channel_id` (required): The Discord channel ID (coerced to string).
+
+**Behavior:** Scans all projects, comparing `discord_channel_id` to the given channel ID. Returns the first match. If no project is linked to this channel, returns the response with `project_id: null`.
+
+**Returns on success (match found):**
+```python
+{
+    "channel_id": <str>,
+    "project_id": <str>,
+    "project_name": <str>,
+}
+```
+
+**Returns on success (no match):**
+```python
+{
+    "channel_id": <str>,
+    "project_id": None,
+    "project_name": None,
+}
+```
+
+**Errors:**
+- `channel_id` not provided.
+
+---
+
+#### `create_channel_for_project`
+
+Creates (or reuses) a dedicated Discord channel for a project. Idempotent: if a channel with the target name already exists in the guild, it is linked rather than duplicated.
+
+**Parameters:**
+- `project_id` (required; also accepted as `project_name`)
+- `channel_name` (optional, default: project ID): Desired Discord channel name. Leading `#` is stripped.
+- `category_id` (optional): Discord category ID for channel placement. This is accepted but not acted upon by this handler — it is intended for the Discord layer.
+- `guild_channels` (optional): List of `{"id": <str/int>, "name": <str>}` dicts for idempotency lookup.
+- `_created_channel_id` (optional): If the Discord layer already created a new channel (because no existing match was found), it passes the new channel's ID here.
+
+**Behavior:**
+1. Validates the project exists.
+2. Strips `#` from `channel_name`.
+3. If `guild_channels` is provided, looks for an existing channel matching `channel_name`. If found, links it and returns `action: "linked_existing"`.
+4. If no existing channel was found but `_created_channel_id` is provided, links that ID and returns `action: "created"`.
+5. If neither guild context nor a pre-created ID is available, returns an error explaining that this command requires Discord context.
+
+**Returns on success:**
+```python
+{
+    "project_id": <str>,
+    "channel_id": <str>,
+    "status": "linked",
+    "action": "linked_existing" | "created",
+    "channel_name": <str>,
+}
+```
+
+**Errors:**
+- `project_id` not provided.
+- Project not found.
+- No guild context and no `_created_channel_id` (cannot create channel without Discord access).
+
+---
+
+### Tasks
+
+---
+
+#### `list_tasks`
+
+Returns up to 200 tasks, optionally filtered.
+
+**Parameters:**
+- `project_id` (optional): Filter by project.
+- `status` (optional): Filter by status string (e.g. `"READY"`, `"IN_PROGRESS"`).
+
+**Returns on success:**
+```python
+{
+    "tasks": [
+        {
+            "id": <str>,
+            "project_id": <str>,
+            "title": <str>,
+            "status": <str>,
+            "priority": <int>,
+            "assigned_agent": <str | None>,
+        },
+        ...
+    ],
+    "total": <int: total matching tasks before the 200-cap>,
+}
+```
+
+**Errors:** None expected.
+
+---
+
+#### `create_task`
+
+Creates a new task in READY status. If no `project_id` is given, a `quick-tasks` project is auto-created if it does not already exist.
+
+**Parameters:**
+- `title` (required): Short task title.
+- `description` (required): Full task description/prompt for the agent.
+- `project_id` (optional, default: `"quick-tasks"`): Project to assign the task to.
+- `priority` (optional, default: `100`): Scheduling priority (lower value = higher priority).
+- `repo_id` (optional): Associate the task with a specific repo.
+- `requires_approval` (optional, default: `False`): If true, task moves to AWAITING_APPROVAL instead of COMPLETED when done.
+
+**Behavior:** Generates a human-readable task ID using `generate_task_id`. Creates the task in READY status.
+
+**Returns on success:**
+```python
+{
+    "created": <str: task_id>,
+    "title": <str>,
+    "project_id": <str>,
+    "repo_id": <str>,          # present only if repo_id was supplied
+    "requires_approval": True, # present only if requires_approval=True
+}
+```
+
+**Errors:** None expected (DB errors propagate as uncaught exceptions).
+
+---
+
+#### `get_task`
+
+Returns full details for a single task.
+
+**Parameters:**
+- `task_id` (required)
+
+**Returns on success:**
+```python
+{
+    "id": <str>,
+    "project_id": <str>,
+    "title": <str>,
+    "description": <str>,
+    "status": <str>,
+    "priority": <int>,
+    "assigned_agent": <str | None>,
+    "retry_count": <int>,
+    "max_retries": <int>,
+    "requires_approval": <bool>,
+    "pr_url": <str>,   # present only if set
+}
+```
+
+**Errors:**
+- Task not found.
+
+---
+
+#### `edit_task`
+
+Updates one or more mutable fields on a task.
+
+**Parameters:**
+- `task_id` (required)
+- `title` (optional)
+- `description` (optional)
+- `priority` (optional)
+
+At least one optional field must be supplied.
+
+**Returns on success:**
+```python
+{"updated": <str: task_id>, "fields": [<list of updated field names>]}
+```
+
+**Errors:**
+- Task not found.
+- No updatable fields provided.
+
+---
+
+#### `stop_task`
+
+Stops a running task by delegating to `orchestrator.stop_task`.
+
+**Parameters:**
+- `task_id` (required)
+
+**Returns on success:**
+```python
+{"stopped": <str: task_id>}
+```
+
+**Errors:**
+- Any error string returned by the orchestrator's stop logic.
+
+---
+
+#### `restart_task`
+
+Resets a task back to READY status, clearing retry count and agent assignment.
+
+**Parameters:**
+- `task_id` (required)
+
+**Behavior:** Refuses if the task is currently IN_PROGRESS (caller must stop it first). Transitions the task to READY, sets `retry_count=0`, clears `assigned_agent_id`.
+
+**Returns on success:**
+```python
+{
+    "restarted": <str: task_id>,
+    "title": <str>,
+    "previous_status": <str>,
+}
+```
+
+**Errors:**
+- Task not found.
+- Task is currently IN_PROGRESS.
+
+---
+
+#### `delete_task`
+
+Deletes a task. If the task is IN_PROGRESS, it is stopped first.
+
+**Parameters:**
+- `task_id` (required)
+
+**Behavior:** If the task is IN_PROGRESS, calls `orchestrator.stop_task` first and returns an error if stopping fails. After stopping (or if already stopped), deletes the task from the database.
+
+**Returns on success:**
+```python
+{"deleted": <str: task_id>, "title": <str>}
+```
+
+**Errors:**
+- Task not found.
+- Could not stop the running task before deleting.
+
+---
+
+#### `approve_task`
+
+Approves a task that is in AWAITING_APPROVAL status, moving it to COMPLETED.
+
+**Parameters:**
+- `task_id` (required)
+
+**Behavior:** Validates the task is in AWAITING_APPROVAL. Transitions to COMPLETED and logs a `task_completed` event.
+
+**Returns on success:**
+```python
+{"approved": <str: task_id>, "title": <str>}
+```
+
+**Errors:**
+- Task not found.
+- Task is not in AWAITING_APPROVAL status.
+
+---
+
+#### `set_task_status`
+
+Administratively force a task into any status (bypasses normal state-machine guards).
+
+**Parameters:**
+- `task_id` (required)
+- `status` (required): Target status string (e.g. `"READY"`, `"BLOCKED"`, `"COMPLETED"`).
+
+**Returns on success:**
+```python
+{
+    "task_id": <str>,
+    "old_status": <str>,
+    "new_status": <str>,
+    "title": <str>,
+}
+```
+
+**Errors:**
+- Task not found.
+
+---
+
+#### `skip_task`
+
+Skips a BLOCKED or FAILED task to unblock its dependency chain.
+
+**Parameters:**
+- `task_id` (required)
+
+**Behavior:** Delegates to `orchestrator.skip_task`, which marks the task as skipped and promotes any downstream tasks that were waiting only on this one.
+
+**Returns on success:**
+```python
+{
+    "skipped": <str: task_id>,
+    "unblocked_count": <int>,
+    "unblocked": [{"id": <str>, "title": <str>}, ...],
+}
+```
+
+**Errors:**
+- Any error string returned by the orchestrator's skip logic.
+
+---
+
+#### `get_chain_health`
+
+Reports on dependency chain health — identifies downstream tasks that are stuck because an upstream task is BLOCKED.
+
+**Parameters:**
+- `task_id` (optional): Check a specific task's downstream chain.
+- `project_id` (optional): Check all blocked tasks in a project.
+
+If neither is provided, falls back to `_active_project_id`.
+
+**Behavior (task_id supplied):**
+- If the task is not BLOCKED, returns immediately with an empty `stuck_downstream` list.
+- If BLOCKED, calls `orchestrator._find_stuck_downstream(task_id)` and returns the list of stuck tasks.
+
+**Behavior (project_id or active project):**
+- Fetches all BLOCKED tasks for the project, checks each one for stuck downstream tasks, and aggregates the chains.
+
+**Returns on success (single task, not blocked):**
+```python
+{
+    "task_id": <str>,
+    "status": <str>,
+    "stuck_downstream": [],
+    "message": "Task is not blocked — no stuck chain.",
+}
+```
+
+**Returns on success (single task, blocked):**
+```python
+{
+    "task_id": <str>,
+    "title": <str>,
+    "status": <str>,
+    "stuck_downstream": [{"id": <str>, "title": <str>, "status": <str>}, ...],
+    "stuck_count": <int>,
+}
+```
+
+**Returns on success (project scope):**
+```python
+{
+    "project_id": <str | None>,
+    "stuck_chains": [
+        {
+            "blocked_task": {"id": <str>, "title": <str>},
+            "stuck_downstream": [{"id": <str>, "title": <str>}, ...],
+            "stuck_count": <int>,
+        },
+        ...
+    ],
+    "total_stuck_chains": <int>,
+}
+```
+
+**Errors:**
+- Task not found (when `task_id` is supplied).
+
+---
+
+#### `get_task_result`
+
+Returns the stored result record for a task (the structured output saved when the agent finished).
+
+**Parameters:**
+- `task_id` (required)
+
+**Returns on success:** The raw result dict as stored in the database.
+
+**Errors:**
+- No result record found for the task.
+
+---
+
+#### `get_task_diff`
+
+Returns the git diff for a task's branch relative to the repository's default branch.
+
+**Parameters:**
+- `task_id` (required)
+
+**Behavior:** Looks up the task's `repo_id` and `branch_name`. Determines the checkout path: first tries the assigned agent's `checkout_path`, then falls back to `repo.source_path`. Calls `git.get_diff(checkout_path, repo.default_branch)`.
+
+**Returns on success:**
+```python
+{
+    "diff": <str: diff text or "(no changes)">,
+    "branch": <str: task branch name>,
+}
+```
+
+**Errors:**
+- Task not found.
+- Task has no associated repository.
+- Repository not found.
+- Task has no branch name.
+- Could not determine checkout path.
+
+---
+
+#### `get_agent_error`
+
+Returns diagnostic information about a task's most recent failure.
+
+**Parameters:**
+- `task_id` (required)
+
+**Behavior:** Fetches the task and its result. Classifies the error type using `classify_error`. Truncates the error message to 2000 characters and the agent summary to 1000 characters.
+
+**Returns on success:**
+```python
+{
+    "task_id": <str>,
+    "title": <str>,
+    "status": <str>,
+    "retries": "<retry_count> / <max_retries>",
+    "message": "No result recorded yet for this task",  # if no result exists
+    # OR, if a result exists:
+    "result": <str: result value>,
+    "error_type": <str: classified error type>,
+    "error_message": <str | None: truncated to 2000 chars>,
+    "suggested_fix": <str: from classify_error>,
+    "agent_summary": <str>,  # present only if summary exists, truncated to 1000 chars
+}
+```
+
+**Errors:**
+- Task not found.
+
+---
+
+### Agents
+
+---
+
+#### `list_agents`
+
+Returns all registered agents.
+
+**Parameters:** None.
+
+**Returns on success:**
+```python
+{
+    "agents": [
+        {
+            "id": <str>,
+            "name": <str>,
+            "type": <str: agent_type>,
+            "state": <str: agent state value>,
+            "current_task": <str | None: task_id>,
+        },
+        ...
+    ]
+}
+```
+
+**Errors:** None expected.
+
+---
+
+#### `create_agent`
+
+Registers a new agent.
+
+**Parameters:**
+- `name` (required): Human-readable agent name. Agent ID is derived by lowercasing and replacing spaces with hyphens.
+- `agent_type` (optional, default `"claude"`): Agent type identifier.
+- `repo_id` (optional): Associate the agent with a specific repo. Validated to exist.
+
+**Returns on success:**
+```python
+{
+    "created": <str: agent_id>,
+    "name": <str>,
+    "repo_id": <str>,  # present only if repo_id was supplied
+}
+```
+
+**Errors:**
+- Repo not found (if `repo_id` was supplied).
+
+---
+
+### Repos
+
+---
+
+#### `add_repo`
+
+Adds a repository configuration to a project.
+
+**Parameters:**
+- `project_id` (required): Must exist.
+- `source` (required): One of `"clone"`, `"link"`, or `"init"` (maps to `RepoSourceType` enum).
+- `url` (required if `source == "clone"`): Git remote URL.
+- `path` (required if `source == "link"`): Local filesystem path to an existing directory.
+- `default_branch` (optional, default `"main"`): The repo's primary branch name.
+- `name` (optional): Repo name. If not provided, derived from the URL (last path segment minus `.git`) or the path basename.
+
+**Behavior:** Validates that for `clone` sources a URL is provided, and for `link` sources a valid directory path is provided. Derives the repo ID by lowercasing the name. Sets `checkout_base_path` to `{project.workspace_path}/repos/{repo_name}`.
+
+**Returns on success:**
+```python
+{
+    "created": <str: repo_id>,
+    "name": <str>,
+    "source_type": <str>,
+    "checkout_base_path": <str>,
+}
+```
+
+**Errors:**
+- Project not found.
+- `url` missing for `clone` source.
+- `path` missing for `link` source.
+- `path` does not exist or is not a directory (for `link` source).
+
+---
+
+#### `list_repos`
+
+Lists all repo configurations, optionally filtered by project.
+
+**Parameters:**
+- `project_id` (optional)
+
+**Returns on success:**
+```python
+{
+    "repos": [
+        {
+            "id": <str>,
+            "project_id": <str>,
+            "source_type": <str>,
+            "url": <str>,
+            "source_path": <str | None>,
+            "default_branch": <str>,
+            "checkout_base_path": <str | None>,
+        },
+        ...
+    ]
+}
+```
+
+**Errors:** None expected.
+
+---
+
+### Git High-Level Commands
+
+These commands operate at the project level and are intended for human-facing use from Discord. They resolve the repo path via `_resolve_repo_path` and may include a `"warning"` field if IN_PROGRESS tasks exist.
+
+---
+
+#### `create_branch`
+
+Creates and checks out a new branch in a project's repository.
+
+**Parameters:**
+- `project_id` (required)
+- `branch_name` (required)
+- `repo_id` (optional): Specific repo; otherwise the project's first repo is used.
+
+**Returns on success:**
+```python
+{
+    "project_id": <str>,
+    "repo_id": <str>,
+    "branch": <str: branch_name>,
+    "status": "created",
+}
+```
+
+**Errors:**
+- `branch_name` not provided.
+- Repo path resolution failure (see `_resolve_repo_path`).
+- Git error (e.g. branch already exists).
+
+---
+
+#### `checkout_branch`
+
+Checks out an existing branch.
+
+**Parameters:**
+- `project_id` (required)
+- `branch_name` (required)
+- `repo_id` (optional)
+
+**Behavior:** After successful checkout, calls `_warn_if_in_progress` and includes the warning in the result if any tasks are running.
+
+**Returns on success:**
+```python
+{
+    "project_id": <str>,
+    "repo_id": <str>,
+    "branch": <str: branch_name>,
+    "status": "checked_out",
+    "warning": <str>,  # present only if IN_PROGRESS tasks exist
+}
+```
+
+**Errors:**
+- `branch_name` not provided.
+- Repo path resolution failure.
+- Git error (e.g. branch not found, dirty working tree).
+
+---
+
+#### `commit_changes`
+
+Stages all changes and creates a commit.
+
+**Parameters:**
+- `project_id` (required)
+- `message` (required): Commit message.
+- `repo_id` (optional)
+
+**Behavior:** Calls `git.commit_all`. If there is nothing to commit, returns `status: "nothing_to_commit"` (not an error). Calls `_warn_if_in_progress` on success.
+
+**Returns on success (committed):**
+```python
+{
+    "project_id": <str>,
+    "repo_id": <str>,
+    "commit_message": <str>,
+    "status": "committed",
+    "warning": <str>,  # present only if IN_PROGRESS tasks exist
+}
+```
+
+**Returns on success (nothing to commit):**
+```python
+{
+    "project_id": <str>,
+    "repo_id": <str>,
+    "status": "nothing_to_commit",
+    "message": "No changes to commit",
+}
+```
+
+**Errors:**
+- `message` not provided.
+- Repo path resolution failure.
+- Git error.
+
+---
+
+#### `push_branch`
+
+Pushes the current or specified branch to origin.
+
+**Parameters:**
+- `project_id` (required)
+- `branch_name` (optional): Branch to push; defaults to the currently checked-out branch.
+- `repo_id` (optional)
+
+**Returns on success:**
+```python
+{
+    "project_id": <str>,
+    "repo_id": <str>,
+    "branch": <str>,
+    "status": "pushed",
+}
+```
+
+**Errors:**
+- Repo path resolution failure.
+- Could not determine current branch.
+- Git error.
+
+---
+
+#### `merge_branch`
+
+Merges a branch into the repository's default branch.
+
+**Parameters:**
+- `project_id` (required)
+- `branch_name` (required)
+- `repo_id` (optional)
+
+**Behavior:** Uses `repo.default_branch` if available, otherwise `"main"`. Calls `_warn_if_in_progress` regardless of merge outcome.
+
+**Returns on success (merged):**
+```python
+{
+    "project_id": <str>,
+    "repo_id": <str>,
+    "branch": <str>,
+    "target": <str: default_branch>,
+    "status": "merged",
+    "warning": <str>,  # present only if IN_PROGRESS tasks exist
+}
+```
+
+**Returns on success (conflict):**
+```python
+{
+    "project_id": <str>,
+    "repo_id": <str>,
+    "branch": <str>,
+    "target": <str>,
+    "status": "conflict",
+    "message": "Merge conflict — merge was aborted",
+    "warning": <str>,  # present only if IN_PROGRESS tasks exist
+}
+```
+
+**Errors:**
+- `branch_name` not provided.
+- Repo path resolution failure.
+- Git error.
+
+---
+
+### Git Status Command
+
+---
+
+#### `get_git_status`
+
+Reports git status across all repos for a project, or falls back to the project workspace if no repos are configured.
+
+**Parameters:**
+- `project_id` (required)
+
+**Behavior:** For each repo, determines the checkout path (LINK uses `source_path`; CLONE uses `checkout_base_path`). Validates the path exists and is a git repo. Calls `git.get_current_branch`, `git.get_status`, and `git.get_recent_commits(count=5)`. Does not use `_resolve_repo_path`; performs its own path resolution across all repos in the project.
+
+**Returns on success:**
+```python
+{
+    "project_id": <str>,
+    "project_name": <str>,
+    "repos": [
+        {
+            "repo_id": <str>,
+            "path": <str>,
+            "branch": <str>,
+            "status": <str: status output or "(clean)">,
+            "recent_commits": <str>,
+        },
+        ...
+    ],
+}
+```
+
+Per-repo errors are embedded as `{"repo_id": <str>, "error": <str>}` entries rather than aborting the whole command.
+
+**Errors:**
+- Project not found.
+- Project has no repos and no valid workspace path.
+- Project workspace is not a git repository.
+
+---
+
+### Git Low-Level Commands
+
+These commands use `_resolve_repo_path` for path lookup. The first group (`git_commit`, `git_push`, `git_create_branch`, `git_merge`, `git_create_pr`, `git_changed_files`) use `repo_id` as the primary key and require it. The second group (`git_log`, `git_branch`, `git_checkout`, `git_diff`) use `project_id` as the primary key with `repo_id` as an optional filter.
+
+---
+
+#### `git_commit`
+
+Stage all changes and commit in a repository.
+
+**Parameters:**
+- `repo_id` (required)
+- `message` (required): Commit message.
+- `project_id` (optional)
+
+**Returns on success (committed):**
+```python
+{"repo_id": <str>, "committed": True, "commit_message": <str>}
+```
+
+**Returns on success (nothing to commit):**
+```python
+{"repo_id": <str>, "committed": False, "message": "Nothing to commit — working tree clean"}
+```
+
+**Errors:**
+- Repo path resolution failure.
+- Git error.
+
+---
+
+#### `git_push`
+
+Push a branch to the remote origin.
+
+**Parameters:**
+- `repo_id` (required)
+- `branch` (optional): Branch to push; defaults to current branch.
+- `project_id` (optional)
+
+**Returns on success:**
+```python
+{"repo_id": <str>, "pushed": <str: branch>}
+```
+
+**Errors:**
+- Repo path resolution failure.
+- Could not determine current branch.
+- Git error.
+
+---
+
+#### `git_create_branch`
+
+Create and switch to a new branch.
+
+**Parameters:**
+- `repo_id` (required)
+- `branch_name` (required)
+- `project_id` (optional)
+
+**Returns on success:**
+```python
+{"repo_id": <str>, "created_branch": <str>}
+```
+
+**Errors:**
+- Repo path resolution failure.
+- Git error.
+
+---
+
+#### `git_merge`
+
+Merge a branch into the default branch.
+
+**Parameters:**
+- `repo_id` (required)
+- `branch_name` (required): The branch to merge.
+- `default_branch` (optional): Target branch; falls back to `repo.default_branch` then `"main"`.
+- `project_id` (optional)
+
+**Returns on success (merged):**
+```python
+{"repo_id": <str>, "merged": True, "branch": <str>, "into": <str>}
+```
+
+**Returns on success (conflict):**
+```python
+{
+    "repo_id": <str>,
+    "merged": False,
+    "into": <str>,
+    "message": "Merge conflict — merge of '<branch>' into '<default_branch>' was aborted",
+}
+```
+
+**Errors:**
+- Repo path resolution failure.
+- Git error.
+
+---
+
+#### `git_create_pr`
+
+Create a GitHub pull request using the `gh` CLI.
+
+**Parameters:**
+- `repo_id` (required)
+- `title` (required): PR title.
+- `body` (optional, default `""`): PR description body.
+- `branch` (optional): Source branch; defaults to current branch.
+- `base` (optional): Target branch; defaults to `repo.default_branch` then `"main"`.
+- `project_id` (optional)
+
+**Returns on success:**
+```python
+{"repo_id": <str>, "pr_url": <str>, "branch": <str>, "base": <str>}
+```
+
+**Errors:**
+- Repo path resolution failure.
+- Could not determine current branch.
+- Git error (e.g. `gh` CLI not installed, not authenticated).
+
+---
+
+#### `git_changed_files`
+
+List files changed compared to a base branch.
+
+**Parameters:**
+- `repo_id` (required)
+- `base_branch` (optional): Comparison base; defaults to `repo.default_branch` then `"main"`.
+- `project_id` (optional)
+
+**Returns on success:**
+```python
+{
+    "repo_id": <str>,
+    "base_branch": <str>,
+    "files": [<str>, ...],
+    "count": <int>,
+}
+```
+
+**Errors:**
+- Repo path resolution failure.
+
+---
+
+#### `git_log`
+
+Show recent commit history for a repository.
+
+**Parameters:**
+- `project_id` (required)
+- `count` (optional, default `10`): Number of commits to return.
+- `repo_id` (optional)
+
+**Returns on success:**
+```python
+{
+    "project_id": <str>,
+    "repo_id": <str>,
+    "branch": <str>,
+    "log": <str: formatted commit log or "(no commits)">,
+}
+```
+
+**Errors:**
+- Repo path resolution failure.
+
+---
+
+#### `git_branch`
+
+List branches or create a new branch.
+
+**Parameters:**
+- `project_id` (required)
+- `name` (optional): If provided, a new branch is created and checked out; otherwise branches are listed.
+- `repo_id` (optional)
+
+**Returns on success (list):**
+```python
+{
+    "project_id": <str>,
+    "current_branch": <str>,
+    "branches": [<str>, ...],
+}
+```
+
+**Returns on success (create):**
+```python
+{
+    "project_id": <str>,
+    "created": <str: branch_name>,
+    "message": "Created and switched to branch '<name>'",
+}
+```
+
+**Errors:**
+- Repo path resolution failure.
+- Git error (branch creation only).
+
+---
+
+#### `git_checkout`
+
+Switch to an existing branch.
+
+**Parameters:**
+- `project_id` (required)
+- `branch` (required): Name of the branch to check out.
+- `repo_id` (optional)
+
+**Returns on success:**
+```python
+{
+    "project_id": <str>,
+    "old_branch": <str>,
+    "new_branch": <str>,
+    "message": "Switched from '<old>' to '<new>'",
+}
+```
+
+**Errors:**
+- Repo path resolution failure.
+- Git error.
+
+---
+
+#### `git_diff`
+
+Show a diff of the working tree or against a base branch.
+
+**Parameters:**
+- `project_id` (required)
+- `base_branch` (optional): If provided, runs `git.get_diff(path, base_branch)`; otherwise shows the working tree diff (unstaged changes via `git diff`).
+- `repo_id` (optional)
+
+**Returns on success:**
+```python
+{
+    "project_id": <str>,
+    "repo_id": <str>,
+    "base_branch": <str: base or "(working tree)">,
+    "diff": <str: diff text or "(no changes)">,
+}
+```
+
+**Errors:**
+- Repo path resolution failure.
+- Git error.
+
+---
+
+### Hooks
+
+---
+
+#### `create_hook`
+
+Creates a new hook for a project.
+
+**Parameters:**
+- `project_id` (required): Must exist.
+- `name` (required): Human-readable hook name. Hook ID is derived by lowercasing and replacing spaces with hyphens.
+- `trigger` (required): Dict describing when the hook fires (serialized as JSON).
+- `prompt_template` (required): Jinja/string template for the LLM prompt.
+- `context_steps` (optional, default `[]`): List of context-gathering steps (serialized as JSON).
+- `cooldown_seconds` (optional, default `3600`): Minimum seconds between firings.
+- `llm_config` (optional): Dict of LLM configuration overrides (serialized as JSON).
+
+**Returns on success:**
+```python
+{"created": <str: hook_id>, "name": <str>, "project_id": <str>}
+```
+
+**Errors:**
+- Project not found.
+
+---
+
+#### `list_hooks`
+
+Lists all hooks, optionally filtered by project.
+
+**Parameters:**
+- `project_id` (optional)
+
+**Returns on success:**
+```python
+{
+    "hooks": [
+        {
+            "id": <str>,
+            "project_id": <str>,
+            "name": <str>,
+            "enabled": <bool>,
+            "trigger": <dict: deserialized from JSON>,
+            "cooldown_seconds": <int>,
+        },
+        ...
+    ]
+}
+```
+
+**Errors:** None expected.
+
+---
+
+#### `edit_hook`
+
+Updates one or more fields on an existing hook.
+
+**Parameters:**
+- `hook_id` (required)
+- `enabled` (optional): Boolean.
+- `trigger` (optional): Dict (serialized to JSON).
+- `context_steps` (optional): List (serialized to JSON).
+- `prompt_template` (optional): String.
+- `cooldown_seconds` (optional): Integer.
+- `llm_config` (optional): Dict (serialized to JSON).
+
+At least one optional field must be supplied.
+
+**Returns on success:**
+```python
+{"updated": <str: hook_id>, "fields": [<list of updated field names>]}
+```
+
+**Errors:**
+- Hook not found.
+- No updatable fields provided.
+
+---
+
+#### `delete_hook`
+
+Deletes a hook.
+
+**Parameters:**
+- `hook_id` (required)
+
+**Returns on success:**
+```python
+{"deleted": <str: hook_id>, "name": <str>}
+```
+
+**Errors:**
+- Hook not found.
+
+---
+
+#### `list_hook_runs`
+
+Returns recent execution records for a hook.
+
+**Parameters:**
+- `hook_id` (required)
+- `limit` (optional, default `10`): Maximum number of run records to return.
+
+**Returns on success:**
+```python
+{
+    "hook_id": <str>,
+    "hook_name": <str>,
+    "runs": [
+        {
+            "id": <str>,
+            "trigger_reason": <str>,
+            "status": <str>,
+            "tokens_used": <int>,
+            "skipped_reason": <str | None>,
+            "started_at": <str | float>,
+            "completed_at": <str | float | None>,
+        },
+        ...
+    ],
+}
+```
+
+**Errors:**
+- Hook not found.
+
+---
+
+#### `fire_hook`
+
+Manually fires a hook immediately (bypasses cooldown).
+
+**Parameters:**
+- `hook_id` (required)
+
+**Behavior:** Delegates to `orchestrator.hooks.fire_hook(hook_id)`. The hook runs asynchronously.
+
+**Returns on success:**
+```python
+{"fired": <str: hook_id>, "status": "running"}
+```
+
+**Errors:**
+- Hook engine is not enabled (`orchestrator.hooks` is None).
+- Hook not found (raised as `ValueError` by the hooks engine).
+
+---
+
+### Notes
+
+Notes are stored as Markdown files in `{project.workspace_path}/notes/`. Filenames are derived from the title using `git.slugify`.
+
+---
+
+#### `list_notes`
+
+Lists all notes for a project.
+
+**Parameters:**
+- `project_id` (required)
+
+**Behavior:** Reads filenames from the `notes/` directory (`.md` files only, sorted alphabetically). For each file, reads the first line to extract a title (if it starts with `# `); otherwise derives the title from the filename.
+
+**Returns on success:**
+```python
+{
+    "project_id": <str>,
+    "notes": [
+        {
+            "name": <str: filename>,
+            "title": <str>,
+            "size_bytes": <int>,
+            "modified": <float: mtime>,
+            "path": <str: absolute path>,
+        },
+        ...
+    ],
+}
+```
+
+If the `notes/` directory does not exist, returns an empty `notes` list (not an error).
+
+**Errors:**
+- Project not found.
+
+---
+
+#### `write_note`
+
+Creates or overwrites a note.
+
+**Parameters:**
+- `project_id` (required)
+- `title` (required): Note title. Slugified for the filename.
+- `content` (required): Full Markdown content to write.
+
+**Behavior:** Creates the `notes/` directory if it does not exist. Slugifies the title to form the filename. Writes the content (overwriting any existing file with the same slug).
+
+**Returns on success:**
+```python
+{
+    "path": <str: absolute file path>,
+    "title": <str>,
+    "status": "created" | "updated",
+}
+```
+
+**Errors:**
+- Project not found.
+- Title produces an empty slug after slugification.
+
+---
+
+#### `delete_note`
+
+Deletes a note by title.
+
+**Parameters:**
+- `project_id` (required)
+- `title` (required): Title of the note to delete. Slugified to find the file.
+
+**Returns on success:**
+```python
+{"deleted": <str: absolute file path>, "title": <str>}
+```
+
+**Errors:**
+- Project not found.
+- Note not found (file does not exist).
+
+---
+
+### System
+
+---
+
+#### `get_recent_events`
+
+Returns recent system events from the event log.
+
+**Parameters:**
+- `limit` (optional, default `10`): Number of events to return.
+
+**Returns on success:**
+```python
+{"events": [<event dicts>, ...]}
+```
+
+**Errors:** None expected.
+
+---
+
+#### `get_token_usage`
+
+Returns token usage statistics, scoped to a task, project, or the entire system.
+
+**Parameters:**
+- `task_id` (optional): If provided, returns per-agent token breakdown for this task.
+- `project_id` (optional): If provided (and `task_id` not given), returns per-task/agent breakdown for this project.
+- Neither: Returns per-project totals system-wide.
+
+**Returns on success (task scope):**
+```python
+{
+    "task_id": <str>,
+    "breakdown": [{"agent_id": <str>, "tokens": <int>, "entries": <int>}, ...],
+    "total": <int>,
+}
+```
+
+**Returns on success (project scope):**
+```python
+{
+    "project_id": <str>,
+    "breakdown": [{"task_id": <str>, "agent_id": <str>, "tokens": <int>}, ...],
+    "total": <int>,
+}
+```
+
+**Returns on success (system scope):**
+```python
+{
+    "breakdown": [{"project_id": <str>, "tokens": <int>}, ...],
+    "total": <int>,
+}
+```
+
+**Errors:** None expected.
+
+---
+
+#### `set_active_project`
+
+Sets or clears the `_active_project_id` on the handler, which is used as a fallback scope for certain commands (e.g. `get_chain_health`).
+
+**Parameters:**
+- `project_id` (optional): If not provided or empty, the active project is cleared.
+
+**Returns on success (set):**
+```python
+{"active_project": <str: project_id>, "name": <str>}
+```
+
+**Returns on success (cleared):**
+```python
+{"active_project": None, "message": "Active project cleared"}
+```
+
+**Errors:**
+- Project not found (when `project_id` is provided).
+
+---
+
+#### `orchestrator_control`
+
+Pauses, resumes, or checks the status of the orchestrator loop.
+
+**Parameters:**
+- `action` (required): One of `"pause"`, `"resume"`, `"status"`.
+
+**Returns on success (pause):**
+```python
+{"status": "paused", "message": "Orchestrator paused — no new tasks will be scheduled"}
+```
+
+**Returns on success (resume):**
+```python
+{"status": "running", "message": "Orchestrator resumed"}
+```
+
+**Returns on success (status):**
+```python
+{"status": "paused" | "running", "running_tasks": <int>}
+```
+
+**Errors:** None expected (unrecognized action falls through to the `status` case).
+
+---
+
+#### `restart_daemon`
+
+Sends `SIGTERM` to the current process, causing the daemon to shut down (and presumably restart via a process manager).
+
+**Parameters:** None.
+
+**Returns on success:**
+```python
+{"status": "restarting", "message": "Daemon restart initiated"}
+```
+
+**Errors:** None expected.
+
+---
+
+#### `read_file`
+
+Reads a file from within an allowed directory. Intended for the chat agent, not Discord slash commands.
+
+**Parameters:**
+- `path` (required): File path. If not absolute, it is joined with `config.workspace_dir`.
+- `max_lines` (optional, default `200`): Maximum lines to return. If the file is longer, a truncation notice is appended.
+
+**Behavior:** Resolves the path and validates it via `_validate_path`. Reads up to `max_lines` lines. Returns an error for binary files (UnicodeDecodeError).
+
+**Returns on success:**
+```python
+{"content": <str: file contents>, "path": <str: validated absolute path>}
+```
+
+**Errors:**
+- Path is outside allowed directories.
+- File not found.
+- Binary file (cannot display).
+
+---
+
+#### `run_command`
+
+Executes a shell command in a validated working directory. Intended for the chat agent.
+
+**Parameters:**
+- `command` (required): Shell command string (executed via `shell=True`).
+- `working_dir` (required): Directory to run the command in. If not an absolute path, the handler first tries to look it up as a project ID; if that fails, it joins with `config.workspace_dir`.
+- `timeout` (optional, default `30`, max `120`): Execution timeout in seconds.
+
+**Behavior:** Validates the working directory via `_validate_path`. Runs the command in a thread using `subprocess.run`. Stdout is truncated to 4000 characters; stderr to 2000 characters.
+
+**Returns on success:**
+```python
+{
+    "returncode": <int>,
+    "stdout": <str>,
+    "stderr": <str>,
+}
+```
+
+**Errors:**
+- Working directory is outside allowed directories.
+- Directory not found.
+- Command timed out.
+
+---
+
+#### `search_files`
+
+Searches for patterns in files within a validated directory. Intended for the chat agent.
+
+**Parameters:**
+- `pattern` (required): Search pattern (regex for `grep` mode; glob for `find` mode).
+- `path` (required): Directory to search. If not absolute, joined with `config.workspace_dir`.
+- `mode` (optional, default `"grep"`): Either `"grep"` (recursive regex search, up to 50 matches) or `"find"` (filename glob search).
+
+**Behavior:** Validates the directory via `_validate_path`. Runs `grep -rn --include=* -m 50 <pattern> <path>` in `grep` mode, or `find <path> -name <pattern> -type f` in `find` mode. Output is truncated to 4000 characters.
+
+**Returns on success:**
+```python
+{"results": <str: output or "(no matches)">, "mode": <str>}
+```
+
+**Errors:**
+- Path is outside allowed directories.
+- Directory not found.
+- Search timed out.
+
+---
+
+## 5. Path Validation (`_validate_path`)
+
+```python
+async def _validate_path(self, path: str) -> str | None
+```
+
+This method is a security gate that ensures file operations cannot escape designated directories.
+
+**Logic:**
+1. Resolves the given path to its canonical realpath (resolves symlinks).
+2. Resolves `config.workspace_dir` to its canonical realpath.
+3. If the resolved path is within (starts with `{workspace_real}/`) or equal to `workspace_real`, the canonical path is returned (allowed).
+4. Otherwise, fetches all repos from the database. For each repo that has a `source_path`, resolves that `source_path` to its canonical realpath. If the given path is within or equal to any repo's `source_path`, the canonical path is returned (allowed).
+5. If none of the above match, returns `None` (denied).
+
+The caller is responsible for checking whether `None` was returned and returning an access-denied error to the user.
+
+---
+
+## 6. Repo Path Resolution (`_resolve_repo_path`)
+
+```python
+async def _resolve_repo_path(self, args: dict) -> tuple[str | None, RepoConfig | None, dict | None]
+```
+
+Returns a 3-tuple: `(checkout_path, repo_config, error_dict)`. On success, `error_dict` is `None`. On failure, `checkout_path` is `None`.
+
+**Logic:**
+
+1. Reads `project_id` and `repo_id` from `args`.
+2. If neither is provided, returns an error.
+3. If `project_id` is provided, fetches and validates the project exists. `repo_id` alone (without `project_id`) is also a valid input — the repo is looked up directly, which keeps older repo-id-only commands working.
+4. **Repo resolution:**
+   - If `repo_id` is provided, fetches that specific repo (error if not found).
+   - If only `project_id` is provided, fetches the project's repos and takes the first one (or `None` if none exist).
+5. **Path determination:**
+   - If a repo was found:
+     - `LINK` source type: uses `repo.source_path`.
+     - `CLONE` or `INIT` source type: uses `repo.checkout_base_path`.
+     - If neither path is set: error.
+   - If no repo was found: uses `project.workspace_path` as the checkout path (requires project context; error if workspace path is invalid).
+6. Validates that the determined path exists as a directory (error if not).
+7. Calls `git.validate_checkout(checkout_path)` to confirm it is a git repository (error if not).
+8. Returns `(checkout_path, repo, None)`.
+
+**Summary of error conditions:**
+- Neither `project_id` nor `repo_id` provided.
+- Project not found.
+- Repo not found (when `repo_id` specified).
+- Repo has no usable path configured.
+- No repo found and no project context.
+- Project has no repos and no valid workspace.
+- Path does not exist on disk.
+- Path is not a valid git repository.
+
+---
+
+## 7. In-Progress Warning (`_warn_if_in_progress`)
+
+```python
+async def _warn_if_in_progress(self, project_id: str) -> str | None
+```
+
+Queries the database for any tasks with status `IN_PROGRESS` for the given project. If any are found, returns a warning string of the form:
+
+```
+⚠️ {n} task(s) currently IN_PROGRESS for this project — this operation may disrupt running agent(s).
+```
+
+If no tasks are in progress, returns `None`.
+
+This method is called by the high-level git commands `checkout_branch`, `commit_changes`, and `merge_branch` after a successful git operation. The warning is included in the response dict under the `"warning"` key when present. It is never a blocking error — the git operation proceeds regardless.

@@ -1,11 +1,9 @@
 """Tests for the set_project_channel command.
 
 Covers:
-- Link a channel as notifications (default)
-- Link a channel as control
-- Invalid channel_type -> error
+- Link a channel to a project
 - Project not found -> error
-- DB state is updated correctly for both channel types
+- DB state is updated correctly
 - Setting a new channel replaces the previous one
 """
 
@@ -41,10 +39,10 @@ async def handler(db, config):
     return CommandHandler(orchestrator, config)
 
 
-class TestSetNotificationsChannel:
-    """Link a channel as the notifications channel (default)."""
+class TestSetProjectChannel:
+    """Link a channel to a project."""
 
-    async def test_link_notifications_channel(self, handler, db):
+    async def test_link_channel(self, handler, db):
         await db.create_project(Project(id="p-1", name="Alpha"))
 
         result = await handler.execute("set_project_channel", {
@@ -55,28 +53,12 @@ class TestSetNotificationsChannel:
         assert "error" not in result
         assert result["project_id"] == "p-1"
         assert result["channel_id"] == "111111111111111111"
-        assert result["channel_type"] == "notifications"
         assert result["status"] == "linked"
 
         project = await db.get_project("p-1")
         assert project.discord_channel_id == "111111111111111111"
 
-    async def test_explicit_notifications_type(self, handler, db):
-        await db.create_project(Project(id="p-1", name="Alpha"))
-
-        result = await handler.execute("set_project_channel", {
-            "project_id": "p-1",
-            "channel_id": "222222222222222222",
-            "channel_type": "notifications",
-        })
-
-        assert "error" not in result
-        assert result["channel_type"] == "notifications"
-
-        project = await db.get_project("p-1")
-        assert project.discord_channel_id == "222222222222222222"
-
-    async def test_replace_existing_notifications_channel(self, handler, db):
+    async def test_replace_existing_channel(self, handler, db):
         """Setting a new channel replaces the old one."""
         await db.create_project(Project(id="p-1", name="Alpha"))
 
@@ -94,45 +76,6 @@ class TestSetNotificationsChannel:
         assert project.discord_channel_id == "999999999999999999"
 
 
-class TestSetControlChannel:
-    """Link a channel as the control channel."""
-
-    async def test_link_control_channel(self, handler, db):
-        await db.create_project(Project(id="p-1", name="Alpha"))
-
-        result = await handler.execute("set_project_channel", {
-            "project_id": "p-1",
-            "channel_id": "333333333333333333",
-            "channel_type": "control",
-        })
-
-        assert "error" not in result
-        assert result["channel_type"] == "control"
-        assert result["status"] == "linked"
-
-        project = await db.get_project("p-1")
-        assert project.discord_control_channel_id == "333333333333333333"
-
-    async def test_both_channels_independent(self, handler, db):
-        """Setting one channel type doesn't affect the other."""
-        await db.create_project(Project(id="p-1", name="Alpha"))
-
-        await handler.execute("set_project_channel", {
-            "project_id": "p-1",
-            "channel_id": "111111111111111111",
-            "channel_type": "notifications",
-        })
-        await handler.execute("set_project_channel", {
-            "project_id": "p-1",
-            "channel_id": "222222222222222222",
-            "channel_type": "control",
-        })
-
-        project = await db.get_project("p-1")
-        assert project.discord_channel_id == "111111111111111111"
-        assert project.discord_control_channel_id == "222222222222222222"
-
-
 class TestSetProjectChannelErrors:
     """Error conditions for set_project_channel."""
 
@@ -144,18 +87,6 @@ class TestSetProjectChannelErrors:
 
         assert "error" in result
         assert "not found" in result["error"].lower()
-
-    async def test_invalid_channel_type(self, handler, db):
-        await db.create_project(Project(id="p-1", name="Alpha"))
-
-        result = await handler.execute("set_project_channel", {
-            "project_id": "p-1",
-            "channel_id": "111111111111111111",
-            "channel_type": "invalid",
-        })
-
-        assert "error" in result
-        assert "channel_type" in result["error"].lower()
 
 
 class TestSetProjectChannelToolDefinition:
@@ -175,6 +106,6 @@ class TestSetProjectChannelToolDefinition:
         assert schema["type"] == "object"
         assert "project_id" in schema["properties"]
         assert "channel_id" in schema["properties"]
-        assert "channel_type" in schema["properties"]
+        assert "channel_type" not in schema["properties"]
         assert "project_id" in schema["required"]
         assert "channel_id" in schema["required"]

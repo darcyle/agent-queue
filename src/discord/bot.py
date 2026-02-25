@@ -29,12 +29,10 @@ class AgentQueueBot(commands.Bot):
         # Register a callback so that project deletions (from any caller)
         # automatically purge the bot's in-memory channel caches.
         self.agent.handler._on_project_deleted = self.clear_project_channels
-        self._control_channel: discord.TextChannel | None = None
-        self._notifications_channel: discord.TextChannel | None = None
-        # Per-project channel caches: project_id -> channel
+        self._channel: discord.TextChannel | None = None
+        # Per-project channel cache: project_id -> channel
         self._project_channels: dict[str, discord.TextChannel] = {}
-        self._project_control_channels: dict[str, discord.TextChannel] = {}
-        # Reverse lookup: channel_id -> project_id (covers both notification and control channels)
+        # Reverse lookup: channel_id -> project_id
         self._channel_to_project: dict[int, str] = {}
         self._processed_messages: set[int] = set()
         self._channel_summaries: dict[int, tuple[int, str]] = {}  # channel_id -> (up_to_message_id, summary)
@@ -70,7 +68,7 @@ class AgentQueueBot(commands.Bot):
         self._save_notes_threads()
 
     def update_project_channel(
-        self, project_id: str, channel: discord.TextChannel, channel_type: str = "notifications"
+        self, project_id: str, channel: discord.TextChannel
     ) -> None:
         """Update the cached channel for a project at runtime.
 
@@ -78,18 +76,11 @@ class AgentQueueBot(commands.Bot):
         bot immediately routes to the new channel without requiring a restart.
         Also maintains the reverse ``_channel_to_project`` mapping.
         """
-        if channel_type == "control":
-            # Remove stale reverse entry for old control channel, if any
-            old_ch = self._project_control_channels.get(project_id)
-            if old_ch is not None and old_ch.id != channel.id:
-                self._channel_to_project.pop(old_ch.id, None)
-            self._project_control_channels[project_id] = channel
-        else:
-            # Remove stale reverse entry for old notification channel, if any
-            old_ch = self._project_channels.get(project_id)
-            if old_ch is not None and old_ch.id != channel.id:
-                self._channel_to_project.pop(old_ch.id, None)
-            self._project_channels[project_id] = channel
+        # Remove stale reverse entry for old channel, if any
+        old_ch = self._project_channels.get(project_id)
+        if old_ch is not None and old_ch.id != channel.id:
+            self._channel_to_project.pop(old_ch.id, None)
+        self._project_channels[project_id] = channel
         # Always update the reverse mapping
         self._channel_to_project[channel.id] = project_id
 
@@ -98,7 +89,7 @@ class AgentQueueBot(commands.Bot):
 
         Called after project deletion to keep the in-memory cache in sync
         with the database and avoid stale routing entries.  Cleans up:
-        - ``_project_channels`` / ``_project_control_channels``
+        - ``_project_channels``
         - ``_notes_threads`` entries that map to the deleted project
         - ``_channel_summaries`` and ``_channel_locks`` for the project's channels
         """
@@ -106,10 +97,6 @@ class AgentQueueBot(commands.Bot):
         # can clean up secondary caches keyed by channel ID.
         stale_channel_ids: set[int] = set()
         ch = self._project_channels.pop(project_id, None)
-        if ch is not None:
-            stale_channel_ids.add(ch.id)
-            self._channel_to_project.pop(ch.id, None)
-        ch = self._project_control_channels.pop(project_id, None)
         if ch is not None:
             stale_channel_ids.add(ch.id)
             self._channel_to_project.pop(ch.id, None)
@@ -184,29 +171,17 @@ class AgentQueueBot(commands.Bot):
             guild = self.get_guild(int(self.config.discord.guild_id))
             self._guild = guild
             if guild:
-                control_name = self.config.discord.channels.get("control", "control")
-                notifications_name = self.config.discord.channels.get("notifications", "notifications")
+                channel_name = self.config.discord.channels.get("channel", "agent-queue")
                 for ch in guild.text_channels:
-                    if ch.name == control_name:
-                        self._control_channel = ch
-                    if ch.name == notifications_name:
-                        self._notifications_channel = ch
+                    if ch.name == channel_name:
+                        self._channel = ch
 
-                if self._notifications_channel:
-                    print(f"Notifications channel: #{self._notifications_channel.name}")
-                    self.orchestrator.set_notify_callback(self._send_notification)
-                else:
-                    print(f"Warning: notifications channel '{notifications_name}' not found")
-
-                if self._control_channel:
-                    print(f"Control channel: #{self._control_channel.name}")
-                    self.orchestrator.set_control_callback(self._send_control_message)
-                else:
-                    print(f"Warning: control channel '{control_name}' not found")
-
-                # Wire up thread creation for task streaming
-                if self._notifications_channel:
+                if self._channel:
+                    print(f"Bot channel: #{self._channel.name}")
+                    self.orchestrator.set_notify_callback(self._send_message)
                     self.orchestrator.set_create_thread_callback(self._create_task_thread)
+                else:
+                    print(f"Warning: bot channel '{channel_name}' not found")
 
                 # Resolve per-project channels from database
                 await self._resolve_project_channels()
@@ -287,9 +262,8 @@ class AgentQueueBot(commands.Bot):
     async def _resolve_project_channels(self) -> None:
         """Resolve per-project Discord channels from the database.
 
-        Projects may have ``discord_channel_id`` and/or
-        ``discord_control_channel_id`` set.  This method looks up the
-        corresponding :class:`discord.TextChannel` objects and caches
+        Projects may have ``discord_channel_id`` set.  This method looks up
+        the corresponding :class:`discord.TextChannel` objects and caches
         them for fast routing.
 
         When a stored channel ID no longer resolves to a guild channel
@@ -306,7 +280,7 @@ class AgentQueueBot(commands.Bot):
                 if ch and isinstance(ch, discord.TextChannel):
                     self._project_channels[project.id] = ch
                     self._channel_to_project[ch.id] = project.id
-                    print(f"Project '{project.id}' notifications: #{ch.name}")
+                    print(f"Project '{project.id}' channel: #{ch.name}")
                 else:
                     print(
                         f"Warning: project '{project.id}' channel "
@@ -315,55 +289,23 @@ class AgentQueueBot(commands.Bot):
                     await self.orchestrator.db.update_project(
                         project.id, discord_channel_id=None
                     )
-            if project.discord_control_channel_id:
-                ch = self._guild.get_channel(int(project.discord_control_channel_id))
-                if ch and isinstance(ch, discord.TextChannel):
-                    self._project_control_channels[project.id] = ch
-                    self._channel_to_project[ch.id] = project.id
-                    print(f"Project '{project.id}' control: #{ch.name}")
-                else:
-                    print(
-                        f"Warning: project '{project.id}' control channel "
-                        f"{project.discord_control_channel_id} not found in guild — clearing stale ID"
-                    )
-                    await self.orchestrator.db.update_project(
-                        project.id, discord_control_channel_id=None
-                    )
 
-    def _get_notification_channel(
+    def _get_channel(
         self, project_id: str | None = None
     ) -> discord.TextChannel | None:
-        """Return the notification channel for a project, falling back to global."""
+        """Return the channel for a project, falling back to the global channel."""
         if project_id and project_id in self._project_channels:
             return self._project_channels[project_id]
-        return self._notifications_channel
+        return self._channel
 
-    def _get_control_channel(
-        self, project_id: str | None = None
-    ) -> discord.TextChannel | None:
-        """Return the control channel for a project, falling back to global."""
-        if project_id and project_id in self._project_control_channels:
-            return self._project_control_channels[project_id]
-        return self._control_channel
-
-    def _is_global_notification_channel(
+    def _is_global_channel(
         self, channel: discord.TextChannel, project_id: str | None
     ) -> bool:
         """Return True if *channel* is the global fallback (not a per-project channel)."""
         return (
             project_id is not None
-            and channel == self._notifications_channel
+            and channel == self._channel
             and project_id not in self._project_channels
-        )
-
-    def _is_global_control_channel(
-        self, channel: discord.TextChannel, project_id: str | None
-    ) -> bool:
-        """Return True if *channel* is the global fallback (not a per-project control channel)."""
-        return (
-            project_id is not None
-            and channel == self._control_channel
-            and project_id not in self._project_control_channels
         )
 
     @staticmethod
@@ -371,37 +313,18 @@ class AgentQueueBot(commands.Bot):
         """Prepend a ``[project-id]`` tag to a message for global-channel context."""
         return f"[`{project_id}`] {text}"
 
-    async def _send_notification(self, text: str, project_id: str | None = None) -> None:
-        """Send a message to the notifications channel (project-specific or global).
+    async def _send_message(self, text: str, project_id: str | None = None) -> None:
+        """Send a message to the project's channel (or the global channel).
 
-        When the notification is routed to the **global** channel (because the
+        When the message is routed to the **global** channel (because the
         project has no dedicated channel), a ``[project-id]`` tag is prepended
         so users can tell which project the message belongs to.
         """
-        channel = self._get_notification_channel(project_id)
+        channel = self._get_channel(project_id)
         if channel:
-            if project_id and self._is_global_notification_channel(channel, project_id):
+            if project_id and self._is_global_channel(channel, project_id):
                 text = self._prepend_project_tag(text, project_id)
             await self._send_long_message(channel, text)
-
-    async def _send_control_message(self, text: str, project_id: str | None = None) -> None:
-        """Send a message to the control channel (project-specific or global).
-
-        Skips sending if the control channel is the same as the notifications
-        channel to avoid duplicate messages.  Prepends a ``[project-id]`` tag
-        when falling back to the global control channel.
-        """
-        channel = self._get_control_channel(project_id)
-        if not channel:
-            return
-        # Avoid duplicating messages when control and notifications target
-        # the same Discord channel.
-        notify_channel = self._get_notification_channel(project_id)
-        if channel.id == notify_channel.id if notify_channel else False:
-            return
-        if project_id and self._is_global_control_channel(channel, project_id):
-            text = self._prepend_project_tag(text, project_id)
-        await self._send_long_message(channel, text)
 
     async def _create_task_thread(
         self, thread_name: str, initial_message: str, project_id: str | None = None
@@ -418,14 +341,14 @@ class AgentQueueBot(commands.Bot):
 
         Returns None if the notifications channel is unavailable.
         """
-        channel = self._get_notification_channel(project_id)
+        channel = self._get_channel(project_id)
         if not channel:
-            print("Cannot create thread: no notifications channel")
+            print("Cannot create thread: no channel configured")
             return None
 
         # When routing to the global channel, prepend a project tag so users
         # can tell which project the thread belongs to.
-        is_global = self._is_global_notification_channel(channel, project_id)
+        is_global = self._is_global_channel(channel, project_id)
         display_name = thread_name
         if is_global and project_id:
             display_name = f"[{project_id}] {thread_name}"
@@ -485,27 +408,20 @@ class AgentQueueBot(commands.Bot):
         if self._boot_time and message.created_at.timestamp() < self._boot_time:
             return
 
-        # Only respond in the control channel, per-project control channels,
+        # Only respond in the global bot channel, per-project channels,
         # when mentioned, or in a notes thread
-        is_control = (
-            self._control_channel
-            and message.channel.id == self._control_channel.id
+        is_bot_channel = (
+            self._channel
+            and message.channel.id == self._channel.id
         )
-        # Check if this is a per-project control channel (O(1) reverse lookup)
-        project_control_id: str | None = None
-        channel_project_id = self._channel_to_project.get(message.channel.id)
-        if channel_project_id is not None:
-            # Verify it's specifically a control channel for this project
-            ctrl_ch = self._project_control_channels.get(channel_project_id)
-            if ctrl_ch is not None and ctrl_ch.id == message.channel.id:
-                project_control_id = channel_project_id
-        is_project_control = project_control_id is not None
+        # Check if this is a per-project channel (O(1) reverse lookup)
+        project_channel_id: str | None = self._channel_to_project.get(message.channel.id)
 
         is_mentioned = self.user in message.mentions
         notes_project_id = self._notes_threads.get(message.channel.id)
         is_notes_thread = notes_project_id is not None
 
-        if not is_control and not is_project_control and not is_mentioned and not is_notes_thread:
+        if not is_bot_channel and project_channel_id is None and not is_mentioned and not is_notes_thread:
             return
 
         # Strip the bot mention from the message text
@@ -529,16 +445,16 @@ class AgentQueueBot(commands.Bot):
                         )
                         return
 
-                    # Prepend project context for notes threads and project control channels
+                    # Prepend project context for project channels and notes threads
                     user_text = text
-                    if is_project_control and not is_control:
+                    if project_channel_id and not is_bot_channel:
                         user_text = (
-                            f"[Context: this is the control channel for project "
-                            f"`{project_control_id}`. Default to using "
-                            f"project_id='{project_control_id}' for all project-scoped "
+                            f"[Context: this is the channel for project "
+                            f"`{project_channel_id}`. Default to using "
+                            f"project_id='{project_channel_id}' for all project-scoped "
                             f"commands.]\n{text}"
                         )
-                    elif is_notes_thread and not is_control:
+                    elif is_notes_thread and not is_bot_channel:
                         user_text = (
                             f"[Context: this is the notes thread for project "
                             f"`{notes_project_id}`. Default to using notes tools "

@@ -149,6 +149,63 @@ Documented in `plan.md` — five interrelated issues with plan-generated tasks g
 
 Also: `state_machine.py` defines valid transitions but they're never enforced in production — all transitions use direct `db.update_task()`.
 
+## Spec-Driven Development
+
+This project follows a **spec-driven development workflow**. Specifications are the source of truth for all functionality.
+
+### Flow
+
+```
+specs/ (source of truth)  →  src/ (implementation)  →  tests/ (verification)  →  docs/ (generated)
+```
+
+1. **Specs first:** All changes start by updating or creating a spec in `specs/`
+2. **Code from specs:** Implementation in `src/` is written to satisfy the spec
+3. **Tests from specs:** Tests in `tests/` verify the spec's behavioral contracts
+4. **Docs from code:** Documentation in `docs/` is generated from the implemented code
+
+### Specs Folder Structure
+
+The `specs/` folder mirrors `src/` structure. Each spec covers one or more closely-related source files:
+
+```
+specs/
+├── models-and-state-machine.md    — Data models, enums, state transitions, DAG validation
+├── config.md                      — YAML config loading, env var substitution, all config fields
+├── main.md                        — Entry point, process lifecycle, signal handling, restart
+├── database.md                    — SQLite schema (14 tables), all CRUD operations, migrations
+├── orchestrator.md                — Central loop, task lifecycle, workspace management, plan generation
+├── scheduler-and-budget.md        — Credit-weight scheduling, token budgets, rate limit windows
+├── command-handler.md             — All 50+ commands, input/output contracts, error handling
+├── chat-agent.md                  — LLM tool definitions, conversation loop, history compaction
+├── event-bus.md                   — Async pub/sub, wildcard subscriptions
+├── plan-parser.md                 — Plan file discovery, regex + LLM parsing, step extraction
+├── hooks.md                       — Hook engine, triggers, context steps, LLM invocation, cooldowns
+├── adapters/
+│   └── claude.md                  — AgentAdapter interface, Claude Code SDK integration
+├── chat-providers/
+│   └── providers.md               — ChatProvider interface, Anthropic + Ollama implementations
+├── discord/
+│   └── discord.md                 — Bot, slash commands, notifications, channel routing, auth
+└── git/
+    └── git.md                     — GitManager operations, worktrees, PR management
+```
+
+### Spec Conventions
+
+- **Plain English:** Specs describe *what* the system does, not *how* the code is structured
+- **Behavioral:** Focus on inputs, outputs, side effects, and invariants
+- **Complete enough to reimplement:** A developer should be able to rewrite the code from the spec alone
+- **High-level:** Don't mirror code line-by-line — describe functionality and contracts
+- **Authoritative:** When spec and code disagree, the spec is correct and code should be updated
+
+### When to Update Specs
+
+- **Adding a feature:** Write the spec first, then implement
+- **Fixing a bug:** If the bug reveals a missing spec detail, update the spec
+- **Refactoring:** Update the spec only if the external behavior changes
+- **Deleting code:** Remove the corresponding spec section
+
 ## Code Conventions
 
 - All async functions use `async/await` (asyncio-based)

@@ -1,11 +1,10 @@
 """Tests for delete_project command with channel cleanup.
 
 Covers:
-- Deleting a project with channel IDs returns them in the result
-- Deleting a project without channels returns no channel_ids
+- Deleting a project with a channel ID returns it in the result
+- Deleting a project without a channel returns no channel_ids
 - _on_project_deleted callback is invoked
 - archive_channels flag is passed through
-- Channel IDs cover both notifications and control
 """
 
 import pytest
@@ -43,38 +42,16 @@ async def handler(db, config):
 class TestDeleteProjectReturnsChannelIds:
     """Verify channel IDs are captured and returned before deletion."""
 
-    async def test_returns_both_channel_ids(self, handler, db):
+    async def test_returns_channel_id(self, handler, db):
         await db.create_project(Project(id="p-1", name="Alpha"))
         await db.update_project("p-1", discord_channel_id="111111111111111111")
-        await db.update_project("p-1", discord_control_channel_id="222222222222222222")
 
         result = await handler.execute("delete_project", {"project_id": "p-1"})
 
         assert "error" not in result
         assert result["deleted"] == "p-1"
         assert "channel_ids" in result
-        assert result["channel_ids"]["notifications"] == "111111111111111111"
-        assert result["channel_ids"]["control"] == "222222222222222222"
-
-    async def test_returns_only_notifications_channel(self, handler, db):
-        await db.create_project(Project(id="p-1", name="Alpha"))
-        await db.update_project("p-1", discord_channel_id="111111111111111111")
-
-        result = await handler.execute("delete_project", {"project_id": "p-1"})
-
-        assert "error" not in result
-        assert result["channel_ids"]["notifications"] == "111111111111111111"
-        assert "control" not in result["channel_ids"]
-
-    async def test_returns_only_control_channel(self, handler, db):
-        await db.create_project(Project(id="p-1", name="Alpha"))
-        await db.update_project("p-1", discord_control_channel_id="222222222222222222")
-
-        result = await handler.execute("delete_project", {"project_id": "p-1"})
-
-        assert "error" not in result
-        assert result["channel_ids"]["control"] == "222222222222222222"
-        assert "notifications" not in result["channel_ids"]
+        assert result["channel_ids"]["channel"] == "111111111111111111"
 
     async def test_no_channel_ids_when_none_set(self, handler, db):
         await db.create_project(Project(id="p-1", name="Alpha"))
