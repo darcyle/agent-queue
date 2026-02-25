@@ -26,6 +26,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from src.config import AppConfig
+from src.discord.embeds import STATUS_EMOJIS, TREE_BRANCH, TREE_LAST, TREE_PIPE, TREE_SPACE
 from src.discord.notifications import classify_error
 from src.git.manager import GitError
 from src.models import (
@@ -42,6 +43,165 @@ def _count_by(items, key_fn) -> dict[str, int]:
         k = key_fn(item)
         counts[k] = counts.get(k, 0) + 1
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Tree-view text formatter
+# ---------------------------------------------------------------------------
+
+# Hard character budget — leaves room for embed field overhead and a small
+# safety margin below Discord's 2 000-char message / 1 024-char field limits.
+_TREE_MAX_CHARS = 1800
+
+
+def _count_tree_stats(node: dict) -> tuple[int, int]:
+    """Return ``(completed, total)`` counts for all descendants of *node*.
+
+    *node* uses the ``{"task": Task, "children": [...]}`` shape produced by
+    ``Database.get_task_tree()``.
+    """
+    total = 0
+    completed = 0
+    for child in node.get("children", []):
+        total += 1
+        if child["task"].status == TaskStatus.COMPLETED:
+            completed += 1
+        # Recurse into grandchildren
+        sub_c, sub_t = _count_tree_stats(child)
+        completed += sub_c
+        total += sub_t
+    return completed, total
+
+
+def _format_task_tree(
+    root_task: Task,
+    subtasks: list[dict],
+    *,
+    depth: int = 0,
+    max_depth: int = 4,
+    compact: bool = False,
+) -> str:
+    """Render a task and its subtask hierarchy as a tree-view string.
+
+    Parameters
+    ----------
+    root_task:
+        The top-level task to render.
+    subtasks:
+        Child nodes in the ``{"task": Task, "children": [...]}`` format
+        returned by ``Database.get_task_tree()``.
+    depth:
+        Current nesting depth (0 = root).  Used internally during recursion.
+    max_depth:
+        Maximum nesting depth to render before collapsing.  Defaults to 4.
+    compact:
+        When ``True`` only the root task line and an aggregate summary
+        (``X/Y subtasks complete``) are returned — no individual subtask
+        lines.
+
+    Returns
+    -------
+    str
+        A multi-line string using Unicode box-drawing characters suitable
+        for Discord code blocks or embed descriptions.  Automatically
+        truncated to ~1 800 characters to stay within Discord limits.
+
+    Examples
+    --------
+    Expanded (default)::
+
+        🟡 **Root Task** `task-id`
+        ├── 🟢 **Child A** `child-a`
+        │   └── 🟢 **Grandchild** `gc-1`
+        └── ⚪ **Child B** `child-b`
+        📊 2/3 subtasks complete
+
+    Compact::
+
+        🟡 **Root Task** `task-id`
+        📊 2/3 subtasks complete
+    """
+    completed, total = _count_tree_stats({"task": root_task, "children": subtasks})
+
+    # --- Root line -----------------------------------------------------------
+    root_emoji = STATUS_EMOJIS.get(root_task.status.value, "⚪")
+    lines: list[str] = [f"{root_emoji} **{root_task.title}** `{root_task.id}`"]
+
+    # --- Summary line (always appended at the end) ---------------------------
+    summary = f"📊 {completed}/{total} subtasks complete"
+
+    if compact or not subtasks:
+        if total > 0:
+            lines.append(summary)
+        return "\n".join(lines)
+
+    # --- Expanded mode: recursively render children --------------------------
+    def _render_children(
+        children: list[dict],
+        prefix: str,
+        current_depth: int,
+    ) -> None:
+        """Append formatted lines for *children* at *current_depth*."""
+        for idx, child_node in enumerate(children):
+            is_last = idx == len(children) - 1
+            task: Task = child_node["task"]
+            grandchildren: list[dict] = child_node.get("children", [])
+
+            emoji = STATUS_EMOJIS.get(task.status.value, "⚪")
+            connector = TREE_LAST if is_last else TREE_BRANCH
+            line = f"{prefix}{connector}{emoji} **{task.title}** `{task.id}`"
+            lines.append(line)
+
+            # Decide continuation prefix for deeper levels
+            next_prefix = prefix + (TREE_SPACE if is_last else TREE_PIPE)
+
+            if grandchildren:
+                if current_depth + 1 >= max_depth:
+                    # Collapse deeper nesting
+                    gc_count = len(grandchildren)
+                    lines.append(
+                        f"{next_prefix}{TREE_LAST}… ({gc_count} more subtask{'s' if gc_count != 1 else ''})"
+                    )
+                else:
+                    _render_children(grandchildren, next_prefix, current_depth + 1)
+
+    _render_children(subtasks, prefix="", current_depth=depth)
+
+    # --- Truncation guard ----------------------------------------------------
+    # If the rendered tree exceeds the character budget, progressively drop
+    # lines from the bottom (keeping root + summary) and add a "... N more"
+    # indicator.
+    if total > 0:
+        lines.append(summary)
+
+    result = "\n".join(lines)
+    if len(result) <= _TREE_MAX_CHARS:
+        return result
+
+    # Truncate: keep the first line (root) and summary, trim middle lines
+    budget = _TREE_MAX_CHARS
+    kept: list[str] = [lines[0]]  # root line always kept
+    used = len(lines[0]) + 1  # +1 for the newline
+    # Reserve space for the summary and a "... N more" indicator
+    # Worst case indicator: "… (999 more subtasks)\n" ≈ 25 chars
+    reserve = len(summary) + 1 + 30
+    remaining_budget = budget - used - reserve
+
+    skipped = 0
+    for line in lines[1:-1]:  # skip root (first) and summary (last)
+        line_cost = len(line) + 1  # +1 for newline
+        if remaining_budget >= line_cost:
+            kept.append(line)
+            remaining_budget -= line_cost
+        else:
+            skipped += 1
+
+    if skipped > 0:
+        kept.append(f"… ({skipped} more subtask{'s' if skipped != 1 else ''})")
+    if total > 0:
+        kept.append(summary)
+
+    return "\n".join(kept)
 
 
 class CommandHandler:
