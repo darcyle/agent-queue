@@ -26,7 +26,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from src.config import AppConfig
-from src.discord.embeds import STATUS_EMOJIS, TREE_BRANCH, TREE_LAST, TREE_PIPE, TREE_SPACE
+from src.discord.embeds import STATUS_EMOJIS, TREE_BRANCH, TREE_LAST, TREE_PIPE, TREE_SPACE, progress_bar
 from src.discord.notifications import classify_error
 from src.git.manager import GitError
 from src.models import (
@@ -642,6 +642,25 @@ class CommandHandler:
     # diagnostics for dependency graphs.
     # -----------------------------------------------------------------------
 
+    async def _resolve_root_task_id(self, task_id: str) -> str:
+        """Walk up the parent chain to find the topmost ancestor task ID.
+
+        Used by tree/compact display modes to determine the root task that
+        should be rendered as the tree head for a given subtask.  Includes a
+        cycle guard to protect against malformed parent chains.
+        """
+        current_id = task_id
+        seen: set[str] = set()
+        while True:
+            if current_id in seen:
+                break  # cycle guard
+            seen.add(current_id)
+            task = await self.db.get_task(current_id)
+            if task is None or task.parent_task_id is None:
+                return current_id
+            current_id = task.parent_task_id
+        return current_id
+
     async def _cmd_list_tasks(self, args: dict) -> dict:
         kwargs = {}
         if "project_id" in args:
@@ -669,23 +688,66 @@ class CommandHandler:
             elif not include_completed:
                 tasks = [t for t in tasks if t.status not in _terminal]
 
+        # Build the base task list (shared across all display modes).
+        task_list = [
+            {
+                "id": t.id,
+                "project_id": t.project_id,
+                "title": t.title,
+                "status": t.status.value,
+                "priority": t.priority,
+                "assigned_agent": t.assigned_agent_id,
+                "parent_task_id": t.parent_task_id,
+                "is_plan_subtask": t.is_plan_subtask,
+                "pr_url": t.pr_url,
+                "requires_approval": t.requires_approval,
+            }
+            for t in tasks[:200]
+        ]
+
+        display_mode = args.get("display_mode", "flat")
+
+        if display_mode == "flat":
+            return {"tasks": task_list, "total": len(tasks)}
+
+        # --- Tree and compact display modes ------------------------------------
+        # Collect root task IDs by tracing parentage of all filtered tasks.
+        # Uses an ordered dict as a set to preserve insertion order.
+        root_ids: dict[str, None] = {}
+        for t in tasks:
+            if t.parent_task_id is None:
+                root_ids.setdefault(t.id, None)
+            else:
+                root_id = await self._resolve_root_task_id(t.parent_task_id)
+                root_ids.setdefault(root_id, None)
+
+        trees: list[str] = []
+        for root_id in root_ids:
+            tree_data = await self.db.get_task_tree(root_id)
+            if tree_data is None:
+                continue
+            root_task = tree_data["task"]
+            children = tree_data.get("children", [])
+
+            if display_mode == "compact":
+                # Compact: root task line + progress bar (subtask count).
+                completed, total = _count_tree_stats(tree_data)
+                root_emoji = STATUS_EMOJIS.get(root_task.status.value, "⚪")
+                line = f"{root_emoji} **{root_task.title}** `{root_task.id}`"
+                if total > 0:
+                    bar = progress_bar(completed, total)
+                    line += f"\n{bar}"
+                trees.append(line)
+            else:
+                # Tree: full hierarchy rendering with box-drawing characters.
+                rendered = _format_task_tree(root_task, children)
+                trees.append(rendered)
+
         return {
-            "tasks": [
-                {
-                    "id": t.id,
-                    "project_id": t.project_id,
-                    "title": t.title,
-                    "status": t.status.value,
-                    "priority": t.priority,
-                    "assigned_agent": t.assigned_agent_id,
-                    "parent_task_id": t.parent_task_id,
-                    "is_plan_subtask": t.is_plan_subtask,
-                    "pr_url": t.pr_url,
-                    "requires_approval": t.requires_approval,
-                }
-                for t in tasks[:200]
-            ],
+            "tasks": task_list,
             "total": len(tasks),
+            "display_mode": display_mode,
+            "display": "\n\n".join(trees),
         }
 
     async def _cmd_list_active_tasks_all_projects(self, args: dict) -> dict:
