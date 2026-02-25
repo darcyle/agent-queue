@@ -697,6 +697,40 @@ class CommandHandler:
             "title": task.title,
         }
 
+    async def _cmd_provide_input(self, args: dict) -> dict:
+        """Store a user's reply to an agent question for the next execution cycle.
+
+        The response is logged as an ``agent_input`` event and appended to the
+        task's context so the agent receives it when the task is next executed.
+        """
+        task_id = args["task_id"]
+        user_input = args.get("input", "")
+        if not user_input:
+            return {"error": "Input cannot be empty"}
+
+        task = await self.db.get_task(task_id)
+        if not task:
+            return {"error": f"Task '{task_id}' not found"}
+
+        # Append the user reply to the task context so the agent sees it
+        # on the next execution cycle.
+        existing_context = task.context or ""
+        separator = "\n\n" if existing_context else ""
+        updated_context = (
+            f"{existing_context}{separator}"
+            f"--- User reply (to agent question) ---\n{user_input}"
+        )
+        await self.db.update_task(task_id, context=updated_context)
+
+        # Log the event for audit trail
+        await self.db.log_event(
+            "agent_input",
+            project_id=task.project_id,
+            task_id=task_id,
+            payload=user_input[:500],
+        )
+        return {"provided_input": task_id, "title": task.title}
+
     async def _cmd_skip_task(self, args: dict) -> dict:
         """Skip a BLOCKED/FAILED task to unblock its dependency chain."""
         error, unblocked = await self.orchestrator.skip_task(args["task_id"])
