@@ -486,9 +486,29 @@ class CommandHandler:
         kwargs = {}
         if "project_id" in args:
             kwargs["project_id"] = args["project_id"]
-        if "status" in args:
+
+        # When a specific status filter is provided it takes precedence over
+        # the include_completed / completed_only convenience flags.
+        has_status_filter = "status" in args
+        if has_status_filter:
             kwargs["status"] = TaskStatus(args["status"])
+
         tasks = await self.db.list_tasks(**kwargs)
+
+        # Apply active/completed filtering only when no explicit status filter
+        # was given.  The three terminal statuses are COMPLETED, FAILED, and
+        # BLOCKED — these are excluded by default so callers see only the
+        # "active" queue.
+        if not has_status_filter:
+            _terminal = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED}
+            include_completed = args.get("include_completed", False)
+            completed_only = args.get("completed_only", False)
+
+            if completed_only:
+                tasks = [t for t in tasks if t.status in _terminal]
+            elif not include_completed:
+                tasks = [t for t in tasks if t.status not in _terminal]
+
         return {
             "tasks": [
                 {
