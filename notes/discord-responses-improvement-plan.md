@@ -1,46 +1,57 @@
-# Discord Embedded Responses Improvement Plan
+# Discord Embedded Responses: Research & Implementation Plan
+
+> **Date:** February 24, 2026
+> **Branch:** `keen-beacon/research-and-implement-embedded-responses-in-discord`
+> **Objective:** Establish a consistent, visually appealing message format across all Discord bot interactions using rich embeds, interactive components, and a centralized embed factory.
+
+---
 
 ## Executive Summary
 
-This document proposes a comprehensive redesign of Discord message formatting across the `agent-queue` project. The goal is to replace inconsistent plain-text notifications with rich, consistently styled embeds, creating a visually appealing and scannable UI across all bot interactions.
+This document presents comprehensive research on Discord embed best practices, an audit of the current `agent-queue` message formatting, and a phased implementation plan to unify the bot's visual language. The goal is to replace the current mix of plain-text notifications, inline embeds, and ad-hoc formatting with a **centralized embed factory** that ensures consistency, safety (auto-truncation), and visual appeal across all interactions.
 
 ### Current State
 
 The project uses **discord.py >= 2.3.0** and currently has a **mixed formatting approach**:
 
-| Area | Format | Count |
-|------|--------|-------|
-| Slash command responses | `discord.Embed` objects | ~40 instances across `commands.py` |
-| Task lifecycle notifications | Plain markdown strings | 8 formatters in `notifications.py` |
-| Chat agent responses | Plain text with markdown | Via `_send_long_message()` in `bot.py` |
-| Error responses | Plain ephemeral text | Scattered across `commands.py` |
+| Area | Format | Count | Module |
+|------|--------|-------|--------|
+| Slash command responses | `discord.Embed` objects | ~40 instances | `commands.py` |
+| Task lifecycle notifications | Plain markdown strings | 8 formatters | `notifications.py` |
+| Chat agent responses | Plain text with markdown | Via `_send_long_message()` | `bot.py` |
+| Error responses | Plain ephemeral text | Scattered | `commands.py` |
 
-**Key problems:**
-- Notifications (the most visible messages) use plain text, not embeds
-- No centralized embed factory — colors, truncation, and field patterns are repeated inline
-- Error responses are inconsistent (some use embeds, some use plain text)
-- No branding or timestamp consistency across embeds
-- The `_STATUS_COLORS` and `_STATUS_EMOJIS` dicts are defined inside `setup_commands()` scope, making them inaccessible to other modules
+### Key Problems Identified
+
+1. **Notifications use plain text** — The most visible messages (task completions, failures, PR creations) lack visual structure
+2. **No centralized embed factory** — Colors, truncation, and field patterns are repeated inline across ~40 embed constructions
+3. **Inconsistent error responses** — Some use embeds, some use plain text; ephemeral behavior varies
+4. **No branding/timestamp consistency** — Embeds don't share a common footer or timestamp format
+5. **Shared constants are scoped incorrectly** — `_STATUS_COLORS` and `_STATUS_EMOJIS` are defined inside `setup_commands()` scope, making them inaccessible to other modules
 
 ---
 
-## 1. Discord Embed Capabilities & Constraints
+## Part 1: Research — Discord Embed Capabilities & Best Practices
 
-### What Embeds Support
+### 1.1 Embed Anatomy
 
-Discord embeds are structured message components that render as a colored card with:
+A Discord embed is a structured card-style message component rendered with a colored accent bar on the left side. The `discord.py` library provides the `discord.Embed` class for constructing them.
 
-- **Title** (max 256 chars) — can be a hyperlink
-- **Description** (max 4,096 chars) — full markdown support
-- **Fields** (up to 25) — name/value pairs, optionally inline (up to 3 per row)
-- **Author** — name, icon, URL
-- **Footer** — text and icon
-- **Thumbnail** — small image (top-right corner)
-- **Image** — large image (bottom of embed)
-- **Color** — left-side accent bar (hex color)
-- **Timestamp** — displayed in footer area, renders in user's local timezone
+An embed supports the following structural elements:
 
-### Hard Limits (Discord API enforced)
+| Element | Max Length | Description |
+|---------|-----------|-------------|
+| **Title** | 256 chars | Can be a hyperlink; supports markdown |
+| **Description** | 4,096 chars | Full markdown support |
+| **Fields** | Up to 25 per embed | Name/value pairs, optionally inline (up to 3 per row) |
+| **Author** | 256 chars (name) | Name, icon URL, and link URL |
+| **Footer** | 2,048 chars | Text and optional icon |
+| **Thumbnail** | N/A | Small image, top-right corner |
+| **Image** | N/A | Large image at bottom of embed |
+| **Color** | N/A | Left-side accent bar (integer hex color) |
+| **Timestamp** | N/A | Displayed in footer area, renders in user's local timezone |
+
+### 1.2 Hard Limits (Discord API Enforced)
 
 | Property | Limit |
 |----------|-------|
@@ -52,42 +63,171 @@ Discord embeds are structured message components that render as a colored card w
 | Author name | 256 characters |
 | Fields per embed | 25 |
 | Embeds per message | 10 |
-| **Total characters across ALL fields in one message** | **6,000 characters** |
+| **Total characters across ALL fields in one embed** | **6,000 characters** |
+| Regular message content | 2,000 characters |
+| Action rows per message | 5 |
+| Buttons per action row | 5 |
+| Select menu options | 25 |
 
-> ⚠️ The 6,000-character total limit is shared across ALL text properties of ALL embeds in a single message. This is the most important constraint to engineer around.
+> ⚠️ The **6,000-character total limit** is shared across ALL text properties (title + description + all field names + all field values + footer text + author name) in a single embed. This is the most critical constraint to engineer around — exceeding it causes the API call to fail silently or throw an error.
 
-### Markdown Support Within Embeds
+### 1.3 Markdown Support Within Embeds
 
 **Supported in description and field values:**
-- `**bold**`, `*italic*`, `***bold italic***`, `~~strikethrough~~`, `__underline__`
-- `` `inline code` `` and ` ```code blocks``` ` (with language hints for syntax highlighting)
-- `[text](url)` hyperlinks
-- `> blockquote` and `>>> multi-line blockquote`
-- `- item` unordered lists
-- `<t:UNIX_TIMESTAMP:R>` dynamic timestamps (renders relative, e.g., "3 hours ago")
+
+| Syntax | Renders As |
+|--------|-----------|
+| `**bold**` | **bold** |
+| `*italic*` | *italic* |
+| `***bold italic***` | ***bold italic*** |
+| `~~strikethrough~~` | ~~strikethrough~~ |
+| `__underline__` | underline |
+| `` `inline code` `` | `inline code` |
+| ` ```language\ncode``` ` | Syntax-highlighted code block |
+| `[text](url)` | Hyperlink |
+| `> quote` | Single-line blockquote |
+| `>>> quote` | Multi-line blockquote |
+| `- item` | Unordered list |
+| `<t:UNIX:R>` | Dynamic relative timestamp |
 
 **NOT supported in embeds:**
-- `# Headers` (only work in regular messages/forum posts)
-- Tables
+- `# Headers` — only work in regular messages and forum posts, NOT inside embeds
+- Tables (markdown tables do not render)
 - Inline images (must use `set_image()` / `set_thumbnail()`)
+- `@mentions` work but are generally discouraged in embeds for cleanliness
 
-### Discord Timestamps (Highly Recommended)
+> **Note for this project:** The current `TaskReportView.build_content()` in `commands.py` (line 205) uses `### {emoji} {display} ({count})` headers. This works because `build_content()` returns plain message content, NOT embed content. If these task reports are moved into embeds, the header syntax will need to be replaced with **bold text** formatting.
 
-Discord's dynamic timestamp syntax renders in each user's local timezone:
+### 1.4 Discord Dynamic Timestamps
 
-```
-<t:1234567890:R>   → "3 hours ago" (relative)
-<t:1234567890:f>   → "February 24, 2026 4:23 PM" (short datetime)
-<t:1234567890:t>   → "4:23 PM" (short time)
-```
+Discord's dynamic timestamp syntax renders in each user's local timezone and auto-updates for relative styles:
 
-These are ideal for task start times, completion times, and durations in notifications.
+| Style Code | Format | Example Output |
+|------------|--------|----------------|
+| `t` | Short time | `4:23 PM` |
+| `T` | Long time | `4:23:00 PM` |
+| `d` | Short date | `02/24/2026` |
+| `D` | Long date | `February 24, 2026` |
+| `f` | Short datetime | `February 24, 2026 4:23 PM` |
+| `F` | Long datetime | `Monday, February 24, 2026 4:23 PM` |
+| `R` | Relative | `3 hours ago` (updates automatically) |
+
+**Recommended usage in this project:**
+- Task completion/failure notifications: `<t:UNIX:R>` (relative) — "completed 3 hours ago"
+- Task detail views: `<t:UNIX:f>` (short datetime) — precise start/end times
+- Budget warnings: `<t:UNIX:R>` for when the budget was last checked
+
+### 1.5 Interactive Components Reference
+
+The project already uses `discord.ui.View`, `discord.ui.Button`, and `discord.ui.Select` in `TaskReportView`. Here is the complete component taxonomy:
+
+#### Component Constraints
+
+| Component | Container | Max Per Container | Notes |
+|-----------|-----------|-------------------|-------|
+| Buttons | Action Row | 5 | Cannot mix with select menus in same row |
+| Select Menus | Action Row | 1 | Cannot mix with buttons in same row |
+| Action Rows | Message | 5 | Each row is independent |
+| Select Options | Select Menu | 25 | Hard limit |
+| `custom_id` | Button/Select | 100 chars | Must be unique per view |
+
+#### Button Style Reference
+
+| Style | Name | Color | Best For |
+|-------|------|-------|----------|
+| `discord.ButtonStyle.primary` | Blurple | Blurple | Main action (confirm, approve) |
+| `discord.ButtonStyle.secondary` | Gray | Gray | Toggle, info, secondary action |
+| `discord.ButtonStyle.success` | Green | Green | Positive action (complete, accept) |
+| `discord.ButtonStyle.danger` | Red | Red | Destructive action (delete, reject) |
+| `discord.ButtonStyle.link` | Link | Gray w/icon | External URL (no callback) |
+
+### 1.6 Libraries & Dependencies Assessment
+
+#### No Additional Dependencies Required
+
+The project already has everything needed:
+
+- **`discord.py >= 2.3.0`** — Full embed support via `discord.Embed`, interactive components via `discord.ui`
+- **Python `datetime`** — For timestamps
+- **Python `enum`** — For embed style types
+
+#### Optional Enhancements (Future Consideration)
+
+| Library | Purpose | Recommendation |
+|---------|---------|----------------|
+| `discord-ext-pages` | Paginated embeds with built-in navigation | Useful if task lists grow beyond 6,000-char embed limit |
+| Custom `EmbedPaginator` | Multi-page embed navigation | Can be built with `discord.ui.View` + Previous/Next buttons (more control) |
+
+The built-in `discord.ui.View` (already used for `TaskReportView`) is sufficient for interactive components. No new dependencies are recommended.
 
 ---
 
-## 2. Proposed Architecture: Centralized Embed Factory
+## Part 2: Research — Industry Patterns & Anti-Patterns
 
-### New Module: `src/discord/embeds.py`
+### 2.1 Industry Patterns from Popular Bots
+
+#### Task/Project Management Bots (Linear, Jira, GitHub integrations)
+- **Inline field triplets** — Three inline fields per row for compact metadata (ID, Status, Assignee)
+- **Hyperlinked titles** — Embed title links to the web resource (PR URL, task URL)
+- **Code blocks for technical content** — Diffs, error messages, log excerpts in triple backticks
+- **Status change visualization** — `Old Status → New Status` with emoji on both sides
+- **Thread-based streaming** — One thread per long-running operation with streamed updates (already implemented)
+- **Actionable footers** — "Run `/command` to..." suggestions at the bottom
+
+#### General Purpose Bots (MEE6, Carl-bot, Dyno)
+- **Author line for bot identity** — `embed.set_author(name="BotName", icon_url=avatar_url)`
+- **Footer for metadata** — Timestamp + bot version or bot name
+- **Paginated embeds for long lists** — Previous/Next button navigation
+- **Collapsible sections via button toggles** — Already implemented in `TaskReportView`
+- **Ephemeral error responses** — Never clutter the channel with error messages
+
+### 2.2 Color Best Practices
+
+- Use a **consistent semantic color palette** — green for success, red for errors, amber for warnings, blue for informational
+- Map task/status-specific colors consistently
+- Never use random or aesthetic-only colors — they should always convey meaning
+- **Consider colorblind accessibility:** pair colors with emojis/icons so meaning is never color-dependent alone
+
+### 2.3 Anti-Patterns to Avoid
+
+Based on analysis of popular Discord bots and UX research:
+
+1. **Walls of text in embeds** — If content exceeds ~1,000 chars in a single field, use a file attachment with a preview embed instead
+2. **Too many fields** — More than 8-10 fields per embed becomes overwhelming; group related data or use description text
+3. **Inconsistent colors** — Using random colors or different shades of green for different success types
+4. **Missing ephemeral on errors** — Visible errors clutter channels and embarrass users who made typos
+5. **No fallback for oversized content** — Always have a truncation + "full details via `/command`" strategy
+6. **Mixing embeds and plain text for the same message category** — e.g., some task completions as embeds, others as plain text
+7. **Ignoring mobile rendering** — Inline fields stack vertically on mobile; keep inline field values short (under ~20 chars)
+8. **Empty embed fields** — Discord rejects truly empty field values; use zero-width space `\u200b` as a placeholder
+
+### 2.4 Information Hierarchy in Embeds
+
+For scanability in busy Discord channels:
+
+```
+Color bar   → Immediate visual status (green = good, red = bad)
+Title       → What happened (with emoji prefix)
+Inline fields → Key metadata at a glance (ID, project, agent)
+Full-width fields → Details (summary, error, files changed)
+Footer      → Branding + timestamp
+```
+
+### 2.5 Ephemeral vs. Public Response Strategy
+
+| Message Type | Visibility | Rationale |
+|-------------|------------|-----------|
+| Error responses | Ephemeral | Only the triggering user sees them; avoids clutter |
+| Success/creation responses | Public | Team visibility for operations that affect shared state |
+| Inspection/detail responses | Ephemeral | Avoids flooding the channel with read-only data |
+| Notifications | Public | They are broadcast alerts for the whole team |
+| Chat agent responses | Public | Conversational, team-visible |
+
+---
+
+## Part 3: Proposed Architecture — Centralized Embed Factory
+
+### 3.1 New Module: `src/discord/embeds.py`
 
 Create a centralized embed factory that enforces consistent styling. All embed creation should flow through this module.
 
@@ -191,6 +331,22 @@ def unix_timestamp(dt: datetime, style: str = "R") -> str:
     return f"<t:{int(dt.timestamp())}:{style}>"
 
 
+def check_embed_size(embed: discord.Embed) -> bool:
+    """Check if an embed is within the 6,000-character total limit."""
+    total = 0
+    if embed.title:
+        total += len(embed.title)
+    if embed.description:
+        total += len(embed.description)
+    if embed.footer and embed.footer.text:
+        total += len(embed.footer.text)
+    if embed.author and embed.author.name:
+        total += len(embed.author.name)
+    for field in embed.fields:
+        total += len(field.name) + len(field.value)
+    return total <= 6000
+
+
 # ---------------------------------------------------------------------------
 # Core embed builder
 # ---------------------------------------------------------------------------
@@ -279,7 +435,7 @@ def status_embed(
     )
 ```
 
-### Design Principles
+### 3.2 Design Principles
 
 1. **Single source of truth** — All colors, emojis, and truncation logic in one module
 2. **Automatic safety** — Every text property is auto-truncated to Discord limits
@@ -289,13 +445,13 @@ def status_embed(
 
 ---
 
-## 3. Converting Notifications to Embeds
+## Part 4: Converting Notifications to Embeds
 
-### Strategy: Hybrid Approach (Recommended)
+### 4.1 Strategy: Hybrid Approach
 
 Keep the existing string formatters in `notifications.py` for logging and testing, and add parallel `*_embed()` functions that return `discord.Embed` objects. The bot layer (`bot.py`) selects the embed version when sending to Discord.
 
-### Updated Notification Signature
+### 4.2 Updated Notification Callback
 
 Update the notify callback in `bot.py` to accept either strings or embeds:
 
@@ -319,7 +475,7 @@ async def _send_message(
         await self._send_long_message(channel, text)
 ```
 
-### Embed Versions of Each Notification
+### 4.3 Embed Versions of Each Notification
 
 #### `format_task_completed_embed()`
 
@@ -473,6 +629,38 @@ def format_chain_stuck_embed(
     )
 ```
 
+#### `format_stuck_defined_task_embed()`
+
+```python
+def format_stuck_defined_task_embed(
+    task: Task,
+    blocking_deps: list[tuple[str, str, str]],
+    stuck_hours: float,
+) -> discord.Embed:
+    fields = [
+        ("Task ID", f"`{task.id}`", True),
+        ("Project", f"`{task.project_id}`", True),
+        ("Stuck Duration", f"**{stuck_hours:.1f} hours**", True),
+    ]
+    if blocking_deps:
+        dep_list = "\n".join(
+            f"• `{dep_id}` — {dep_title} ({dep_status})"
+            for dep_id, dep_title, dep_status in blocking_deps[:5]
+        )
+        if len(blocking_deps) > 5:
+            dep_list += f"\n… and {len(blocking_deps) - 5} more"
+        fields.append(("Blocked By", truncate(dep_list, 1024), False))
+    else:
+        fields.append(("Note", "_No unmet dependencies found — may be a promotion logic bug._", False))
+    fields.append((
+        "Actions",
+        "• `/skip-task <blocker-id>` to skip a blocker\n"
+        "• `/restart-task <blocker-id>` to retry it",
+        False,
+    ))
+    return warning_embed(title=f"Stuck Task: {task.title}", fields=fields)
+```
+
 #### `format_budget_warning_embed()`
 
 ```python
@@ -496,15 +684,15 @@ def format_budget_warning_embed(
 
 ---
 
-## 4. Standardizing Slash Command Responses
+## Part 5: Standardizing Slash Command Responses
 
-### Current Inconsistencies
+### 5.1 Current Inconsistencies
 
 1. **Successful operations** — Mix of embeds and plain text confirmations
 2. **Error responses** — Almost all are plain `f"Error: {result['error']}"` strings
 3. **Ephemeral handling** — Inconsistent; some errors are ephemeral, some aren't
 
-### Proposed Standard Patterns
+### 5.2 Proposed Standard Patterns
 
 #### Success Responses → Always use `success_embed()`
 
@@ -550,13 +738,199 @@ embed = status_embed(
 
 ---
 
-## 5. Implementation Plan
+## Part 6: Additional Interactive Component Patterns
+
+### 6.1 Confirmation Views for Destructive Operations
+
+```python
+class ConfirmView(discord.ui.View):
+    def __init__(self, timeout=60):
+        super().__init__(timeout=timeout)
+        self.confirmed = None
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction, button):
+        self.confirmed = True
+        self.stop()
+        await interaction.response.edit_message(content="Confirmed.", view=None)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction, button):
+        self.confirmed = False
+        self.stop()
+        await interaction.response.edit_message(content="Cancelled.", view=None)
+```
+
+### 6.2 Actionable Error Embeds with Retry Button
+
+```python
+class RetryView(discord.ui.View):
+    def __init__(self, task_id: str, timeout=300):
+        super().__init__(timeout=timeout)
+        self.task_id = task_id
+
+    @discord.ui.button(label="Retry Task", style=discord.ButtonStyle.primary, emoji="🔄")
+    async def retry(self, interaction, button):
+        result = await handler.execute("restart_task", {"task_id": self.task_id})
+        if "error" in result:
+            await interaction.response.send_message(
+                embed=error_embed("Retry Failed", description=result["error"]),
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.edit_message(
+                embed=success_embed("Task Restarted"),
+                view=None,
+            )
+```
+
+### 6.3 Paginated Embed Views for Long Lists
+
+```python
+class PaginatedView(discord.ui.View):
+    def __init__(self, pages: list[discord.Embed], timeout=300):
+        super().__init__(timeout=timeout)
+        self.pages = pages
+        self.current_page = 0
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
+    async def prev_page(self, interaction, button):
+        self.current_page = max(0, self.current_page - 1)
+        await interaction.response.edit_message(embed=self.pages[self.current_page])
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction, button):
+        self.current_page = min(len(self.pages) - 1, self.current_page + 1)
+        await interaction.response.edit_message(embed=self.pages[self.current_page])
+```
+
+---
+
+## Part 7: Embed Size Safety Engineering
+
+The 6,000-character total limit is the most critical constraint. Beyond the `check_embed_size()` function, here's a robust fallback strategy:
+
+```python
+import io
+
+def safe_send_embed(
+    embed: discord.Embed,
+    fallback_text: str,
+) -> tuple[discord.Embed | None, str | None, discord.File | None]:
+    """Ensure embed fits within Discord limits, falling back gracefully.
+
+    Returns (embed, text, file) — at most one of embed/text will be non-None.
+    """
+    if check_embed_size(embed):
+        return embed, None, None
+
+    # Try trimming description first
+    if embed.description and len(embed.description) > 500:
+        embed.description = truncate(embed.description, 500)
+        if check_embed_size(embed):
+            return embed, None, None
+
+    # If still too large, fall back to a mini embed + file attachment
+    file = discord.File(
+        fp=io.BytesIO(fallback_text.encode("utf-8")),
+        filename="details.md",
+    )
+    mini_embed = discord.Embed(
+        title=embed.title,
+        description="Full details attached as file.",
+        color=embed.color,
+    )
+    return mini_embed, None, file
+```
+
+---
+
+## Part 8: Visual Design Specification
+
+### 8.1 Color Palette
+
+| Context | Color | Hex | Usage |
+|---------|-------|-----|-------|
+| Success | Green | `#2ecc71` | Task completed, resource created, operation succeeded |
+| Error | Red | `#e74c3c` | Task failed, command error, API failure |
+| Warning | Amber | `#f39c12` | Budget warning, approaching limits, agent question |
+| Info | Blue | `#3498db` | Status display, list results, neutral information |
+| Critical | Dark Red | `#992d22` | Task blocked, chain stuck, requires intervention |
+| In Progress | Amber | `#f39c12` | Agent currently working |
+| Assigned | Purple | `#9b59b6` | Task assigned to agent |
+| Waiting | Teal | `#1abc9c` | Waiting for human input |
+| Paused | Dark Gray | `#7f8c8d` | Manually paused |
+
+### 8.2 Embed Structure Template
+
+```
+┌──────────────────────────────────────────┐
+│ 🟢 [Color bar]                           │
+│                                          │
+│ ✅ Task Completed: Fix JWT bug           │  ← Title (icon + text)
+│                                          │
+│ Task ID     Project      Agent           │  ← Inline fields (row 1)
+│ `task-89`   `my-app`     claude-1        │
+│                                          │
+│ Tokens Used                              │  ← Inline field (row 2)
+│ 18,420                                   │
+│                                          │
+│ Summary                                  │  ← Full-width field
+│ Updated auth.py to refresh JWT tokens... │
+│                                          │
+│ Files Changed                            │  ← Full-width field
+│ `auth.py`, `tests/test_auth.py`          │
+│                                          │
+│ AgentQueue • Today at 4:23 PM            │  ← Footer + timestamp
+└──────────────────────────────────────────┘
+```
+
+### 8.3 Inline Field Layout Rules
+
+- **3-column rows:** Use for short metadata (ID, project, agent, status)
+- **2-column rows:** Use for paired data (old → new status, used/limit)
+- **Full-width:** Use for descriptions, error messages, file lists, code blocks
+- **Spacer field:** `("\u200b", "\u200b", True)` to force a new row when needed
+
+---
+
+## Part 9: Message Flow After Implementation
+
+```
+Orchestrator
+├── format_task_completed_embed() ──┐
+├── format_task_failed_embed() ─────┤
+├── format_task_blocked_embed() ────┤ discord.Embed objects
+├── format_pr_created_embed() ──────┤
+├── format_chain_stuck_embed() ─────┤
+├── format_stuck_defined_task_embed()┤
+└── format_budget_warning_embed() ──┘
+         │
+         ▼
+    _notify_channel(text, project_id, embed=embed)
+         │
+         ▼
+    AgentQueueBot._send_message(text, project_id, embed=embed)
+         │
+         ├── embed? → channel.send(embed=embed)
+         └── text?  → _send_long_message(channel, text)
+
+Slash Commands
+    └── success_embed() / error_embed() / status_embed()
+         │
+         ▼
+    interaction.response.send_message(embed=..., ephemeral=...)
+```
+
+---
+
+## Part 10: Phased Implementation Plan
 
 ### Phase 1: Foundation (Low Risk)
 
 **Create `src/discord/embeds.py`**
 - Move `_STATUS_COLORS` and `_STATUS_EMOJIS` from `commands.py` to this module
-- Implement `make_embed()`, convenience builders, `truncate()`, `unix_timestamp()`
+- Implement `make_embed()`, convenience builders, `truncate()`, `unix_timestamp()`, `check_embed_size()`
 - Update `commands.py` to import from `embeds.py` instead of defining locally
 
 **Estimated effort:** ~2 hours
@@ -593,7 +967,16 @@ embed = status_embed(
 
 **Estimated effort:** ~1-2 hours (if pursued)
 
-### Phase 5: Polish & Testing
+### Phase 5: Interactive Components (Medium Risk)
+
+**Add actionable embeds**
+- `RetryView` on failed task notifications
+- `ConfirmView` for destructive slash commands
+- `PaginatedView` for long task lists exceeding embed limits
+
+**Estimated effort:** ~3-4 hours
+
+### Phase 6: Polish & Testing
 
 - Add unit tests for `embeds.py` (pure functions, easy to test)
 - Visual QA in a test Discord server
@@ -604,122 +987,37 @@ embed = status_embed(
 
 ---
 
-## 6. Visual Design Specification
-
-### Color Palette
-
-| Context | Color | Hex | Usage |
-|---------|-------|-----|-------|
-| Success | Green | `#2ecc71` | Task completed, resource created, operation succeeded |
-| Error | Red | `#e74c3c` | Task failed, command error, API failure |
-| Warning | Amber | `#f39c12` | Budget warning, approaching limits, agent question |
-| Info | Blue | `#3498db` | Status display, list results, neutral information |
-| Critical | Dark Red | `#992d22` | Task blocked, chain stuck, requires intervention |
-| In Progress | Amber | `#f39c12` | Agent currently working |
-| Assigned | Purple | `#9b59b6` | Task assigned to agent |
-| Waiting | Teal | `#1abc9c` | Waiting for human input |
-| Paused | Dark Gray | `#7f8c8d` | Manually paused |
-
-### Embed Structure Template
-
-```
-┌──────────────────────────────────────────┐
-│ 🟢 [Color bar]                           │
-│                                          │
-│ ✅ Task Completed: Fix JWT bug           │  ← Title (icon + text)
-│                                          │
-│ Task ID     Project      Agent           │  ← Inline fields (row 1)
-│ `task-89`   `my-app`     claude-1        │
-│                                          │
-│ Tokens Used                              │  ← Inline field (row 2)
-│ 18,420                                   │
-│                                          │
-│ Summary                                  │  ← Full-width field
-│ Updated auth.py to refresh JWT tokens... │
-│                                          │
-│ Files Changed                            │  ← Full-width field
-│ `auth.py`, `tests/test_auth.py`          │
-│                                          │
-│ AgentQueue • Today at 4:23 PM            │  ← Footer + timestamp
-└──────────────────────────────────────────┘
-```
-
-### Inline Field Layout Rules
-
-- **3-column rows:** Use for short metadata (ID, project, agent, status)
-- **2-column rows:** Use for paired data (old → new status, used/limit)
-- **Full-width:** Use for descriptions, error messages, file lists, code blocks
-- **Spacer field:** `("\u200b", "\u200b", True)` to force a new row when needed
-
----
-
-## 7. Libraries and Dependencies
-
-### No Additional Dependencies Required
-
-The project already has everything needed:
-
-- **`discord.py >= 2.3.0`** — Full embed support via `discord.Embed`
-- **Python `datetime`** — For timestamps
-- **Python `enum`** — For embed style types
-
-### Optional Enhancements (Future)
-
-| Library | Purpose | Notes |
-|---------|---------|-------|
-| `discord-ext-pages` | Paginated embeds | For long task lists that exceed embed limits |
-| Custom `EmbedPaginator` | Multi-page embed navigation | Could be built with `discord.ui.View` + buttons |
-
-The built-in `discord.ui.View` (already used in `commands.py` for `TaskReportView`) is sufficient for interactive components. No additional libraries are recommended at this time.
-
----
-
-## 8. Risk Assessment & Mitigations
+## Part 11: Risk Assessment & Mitigations
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| 6,000-char total limit exceeded | Embed fails to send | Add `_check_embed_size()` guard in factory; fall back to text |
-| Mobile rendering differences | Inline fields may stack | Test on mobile; keep inline fields short |
+| 6,000-char total limit exceeded | Embed fails to send | `check_embed_size()` guard + `safe_send_embed()` fallback |
+| Mobile rendering differences | Inline fields may stack | Test on mobile; keep inline field values short |
 | Breaking existing tests | Test failures | Keep string formatters alongside embed formatters |
 | Notification callback signature change | Runtime errors | Use `**kwargs` for backward compat; phase the migration |
 | Embed rate limits | Messages throttled | Discord rate limits are per-channel, not embed-specific; no additional risk |
-
-### Total Character Guard
-
-```python
-def _check_embed_size(embed: discord.Embed) -> bool:
-    """Check if an embed is within the 6,000-character total limit."""
-    total = 0
-    if embed.title:
-        total += len(embed.title)
-    if embed.description:
-        total += len(embed.description)
-    if embed.footer and embed.footer.text:
-        total += len(embed.footer.text)
-    if embed.author and embed.author.name:
-        total += len(embed.author.name)
-    for field in embed.fields:
-        total += len(field.name) + len(field.value)
-    return total <= 6000
-```
+| Over-embedding | Visual clutter | Keep chat agent responses as plain text; only structured data uses embeds |
 
 ---
 
-## 9. Summary of Recommendations
+## Summary of Recommendations
 
 1. **Create `src/discord/embeds.py`** — Centralized embed factory with consistent styling, auto-truncation, and branding
 2. **Add embed notification formatters** — Parallel `*_embed()` functions in `notifications.py` alongside existing string formatters
 3. **Update `bot.py` callback** — Support `embed` kwarg in `_send_message()` for rich notifications
 4. **Standardize slash command responses** — Replace inline `discord.Embed()` calls with factory functions; use `error_embed()` for all errors
 5. **Use Discord timestamps** — `<t:UNIX:R>` for all time-related fields
-6. **Add embed size guard** — Prevent exceeding the 6,000-char total limit
+6. **Add embed size guard** — Prevent exceeding the 6,000-char total limit with `safe_send_embed()` fallback
 7. **Keep chat agent responses as plain text** — Conversational responses don't benefit from embeds
-8. **No new dependencies** — Everything can be done with discord.py's built-in `discord.Embed`
+8. **Add interactive components** — Retry buttons on failures, confirm dialogs on destructive actions, pagination for long lists
+9. **No new dependencies** — Everything can be done with `discord.py >= 2.3.0`'s built-in `discord.Embed` and `discord.ui`
 
 ### Expected Outcome
 
 - **Consistent visual language** across all bot interactions
 - **Easier scanning** in busy channels (colored bars, icons, structured fields)
 - **Better error visibility** (red embeds stand out vs. plain text)
+- **Actionable notifications** (retry buttons, PR links, command hints)
 - **Maintainable code** (single source of truth for colors, styles, limits)
 - **Backward compatible** (string formatters preserved for logging/testing)
+- **Safe by default** (auto-truncation prevents silent Discord API failures)
