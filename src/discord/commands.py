@@ -2152,32 +2152,31 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(
         name="git-log",
-        description="Show recent commit log for a repository",
+        description="Show recent git commits",
     )
     @app_commands.describe(
-        repo_id="Repository ID",
+        project_id="Project ID",
         count="Number of commits to show (default 10)",
+        repo_id="Specific repo ID (optional)",
     )
     async def git_log_command(
         interaction: discord.Interaction,
-        repo_id: str,
+        project_id: str,
         count: int = 10,
+        repo_id: str | None = None,
     ):
-        await interaction.response.defer()
-        result = await handler.execute("git_log", {
-            "repo_id": repo_id,
-            "count": count,
-        })
+        args: dict = {"project_id": project_id, "count": count}
+        if repo_id:
+            args["repo_id"] = repo_id
+        result = await handler.execute("git_log", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}")
+            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
             return
         branch = result.get("branch", "?")
         log = result.get("log", "(no commits)")
-        msg = (
-            f"## Git Log: `{repo_id}` (branch: `{branch}`)\n"
-            f"```\n{log}\n```"
-        )
-        await _send_long(interaction, msg, followup=True)
+        repo_label = result.get("repo_id", project_id)
+        msg = f"## Git Log: `{repo_label}` (branch: `{branch}`)\n```\n{log}\n```"
+        await _send_long(interaction, msg, followup=False)
 
     @bot.tree.command(
         name="git-diff",
