@@ -1596,6 +1596,7 @@ def setup_commands(bot: commands.Bot) -> None:
                 f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
             )
             return
+        handler.set_active_project(project_id)
         await interaction.response.defer()
         args: dict = {"project_id": project_id}
         if repo_id:
@@ -1643,6 +1644,7 @@ def setup_commands(bot: commands.Bot) -> None:
                 f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
             )
             return
+        handler.set_active_project(project_id)
         await interaction.response.defer()
         args: dict = {"project_id": project_id, "branch_name": branch_name}
         if repo_id:
@@ -1677,6 +1679,7 @@ def setup_commands(bot: commands.Bot) -> None:
                 f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
             )
             return
+        handler.set_active_project(project_id)
         await interaction.response.defer()
         args: dict = {"project_id": project_id, "message": message}
         if repo_id:
@@ -1717,6 +1720,7 @@ def setup_commands(bot: commands.Bot) -> None:
                 f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
             )
             return
+        handler.set_active_project(project_id)
         await interaction.response.defer()
         args: dict = {"project_id": project_id}
         if branch_name:
@@ -1753,6 +1757,7 @@ def setup_commands(bot: commands.Bot) -> None:
                 f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
             )
             return
+        handler.set_active_project(project_id)
         await interaction.response.defer()
         args: dict = {"project_id": project_id, "branch_name": branch_name}
         if repo_id:
@@ -1796,6 +1801,7 @@ def setup_commands(bot: commands.Bot) -> None:
                 f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
             )
             return
+        handler.set_active_project(project_id)
         await interaction.response.defer()
         args: dict = {"project_id": project_id, "branch_name": branch_name}
         if repo_id:
@@ -1827,6 +1833,7 @@ def setup_commands(bot: commands.Bot) -> None:
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
+        handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "branch_name": branch_name}
         if repo_id:
             args["repo_id"] = repo_id
@@ -1859,6 +1866,7 @@ def setup_commands(bot: commands.Bot) -> None:
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
+        handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "branch_name": branch_name}
         if repo_id:
             args["repo_id"] = repo_id
@@ -1892,6 +1900,7 @@ def setup_commands(bot: commands.Bot) -> None:
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
+        handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "message": message}
         if repo_id:
             args["repo_id"] = repo_id
@@ -1930,6 +1939,7 @@ def setup_commands(bot: commands.Bot) -> None:
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
+        handler.set_active_project(project_id)
         args: dict = {"project_id": project_id}
         if branch_name:
             args["branch_name"] = branch_name
@@ -1965,6 +1975,7 @@ def setup_commands(bot: commands.Bot) -> None:
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
+        handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "branch_name": branch_name}
         if repo_id:
             args["repo_id"] = repo_id
@@ -2002,6 +2013,10 @@ def setup_commands(bot: commands.Bot) -> None:
         repo_id: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, project_id)
+        # Set active project from channel context so _resolve_repo_path can
+        # infer the repository even when project_id is not in the args dict.
+        if project_id:
+            handler.set_active_project(project_id)
         await interaction.response.defer()
         args: dict = {"message": message}
         if project_id:
@@ -2038,6 +2053,8 @@ def setup_commands(bot: commands.Bot) -> None:
         branch: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, project_id)
+        if project_id:
+            handler.set_active_project(project_id)
         await interaction.response.defer()
         args: dict = {}
         if project_id:
@@ -2071,6 +2088,8 @@ def setup_commands(bot: commands.Bot) -> None:
         repo_id: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, project_id)
+        if project_id:
+            handler.set_active_project(project_id)
         await interaction.response.defer()
         args: dict = {"branch_name": branch_name}
         if project_id:
@@ -2104,6 +2123,8 @@ def setup_commands(bot: commands.Bot) -> None:
         default_branch: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, project_id)
+        if project_id:
+            handler.set_active_project(project_id)
         await interaction.response.defer()
         args: dict = {"branch_name": branch_name}
         if project_id:
@@ -2149,6 +2170,8 @@ def setup_commands(bot: commands.Bot) -> None:
         base: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, project_id)
+        if project_id:
+            handler.set_active_project(project_id)
         await interaction.response.defer()
         args: dict = {"title": title, "body": body}
         if project_id:
@@ -2185,6 +2208,8 @@ def setup_commands(bot: commands.Bot) -> None:
         base_branch: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, project_id)
+        if project_id:
+            handler.set_active_project(project_id)
         await interaction.response.defer()
         args: dict = {}
         if project_id:
@@ -2234,6 +2259,7 @@ def setup_commands(bot: commands.Bot) -> None:
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
+        handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "count": count}
         if repo_id:
             args["repo_id"] = repo_id
@@ -2266,6 +2292,7 @@ def setup_commands(bot: commands.Bot) -> None:
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
+        handler.set_active_project(project_id)
         args: dict = {"project_id": project_id}
         if base_branch:
             args["base_branch"] = base_branch

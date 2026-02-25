@@ -468,6 +468,16 @@ class AgentQueueBot(commands.Bot):
                             f"project_id='{notes_project_id}'.]\n{text}"
                         )
 
+                    # Set active project from channel context so that git
+                    # commands (and other project-scoped tools) automatically
+                    # infer the correct repository without the LLM needing to
+                    # explicitly pass project_id in every tool call.
+                    prev_active = self.agent._active_project_id
+                    if project_channel_id and not is_bot_channel:
+                        self.agent.set_active_project(project_channel_id)
+                    elif is_notes_thread and not is_bot_channel:
+                        self.agent.set_active_project(notes_project_id)
+
                     # Build history from Discord channel
                     history = await self._build_message_history(message.channel, before=message)
 
@@ -498,6 +508,10 @@ class AgentQueueBot(commands.Bot):
                 except Exception as e:
                     print(f"LLM error: {e}\n{traceback.format_exc()}")
                     await message.reply(f"**LLM error:** {e}")
+                finally:
+                    # Restore previous active project to avoid leaking
+                    # channel-specific context across concurrent requests.
+                    self.agent.set_active_project(prev_active)
 
     async def _build_message_history(
         self, channel: discord.TextChannel, before: discord.Message

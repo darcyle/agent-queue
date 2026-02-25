@@ -911,7 +911,9 @@ class CommandHandler:
     # -----------------------------------------------------------------------
 
     async def _cmd_get_git_status(self, args: dict) -> dict:
-        project_id = args["project_id"]
+        project_id = args.get("project_id") or self._active_project_id
+        if not project_id:
+            return {"error": "project_id is required (no active project set)"}
         project = await self.db.get_project(project_id)
         if not project:
             return {"error": f"Project '{project_id}' not found"}
@@ -995,12 +997,27 @@ class CommandHandler:
 
         When only *repo_id* is supplied (without *project_id*) the repo is
         looked up directly — this keeps older repo-id-only commands working.
+
+        When neither *project_id* nor *repo_id* is supplied, falls back to
+        the active project (``_active_project_id``) so that commands issued
+        in a project channel work without explicitly specifying identifiers.
         """
         project_id = args.get("project_id")
         repo_id = args.get("repo_id")
 
+        # Fall back to the active project when no identifiers are supplied.
         if not project_id and not repo_id:
-            return None, None, {"error": "project_id is required"}
+            if self._active_project_id:
+                project_id = self._active_project_id
+                args["project_id"] = project_id  # inject for downstream use
+            else:
+                return None, None, {"error": "project_id is required (no active project set)"}
+        elif not project_id and repo_id:
+            # When only repo_id is given, try to inherit project context from
+            # the active project so downstream code can reference args["project_id"].
+            if self._active_project_id:
+                project_id = self._active_project_id
+                args["project_id"] = project_id
 
         project = None
         if project_id:
@@ -1043,11 +1060,11 @@ class CommandHandler:
 
     async def _cmd_git_commit(self, args: dict) -> dict:
         """Stage all changes and create a commit in a repository."""
-        repo_id = args["repo_id"]
         message = args["message"]
         checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
             return err
+        repo_id = args.get("repo_id") or (repo.id if repo else "(workspace)")
         try:
             committed = self.orchestrator.git.commit_all(checkout_path, message)
         except GitError as e:
@@ -1058,10 +1075,10 @@ class CommandHandler:
 
     async def _cmd_git_push(self, args: dict) -> dict:
         """Push a branch to the remote origin."""
-        repo_id = args["repo_id"]
         checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
             return err
+        repo_id = args.get("repo_id") or (repo.id if repo else "(workspace)")
         git = self.orchestrator.git
         branch = args.get("branch") or git.get_current_branch(checkout_path)
         if not branch:
@@ -1074,11 +1091,11 @@ class CommandHandler:
 
     async def _cmd_git_create_branch(self, args: dict) -> dict:
         """Create and switch to a new git branch."""
-        repo_id = args["repo_id"]
         branch_name = args["branch_name"]
         checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
             return err
+        repo_id = args.get("repo_id") or (repo.id if repo else "(workspace)")
         try:
             self.orchestrator.git.create_branch(checkout_path, branch_name)
         except GitError as e:
@@ -1087,11 +1104,11 @@ class CommandHandler:
 
     async def _cmd_git_merge(self, args: dict) -> dict:
         """Merge a branch into the default branch."""
-        repo_id = args["repo_id"]
         branch_name = args["branch_name"]
         checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
             return err
+        repo_id = args.get("repo_id") or (repo.id if repo else "(workspace)")
         default_branch = args.get("default_branch") or (repo.default_branch if repo else "main") or "main"
         try:
             success = self.orchestrator.git.merge_branch(checkout_path, branch_name, default_branch)
@@ -1113,12 +1130,12 @@ class CommandHandler:
 
     async def _cmd_git_create_pr(self, args: dict) -> dict:
         """Create a GitHub pull request using the gh CLI."""
-        repo_id = args["repo_id"]
         title = args["title"]
         body = args.get("body", "")
         checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
             return err
+        repo_id = args.get("repo_id") or (repo.id if repo else "(workspace)")
         git = self.orchestrator.git
         branch = args.get("branch") or git.get_current_branch(checkout_path)
         if not branch:
@@ -1132,10 +1149,10 @@ class CommandHandler:
 
     async def _cmd_git_changed_files(self, args: dict) -> dict:
         """List files changed compared to a base branch."""
-        repo_id = args["repo_id"]
         checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
             return err
+        repo_id = args.get("repo_id") or (repo.id if repo else "(workspace)")
         base_branch = args.get("base_branch") or (repo.default_branch if repo else "main") or "main"
         files = self.orchestrator.git.get_changed_files(checkout_path, base_branch)
         return {

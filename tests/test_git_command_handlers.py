@@ -687,8 +687,8 @@ class TestGitDiff:
 class TestResolveRepoPath:
     """Edge cases for _resolve_repo_path used by all commands."""
 
-    async def test_missing_project_id(self, handler):
-        """Commands that require project_id should error without it."""
+    async def test_missing_project_id_no_active(self, handler):
+        """Commands without project_id and no active project should error."""
         result = await handler.execute("create_branch", {
             "branch_name": "feature/orphan",
         })
@@ -711,3 +711,245 @@ class TestResolveRepoPath:
         mock_git.create_branch.assert_called_once_with(
             checkout_path, "feature/via-repo-id",
         )
+
+
+# ---------------------------------------------------------------------------
+# test_active_project_fallback
+# ---------------------------------------------------------------------------
+
+
+class TestActiveProjectFallback:
+    """Tests for active project inference in git commands."""
+
+    async def test_create_branch_infers_active_project(self, handler, mock_git, project_with_repo):
+        """create_branch should work without project_id when active project is set."""
+        project_id, repo_id, checkout_path = project_with_repo
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("create_branch", {
+            "branch_name": "feature/auto-project",
+        })
+
+        assert "error" not in result
+        assert result["project_id"] == project_id
+        assert result["branch"] == "feature/auto-project"
+        assert result["status"] == "created"
+        mock_git.create_branch.assert_called_once_with(
+            checkout_path, "feature/auto-project",
+        )
+
+    async def test_commit_changes_infers_active_project(self, handler, mock_git, project_with_repo):
+        """commit_changes should work without project_id when active project is set."""
+        project_id, repo_id, checkout_path = project_with_repo
+        mock_git.commit_all.return_value = True
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("commit_changes", {
+            "message": "feat: auto-inferred project",
+        })
+
+        assert "error" not in result
+        assert result["project_id"] == project_id
+        assert result["status"] == "committed"
+        mock_git.commit_all.assert_called_once_with(
+            checkout_path, "feat: auto-inferred project",
+        )
+
+    async def test_push_branch_infers_active_project(self, handler, mock_git, project_with_repo):
+        """push_branch should work without project_id when active project is set."""
+        project_id, repo_id, checkout_path = project_with_repo
+        mock_git.get_current_branch.return_value = "feature/auto"
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("push_branch", {})
+
+        assert "error" not in result
+        assert result["project_id"] == project_id
+        assert result["status"] == "pushed"
+        mock_git.push_branch.assert_called_once_with(
+            checkout_path, "feature/auto",
+        )
+
+    async def test_checkout_branch_infers_active_project(self, handler, mock_git, project_with_repo):
+        """checkout_branch should work without project_id when active project is set."""
+        project_id, repo_id, checkout_path = project_with_repo
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("checkout_branch", {
+            "branch_name": "feature/existing",
+        })
+
+        assert "error" not in result
+        assert result["project_id"] == project_id
+        assert result["status"] == "checked_out"
+
+    async def test_merge_branch_infers_active_project(self, handler, mock_git, project_with_repo):
+        """merge_branch should work without project_id when active project is set."""
+        project_id, repo_id, checkout_path = project_with_repo
+        mock_git.merge_branch.return_value = True
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("merge_branch", {
+            "branch_name": "feature/auto-merge",
+        })
+
+        assert "error" not in result
+        assert result["project_id"] == project_id
+        assert result["status"] == "merged"
+
+    async def test_git_log_infers_active_project(self, handler, mock_git, project_with_repo):
+        """git_log should work without project_id when active project is set."""
+        project_id, repo_id, checkout_path = project_with_repo
+        mock_git.get_recent_commits.return_value = "abc1234 test commit"
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("git_log", {})
+
+        assert "error" not in result
+        assert result["project_id"] == project_id
+        assert "abc1234" in result["log"]
+
+    async def test_git_diff_infers_active_project(self, handler, mock_git, project_with_repo):
+        """git_diff should work without project_id when active project is set."""
+        project_id, repo_id, checkout_path = project_with_repo
+        mock_git._run.return_value = "diff output"
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("git_diff", {})
+
+        assert "error" not in result
+        assert result["project_id"] == project_id
+
+    async def test_git_commit_infers_active_project(self, handler, mock_git, project_with_repo):
+        """git_commit (old-style) should work without repo_id when active project is set."""
+        project_id, repo_id, checkout_path = project_with_repo
+        mock_git.commit_all.return_value = True
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("git_commit", {
+            "message": "feat: inferred commit",
+        })
+
+        assert "error" not in result
+        assert result["committed"] is True
+        assert result["repo_id"] == repo_id
+        mock_git.commit_all.assert_called_once_with(
+            checkout_path, "feat: inferred commit",
+        )
+
+    async def test_git_push_infers_active_project(self, handler, mock_git, project_with_repo):
+        """git_push (old-style) should work without repo_id when active project is set."""
+        project_id, repo_id, checkout_path = project_with_repo
+        mock_git.get_current_branch.return_value = "feature/auto"
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("git_push", {})
+
+        assert "error" not in result
+        assert result["pushed"] == "feature/auto"
+        assert result["repo_id"] == repo_id
+
+    async def test_git_create_branch_infers_active_project(self, handler, mock_git, project_with_repo):
+        """git_create_branch (old-style) should work without repo_id when active project is set."""
+        project_id, repo_id, checkout_path = project_with_repo
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("git_create_branch", {
+            "branch_name": "feature/auto-branch",
+        })
+
+        assert "error" not in result
+        assert result["created_branch"] == "feature/auto-branch"
+        assert result["repo_id"] == repo_id
+
+    async def test_git_changed_files_infers_active_project(self, handler, mock_git, project_with_repo):
+        """git_changed_files (old-style) should work without repo_id when active project is set."""
+        project_id, repo_id, checkout_path = project_with_repo
+        mock_git.get_changed_files.return_value = ["file1.py", "file2.py"]
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("git_changed_files", {})
+
+        assert "error" not in result
+        assert result["repo_id"] == repo_id
+        assert result["count"] == 2
+
+    async def test_no_fallback_without_active_project(self, handler):
+        """Without active project, commands should still fail gracefully."""
+        handler.set_active_project(None)
+
+        result = await handler.execute("git_commit", {
+            "message": "should fail",
+        })
+
+        assert "error" in result
+        assert "project_id" in result["error"].lower() or "active project" in result["error"].lower()
+
+    async def test_get_git_status_infers_active_project(self, handler, mock_git, project_with_repo):
+        """get_git_status should work without project_id when active project is set."""
+        project_id, repo_id, checkout_path = project_with_repo
+        mock_git.get_status.return_value = "nothing to commit"
+        mock_git.get_current_branch.return_value = "main"
+        mock_git.get_recent_commits.return_value = "abc1234 commit"
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("get_git_status", {})
+
+        assert "error" not in result
+        assert result["project_id"] == project_id
+        assert len(result["repos"]) > 0
+
+    async def test_get_git_status_no_fallback_without_active(self, handler):
+        """get_git_status without project_id and no active project should error."""
+        handler.set_active_project(None)
+
+        result = await handler.execute("get_git_status", {})
+
+        assert "error" in result
+        assert "project_id" in result["error"].lower() or "active project" in result["error"].lower()
+
+    async def test_git_merge_infers_active_project(self, handler, mock_git, project_with_repo):
+        """git_merge (old-style) should work without repo_id when active project is set."""
+        project_id, repo_id, checkout_path = project_with_repo
+        mock_git.merge_branch.return_value = True
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("git_merge", {
+            "branch_name": "feature/auto-merge",
+        })
+
+        assert "error" not in result
+        assert result["merged"] is True
+        assert result["repo_id"] == repo_id
+
+    async def test_git_create_pr_infers_active_project(self, handler, mock_git, project_with_repo):
+        """git_create_pr should work without repo_id when active project is set."""
+        project_id, repo_id, checkout_path = project_with_repo
+        mock_git.get_current_branch.return_value = "feature/pr-test"
+        mock_git.create_pr.return_value = "https://github.com/test/repo/pull/1"
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("git_create_pr", {
+            "title": "Test PR",
+        })
+
+        assert "error" not in result
+        assert result["repo_id"] == repo_id
+        assert "pr_url" in result
+
+    async def test_explicit_project_id_overrides_active(self, handler, db, mock_git, project_with_repo, tmp_path):
+        """Explicit project_id should take precedence over active project."""
+        project_id, repo_id, checkout_path = project_with_repo
+
+        # Set active project to something else
+        handler.set_active_project("some-other-project")
+
+        # But explicitly pass the real project_id
+        result = await handler.execute("commit_changes", {
+            "project_id": project_id,
+            "message": "explicit project",
+        })
+
+        assert "error" not in result
+        assert result["project_id"] == project_id
+        assert result["status"] == "committed"

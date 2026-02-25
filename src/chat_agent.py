@@ -669,193 +669,232 @@ TOOLS = [
         "description": (
             "Get the git status of a project's repository. Shows current branch, "
             "working tree status, and recent commits. Reports status for all repos "
-            "registered to the project, or falls back to the project workspace."
+            "registered to the project, or falls back to the project workspace. "
+            "Infers project from active project context when project_id is omitted."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": "Project ID to check git status for",
+                    "description": "Project ID (optional — inferred from active project)",
                 },
             },
-            "required": ["project_id"],
         },
     },
     {
         "name": "git_commit",
-        "description": "Stage all changes and create a commit in a repository.",
+        "description": (
+            "Stage all changes and create a commit in a repository. "
+            "Infers the repository from the active project when repo_id and project_id are omitted."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "repo_id": {"type": "string", "description": "Repository ID"},
                 "message": {"type": "string", "description": "Commit message"},
+                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
+                "repo_id": {"type": "string", "description": "Repository ID (optional — uses first repo for the project if omitted)"},
             },
-            "required": ["repo_id", "message"],
+            "required": ["message"],
         },
     },
     {
         "name": "git_push",
-        "description": "Push a branch to the remote origin. Defaults to the current branch if not specified.",
+        "description": (
+            "Push a branch to the remote origin. Defaults to the current branch if not specified. "
+            "Infers the repository from the active project when repo_id and project_id are omitted."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "repo_id": {"type": "string", "description": "Repository ID"},
+                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
+                "repo_id": {"type": "string", "description": "Repository ID (optional — uses first repo for the project if omitted)"},
                 "branch": {"type": "string", "description": "Branch name to push (defaults to current branch)"},
             },
-            "required": ["repo_id"],
         },
     },
     {
         "name": "git_create_branch",
-        "description": "Create and switch to a new git branch in a repository.",
+        "description": (
+            "Create and switch to a new git branch in a repository. "
+            "Infers the repository from the active project when repo_id and project_id are omitted."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "repo_id": {"type": "string", "description": "Repository ID"},
                 "branch_name": {"type": "string", "description": "Name for the new branch"},
+                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
+                "repo_id": {"type": "string", "description": "Repository ID (optional — uses first repo for the project if omitted)"},
             },
-            "required": ["repo_id", "branch_name"],
+            "required": ["branch_name"],
         },
     },
     {
         "name": "git_merge",
         "description": (
             "Merge a branch into the default branch. Returns whether the merge "
-            "succeeded or had conflicts (conflicts are automatically aborted)."
+            "succeeded or had conflicts (conflicts are automatically aborted). "
+            "Infers the repository from the active project when repo_id and project_id are omitted."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "repo_id": {"type": "string", "description": "Repository ID"},
                 "branch_name": {"type": "string", "description": "Branch to merge"},
+                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
+                "repo_id": {"type": "string", "description": "Repository ID (optional — uses first repo for the project if omitted)"},
                 "default_branch": {
                     "type": "string",
                     "description": "Target branch to merge into (defaults to repo's default branch)",
                 },
             },
-            "required": ["repo_id", "branch_name"],
+            "required": ["branch_name"],
         },
     },
     {
         "name": "git_create_pr",
-        "description": "Create a GitHub pull request using the gh CLI. Requires gh to be authenticated.",
+        "description": (
+            "Create a GitHub pull request using the gh CLI. Requires gh to be authenticated. "
+            "Infers the repository from the active project when repo_id and project_id are omitted."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "repo_id": {"type": "string", "description": "Repository ID"},
                 "title": {"type": "string", "description": "PR title"},
                 "body": {"type": "string", "description": "PR description body (optional)", "default": ""},
                 "branch": {"type": "string", "description": "Head branch (defaults to current branch)"},
                 "base": {"type": "string", "description": "Base branch (defaults to repo's default branch)"},
+                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
+                "repo_id": {"type": "string", "description": "Repository ID (optional — uses first repo for the project if omitted)"},
             },
-            "required": ["repo_id", "title"],
+            "required": ["title"],
         },
     },
     {
         "name": "git_changed_files",
-        "description": "List files changed compared to a base branch. Lighter than a full diff.",
+        "description": (
+            "List files changed compared to a base branch. Lighter than a full diff. "
+            "Infers the repository from the active project when repo_id and project_id are omitted."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "repo_id": {"type": "string", "description": "Repository ID"},
+                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
+                "repo_id": {"type": "string", "description": "Repository ID (optional — uses first repo for the project if omitted)"},
                 "base_branch": {
                     "type": "string",
                     "description": "Branch to compare against (defaults to repo's default branch)",
                 },
             },
-            "required": ["repo_id"],
         },
     },
     {
         "name": "git_log",
-        "description": "Show recent git commits for a project's repository.",
+        "description": (
+            "Show recent git commits for a project's repository. "
+            "Infers project from active project context when project_id is omitted."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
+                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
                 "count": {"type": "integer", "description": "Number of commits to show (default 10)", "default": 10},
                 "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
             },
-            "required": ["project_id"],
         },
     },
     {
         "name": "git_diff",
-        "description": "Show the git diff for a project's repository. Without base_branch shows working tree changes; with base_branch shows diff against that branch.",
+        "description": (
+            "Show the git diff for a project's repository. Without base_branch shows working tree changes; "
+            "with base_branch shows diff against that branch. "
+            "Infers project from active project context when project_id is omitted."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
+                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
                 "base_branch": {"type": "string", "description": "Base branch to diff against (optional — shows working tree diff if omitted)"},
                 "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
             },
-            "required": ["project_id"],
         },
     },
     {
         "name": "create_branch",
-        "description": "Create a new git branch in a project's repository.",
+        "description": (
+            "Create a new git branch in a project's repository. "
+            "Infers project from active project context when project_id is omitted."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
+                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
                 "branch_name": {"type": "string", "description": "Name for the new branch"},
                 "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
             },
-            "required": ["project_id", "branch_name"],
+            "required": ["branch_name"],
         },
     },
     {
         "name": "checkout_branch",
-        "description": "Switch to an existing git branch in a project's repository.",
+        "description": (
+            "Switch to an existing git branch in a project's repository. "
+            "Infers project from active project context when project_id is omitted."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
+                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
                 "branch_name": {"type": "string", "description": "Branch name to check out"},
                 "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
             },
-            "required": ["project_id", "branch_name"],
+            "required": ["branch_name"],
         },
     },
     {
         "name": "commit_changes",
-        "description": "Stage all changes and create a git commit in a project's repository.",
+        "description": (
+            "Stage all changes and create a git commit in a project's repository. "
+            "Infers project from active project context when project_id is omitted."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
+                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
                 "message": {"type": "string", "description": "Commit message"},
                 "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
             },
-            "required": ["project_id", "message"],
+            "required": ["message"],
         },
     },
     {
         "name": "push_branch",
-        "description": "Push a branch to the remote origin in a project's repository.",
+        "description": (
+            "Push a branch to the remote origin in a project's repository. "
+            "Infers project from active project context when project_id is omitted."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
+                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
                 "branch_name": {"type": "string", "description": "Branch to push (optional — pushes current branch if omitted)"},
                 "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
             },
-            "required": ["project_id"],
         },
     },
     {
         "name": "merge_branch",
-        "description": "Merge a branch into the default branch (e.g., main). Aborts if there are conflicts.",
+        "description": (
+            "Merge a branch into the default branch (e.g., main). Aborts if there are conflicts. "
+            "Infers project from active project context when project_id is omitted."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
+                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
                 "branch_name": {"type": "string", "description": "Branch to merge into the default branch"},
                 "repo_id": {"type": "string", "description": "Specific repo ID (optional — uses first repo if omitted)"},
             },
-            "required": ["project_id", "branch_name"],
+            "required": ["branch_name"],
         },
     },
     {
@@ -934,6 +973,8 @@ You can directly (using your tools):
 - Commit changes with `commit_changes`, push branches with `push_branch`
 - Merge branches with `merge_branch`
 - View commit history with `git_log`, see diffs with `git_diff`
+- All git commands automatically infer the repository from the active project — \
+you do NOT need to specify project_id or repo_id when an active project is set
 - Read files from workspaces with `read_file`
 - Run shell commands in workspaces with `run_command`
 - Search file contents or filenames with `search_files`
