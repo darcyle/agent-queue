@@ -293,6 +293,13 @@ def setup_commands(bot: commands.Bot) -> None:
             preview = text[:300].rstrip() + "\n\n*Full output attached.*"
             await send(preview, file=file)
 
+    def _with_warning(msg: str, result: dict) -> str:
+        """Append an in-progress task warning to *msg* if present in *result*."""
+        warning = result.get("warning")
+        if warning:
+            return f"{msg}\n{warning}"
+        return msg
+
     # ===================================================================
     # SYSTEM / STATUS COMMANDS
     # ===================================================================
@@ -1657,9 +1664,10 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await interaction.followup.send(f"Error: {result['error']}")
             return
-        await interaction.followup.send(
-            f"✅ Switched to branch `{result['branch']}` on `{project_id}`"
-        )
+        await interaction.followup.send(_with_warning(
+            f"✅ Switched to branch `{result['branch']}` on `{project_id}`",
+            result,
+        ))
 
     @bot.tree.command(
         name="project-commit",
@@ -1692,9 +1700,10 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         if result.get("status") == "committed":
             repo_label = result.get("repo_id", "?")
-            await interaction.followup.send(
-                f"✅ Committed in `{repo_label}` on `{project_id}`: {message}"
-            )
+            await interaction.followup.send(_with_warning(
+                f"✅ Committed in `{repo_label}` on `{project_id}`: {message}",
+                result,
+            ))
         else:
             await interaction.followup.send(
                 f"ℹ️ Nothing to commit on `{project_id}` — working tree clean"
@@ -1767,15 +1776,17 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         if result.get("status") == "conflict":
             target = result.get("target", "main")
-            await interaction.followup.send(
+            await interaction.followup.send(_with_warning(
                 f"⚠️ Merge conflict — `{branch_name}` could not be merged "
-                f"into `{target}` on `{project_id}`. Merge was aborted."
-            )
+                f"into `{target}` on `{project_id}`. Merge was aborted.",
+                result,
+            ))
         else:
             target = result.get("target", "main")
-            await interaction.followup.send(
-                f"✅ Merged `{branch_name}` into `{target}` on `{project_id}`"
-            )
+            await interaction.followup.send(_with_warning(
+                f"✅ Merged `{branch_name}` into `{target}` on `{project_id}`",
+                result,
+            ))
 
     @bot.tree.command(
         name="project-create-branch",
@@ -1862,9 +1873,10 @@ def setup_commands(bot: commands.Bot) -> None:
                 f"Error: {result['error']}", ephemeral=True,
             )
             return
-        await interaction.response.send_message(
-            f"🔀 Switched to branch `{branch_name}` in `{result.get('repo_id', project_id)}`"
-        )
+        await interaction.response.send_message(_with_warning(
+            f"🔀 Switched to branch `{branch_name}` in `{result.get('repo_id', project_id)}`",
+            result,
+        ))
 
     @bot.tree.command(
         name="commit",
@@ -1895,9 +1907,10 @@ def setup_commands(bot: commands.Bot) -> None:
                 f"ℹ️ Nothing to commit in `{result.get('repo_id', project_id)}` — working tree clean."
             )
             return
-        await interaction.response.send_message(
-            f"✅ Committed in `{result.get('repo_id', project_id)}`: {message}"
-        )
+        await interaction.response.send_message(_with_warning(
+            f"✅ Committed in `{result.get('repo_id', project_id)}`: {message}",
+            result,
+        ))
 
     @bot.tree.command(
         name="push",
@@ -1955,14 +1968,16 @@ def setup_commands(bot: commands.Bot) -> None:
             )
             return
         if result.get("status") == "conflict":
-            await interaction.response.send_message(
+            await interaction.response.send_message(_with_warning(
                 f"⚠️ Merge conflict when merging `{branch_name}` → `{result.get('target', 'main')}`. "
-                f"Merge was aborted."
-            )
+                f"Merge was aborted.",
+                result,
+            ))
             return
-        await interaction.response.send_message(
-            f"✅ Merged `{branch_name}` → `{result.get('target', 'main')}` in `{result.get('repo_id', project_id)}`"
-        )
+        await interaction.response.send_message(_with_warning(
+            f"✅ Merged `{branch_name}` → `{result.get('target', 'main')}` in `{result.get('repo_id', project_id)}`",
+            result,
+        ))
 
     @bot.tree.command(
         name="git-commit",

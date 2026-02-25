@@ -1308,6 +1308,18 @@ class CommandHandler:
             "status": "created",
         }
 
+    async def _warn_if_in_progress(self, project_id: str) -> str | None:
+        """Return a warning string if any tasks are IN_PROGRESS for *project_id*."""
+        in_progress = await self.db.list_tasks(
+            project_id=project_id, status=TaskStatus.IN_PROGRESS,
+        )
+        if in_progress:
+            return (
+                f"⚠️ {len(in_progress)} task(s) currently IN_PROGRESS for this project — "
+                f"this operation may disrupt running agent(s)."
+            )
+        return None
+
     async def _cmd_checkout_branch(self, args: dict) -> dict:
         """Check out an existing branch."""
         branch_name = args.get("branch_name")
@@ -1324,12 +1336,16 @@ class CommandHandler:
         except Exception as e:
             return {"error": f"Failed to checkout branch: {e}"}
 
-        return {
+        result = {
             "project_id": args["project_id"],
             "repo_id": repo.id if repo else "(workspace)",
             "branch": branch_name,
             "status": "checked_out",
         }
+        warning = await self._warn_if_in_progress(args["project_id"])
+        if warning:
+            result["warning"] = warning
+        return result
 
     async def _cmd_commit_changes(self, args: dict) -> dict:
         """Stage all changes and commit with a message."""
@@ -1355,12 +1371,16 @@ class CommandHandler:
                 "message": "No changes to commit",
             }
 
-        return {
+        result = {
             "project_id": args["project_id"],
             "repo_id": repo.id if repo else "(workspace)",
             "commit_message": message,
             "status": "committed",
         }
+        warning = await self._warn_if_in_progress(args["project_id"])
+        if warning:
+            result["warning"] = warning
+        return result
 
     async def _cmd_push_branch(self, args: dict) -> dict:
         """Push the current (or specified) branch to origin."""
@@ -1405,8 +1425,10 @@ class CommandHandler:
         except Exception as e:
             return {"error": f"Failed to merge: {e}"}
 
+        warning = await self._warn_if_in_progress(args["project_id"])
+
         if not success:
-            return {
+            result = {
                 "project_id": args["project_id"],
                 "repo_id": repo.id if repo else "(workspace)",
                 "branch": branch_name,
@@ -1414,14 +1436,20 @@ class CommandHandler:
                 "status": "conflict",
                 "message": "Merge conflict — merge was aborted",
             }
+            if warning:
+                result["warning"] = warning
+            return result
 
-        return {
+        result = {
             "project_id": args["project_id"],
             "repo_id": repo.id if repo else "(workspace)",
             "branch": branch_name,
             "target": default_branch,
             "status": "merged",
         }
+        if warning:
+            result["warning"] = warning
+        return result
 
     # -----------------------------------------------------------------------
     # Hook commands
