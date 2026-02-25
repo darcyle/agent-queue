@@ -23,11 +23,17 @@ from .types import ChatResponse, TextBlock, ToolUseBlock
 class OllamaChatProvider(ChatProvider):
     """Chat provider using Ollama's OpenAI-compatible endpoint."""
 
-    def __init__(self, model: str = "qwen2.5:32b-instruct-q3_K_M", base_url: str = "http://localhost:11434/v1"):
+    def __init__(
+        self,
+        model: str = "qwen2.5:32b-instruct-q3_K_M",
+        base_url: str = "http://localhost:11434/v1",
+        keep_alive: str = "1h",
+    ):
         from openai import AsyncOpenAI
 
         self._client = AsyncOpenAI(base_url=base_url, api_key="ollama")
         self._model = model
+        self._keep_alive = keep_alive
         # Derive Ollama API root by stripping /v1 suffix
         self._ollama_api_root = base_url.rstrip("/").removesuffix("/v1")
 
@@ -75,6 +81,7 @@ class OllamaChatProvider(ChatProvider):
             "model": self._model,
             "max_tokens": max_tokens,
             "messages": openai_messages,
+            "extra_body": {"keep_alive": self._keep_alive},
         }
         if tools:
             kwargs["tools"] = anthropic_tools_to_openai(tools)

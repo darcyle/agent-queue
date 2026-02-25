@@ -678,7 +678,7 @@ TOOLS = [
     },
     {
         "name": "list_notes",
-        "description": "List all notes for a project. Notes are markdown documents stored in the project workspace.",
+        "description": "List all notes for a project. Returns name (filename), title, and size for each note. Use the 'name' field when calling read_note or delete_note.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -702,14 +702,85 @@ TOOLS = [
     },
     {
         "name": "delete_note",
-        "description": "Delete a project note.",
+        "description": (
+            "Delete a project note. IMPORTANT: Always call list_notes first to get "
+            "exact filenames, then pass the 'name' field (e.g. 'my-note.md' or "
+            "'my-note') as the title parameter."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {"type": "string", "description": "Project ID"},
-                "title": {"type": "string", "description": "Note title (as used when creating it)"},
+                "title": {
+                    "type": "string",
+                    "description": (
+                        "Note filename from list_notes 'name' field (e.g. 'my-note.md'), "
+                        "or the note title"
+                    ),
+                },
             },
             "required": ["project_id", "title"],
+        },
+    },
+    {
+        "name": "read_note",
+        "description": (
+            "Read a note's full contents. Returns the markdown content, path, and size. "
+            "Use the 'name' field from list_notes (e.g. 'my-note.md') as the title parameter."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "title": {
+                    "type": "string",
+                    "description": (
+                        "Note filename from list_notes 'name' field (e.g. 'my-note.md'), "
+                        "or the note title"
+                    ),
+                },
+            },
+            "required": ["project_id", "title"],
+        },
+    },
+    {
+        "name": "append_note",
+        "description": (
+            "Append content to an existing note, or create a new note if it doesn't exist. "
+            "Ideal for stream-of-consciousness input — appends with a blank line separator "
+            "without needing to read and rewrite the entire note."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "title": {"type": "string", "description": "Note title (used as filename)"},
+                "content": {
+                    "type": "string",
+                    "description": "Content to append (or initial content if creating)",
+                },
+            },
+            "required": ["project_id", "title", "content"],
+        },
+    },
+    {
+        "name": "compare_specs_notes",
+        "description": (
+            "List all spec files and note files for a project side by side. "
+            "Returns raw file listings (names, titles, sizes) for gap analysis. "
+            "Use this when the user asks to compare specs with notes or find "
+            "what's missing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "specs_path": {
+                    "type": "string",
+                    "description": "Override path to specs directory (optional)",
+                },
+            },
+            "required": ["project_id"],
         },
     },
     {
@@ -1054,10 +1125,15 @@ Agent workspaces — each agent has a per-project workspace directory:
 
 Notes management — use notes to build up project knowledge:
 - Use `list_notes` to see what notes exist for a project
-- Use `read_file` to read a note's contents (path: <workspace>/notes/<name>.md)
-- Use `write_note` to create or update a note (read with `read_file` first, edit content, \
-then write back with `write_note`)
+- Use `read_note` to read a note's contents by title (no need to construct paths)
+- Use `write_note` to create or fully replace a note's content
+- Use `append_note` to add content to an existing note (or create a new one). \
+This is the preferred tool for stream-of-consciousness input — it appends with \
+a blank line separator without needing to read and rewrite the entire note.
 - Use `delete_note` to remove a note
+- Use `compare_specs_notes` to list all specs and notes files side by side for gap analysis. \
+When the user says "compare specs", "what's missing", or "gap analysis", call this tool \
+then analyze which specs lack corresponding notes and vice versa.
 - When a user asks to "turn a note into tasks" or "create tasks from the spec", \
 read the note, propose a list of tasks with titles and descriptions, and wait \
 for the user to approve before calling `create_task` for each one.

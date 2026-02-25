@@ -70,11 +70,17 @@ class AgentQueueBot(commands.Bot):
         self._restart_requested = False
         self._boot_time: float | None = None
         self._notes_threads: dict[int, str] = {}  # thread_id -> project_id
+        self._notes_toc_messages: dict[int, int] = {}  # thread_id -> toc_message_id
         self._notes_threads_path = os.path.join(
             os.path.dirname(config.database_path), "notes_threads.json"
         )
         self._load_notes_threads()
         self._guild: discord.Guild | None = None
+        # Notes auto-refresh tracking
+        self._note_viewers: dict[int, dict[str, int]] = {}  # thread_id -> {filename: msg_id}
+        self._note_refresh_timers: dict[str, asyncio.TimerHandle] = {}  # debounce key -> timer
+        # Wire up the note-written callback
+        self.agent.handler.on_note_written = self._handle_note_written
 
     def _load_notes_threads(self) -> None:
         try:
@@ -82,20 +88,137 @@ class AgentQueueBot(commands.Bot):
                 with open(self._notes_threads_path) as f:
                     raw = json.load(f)
                 # Keys are stored as strings in JSON; convert back to int
-                self._notes_threads = {int(k): v for k, v in raw.items()}
+                self._notes_threads = {int(k): v for k, v in raw.get("threads", raw).items()}
+                # Load TOC message IDs if present
+                toc = raw.get("toc_messages", {})
+                self._notes_toc_messages = {int(k): int(v) for k, v in toc.items()}
         except Exception as e:
             print(f"Warning: could not load notes threads: {e}")
 
     def _save_notes_threads(self) -> None:
         try:
+            data = {
+                "threads": {str(k): v for k, v in self._notes_threads.items()},
+                "toc_messages": {str(k): v for k, v in self._notes_toc_messages.items()},
+            }
             with open(self._notes_threads_path, "w") as f:
-                json.dump(self._notes_threads, f)
+                json.dump(data, f)
         except Exception as e:
             print(f"Warning: could not save notes threads: {e}")
 
     def register_notes_thread(self, thread_id: int, project_id: str) -> None:
         self._notes_threads[thread_id] = project_id
         self._save_notes_threads()
+
+    async def _handle_note_written(
+        self, project_id: str, note_filename: str, note_path: str,
+    ) -> None:
+        """Auto-refresh viewed notes when a note is written or appended.
+
+        Uses a 2-second debounce to avoid Discord rate limits when multiple
+        writes happen in quick succession.
+        """
+        debounce_key = f"{project_id}:{note_filename}"
+
+        # Cancel previous timer for this note
+        old_timer = self._note_refresh_timers.pop(debounce_key, None)
+        if old_timer:
+            old_timer.cancel()
+
+        async def _do_refresh():
+            self._note_refresh_timers.pop(debounce_key, None)
+            # Find all notes threads for this project
+            for thread_id, pid in list(self._notes_threads.items()):
+                if pid != project_id:
+                    continue
+                # Refresh viewed note content if being viewed
+                viewers = self._note_viewers.get(thread_id, {})
+                if note_filename in viewers:
+                    try:
+                        thread = self.get_channel(thread_id)
+                        if thread is None:
+                            continue
+                        # Read updated content
+                        result = await self.agent.handler.execute("read_note", {
+                            "project_id": project_id,
+                            "title": note_filename[:-3].replace("-", " ").title(),
+                        })
+                        if "error" in result:
+                            continue
+                        # Delete old message
+                        try:
+                            old_msg = await thread.fetch_message(viewers[note_filename])
+                            await old_msg.delete()
+                        except Exception:
+                            pass
+                        # Send updated content
+                        from src.discord.commands import setup_commands
+                        content = result["content"]
+                        slug = note_filename[:-3]
+                        view = discord.ui.View(timeout=None)
+                        view.add_item(discord.ui.Button(
+                            style=discord.ButtonStyle.danger,
+                            label="Dismiss",
+                            custom_id=f"notes:{project_id}:dismiss:{slug}",
+                        ))
+                        if len(content) <= 1900:
+                            msg = await thread.send(
+                                f"### 📄 {result['title']} *(updated)*\n"
+                                f"```md\n{content}\n```",
+                                view=view,
+                            )
+                        else:
+                            import io as _io
+                            file = discord.File(
+                                fp=_io.BytesIO(content.encode("utf-8")),
+                                filename=note_filename,
+                            )
+                            preview = content[:300].rstrip()
+                            msg = await thread.send(
+                                f"### 📄 {result['title']} *(updated)*\n"
+                                f"{preview}\n\n"
+                                f"*Full content attached ({len(content):,} chars)*",
+                                file=file,
+                                view=view,
+                            )
+                        viewers[note_filename] = msg.id
+                    except Exception as e:
+                        print(f"Warning: note refresh failed: {e}")
+
+        # Schedule with 2-second debounce
+        loop = asyncio.get_event_loop()
+        handle = loop.call_later(
+            2.0, lambda: asyncio.ensure_future(_do_refresh())
+        )
+        self._note_refresh_timers[debounce_key] = handle
+
+    async def _reattach_notes_views(self) -> None:
+        """Reattach NotesView buttons to existing TOC messages after bot restart."""
+        from src.discord.commands import NotesView
+        if not self._notes_toc_messages:
+            return
+        reattached = 0
+        for thread_id, toc_msg_id in list(self._notes_toc_messages.items()):
+            project_id = self._notes_threads.get(thread_id)
+            if not project_id:
+                continue
+            try:
+                result = await self.agent.handler.execute(
+                    "list_notes", {"project_id": project_id}
+                )
+                if "error" in result:
+                    continue
+                notes = result.get("notes", [])
+                view = NotesView(
+                    project_id, notes,
+                    handler=self.agent.handler, bot=self,
+                )
+                self.add_view(view, message_id=toc_msg_id)
+                reattached += 1
+            except Exception as e:
+                print(f"Warning: could not reattach notes view for thread {thread_id}: {e}")
+        if reattached:
+            print(f"Reattached {reattached} notes view(s)")
 
     def update_project_channel(
         self, project_id: str, channel: discord.TextChannel
@@ -230,6 +353,9 @@ class AgentQueueBot(commands.Bot):
                 print("Warning: No LLM credentials found — set ANTHROPIC_API_KEY or run `claude login`")
         except Exception as e:
             print(f"Warning: Could not initialize LLM client: {e}")
+
+        # Reattach persistent NotesView buttons on existing messages
+        await self._reattach_notes_views()
 
     @staticmethod
     async def _send_long_message(
@@ -531,10 +657,14 @@ class AgentQueueBot(commands.Bot):
                         )
                     elif is_notes_thread and not is_bot_channel:
                         user_text = (
-                            f"[Context: this is the notes thread for project "
-                            f"`{notes_project_id}`. Default to using notes tools "
-                            f"(list_notes/write_note/delete_note/read_file) with "
-                            f"project_id='{notes_project_id}'.]\n{text}"
+                            f"[NOTES MODE for project '{notes_project_id}'. "
+                            f"BEHAVIOR: The user will type stream-of-consciousness thoughts. "
+                            f"1. Call list_notes to see existing notes. "
+                            f"2. Categorize input — decide which note it belongs to or create new. "
+                            f"3. Use append_note to add to existing, or write_note for new. "
+                            f"4. Respond with BRIEF confirmation: which note updated + 1-line summary. "
+                            f"5. For browsing/management/comparison requests, use appropriate tools. "
+                            f"Default project_id='{notes_project_id}'.]\n{text}"
                         )
 
                     # Set active project from channel context so that git

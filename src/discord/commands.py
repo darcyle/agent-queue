@@ -18,6 +18,287 @@ from discord.ext import commands
 from src.discord.embeds import STATUS_COLORS, STATUS_EMOJIS
 from src.models import TaskStatus
 
+_NOTES_PER_PAGE = 20  # Max note buttons (4 rows × 5 buttons)
+
+
+class _NoteDismissButton(discord.ui.Button):
+    """Dismiss button that deletes the note-viewing message."""
+
+    def __init__(self, project_id: str, note_slug: str, bot) -> None:
+        super().__init__(
+            style=discord.ButtonStyle.danger,
+            label="Dismiss",
+            custom_id=f"notes:{project_id}:dismiss:{note_slug}",
+        )
+        self._bot = bot
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        bot = self._bot
+        if bot:
+            thread_id = interaction.channel_id
+            note_viewers = getattr(bot, "_note_viewers", {})
+            if thread_id in note_viewers:
+                fname = f"{self.custom_id.split(':')[3]}.md"
+                note_viewers[thread_id].pop(fname, None)
+        await interaction.message.delete()
+
+
+class NoteContentView(discord.ui.View):
+    """View attached to a note content message with a Dismiss button."""
+
+    def __init__(self, project_id: str, note_slug: str, bot=None) -> None:
+        super().__init__(timeout=None)
+        self.add_item(_NoteDismissButton(project_id, note_slug, bot))
+
+
+class _NoteViewButton(discord.ui.Button):
+    """Button that displays a note's content when clicked."""
+
+    def __init__(self, project_id: str, slug: str, label: str, handler, bot) -> None:
+        super().__init__(
+            style=discord.ButtonStyle.secondary,
+            label=label,
+            custom_id=f"notes:{project_id}:view:{slug}",
+        )
+        self._project_id = project_id
+        self._slug = slug
+        self._handler = handler
+        self._bot = bot
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        handler = self._handler
+        bot = self._bot
+        if not handler:
+            await interaction.response.send_message("Not available.", ephemeral=True)
+            return
+        title = self._slug.replace("-", " ").title()
+        await interaction.response.defer()
+        result = await handler.execute("read_note", {
+            "project_id": self._project_id,
+            "title": title,
+        })
+        if "error" in result:
+            await interaction.followup.send(
+                f"Error: {result['error']}", ephemeral=True,
+            )
+            return
+        content = result["content"]
+        fname = f"{self._slug}.md"
+        thread_id = interaction.channel_id
+
+        # Delete previous view of the same note if any
+        if bot:
+            note_viewers = getattr(bot, "_note_viewers", {})
+            if thread_id in note_viewers and fname in note_viewers[thread_id]:
+                try:
+                    old_msg = await interaction.channel.fetch_message(
+                        note_viewers[thread_id][fname]
+                    )
+                    await old_msg.delete()
+                except Exception:
+                    pass
+
+        # Send note content with dismiss button
+        dismiss_view = NoteContentView(self._project_id, self._slug, bot=bot)
+        if len(content) <= 1900:
+            msg = await interaction.followup.send(
+                f"### 📄 {result['title']}\n```md\n{content}\n```",
+                view=dismiss_view,
+                wait=True,
+            )
+        else:
+            file = discord.File(
+                fp=io.BytesIO(content.encode("utf-8")),
+                filename=fname,
+            )
+            preview = content[:300].rstrip()
+            msg = await interaction.followup.send(
+                f"### 📄 {result['title']}\n{preview}\n\n"
+                f"*Full content attached ({len(content):,} chars)*",
+                file=file,
+                view=dismiss_view,
+                wait=True,
+            )
+
+        # Track the viewing message
+        if bot:
+            note_viewers = getattr(bot, "_note_viewers", {})
+            note_viewers.setdefault(thread_id, {})[fname] = msg.id
+
+
+class _NotesRefreshButton(discord.ui.Button):
+    """Refreshes the notes TOC by re-fetching the note list."""
+
+    def __init__(self, project_id: str, handler, bot) -> None:
+        super().__init__(
+            style=discord.ButtonStyle.secondary,
+            label="Refresh",
+            custom_id=f"notes:{project_id}:refresh",
+            row=4,
+        )
+        self._project_id = project_id
+        self._handler = handler
+        self._bot = bot
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        handler = self._handler
+        if not handler:
+            await interaction.response.send_message("Not available.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        result = await handler.execute("list_notes", {
+            "project_id": self._project_id,
+        })
+        if "error" not in result:
+            parent_view: NotesView = self.view
+            parent_view.notes = result.get("notes", [])
+            parent_view.total_pages = max(
+                1, (len(parent_view.notes) + _NOTES_PER_PAGE - 1) // _NOTES_PER_PAGE
+            )
+            if parent_view.page >= parent_view.total_pages:
+                parent_view.page = parent_view.total_pages - 1
+            parent_view._rebuild_components()
+            await interaction.edit_original_response(
+                content=parent_view.build_content(), view=parent_view,
+            )
+
+
+class _NotesCloseButton(discord.ui.Button):
+    """Archives the notes thread and cleans up tracking state."""
+
+    def __init__(self, project_id: str, bot) -> None:
+        super().__init__(
+            style=discord.ButtonStyle.danger,
+            label="Close Thread",
+            custom_id=f"notes:{project_id}:close",
+            row=4,
+        )
+        self._project_id = project_id
+        self._bot = bot
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        bot = self._bot
+        if not bot:
+            await interaction.response.send_message("Not available.", ephemeral=True)
+            return
+        await interaction.response.defer()
+
+        # Find the thread for this project — it may not be interaction.channel
+        # (the TOC message lives in the parent channel, not the thread).
+        thread = None
+        if isinstance(interaction.channel, discord.Thread):
+            thread = interaction.channel
+        else:
+            # Look up the thread from bot tracking
+            for tid, pid in list(bot._notes_threads.items()):
+                if pid == self._project_id:
+                    thread = bot.get_channel(tid)
+                    if isinstance(thread, discord.Thread):
+                        break
+                    thread = None
+
+        if thread and isinstance(thread, discord.Thread):
+            # Clean up tracking
+            note_viewers = getattr(bot, "_note_viewers", {})
+            note_viewers.pop(thread.id, None)
+            toc_messages = getattr(bot, "_notes_toc_messages", {})
+            toc_messages.pop(thread.id, None)
+            # Unregister and archive
+            bot._notes_threads.pop(thread.id, None)
+            bot._save_notes_threads()
+            await thread.edit(archived=True)
+            # Delete the TOC message (the /notes response with buttons)
+            try:
+                await interaction.message.delete()
+            except Exception:
+                pass
+
+
+class _NotesPageButton(discord.ui.Button):
+    """Paginates the notes TOC forward or backward."""
+
+    def __init__(self, project_id: str, direction: str, disabled: bool) -> None:
+        label = "◀ Prev" if direction == "prev" else "Next ▶"
+        super().__init__(
+            style=discord.ButtonStyle.primary,
+            label=label,
+            custom_id=f"notes:{project_id}:page:{direction}",
+            disabled=disabled,
+            row=4,
+        )
+        self._direction = direction
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        parent_view: NotesView = self.view
+        if self._direction == "prev" and parent_view.page > 0:
+            parent_view.page -= 1
+        elif self._direction == "next" and parent_view.page < parent_view.total_pages - 1:
+            parent_view.page += 1
+        parent_view._rebuild_components()
+        await interaction.response.edit_message(
+            content=parent_view.build_content(), view=parent_view,
+        )
+
+
+class NotesView(discord.ui.View):
+    """Interactive table-of-contents for project notes with per-note buttons."""
+
+    def __init__(
+        self,
+        project_id: str,
+        notes: list[dict],
+        page: int = 0,
+        handler=None,
+        bot=None,
+    ) -> None:
+        super().__init__(timeout=None)
+        self.project_id = project_id
+        self.notes = notes
+        self.page = page
+        self._handler = handler
+        self._bot = bot
+        self.total_pages = max(1, (len(notes) + _NOTES_PER_PAGE - 1) // _NOTES_PER_PAGE)
+        self._rebuild_components()
+
+    def _rebuild_components(self) -> None:
+        self.clear_items()
+        start = self.page * _NOTES_PER_PAGE
+        page_notes = self.notes[start:start + _NOTES_PER_PAGE]
+
+        # Rows 1-4: note buttons (up to 5 per row, 4 rows = 20 max)
+        for note in page_notes:
+            slug = note["name"][:-3] if note["name"].endswith(".md") else note["name"]
+            label = note["title"]
+            if len(label) > 72:
+                label = label[:69] + "..."
+            self.add_item(_NoteViewButton(
+                self.project_id, slug, label, self._handler, self._bot,
+            ))
+
+        # Row 5: control buttons
+        if self.total_pages > 1:
+            self.add_item(_NotesPageButton(
+                self.project_id, "prev", disabled=(self.page == 0),
+            ))
+            self.add_item(_NotesPageButton(
+                self.project_id, "next",
+                disabled=(self.page >= self.total_pages - 1),
+            ))
+        self.add_item(_NotesRefreshButton(self.project_id, self._handler, self._bot))
+        self.add_item(_NotesCloseButton(self.project_id, self._bot))
+
+    def build_content(self) -> str:
+        if not self.notes:
+            return "## 📝 Notes\n_No notes yet._ Use the chat thread to create some!"
+        lines = ["## 📝 Notes"]
+        start = self.page * _NOTES_PER_PAGE
+        for i, note in enumerate(self.notes[start:start + _NOTES_PER_PAGE], start=1):
+            size_kb = note["size_bytes"] / 1024
+            lines.append(f"**{i}.** {note['title']} (`{note['name']}`, {size_kb:.1f} KB)")
+        if self.total_pages > 1:
+            lines.append(f"\n_Page {self.page + 1}/{self.total_pages}_")
+        return "\n".join(lines)
+
 
 def setup_commands(bot: commands.Bot) -> None:
     """Register all slash commands on the bot."""
@@ -977,9 +1258,8 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.response.send_message("\n".join(lines))
 
     @bot.tree.command(name="pause", description="Pause a project")
-    @app_commands.describe(project_id="Project ID to pause (auto-detected from channel)")
-    async def pause_command(interaction: discord.Interaction, project_id: str | None = None):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+    async def pause_command(interaction: discord.Interaction):
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
@@ -992,9 +1272,8 @@ def setup_commands(bot: commands.Bot) -> None:
         )
 
     @bot.tree.command(name="resume", description="Resume a paused project")
-    @app_commands.describe(project_id="Project ID to resume (auto-detected from channel)")
-    async def resume_command(interaction: discord.Interaction, project_id: str | None = None):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+    async def resume_command(interaction: discord.Interaction):
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
@@ -1026,9 +1305,8 @@ def setup_commands(bot: commands.Bot) -> None:
     # ===================================================================
 
     @bot.tree.command(name="tasks", description="List tasks for a project")
-    @app_commands.describe(project_id="Project ID to filter by (auto-detected from channel)")
-    async def tasks_command(interaction: discord.Interaction, project_id: str | None = None):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+    async def tasks_command(interaction: discord.Interaction):
+        project_id = await _resolve_project_from_context(interaction, None)
         args = {}
         if project_id:
             args["project_id"] = project_id
@@ -1177,14 +1455,12 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         task_id="(Optional) Check a specific blocked task",
-        project_id="(Optional) Check all blocked chains in a project (auto-detected from channel)",
     )
     async def chain_health_command(
         interaction: discord.Interaction,
         task_id: str | None = None,
-        project_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         args = {}
         if task_id:
             args["task_id"] = task_id
@@ -1429,9 +1705,8 @@ def setup_commands(bot: commands.Bot) -> None:
     # ===================================================================
 
     @bot.tree.command(name="repos", description="List registered repositories")
-    @app_commands.describe(project_id="Filter by project ID (auto-detected from channel)")
-    async def repos_command(interaction: discord.Interaction, project_id: str | None = None):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+    async def repos_command(interaction: discord.Interaction):
+        project_id = await _resolve_project_from_context(interaction, None)
         args = {}
         if project_id:
             args["project_id"] = project_id
@@ -1458,7 +1733,6 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(name="add-repo", description="Register a repository for a project")
     @app_commands.describe(
-        project_id="Project ID (auto-detected from channel)",
         source="How to set up the repo",
         url="Git URL (for clone)",
         path="Existing directory path (for link)",
@@ -1473,13 +1747,12 @@ def setup_commands(bot: commands.Bot) -> None:
     async def add_repo_command(
         interaction: discord.Interaction,
         source: app_commands.Choice[str],
-        project_id: str | None = None,
         url: str | None = None,
         path: str | None = None,
         name: str | None = None,
         default_branch: str = "main",
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
@@ -1512,9 +1785,8 @@ def setup_commands(bot: commands.Bot) -> None:
         name="git-status",
         description="Show the git status of a project's repository",
     )
-    @app_commands.describe(project_id="Project ID to check git status for (auto-detected from channel)")
-    async def git_status_command(interaction: discord.Interaction, project_id: str | None = None):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+    async def git_status_command(interaction: discord.Interaction):
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
@@ -1562,17 +1834,15 @@ def setup_commands(bot: commands.Bot) -> None:
         description="List branches or create a new branch in a project's repository",
     )
     @app_commands.describe(
-        project_id="Project ID (auto-detected from channel)",
         name="New branch name to create (omit to list branches)",
         repo_id="Repo ID (optional — uses first repo if omitted)",
     )
     async def git_branches_command(
         interaction: discord.Interaction,
-        project_id: str | None = None,
         name: str | None = None,
         repo_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(
                 f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
@@ -1610,17 +1880,15 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Switch to an existing branch in a project's repository",
     )
     @app_commands.describe(
-        project_id="Project ID (auto-detected from channel)",
         branch_name="Branch name to switch to",
         repo_id="Repo ID (optional — uses first repo if omitted)",
     )
     async def git_checkout_command(
         interaction: discord.Interaction,
         branch_name: str,
-        project_id: str | None = None,
         repo_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(
                 f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
@@ -1645,17 +1913,15 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Stage all changes and commit in a project's repository",
     )
     @app_commands.describe(
-        project_id="Project ID (auto-detected from channel)",
         message="Commit message",
         repo_id="Repo ID (optional — uses first repo if omitted)",
     )
     async def project_commit_command(
         interaction: discord.Interaction,
         message: str,
-        project_id: str | None = None,
         repo_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(
                 f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
@@ -1686,17 +1952,15 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Push a branch to origin in a project's repository",
     )
     @app_commands.describe(
-        project_id="Project ID (auto-detected from channel)",
         branch_name="Branch to push (defaults to current branch)",
         repo_id="Repo ID (optional — uses first repo if omitted)",
     )
     async def project_push_command(
         interaction: discord.Interaction,
-        project_id: str | None = None,
         branch_name: str | None = None,
         repo_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(
                 f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
@@ -1723,17 +1987,15 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Merge a branch into the default branch in a project's repository",
     )
     @app_commands.describe(
-        project_id="Project ID (auto-detected from channel)",
         branch_name="Branch to merge",
         repo_id="Repo ID (optional — uses first repo if omitted)",
     )
     async def project_merge_command(
         interaction: discord.Interaction,
         branch_name: str,
-        project_id: str | None = None,
         repo_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(
                 f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
@@ -1767,17 +2029,15 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Create and switch to a new branch in a project's repository",
     )
     @app_commands.describe(
-        project_id="Project ID (auto-detected from channel)",
         branch_name="Name for the new branch",
         repo_id="Repo ID (optional — uses first repo if omitted)",
     )
     async def project_create_branch_command(
         interaction: discord.Interaction,
         branch_name: str,
-        project_id: str | None = None,
         repo_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(
                 f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
@@ -1802,16 +2062,14 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         branch_name="Name for the new branch",
-        project_id="Project ID (auto-detected from channel)",
         repo_id="Specific repo ID (optional)",
     )
     async def create_branch_command(
         interaction: discord.Interaction,
         branch_name: str,
-        project_id: str | None = None,
         repo_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
@@ -1835,16 +2093,14 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         branch_name="Branch name to check out",
-        project_id="Project ID (auto-detected from channel)",
         repo_id="Specific repo ID (optional)",
     )
     async def checkout_branch_command(
         interaction: discord.Interaction,
         branch_name: str,
-        project_id: str | None = None,
         repo_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
@@ -1869,16 +2125,14 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         message="Commit message",
-        project_id="Project ID (auto-detected from channel)",
         repo_id="Specific repo ID (optional)",
     )
     async def commit_command(
         interaction: discord.Interaction,
         message: str,
-        project_id: str | None = None,
         repo_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
@@ -1907,17 +2161,15 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Push a branch to the remote",
     )
     @app_commands.describe(
-        project_id="Project ID (auto-detected from channel)",
         branch_name="Branch to push (optional — pushes current branch)",
         repo_id="Specific repo ID (optional)",
     )
     async def push_command(
         interaction: discord.Interaction,
-        project_id: str | None = None,
         branch_name: str | None = None,
         repo_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
@@ -1944,16 +2196,14 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         branch_name="Branch to merge",
-        project_id="Project ID (auto-detected from channel)",
         repo_id="Specific repo ID (optional)",
     )
     async def merge_command(
         interaction: discord.Interaction,
         branch_name: str,
-        project_id: str | None = None,
         repo_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
@@ -1985,16 +2235,14 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         message="Commit message",
-        project_id="Project ID (auto-detected from channel)",
         repo_id="Repository ID (optional — uses first repo if omitted)",
     )
     async def git_commit_command(
         interaction: discord.Interaction,
         message: str,
-        project_id: str | None = None,
         repo_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         # Set active project from channel context so _resolve_repo_path can
         # infer the repository even when project_id is not in the args dict.
         if project_id:
@@ -2024,17 +2272,15 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Push a branch to remote origin",
     )
     @app_commands.describe(
-        project_id="Project ID (auto-detected from channel)",
         repo_id="Repository ID (optional — uses first repo if omitted)",
         branch="Branch name to push (defaults to current branch)",
     )
     async def git_push_command(
         interaction: discord.Interaction,
-        project_id: str | None = None,
         repo_id: str | None = None,
         branch: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if project_id:
             handler.set_active_project(project_id)
         await interaction.response.defer()
@@ -2060,16 +2306,14 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         branch_name="Name for the new branch",
-        project_id="Project ID (auto-detected from channel)",
         repo_id="Repository ID (optional — uses first repo if omitted)",
     )
     async def git_branch_command(
         interaction: discord.Interaction,
         branch_name: str,
-        project_id: str | None = None,
         repo_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if project_id:
             handler.set_active_project(project_id)
         await interaction.response.defer()
@@ -2093,18 +2337,16 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         branch_name="Branch to merge",
-        project_id="Project ID (auto-detected from channel)",
         repo_id="Repository ID (optional — uses first repo if omitted)",
         default_branch="Target branch (defaults to repo's default branch)",
     )
     async def git_merge_command(
         interaction: discord.Interaction,
         branch_name: str,
-        project_id: str | None = None,
         repo_id: str | None = None,
         default_branch: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if project_id:
             handler.set_active_project(project_id)
         await interaction.response.defer()
@@ -2136,7 +2378,6 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         title="PR title",
-        project_id="Project ID (auto-detected from channel)",
         repo_id="Repository ID (optional — uses first repo if omitted)",
         body="PR description (optional)",
         branch="Head branch (defaults to current)",
@@ -2145,13 +2386,12 @@ def setup_commands(bot: commands.Bot) -> None:
     async def git_pr_command(
         interaction: discord.Interaction,
         title: str,
-        project_id: str | None = None,
         repo_id: str | None = None,
         body: str = "",
         branch: str | None = None,
         base: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if project_id:
             handler.set_active_project(project_id)
         await interaction.response.defer()
@@ -2179,17 +2419,15 @@ def setup_commands(bot: commands.Bot) -> None:
         description="List files changed compared to a base branch",
     )
     @app_commands.describe(
-        project_id="Project ID (auto-detected from channel)",
         repo_id="Repository ID (optional — uses first repo if omitted)",
         base_branch="Branch to compare against (defaults to repo default)",
     )
     async def git_files_command(
         interaction: discord.Interaction,
-        project_id: str | None = None,
         repo_id: str | None = None,
         base_branch: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if project_id:
             handler.set_active_project(project_id)
         await interaction.response.defer()
@@ -2227,17 +2465,15 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Show recent git commits",
     )
     @app_commands.describe(
-        project_id="Project ID (auto-detected from channel)",
         count="Number of commits to show (default 10)",
         repo_id="Specific repo ID (optional)",
     )
     async def git_log_command(
         interaction: discord.Interaction,
-        project_id: str | None = None,
         count: int = 10,
         repo_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
@@ -2260,17 +2496,15 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Show git diff for a project's repo",
     )
     @app_commands.describe(
-        project_id="Project ID (auto-detected from channel)",
         base_branch="Base branch to diff against (optional — shows working tree diff)",
         repo_id="Specific repo ID (optional)",
     )
     async def git_diff_command(
         interaction: discord.Interaction,
-        project_id: str | None = None,
         base_branch: str | None = None,
         repo_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
@@ -2311,9 +2545,8 @@ def setup_commands(bot: commands.Bot) -> None:
     # ===================================================================
 
     @bot.tree.command(name="hooks", description="List automation hooks")
-    @app_commands.describe(project_id="Filter by project ID (auto-detected from channel)")
-    async def hooks_command(interaction: discord.Interaction, project_id: str | None = None):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+    async def hooks_command(interaction: discord.Interaction):
+        project_id = await _resolve_project_from_context(interaction, None)
         args = {}
         if project_id:
             args["project_id"] = project_id
@@ -2344,7 +2577,6 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(name="create-hook", description="Create an automation hook")
     @app_commands.describe(
-        project_id="Project ID (auto-detected from channel)",
         name="Hook name",
         trigger_type="Trigger type",
         trigger_value="Interval seconds (periodic) or event type (event)",
@@ -2361,10 +2593,9 @@ def setup_commands(bot: commands.Bot) -> None:
         trigger_type: app_commands.Choice[str],
         trigger_value: str,
         prompt_template: str,
-        project_id: str | None = None,
         cooldown_seconds: int = 3600,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
@@ -2483,9 +2714,8 @@ def setup_commands(bot: commands.Bot) -> None:
     # ===================================================================
 
     @bot.tree.command(name="notes", description="View and manage notes for a project")
-    @app_commands.describe(project_id="Project ID (auto-detected from channel)")
-    async def notes_command(interaction: discord.Interaction, project_id: str | None = None):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+    async def notes_command(interaction: discord.Interaction):
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
@@ -2505,16 +2735,10 @@ def setup_commands(bot: commands.Bot) -> None:
                 break
 
         notes = result.get("notes", [])
-        lines = [f"## Notes: {project_name}"]
-        if notes:
-            for note in notes:
-                size_kb = note["size_bytes"] / 1024
-                lines.append(f"• **{note['title']}** (`{note['name']}`, {size_kb:.1f} KB)")
-        else:
-            lines.append("_No notes yet._")
-
-        listing = "\n".join(lines)
-        await interaction.response.send_message(listing)
+        view = NotesView(project_id, notes, handler=handler, bot=bot)
+        await interaction.response.send_message(
+            view.build_content(), view=view,
+        )
 
         # Create a thread for interactive note management
         msg = await interaction.original_response()
@@ -2523,13 +2747,19 @@ def setup_commands(bot: commands.Bot) -> None:
             auto_archive_duration=1440,
         )
         await thread.send(
-            f"Ask me to read, create, or edit notes for **{project_name}**."
+            f"💬 Type ideas and I'll organize them into notes for **{project_name}**.\n"
+            f"Click a note button above to view its content."
         )
         bot.register_notes_thread(thread.id, project_id)
 
+        # Track TOC message for view persistence
+        toc_messages = getattr(bot, "_notes_toc_messages", {})
+        toc_messages[thread.id] = msg.id
+        bot._notes_toc_messages = toc_messages
+        bot._save_notes_threads()
+
     @bot.tree.command(name="write-note", description="Create or update a project note")
     @app_commands.describe(
-        project_id="Project ID (auto-detected from channel)",
         title="Note title",
         content="Note content (markdown)",
     )
@@ -2537,9 +2767,8 @@ def setup_commands(bot: commands.Bot) -> None:
         interaction: discord.Interaction,
         title: str,
         content: str,
-        project_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return
@@ -2558,15 +2787,13 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(name="delete-note", description="Delete a project note")
     @app_commands.describe(
-        project_id="Project ID (auto-detected from channel)",
         title="Note title",
     )
     async def delete_note_command(
         interaction: discord.Interaction,
         title: str,
-        project_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
+        project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
             return

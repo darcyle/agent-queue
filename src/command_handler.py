@@ -82,6 +82,10 @@ class CommandHandler:
         # Signature: callback(project_id: str) -> None
         # The Discord bot registers this to clean in-memory channel caches.
         self._on_project_deleted: Callable[[str], None] | None = None
+        # Optional callback invoked after a note is written or appended.
+        # Signature: async callback(project_id, note_filename, note_path) -> None
+        # The Discord bot registers this to auto-refresh viewed notes.
+        self.on_note_written: Callable | None = None
 
     @property
     def db(self):
@@ -1620,6 +1624,36 @@ class CommandHandler:
     # Stored as plain .md files under <workspace>/notes/.
     # -----------------------------------------------------------------------
 
+    def _resolve_note_path(self, notes_dir: str, title: str) -> str | None:
+        """Resolve a note file path from a title, filename, or slug.
+
+        Tries in order:
+        1. Exact filename match (e.g. "keen-beacon-splitting-analysis.md")
+        2. Filename without .md extension (e.g. "keen-beacon-splitting-analysis")
+        3. Slugified title (e.g. "Analysis: Why keen-beacon Was Not Split" → slug)
+
+        Returns the full file path if found, None otherwise.
+        """
+        # 1. Exact filename
+        if title.endswith(".md"):
+            fpath = os.path.join(notes_dir, title)
+            if os.path.isfile(fpath):
+                return fpath
+
+        # 2. Title as filename without extension
+        fpath = os.path.join(notes_dir, f"{title}.md")
+        if os.path.isfile(fpath):
+            return fpath
+
+        # 3. Slugified title
+        slug = self.orchestrator.git.slugify(title)
+        if slug:
+            fpath = os.path.join(notes_dir, f"{slug}.md")
+            if os.path.isfile(fpath):
+                return fpath
+
+        return None
+
     async def _cmd_list_notes(self, args: dict) -> dict:
         project = await self.db.get_project(args["project_id"])
         if not project:
@@ -1669,10 +1703,129 @@ class CommandHandler:
         existed = os.path.isfile(fpath)
         with open(fpath, "w") as f:
             f.write(args["content"])
-        return {
+        result = {
             "path": fpath,
             "title": args["title"],
             "status": "updated" if existed else "created",
+        }
+        if self.on_note_written:
+            await self.on_note_written(
+                args["project_id"], f"{slug}.md", fpath,
+            )
+        return result
+
+    async def _cmd_read_note(self, args: dict) -> dict:
+        project = await self.db.get_project(args["project_id"])
+        if not project:
+            return {"error": f"Project '{args['project_id']}' not found"}
+        workspace = project.workspace_path or os.path.join(
+            self.config.workspace_dir, args["project_id"]
+        )
+        notes_dir = os.path.join(workspace, "notes")
+        fpath = self._resolve_note_path(notes_dir, args["title"])
+        if not fpath:
+            return {"error": f"Note '{args['title']}' not found"}
+        with open(fpath, "r") as f:
+            content = f.read()
+        stat = os.stat(fpath)
+        return {
+            "content": content,
+            "title": args["title"],
+            "path": fpath,
+            "size_bytes": stat.st_size,
+        }
+
+    async def _cmd_append_note(self, args: dict) -> dict:
+        project = await self.db.get_project(args["project_id"])
+        if not project:
+            return {"error": f"Project '{args['project_id']}' not found"}
+        workspace = project.workspace_path or os.path.join(
+            self.config.workspace_dir, args["project_id"]
+        )
+        notes_dir = os.path.join(workspace, "notes")
+        os.makedirs(notes_dir, exist_ok=True)
+        slug = self.orchestrator.git.slugify(args["title"])
+        if not slug:
+            return {"error": "Title produces an empty filename"}
+        fpath = os.path.join(notes_dir, f"{slug}.md")
+        existed = os.path.isfile(fpath)
+        if existed:
+            with open(fpath, "a") as f:
+                f.write(f"\n\n{args['content']}")
+            status = "appended"
+        else:
+            with open(fpath, "w") as f:
+                f.write(f"# {args['title']}\n\n{args['content']}")
+            status = "created"
+        stat = os.stat(fpath)
+        result = {
+            "path": fpath,
+            "title": args["title"],
+            "status": status,
+            "size_bytes": stat.st_size,
+        }
+        if self.on_note_written:
+            note_filename = f"{slug}.md"
+            await self.on_note_written(
+                args["project_id"], note_filename, fpath,
+            )
+        return result
+
+    async def _cmd_compare_specs_notes(self, args: dict) -> dict:
+        project = await self.db.get_project(args["project_id"])
+        if not project:
+            return {"error": f"Project '{args['project_id']}' not found"}
+        workspace = project.workspace_path or os.path.join(
+            self.config.workspace_dir, args["project_id"]
+        )
+
+        # Resolve specs directory — check repo specs/ first, then workspace specs/
+        specs_path = args.get("specs_path")
+        if not specs_path:
+            # Try repo specs/ first
+            repos = await self.db.list_repos()
+            for repo in repos:
+                if repo.project_id == args["project_id"] and repo.source_path:
+                    candidate = os.path.join(repo.source_path, "specs")
+                    if os.path.isdir(candidate):
+                        specs_path = candidate
+                        break
+            # Fall back to workspace specs/
+            if not specs_path:
+                specs_path = os.path.join(workspace, "specs")
+
+        notes_path = os.path.join(workspace, "notes")
+
+        def _list_md_files(dirpath: str) -> list[dict]:
+            if not os.path.isdir(dirpath):
+                return []
+            files = []
+            for fname in sorted(os.listdir(dirpath)):
+                if not fname.endswith(".md"):
+                    continue
+                fpath = os.path.join(dirpath, fname)
+                stat = os.stat(fpath)
+                title = fname[:-3].replace("-", " ").title()
+                try:
+                    with open(fpath, "r") as f:
+                        first_line = f.readline().strip()
+                    if first_line.startswith("# "):
+                        title = first_line[2:].strip()
+                except Exception:
+                    pass
+                files.append({
+                    "name": fname,
+                    "title": title,
+                    "size_bytes": stat.st_size,
+                })
+            return files
+
+        return {
+            "specs": _list_md_files(specs_path),
+            "notes": _list_md_files(notes_path),
+            "specs_path": specs_path,
+            "notes_path": notes_path,
+            "project_id": args["project_id"],
         }
 
     async def _cmd_delete_note(self, args: dict) -> dict:
@@ -1682,9 +1835,9 @@ class CommandHandler:
         workspace = project.workspace_path or os.path.join(
             self.config.workspace_dir, args["project_id"]
         )
-        slug = self.orchestrator.git.slugify(args["title"])
-        fpath = os.path.join(workspace, "notes", f"{slug}.md")
-        if not os.path.isfile(fpath):
+        notes_dir = os.path.join(workspace, "notes")
+        fpath = self._resolve_note_path(notes_dir, args["title"])
+        if not fpath:
             return {"error": f"Note '{args['title']}' not found"}
         os.remove(fpath)
         return {"deleted": fpath, "title": args["title"]}

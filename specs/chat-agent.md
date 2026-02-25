@@ -135,6 +135,9 @@ These tools take a `project_id` and resolve the repository automatically. `get_g
 | `list_notes` | List all markdown notes for a project |
 | `write_note` | Create or overwrite a project note |
 | `delete_note` | Delete a project note |
+| `read_note` | Read note contents by title |
+| `append_note` | Append content to note (stream-of-consciousness) |
+| `compare_specs_notes` | List specs and notes for gap analysis |
 
 ### Hook System
 
@@ -296,7 +299,7 @@ The active project ID is injected into the system prompt as an `ACTIVE PROJECT:`
 When a user message arrives in a per-project channel or a notes thread, the Discord bot prepends a context prefix to `user_text` before calling `agent.chat()`:
 
 - **Project channel**: `"[Context: this is the channel for project `{project_id}`. Default to using project_id='{project_id}' for all project-scoped commands.]\n{original_text}"`
-- **Notes thread**: `"[Context: this is the notes thread for project `{project_id}`. Default to using notes tools with project_id='{project_id}'.]\n{original_text}"`
+- **Notes thread**: `"[Context: this is the notes thread for project `{project_id}`. Default to using notes tools with project_id='{project_id}'.]\n{original_text}"` — Enhanced NOTES MODE: When operating in a notes thread, the agent enters a special mode with auto-categorization behavior. Stream-of-consciousness input from the user is handled by appending to the appropriate note (using `append_note`) rather than requiring structured commands. The agent uses brief confirmation responses (e.g., "Added to {note title}.") to minimize noise in the thread.
 
 This is additional guidance beyond (and independent of) the active project system prompt injection.
 

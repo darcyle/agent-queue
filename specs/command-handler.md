@@ -1575,6 +1575,85 @@ Deletes a note by title.
 
 ---
 
+#### `read_note`
+
+Reads a note's contents by title without needing the full path.
+
+**Parameters:**
+- `project_id` (required)
+- `title` (required): Note title. Slugified to resolve the filename.
+
+**Behavior:** Resolves the file path as `{workspace}/notes/{slugify(title)}.md` and reads the full content.
+
+**Returns on success:**
+```python
+{
+    "content": <str: full file content>,
+    "title": <str>,
+    "path": <str: absolute file path>,
+    "size_bytes": <int>,
+}
+```
+
+**Errors:**
+- Project not found.
+- Note not found (file does not exist).
+
+---
+
+#### `append_note`
+
+Appends content to an existing note, or creates a new note if one does not exist.
+
+**Parameters:**
+- `project_id` (required)
+- `title` (required): Note title. Slugified for the filename.
+- `content` (required): Content to append.
+
+**Behavior:** Resolves the file path as `{workspace}/notes/{slugify(title)}.md`. If the file exists, appends `\n\n` followed by the new content. If the file does not exist, creates it with `# {title}\n\n{content}`. Creates the `notes/` directory if it does not exist.
+
+**Returns on success:**
+```python
+{
+    "path": <str: absolute file path>,
+    "title": <str>,
+    "status": "appended" | "created",
+    "size_bytes": <int>,
+}
+```
+
+**Errors:**
+- Project not found.
+- Title produces an empty slug after slugification.
+
+---
+
+#### `compare_specs_notes`
+
+Lists specs and notes files for gap analysis. Returns raw file listings — no LLM call is made.
+
+**Parameters:**
+- `project_id` (required)
+- `specs_path` (optional): Override for the specs directory path. If not provided, the command checks for a `specs/` directory in the project's repo first, then falls back to `{workspace}/specs/`.
+
+**Behavior:** Resolves the specs directory (repo `specs/` first, then `{workspace}/specs/`). Lists all `.md` files in both the specs directory and the `{workspace}/notes/` directory, returning titles and sizes for each.
+
+**Returns on success:**
+```python
+{
+    "specs": [{"name": <str>, "title": <str>, "size_bytes": <int>}, ...],
+    "notes": [{"name": <str>, "title": <str>, "size_bytes": <int>}, ...],
+    "specs_path": <str: absolute path to specs dir>,
+    "notes_path": <str: absolute path to notes dir>,
+    "project_id": <str>,
+}
+```
+
+**Errors:**
+- Project not found.
+
+---
+
 ### System
 
 ---

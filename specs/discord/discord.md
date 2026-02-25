@@ -37,8 +37,11 @@ Key instance state initialized at construction:
 | `_boot_time` | `float \| None` | UTC timestamp recorded on `on_ready`, used to discard pre-boot messages |
 | `_restart_requested` | `bool` | Set by `/restart` command |
 | `_guild` | `discord.Guild \| None` | Cached guild reference |
+| `_note_viewers` | `dict[int, dict[str, int]]` | Maps thread_id → {note_filename: message_id} for auto-refresh |
+| `_notes_toc_messages` | `dict[int, int]` | Maps thread_id → TOC message_id for view persistence |
+| `_note_refresh_timers` | `dict[str, asyncio.TimerHandle]` | Debounce timers for note refresh (keyed by `project_id:filename`) |
 
-The `_notes_threads` mapping is persisted to disk at `<database_dir>/notes_threads.json`, loaded at startup, and saved on every modification. Keys are stored as strings in JSON and converted back to `int` on load.
+The `_notes_threads` mapping is persisted to disk at `<database_dir>/notes_threads.json` as a JSON object with two keys: `threads` (thread_id → project_id) and `toc_messages` (thread_id → toc_message_id). Loaded at startup and saved on every modification. Keys are stored as strings in JSON and converted back to `int` on load. Legacy format (flat dict without `threads`/`toc_messages` keys) is supported for backward compatibility.
 
 ### 2.2 `setup_hook`
 
@@ -58,6 +61,7 @@ If `guild_id` is configured, commands are copied to the guild and synced immedia
 3. Calls `_resolve_project_channels()` to populate the per-project channel cache from the database.
 4. Registers orchestrator callbacks (`set_notify_callback` and `set_create_thread_callback`) if any usable channel exists — either the global channel or at least one per-project channel. This allows projects with dedicated channels to receive notifications and task threads even when no global channel is configured.
 5. Initializes the `ChatAgent` LLM client, logging whether credentials were found.
+6. Calls `_reattach_notes_views()` to restore persistent `NotesView` button handlers on existing TOC messages from `_notes_toc_messages`.
 
 ### 2.4 Authorization
 
@@ -135,9 +139,9 @@ For per-project channels (when not the global bot channel), a context prefix is 
 {user_text}
 ```
 
-For notes threads (when not the global bot channel):
+For notes threads (when not the global bot channel), a rich NOTES MODE context is injected:
 ```
-[Context: this is the notes thread for project `{notes_project_id}`. Default to using notes tools (list_notes/write_note/delete_note/read_file) with project_id='{notes_project_id}'.]
+[NOTES MODE for project '{notes_project_id}'. BEHAVIOR: The user will type stream-of-consciousness thoughts. 1. Call list_notes to see existing notes. 2. Categorize input — decide which note it belongs to or create new. 3. Use append_note to add to existing, or write_note for new. 4. Respond with BRIEF confirmation: which note updated + 1-line summary. 5. For browsing/management/comparison requests, use appropriate tools. Default project_id='{notes_project_id}'.]
 {user_text}
 ```
 
@@ -804,13 +808,37 @@ Manually triggers a hook immediately, bypassing its schedule and cooldown.
 ### 3.9 Notes Commands
 
 #### `/notes`
-Lists notes for a project. After sending the listing, creates a Discord thread on the response message for interactive note management. The thread is registered with `bot.register_notes_thread(thread_id, project_id)`, so subsequent messages in it are automatically routed to the LLM with project context.
+Opens an interactive notes browser for a project with button-based navigation.
 
 | Parameter | Type | Description |
 |---|---|---|
 | `project_id` | str (optional) | Project (auto-detected from channel) |
 
-The thread is named `"Notes: {project_name}"` with `auto_archive_duration=1440` (24 hours).
+**Behavior:**
+1. Fetches notes via `list_notes` command
+2. Sends a `NotesView` — an interactive table-of-contents message with buttons per note file
+3. Creates a Discord thread on that message named `"Notes: {project_name}"` (`auto_archive_duration=1440`)
+4. Sends a welcome message in the thread explaining stream-of-consciousness input
+5. Registers the thread with `bot.register_notes_thread(thread_id, project_id)`
+6. Stores the TOC message ID in `_notes_toc_messages` for view persistence
+
+**`NotesView`** (module-level class in `commands.py`, `timeout=None`):
+- Rows 1–4: Up to 20 note buttons (`ButtonStyle.secondary`), one per note file, label is note title (truncated to 72 chars)
+- Row 5: Control buttons — `Refresh`, `Close Thread`, plus `◀ Prev`/`Next ▶` when notes > 20
+- All buttons use `custom_id` for persistence across bot restarts
+- Custom ID scheme: `notes:{project_id}:view:{note_slug}`, `notes:{project_id}:refresh`, `notes:{project_id}:close`, `notes:{project_id}:page:{direction}`
+
+**Note button callback:** Reads note content via `read_note`, sends as a message in the thread with a `NoteContentView` (Dismiss button). Deletes any previous view of the same note first. Tracks in `_note_viewers[thread_id][filename] = message_id`.
+
+**`NoteContentView`**: Single `Dismiss` button (`ButtonStyle.danger`). On click: deletes the message and removes from `_note_viewers`. Custom ID: `notes:{project_id}:dismiss:{note_slug}`.
+
+**Refresh button:** Re-fetches notes and edits the TOC message with updated content and buttons.
+
+**Close button:** Archives the thread, removes from `_notes_threads` and `_notes_toc_messages`, cleans up `_note_viewers`.
+
+**Auto-refresh:** When a note is written or appended (via `on_note_written` callback from CommandHandler), any active viewer of that note in any notes thread for the project is automatically refreshed — the old viewing message is deleted and replaced with updated content. A 2-second debounce prevents Discord rate limiting.
+
+**View persistence:** On bot startup (`on_ready`), `_reattach_notes_views()` iterates `_notes_toc_messages`, fetches current notes for each project, creates fresh `NotesView` instances, and calls `bot.add_view(view, message_id=toc_msg_id)` to reattach button handlers.
 
 #### `/write-note`
 Creates or updates a project note.
