@@ -95,8 +95,10 @@ class _NoteDeleteButton(discord.ui.Button):
             pass
 
         # Send ephemeral confirmation
-        await interaction.followup.send(
-            f"🗑️ Note **{title}** deleted.", ephemeral=True,
+        await _send_success(
+            interaction, "Note Deleted",
+            description=f"Note **{title}** deleted.",
+            followup=True, ephemeral=True,
         )
 
         # Auto-refresh notes TOC if available
@@ -800,11 +802,59 @@ def setup_commands(bot: commands.Bot) -> None:
         else:
             await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
 
+    async def _send_success(
+        interaction,
+        title: str,
+        *,
+        description: str | None = None,
+        fields: list[tuple[str, str, bool]] | None = None,
+        followup: bool = False,
+        ephemeral: bool = False,
+    ):
+        """Send a success response as a rich green embed."""
+        embed = success_embed(title, description=description, fields=fields)
+        if followup:
+            await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+
+    async def _send_info(
+        interaction,
+        title: str,
+        *,
+        description: str | None = None,
+        fields: list[tuple[str, str, bool]] | None = None,
+        followup: bool = False,
+        ephemeral: bool = False,
+    ):
+        """Send an informational response as a rich blue embed."""
+        embed = info_embed(title, description=description, fields=fields)
+        if followup:
+            await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+
+    async def _send_warning(
+        interaction,
+        title: str,
+        *,
+        description: str | None = None,
+        fields: list[tuple[str, str, bool]] | None = None,
+        followup: bool = False,
+        ephemeral: bool = False,
+    ):
+        """Send a warning response as a rich amber embed."""
+        embed = warning_embed(title, description=description, fields=fields)
+        if followup:
+            await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+
     def _with_warning(msg: str, result: dict) -> str:
         """Append an in-progress task warning to *msg* if present in *result*."""
         warning = result.get("warning")
         if warning:
-            return f"{msg}\n{warning}"
+            return f"{msg}\n\n⚠️ {warning}"
         return msg
 
     # ===================================================================
@@ -875,7 +925,7 @@ def setup_commands(bot: commands.Bot) -> None:
         result = await handler.execute("list_projects", {})
         projects = result.get("projects", [])
         if not projects:
-            await interaction.response.send_message("No projects configured.")
+            await _send_info(interaction, "No Projects", description="No projects configured.")
             return
         lines = []
         for p in projects:
@@ -890,7 +940,7 @@ def setup_commands(bot: commands.Bot) -> None:
         result = await handler.execute("list_agents", {})
         agents = result.get("agents", [])
         if not agents:
-            await interaction.response.send_message("No agents configured.")
+            await _send_info(interaction, "No Agents", description="No agents configured.")
             return
         lines = []
         for a in agents:
@@ -903,7 +953,7 @@ def setup_commands(bot: commands.Bot) -> None:
         result = await handler.execute("get_token_usage", {})
         breakdown = result.get("breakdown", [])
         if not breakdown:
-            await interaction.response.send_message("No token usage recorded.")
+            await _send_info(interaction, "No Usage", description="No token usage recorded.")
             return
         lines = []
         for entry in breakdown:
@@ -918,7 +968,7 @@ def setup_commands(bot: commands.Bot) -> None:
         result = await handler.execute("get_recent_events", {"limit": limit})
         events = result.get("events", [])
         if not events:
-            await interaction.response.send_message("No recent events.")
+            await _send_info(interaction, "No Events", description="No recent events.")
             return
         lines = ["## Recent Events"]
         for evt in events:
@@ -1159,8 +1209,9 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result['error'])
             return
         fields = ", ".join(result.get("fields", []))
-        await interaction.response.send_message(
-            f"✅ Project `{project_id}` updated: {fields}"
+        await _send_success(
+            interaction, "Project Updated",
+            description=f"Project `{project_id}` updated: {fields}",
         )
 
     @bot.tree.command(name="delete-project", description="Delete a project and all its data")
@@ -1212,12 +1263,12 @@ def setup_commands(bot: commands.Bot) -> None:
                         except discord.Forbidden:
                             archived.append(f"#{channel.name} ({ch_type}) — no permission to archive")
 
-        msg = f"🗑️ Project **{result.get('name', project_id)}** (`{project_id}`) deleted."
+        desc = f"Project **{result.get('name', project_id)}** (`{project_id}`) deleted."
         if archived:
-            msg += "\n📦 Archived channels: " + ", ".join(archived)
+            desc += "\n📦 Archived channels: " + ", ".join(archived)
         elif do_archive:
-            msg += "\n*(No linked channels to archive.)*"
-        await interaction.response.send_message(msg)
+            desc += "\n*(No linked channels to archive.)*"
+        await _send_success(interaction, "Project Deleted", description=desc)
 
     # -------------------------------------------------------------------
     # CHANNEL MANAGEMENT COMMANDS
@@ -1245,8 +1296,9 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         # Update the bot's channel cache immediately
         bot.update_project_channel(project_id, channel)
-        await interaction.response.send_message(
-            f"✅ Project `{project_id}` channel set to {channel.mention}"
+        await _send_success(
+            interaction, "Channel Linked",
+            description=f"Project `{project_id}` channel set to {channel.mention}",
         )
 
     @bot.tree.command(
@@ -1291,8 +1343,9 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         # Update the bot's channel cache immediately
         bot.update_project_channel(project_id, matched_channel)
-        await interaction.response.send_message(
-            f"✅ Project `{project_id}` channel set to {matched_channel.mention}"
+        await _send_success(
+            interaction, "Channel Linked",
+            description=f"Project `{project_id}` channel set to {matched_channel.mention}",
         )
 
     @bot.tree.command(
@@ -1352,8 +1405,10 @@ def setup_commands(bot: commands.Bot) -> None:
 
         # Update the bot's channel cache immediately
         bot.update_project_channel(project_id, new_channel)
-        await interaction.followup.send(
-            f"✅ Created {new_channel.mention} as channel for project `{project_id}`"
+        await _send_success(
+            interaction, "Channel Created",
+            description=f"Created {new_channel.mention} as channel for project `{project_id}`",
+            followup=True,
         )
 
     @bot.tree.command(
@@ -1440,14 +1495,22 @@ def setup_commands(bot: commands.Bot) -> None:
 
         action = result.get("action", "linked")
         if action == "linked_existing":
-            await interaction.followup.send(
-                f"✅ Channel {existing_channel.mention} already exists — "
-                f"linked to project `{project_id}`"
+            await _send_success(
+                interaction, "Channel Linked",
+                description=(
+                    f"Channel {existing_channel.mention} already exists — "
+                    f"linked to project `{project_id}`"
+                ),
+                followup=True,
             )
         else:
-            await interaction.followup.send(
-                f"✅ Created {existing_channel.mention} as channel "
-                f"for project `{project_id}`"
+            await _send_success(
+                interaction, "Channel Created",
+                description=(
+                    f"Created {existing_channel.mention} as channel "
+                    f"for project `{project_id}`"
+                ),
+                followup=True,
             )
 
     @bot.tree.command(
@@ -1458,7 +1521,7 @@ def setup_commands(bot: commands.Bot) -> None:
         result = await handler.execute("list_projects", {})
         projects = result.get("projects", [])
         if not projects:
-            await interaction.response.send_message("No projects configured.")
+            await _send_info(interaction, "No Projects", description="No projects configured.")
             return
 
         # Build a channel-centric view: collect all channel assignments
@@ -1500,8 +1563,9 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(
-            f"⏸ Project **{result.get('name', project_id)}** paused."
+        await _send_info(
+            interaction, "Project Paused",
+            description=f"Project **{result.get('name', project_id)}** is now paused.",
         )
 
     @bot.tree.command(name="resume", description="Resume a paused project")
@@ -1514,8 +1578,9 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(
-            f"▶ Project **{result.get('name', project_id)}** resumed."
+        await _send_success(
+            interaction, "Project Resumed",
+            description=f"Project **{result.get('name', project_id)}** is now active.",
         )
 
     @bot.tree.command(name="set-project", description="Set or clear the active project for the chat agent")
@@ -1527,11 +1592,15 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result['error'])
             return
         if result.get("active_project"):
-            await interaction.response.send_message(
-                f"📌 Active project set to **{result.get('name', '')}** (`{result['active_project']}`)"
+            await _send_success(
+                interaction, "Active Project Set",
+                description=f"Active project set to **{result.get('name', '')}** (`{result['active_project']}`)",
             )
         else:
-            await interaction.response.send_message("📌 Active project cleared.")
+            await _send_info(
+                interaction, "Active Project Cleared",
+                description="No active project is set for the chat agent.",
+            )
 
     # ===================================================================
     # TASK COMMANDS
@@ -1649,8 +1718,9 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result['error'])
             return
         fields = ", ".join(result.get("fields", []))
-        await interaction.response.send_message(
-            f"✅ Task `{task_id}` updated: {fields}"
+        await _send_success(
+            interaction, "Task Updated",
+            description=f"Task `{task_id}` updated: {fields}",
         )
 
     @bot.tree.command(name="stop-task", description="Stop a task that is currently in progress")
@@ -1660,7 +1730,7 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(f"⏹ Task `{task_id}` stopped.")
+        await _send_success(interaction, "Task Stopped", description=f"Task `{task_id}` has been stopped.")
 
     @bot.tree.command(name="restart-task", description="Reset a task back to READY for re-execution")
     @app_commands.describe(task_id="Task ID to restart")
@@ -1669,8 +1739,9 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(
-            f"🔄 Task `{task_id}` restarted ({result.get('previous_status', '?')} → READY)"
+        await _send_success(
+            interaction, "Task Restarted",
+            description=f"Task `{task_id}` restarted ({result.get('previous_status', '?')} → READY)",
         )
 
     @bot.tree.command(name="delete-task", description="Delete a task")
@@ -1680,8 +1751,9 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(
-            f"🗑️ Task `{task_id}` ({result.get('title', '')}) deleted."
+        await _send_success(
+            interaction, "Task Deleted",
+            description=f"Task `{task_id}` ({result.get('title', '')}) deleted.",
         )
 
     @bot.tree.command(name="approve-task", description="Approve a task that is awaiting approval")
@@ -1691,8 +1763,9 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(
-            f"✅ Task `{task_id}` ({result.get('title', '')}) approved and completed."
+        await _send_success(
+            interaction, "Task Approved",
+            description=f"Task `{task_id}` ({result.get('title', '')}) approved and completed.",
         )
 
     @bot.tree.command(
@@ -1706,13 +1779,13 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result['error'])
             return
         unblocked_count = result.get("unblocked_count", 0)
-        msg = f"⏭️ Task `{task_id}` skipped (marked COMPLETED)."
+        desc = f"Task `{task_id}` skipped (marked COMPLETED)."
         if unblocked_count:
             unblocked_list = ", ".join(
                 f"`{t['id']}`" for t in result.get("unblocked", [])
             )
-            msg += f"\n{unblocked_count} task(s) unblocked: {unblocked_list}"
-        await interaction.response.send_message(msg)
+            desc += f"\n{unblocked_count} task(s) unblocked: {unblocked_list}"
+        await _send_success(interaction, "Task Skipped", description=desc)
 
     @bot.tree.command(
         name="chain-health",
@@ -1739,29 +1812,33 @@ def setup_commands(bot: commands.Bot) -> None:
         if "task_id" in result:
             stuck = result.get("stuck_downstream", [])
             if not stuck:
-                await interaction.response.send_message(
-                    f"✅ No stuck downstream tasks for `{result['task_id']}`."
+                await _send_success(
+                    interaction, "Chain Healthy",
+                    description=f"No stuck downstream tasks for `{result['task_id']}`.",
                 )
             else:
                 lines = [
-                    f"⛓️ **Stuck Chain:** `{result['task_id']}` — {result.get('title', '')}",
+                    f"**Stuck Chain:** `{result['task_id']}` — {result.get('title', '')}",
                     f"{len(stuck)} downstream task(s) stuck:",
                 ]
                 for t in stuck[:15]:
                     lines.append(f"  • `{t['id']}` — {t['title']} ({t['status']})")
                 if len(stuck) > 15:
                     lines.append(f"  … and {len(stuck) - 15} more")
-                await interaction.response.send_message("\n".join(lines))
+                await _send_warning(
+                    interaction, "Stuck Chain Detected",
+                    description="\n".join(lines),
+                )
         else:
             chains = result.get("stuck_chains", [])
             if not chains:
-                await interaction.response.send_message(
-                    f"✅ No stuck dependency chains"
-                    + (f" in project `{result.get('project_id')}`" if result.get("project_id") else "")
-                    + "."
+                scope = f" in project `{result.get('project_id')}`" if result.get("project_id") else ""
+                await _send_success(
+                    interaction, "Chains Healthy",
+                    description=f"No stuck dependency chains{scope}.",
                 )
             else:
-                lines = [f"⛓️ **{len(chains)} stuck chain(s):**"]
+                lines = [f"**{len(chains)} stuck chain(s):**"]
                 for chain in chains[:10]:
                     bt = chain["blocked_task"]
                     lines.append(
@@ -1770,7 +1847,10 @@ def setup_commands(bot: commands.Bot) -> None:
                     )
                 if len(chains) > 10:
                     lines.append(f"  … and {len(chains) - 10} more chains")
-                await interaction.response.send_message("\n".join(lines))
+                await _send_warning(
+                    interaction, "Stuck Chains Found",
+                    description="\n".join(lines),
+                )
 
     @bot.tree.command(name="set-status", description="Change the status of a task")
     @app_commands.describe(
@@ -1964,7 +2044,7 @@ def setup_commands(bot: commands.Bot) -> None:
         result = await handler.execute("list_repos", args)
         repos = result.get("repos", [])
         if not repos:
-            await interaction.response.send_message("No repositories registered.")
+            await _send_info(interaction, "No Repositories", description="No repositories registered.")
             return
         lines = ["## Repositories"]
         for r in repos:
@@ -2114,9 +2194,10 @@ def setup_commands(bot: commands.Bot) -> None:
             return
 
         if "created" in result:
-            await interaction.followup.send(
-                f"✅ Created and switched to branch `{result['created']}` "
-                f"on `{project_id}`"
+            await _send_success(
+                interaction, "Branch Created",
+                description=f"Created and switched to branch `{result['created']}` on `{project_id}`",
+                followup=True,
             )
         else:
             current = result.get("current_branch", "?")
@@ -2154,10 +2235,13 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
             return
-        await interaction.followup.send(_with_warning(
-            f"✅ Switched to branch `{result['branch']}` on `{project_id}`",
-            result,
-        ))
+        await _send_success(
+            interaction, "Branch Switched",
+            description=_with_warning(
+                f"Switched to branch `{result['branch']}` on `{project_id}`", result,
+            ),
+            followup=True,
+        )
 
     @bot.tree.command(
         name="project-commit",
@@ -2187,13 +2271,18 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         if result.get("status") == "committed":
             repo_label = result.get("repo_id", "?")
-            await interaction.followup.send(_with_warning(
-                f"✅ Committed in `{repo_label}` on `{project_id}`: {message}",
-                result,
-            ))
+            await _send_success(
+                interaction, "Changes Committed",
+                description=_with_warning(
+                    f"Committed in `{repo_label}` on `{project_id}`: {message}", result,
+                ),
+                followup=True,
+            )
         else:
-            await interaction.followup.send(
-                f"ℹ️ Nothing to commit on `{project_id}` — working tree clean"
+            await _send_info(
+                interaction, "Nothing to Commit",
+                description=f"Working tree clean on `{project_id}`.",
+                followup=True,
             )
 
     @bot.tree.command(
@@ -2225,8 +2314,10 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result['error'], followup=True)
             return
         pushed_branch = result.get("branch", "?")
-        await interaction.followup.send(
-            f"✅ Pushed `{pushed_branch}` to origin on `{project_id}`"
+        await _send_success(
+            interaction, "Branch Pushed",
+            description=f"Pushed `{pushed_branch}` to origin on `{project_id}`",
+            followup=True,
         )
 
     @bot.tree.command(
@@ -2255,19 +2346,24 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
             return
+        target = result.get("target", "main")
         if result.get("status") == "conflict":
-            target = result.get("target", "main")
-            await interaction.followup.send(_with_warning(
-                f"⚠️ Merge conflict — `{branch_name}` could not be merged "
-                f"into `{target}` on `{project_id}`. Merge was aborted.",
-                result,
-            ))
+            await _send_warning(
+                interaction, "Merge Conflict",
+                description=_with_warning(
+                    f"`{branch_name}` could not be merged into `{target}` on `{project_id}`. Merge was aborted.",
+                    result,
+                ),
+                followup=True,
+            )
         else:
-            target = result.get("target", "main")
-            await interaction.followup.send(_with_warning(
-                f"✅ Merged `{branch_name}` into `{target}` on `{project_id}`",
-                result,
-            ))
+            await _send_success(
+                interaction, "Branch Merged",
+                description=_with_warning(
+                    f"Merged `{branch_name}` into `{target}` on `{project_id}`", result,
+                ),
+                followup=True,
+            )
 
     @bot.tree.command(
         name="project-create-branch",
@@ -2295,8 +2391,10 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
             return
-        await interaction.followup.send(
-            f"✅ Created and switched to branch `{result['branch']}` on `{project_id}`"
+        await _send_success(
+            interaction, "Branch Created",
+            description=f"Created and switched to branch `{result['branch']}` on `{project_id}`",
+            followup=True,
         )
 
     @bot.tree.command(
@@ -2324,8 +2422,9 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(
-            f"🌿 Branch `{branch_name}` created in `{result.get('repo_id', project_id)}`"
+        await _send_success(
+            interaction, "Branch Created",
+            description=f"Branch `{branch_name}` created in `{result.get('repo_id', project_id)}`",
         )
 
     @bot.tree.command(
@@ -2353,10 +2452,12 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(_with_warning(
-            f"🔀 Switched to branch `{branch_name}` in `{result.get('repo_id', project_id)}`",
-            result,
-        ))
+        await _send_success(
+            interaction, "Branch Switched",
+            description=_with_warning(
+                f"Switched to branch `{branch_name}` in `{result.get('repo_id', project_id)}`", result,
+            ),
+        )
 
     @bot.tree.command(
         name="commit",
@@ -2384,14 +2485,17 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result['error'])
             return
         if result.get("status") == "nothing_to_commit":
-            await interaction.response.send_message(
-                f"ℹ️ Nothing to commit in `{result.get('repo_id', project_id)}` — working tree clean."
+            await _send_info(
+                interaction, "Nothing to Commit",
+                description=f"Working tree clean in `{result.get('repo_id', project_id)}`.",
             )
             return
-        await interaction.response.send_message(_with_warning(
-            f"✅ Committed in `{result.get('repo_id', project_id)}`: {message}",
-            result,
-        ))
+        await _send_success(
+            interaction, "Changes Committed",
+            description=_with_warning(
+                f"Committed in `{result.get('repo_id', project_id)}`: {message}", result,
+            ),
+        )
 
     @bot.tree.command(
         name="push",
@@ -2421,8 +2525,9 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result['error'])
             return
         pushed_branch = result.get("branch", branch_name or "current")
-        await interaction.response.send_message(
-            f"🚀 Pushed `{pushed_branch}` in `{result.get('repo_id', project_id)}`"
+        await _send_success(
+            interaction, "Branch Pushed",
+            description=f"Pushed `{pushed_branch}` in `{result.get('repo_id', project_id)}`",
         )
 
     @bot.tree.command(
@@ -2451,16 +2556,21 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result['error'])
             return
         if result.get("status") == "conflict":
-            await interaction.response.send_message(_with_warning(
-                f"⚠️ Merge conflict when merging `{branch_name}` → `{result.get('target', 'main')}`. "
-                f"Merge was aborted.",
-                result,
-            ))
+            await _send_warning(
+                interaction, "Merge Conflict",
+                description=_with_warning(
+                    f"Merge conflict when merging `{branch_name}` → `{result.get('target', 'main')}`. Merge was aborted.",
+                    result,
+                ),
+            )
             return
-        await interaction.response.send_message(_with_warning(
-            f"✅ Merged `{branch_name}` → `{result.get('target', 'main')}` in `{result.get('repo_id', project_id)}`",
-            result,
-        ))
+        await _send_success(
+            interaction, "Branch Merged",
+            description=_with_warning(
+                f"Merged `{branch_name}` → `{result.get('target', 'main')}` in `{result.get('repo_id', project_id)}`",
+                result,
+            ),
+        )
 
     @bot.tree.command(
         name="git-commit",
@@ -2492,12 +2602,16 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         label = result.get("repo_id", project_id or "repo")
         if result.get("committed"):
-            await interaction.followup.send(
-                f"✅ Committed in `{label}`: {message}"
+            await _send_success(
+                interaction, "Changes Committed",
+                description=f"Committed in `{label}`: {message}",
+                followup=True,
             )
         else:
-            await interaction.followup.send(
-                f"ℹ️ Nothing to commit in `{label}` — working tree clean"
+            await _send_info(
+                interaction, "Nothing to Commit",
+                description=f"Working tree clean in `{label}`.",
+                followup=True,
             )
 
     @bot.tree.command(
@@ -2529,8 +2643,10 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result['error'], followup=True)
             return
         label = result.get("repo_id", project_id or "repo")
-        await interaction.followup.send(
-            f"✅ Pushed `{result['pushed']}` in `{label}`"
+        await _send_success(
+            interaction, "Branch Pushed",
+            description=f"Pushed `{result['pushed']}` in `{label}`",
+            followup=True,
         )
 
     @bot.tree.command(
@@ -2560,8 +2676,10 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result['error'], followup=True)
             return
         label = result.get("repo_id", project_id or "repo")
-        await interaction.followup.send(
-            f"✅ Created and switched to branch `{branch_name}` in `{label}`"
+        await _send_success(
+            interaction, "Branch Created",
+            description=f"Created and switched to branch `{branch_name}` in `{label}`",
+            followup=True,
         )
 
     @bot.tree.command(
@@ -2596,13 +2714,19 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         label = result.get("repo_id", project_id or "repo")
         if result.get("merged"):
-            await interaction.followup.send(
-                f"✅ Merged `{branch_name}` into `{result['into']}` in `{label}`"
+            await _send_success(
+                interaction, "Branch Merged",
+                description=f"Merged `{branch_name}` into `{result['into']}` in `{label}`",
+                followup=True,
             )
         else:
-            await interaction.followup.send(
-                f"⚠️ Merge conflict — `{branch_name}` could not be merged into "
-                f"`{result.get('into', 'default')}` in `{label}`. Merge was aborted."
+            await _send_warning(
+                interaction, "Merge Conflict",
+                description=(
+                    f"`{branch_name}` could not be merged into "
+                    f"`{result.get('into', 'default')}` in `{label}`. Merge was aborted."
+                ),
+                followup=True,
             )
 
     @bot.tree.command(
@@ -2642,9 +2766,13 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result['error'], followup=True)
             return
         pr_url = result.get("pr_url", "")
-        await interaction.followup.send(
-            f"✅ PR created: {pr_url}\n"
-            f"**Branch:** `{result.get('branch', '?')}` → `{result.get('base', '?')}`"
+        await _send_success(
+            interaction, "Pull Request Created",
+            description=(
+                f"[View PR]({pr_url})\n"
+                f"**Branch:** `{result.get('branch', '?')}` → `{result.get('base', '?')}`"
+            ),
+            followup=True,
         )
 
     @bot.tree.command(
@@ -2680,8 +2808,10 @@ def setup_commands(bot: commands.Bot) -> None:
         count = result.get("count", 0)
         base = result.get("base_branch", "main")
         if not files:
-            await interaction.followup.send(
-                f"No files changed in `{label}` vs `{base}`"
+            await _send_info(
+                interaction, "No Changes",
+                description=f"No files changed in `{label}` vs `{base}`",
+                followup=True,
             )
             return
         file_list = "\n".join(f"• `{f}`" for f in files[:50])
@@ -2784,7 +2914,7 @@ def setup_commands(bot: commands.Bot) -> None:
         result = await handler.execute("list_hooks", args)
         hooks = result.get("hooks", [])
         if not hooks:
-            await interaction.response.send_message("No hooks configured.")
+            await _send_info(interaction, "No Hooks", description="No hooks configured.")
             return
         lines = ["## Hooks"]
         for h in hooks:
@@ -2850,8 +2980,9 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(
-            f"✅ Hook **{name}** (`{result['created']}`) created in `{project_id}`"
+        await _send_success(
+            interaction, "Hook Created",
+            description=f"Hook **{name}** (`{result['created']}`) created in `{project_id}`",
         )
 
     @bot.tree.command(name="edit-hook", description="Edit an automation hook")
@@ -2880,8 +3011,9 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result['error'])
             return
         fields = ", ".join(result.get("fields", []))
-        await interaction.response.send_message(
-            f"✅ Hook `{hook_id}` updated: {fields}"
+        await _send_success(
+            interaction, "Hook Updated",
+            description=f"Hook `{hook_id}` updated: {fields}",
         )
 
     @bot.tree.command(name="delete-hook", description="Delete an automation hook")
@@ -2891,8 +3023,9 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(
-            f"🗑️ Hook **{result.get('name', hook_id)}** (`{hook_id}`) deleted."
+        await _send_success(
+            interaction, "Hook Deleted",
+            description=f"Hook **{result.get('name', hook_id)}** (`{hook_id}`) deleted.",
         )
 
     @bot.tree.command(name="hook-runs", description="Show recent execution history for a hook")
@@ -2910,7 +3043,10 @@ def setup_commands(bot: commands.Bot) -> None:
         runs = result.get("runs", [])
         hook_name = result.get("hook_name", hook_id)
         if not runs:
-            await interaction.response.send_message(f"No runs found for hook **{hook_name}**.")
+            await _send_info(
+                interaction, "No Hook Runs",
+                description=f"No runs found for hook **{hook_name}**.",
+            )
             return
         lines = [f"## Hook Runs: {hook_name}"]
         for r in runs:
@@ -2933,8 +3069,9 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(
-            f"🔥 Hook `{hook_id}` fired — status: {result.get('status', 'running')}"
+        await _send_success(
+            interaction, "Hook Fired",
+            description=f"Hook `{hook_id}` fired — status: {result.get('status', 'running')}",
         )
 
     # ===================================================================
@@ -3007,8 +3144,9 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result['error'])
             return
         status = result.get("status", "created")
-        await interaction.response.send_message(
-            f"📝 Note **{title}** {status} in `{project_id}`"
+        await _send_success(
+            interaction, f"Note {status.title()}",
+            description=f"Note **{title}** {status} in `{project_id}`",
         )
 
     @bot.tree.command(name="delete-note", description="Delete a project note")
@@ -3030,8 +3168,9 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(
-            f"🗑️ Note **{title}** deleted from `{project_id}`"
+        await _send_success(
+            interaction, "Note Deleted",
+            description=f"Note **{title}** deleted from `{project_id}`",
         )
 
     # ===================================================================
@@ -3050,21 +3189,27 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         result = await handler.execute("orchestrator_control", {"action": action.value})
         if action.value == "pause":
-            await interaction.response.send_message(
-                "⏸ Orchestrator paused — no new tasks will be scheduled."
+            await _send_info(
+                interaction, "Orchestrator Paused",
+                description="No new tasks will be scheduled.",
             )
         elif action.value == "resume":
-            await interaction.response.send_message("▶ Orchestrator resumed.")
+            await _send_success(
+                interaction, "Orchestrator Resumed",
+                description="Task scheduling is now active.",
+            )
         else:
             running = result.get("running_tasks", 0)
-            state = "⏸ PAUSED" if result.get("status") == "paused" else "▶ RUNNING"
-            await interaction.response.send_message(
-                f"**Orchestrator status:** {state}\n"
-                f"**Running tasks:** {running}"
+            is_paused = result.get("status") == "paused"
+            state = "⏸ PAUSED" if is_paused else "▶ RUNNING"
+            embed_fn = _send_info if is_paused else _send_success
+            await embed_fn(
+                interaction, f"Orchestrator {state}",
+                description=f"**Running tasks:** {running}",
             )
 
     @bot.tree.command(name="restart", description="Restart the agent-queue daemon")
     async def restart_command(interaction: discord.Interaction):
-        await interaction.response.send_message("Restarting agent-queue...")
+        await _send_warning(interaction, "Restarting", description="Agent-queue daemon is restarting…")
         bot._restart_requested = True
         await handler.execute("restart_daemon", {})
