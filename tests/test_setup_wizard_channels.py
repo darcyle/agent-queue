@@ -55,8 +55,8 @@ class TestStepPerProjectChannelsAccept:
 
     def test_accept_with_all_defaults(self):
         """User accepts and takes all defaults."""
-        # Inputs: yes to enable, enter for convention, enter for category
-        inputs = iter(["y", "", ""])
+        # Inputs: yes to enable, enter for convention, enter for category, enter for private
+        inputs = iter(["y", "", "", ""])
         with patch("builtins.input", lambda _: next(inputs)):
             result = _step_per_project_channels({}, discord_ok=False)
 
@@ -70,6 +70,7 @@ class TestStepPerProjectChannelsAccept:
             "y",                      # Enable auto-create
             "aq-{project_id}",        # Custom convention
             "Bot Channels",           # Category name
+            "",                       # Private (default)
         ])
         with patch("builtins.input", lambda _: next(inputs)):
             result = _step_per_project_channels({}, discord_ok=False)
@@ -80,7 +81,7 @@ class TestStepPerProjectChannelsAccept:
 
     def test_accept_no_category(self):
         """User accepts but leaves category blank."""
-        inputs = iter(["y", "", ""])
+        inputs = iter(["y", "", "", ""])
         with patch("builtins.input", lambda _: next(inputs)):
             result = _step_per_project_channels({}, discord_ok=True)
 
@@ -97,6 +98,7 @@ class TestStepPerProjectChannelsValidation:
             "y",
             "invalid-pattern",          # Missing {project_id}
             "",                         # No category
+            "",                         # Private (default)
         ])
         with patch("builtins.input", lambda _: next(inputs)):
             result = _step_per_project_channels({}, discord_ok=False)
@@ -121,7 +123,7 @@ class TestStepPerProjectChannelsExistingConfig:
             }
         }
         # User accepts everything with defaults (empty inputs)
-        inputs = iter(["", "", ""])
+        inputs = iter(["", "", "", ""])
         with patch("builtins.input", lambda _: next(inputs)):
             result = _step_per_project_channels(existing, discord_ok=False)
 
@@ -131,7 +133,7 @@ class TestStepPerProjectChannelsExistingConfig:
 
     def test_empty_existing_config(self):
         """Empty existing config uses standard defaults."""
-        inputs = iter(["y", "", ""])
+        inputs = iter(["y", "", "", ""])
         with patch("builtins.input", lambda _: next(inputs)):
             result = _step_per_project_channels({"_yaml": {}}, discord_ok=False)
 

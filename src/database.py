@@ -435,7 +435,7 @@ class Database:
             "checkout_base_path, source_type, source_path) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (repo.id, repo.project_id, repo.url, repo.default_branch,
-             "", repo.source_type.value, repo.source_path),
+             repo.checkout_base_path, repo.source_type.value, repo.source_path),
         )
         await self._db.commit()
 
@@ -469,6 +469,7 @@ class Database:
             source_type=RepoSourceType(row["source_type"]) if row["source_type"] else RepoSourceType.CLONE,
             url=row["url"],
             source_path=row["source_path"] if "source_path" in row.keys() else "",
+            checkout_base_path=row["checkout_base_path"] if "checkout_base_path" in row.keys() else "",
             default_branch=row["default_branch"],
         )
 

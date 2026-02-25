@@ -152,6 +152,7 @@ class RepoConfig:
     source_type: RepoSourceType
     url: str = ""
     source_path: str = ""
+    checkout_base_path: str = ""
     default_branch: str = "main"
 
 

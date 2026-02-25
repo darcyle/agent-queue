@@ -112,12 +112,36 @@ _ACTIONABLE_KEYWORDS = {
 
 
 @dataclass
+class PlanQualityReport:
+    """Quality assessment of a parsed plan document."""
+
+    is_design_doc: bool
+    is_implementation_plan: bool
+    quality_score: float  # 0.0–1.0
+    total_sections: int
+    actionable_sections: int
+    filtered_sections: int
+    actionable_ratio: float
+    warnings: list[str] = field(default_factory=list)
+    recommendation: str = ""
+
+    @property
+    def is_suitable_for_splitting(self) -> bool:
+        return (
+            self.is_implementation_plan
+            and self.quality_score >= 0.3
+            and self.actionable_sections >= 1
+        )
+
+
+@dataclass
 class PlanStep:
     """A single actionable step extracted from an implementation plan."""
 
     title: str
     description: str
     priority_hint: int = 0  # 0-based index in the original plan (for ordering)
+    raw_title: str = ""  # original heading text before cleaning
 
 
 @dataclass
@@ -377,6 +401,7 @@ def _parse_implementation_section(content: str) -> list[PlanStep]:
             title=title,
             description=body,
             priority_hint=len(steps),
+            raw_title=match.group(2).strip(),
         ))
 
     return steps
@@ -418,6 +443,7 @@ def _parse_heading_sections(content: str) -> list[PlanStep]:
             title=title,
             description=body,
             priority_hint=len(steps),
+            raw_title=match.group(2).strip(),
         ))
 
     return steps
@@ -588,3 +614,169 @@ def build_task_description(
     parts.append(f"## Task Details\n{step.description}")
 
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Plan quality validation and orchestrator integration
+# ---------------------------------------------------------------------------
+
+def validate_plan_quality(content: str) -> PlanQualityReport:
+    """Assess the quality of a plan document for task splitting.
+
+    Analyzes the markdown content to determine whether it is an actionable
+    implementation plan or a design/reference document, and scores it
+    accordingly.
+    """
+    if not content.strip():
+        return PlanQualityReport(
+            is_design_doc=False,
+            is_implementation_plan=False,
+            quality_score=0.0,
+            total_sections=0,
+            actionable_sections=0,
+            filtered_sections=0,
+            actionable_ratio=0.0,
+            warnings=[],
+            recommendation="Empty document — nothing to split.",
+        )
+
+    # Extract all ## and ### headings
+    heading_pattern = re.compile(r"^#{2,3}\s+(.+)$", re.MULTILINE)
+    headings = [m.group(1).strip() for m in heading_pattern.finditer(content)]
+    total_sections = len(headings)
+
+    if total_sections == 0:
+        return PlanQualityReport(
+            is_design_doc=False,
+            is_implementation_plan=False,
+            quality_score=0.0,
+            total_sections=0,
+            actionable_sections=0,
+            filtered_sections=0,
+            actionable_ratio=0.0,
+            warnings=[],
+            recommendation="No headings found — cannot split into tasks.",
+        )
+
+    # Classify each heading
+    actionable_count = 0
+    design_indicators = 0
+    for heading in headings:
+        clean = _clean_step_title(heading)
+        clean_lower = clean.lower()
+
+        if clean_lower in NON_ACTIONABLE_HEADINGS:
+            design_indicators += 1
+            continue
+
+        if STEP_HEADING_PATTERN.match(clean) or _is_likely_actionable(clean):
+            actionable_count += 1
+        else:
+            # Check for informational keywords
+            words = set(clean_lower.split())
+            if words & _INFORMATIONAL_KEYWORDS:
+                design_indicators += 1
+
+    filtered = total_sections - actionable_count
+    actionable_ratio = round(actionable_count / total_sections, 2) if total_sections else 0.0
+
+    # Determine document type
+    is_design_doc = design_indicators > actionable_count and actionable_count <= 2
+    is_implementation_plan = actionable_count >= 2 or (
+        actionable_count >= 1 and actionable_ratio >= 0.3
+    )
+
+    # Quality score: proportion of actionable sections, boosted by step patterns
+    quality_score = actionable_ratio
+    if any(STEP_HEADING_PATTERN.match(_clean_step_title(h)) for h in headings):
+        quality_score = min(1.0, quality_score + 0.2)
+
+    # Warnings
+    warnings: list[str] = []
+    if is_design_doc:
+        warnings.append(
+            "Document appears to be a design/reference document rather than "
+            "an implementation plan."
+        )
+    if actionable_count > 15:
+        warnings.append(
+            f"High step count ({actionable_count}) — consider consolidating "
+            f"related steps."
+        )
+
+    # Recommendation
+    if is_design_doc:
+        recommendation = (
+            "This looks like a design document. Consider extracting only the "
+            "implementation sections into a separate plan."
+        )
+    elif is_implementation_plan and quality_score >= 0.5:
+        recommendation = "Good implementation plan — suitable for automatic task splitting."
+    elif is_implementation_plan:
+        recommendation = (
+            "Implementation plan detected but quality is moderate. "
+            "Review generated tasks for relevance."
+        )
+    else:
+        recommendation = "Unable to identify clear implementation steps."
+
+    return PlanQualityReport(
+        is_design_doc=is_design_doc,
+        is_implementation_plan=is_implementation_plan,
+        quality_score=quality_score,
+        total_sections=total_sections,
+        actionable_sections=actionable_count,
+        filtered_sections=filtered,
+        actionable_ratio=actionable_ratio,
+        warnings=warnings,
+        recommendation=recommendation,
+    )
+
+
+def parse_and_generate_steps(
+    content: str,
+    *,
+    max_steps: int = 20,
+    enforce_quality: bool = False,
+    min_quality_score: float = 0.3,
+) -> tuple[list[dict], PlanQualityReport]:
+    """Parse a plan document and return steps as dicts with a quality report.
+
+    This is the main orchestrator integration point.  It combines
+    ``parse_plan()`` with ``validate_plan_quality()`` and applies an
+    additional post-filter to remove any remaining non-actionable steps.
+
+    Args:
+        content: Raw markdown content.
+        max_steps: Maximum number of steps to return.
+        enforce_quality: If True, return no steps when quality is below threshold.
+        min_quality_score: Minimum quality score (used when enforce_quality=True).
+
+    Returns:
+        A tuple of (steps, quality_report) where each step is a dict with
+        ``title`` and ``description`` keys.
+    """
+    quality = validate_plan_quality(content)
+
+    if enforce_quality and quality.quality_score < min_quality_score:
+        return [], quality
+
+    parsed = parse_plan(content, max_steps=max_steps)
+
+    # Post-filter: remove any remaining non-actionable steps
+    filtered_steps: list[dict] = []
+    for step in parsed.steps:
+        title_lower = step.title.lower()
+        if title_lower in NON_ACTIONABLE_HEADINGS:
+            continue
+        # Use raw_title (original heading) when available for fidelity
+        title = step.raw_title if step.raw_title else step.title
+        filtered_steps.append({
+            "title": title,
+            "description": step.description,
+        })
+
+    # Enforce safety cap
+    filtered_steps = filtered_steps[:max_steps]
+
+    return filtered_steps, quality

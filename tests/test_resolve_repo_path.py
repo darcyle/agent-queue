@@ -75,7 +75,7 @@ def _make_dir(path: str) -> str:
 
 
 class TestLinkedRepo:
-    """Project with a LINK repo → returns source_path."""
+    """Project with a LINK repo → returns checkout_base_path."""
 
     async def test_resolve_linked_repo_by_project_id(self, handler, db, tmp_path, mock_git):
         checkout = _make_dir(str(tmp_path / "linked-checkout"))
