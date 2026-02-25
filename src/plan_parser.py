@@ -47,6 +47,15 @@ NON_ACTIONABLE_HEADINGS = {
     "project structure", "file organization", "directory structure",
     "environment setup", "infrastructure", "deployment",
     "summary of recommendations", "summary of changes",
+    # Strategy/approach sections that describe HOW but aren't actionable steps
+    "strategy", "approach", "methodology", "rationale",
+    "comparison", "alternatives", "trade-offs", "tradeoffs",
+    "evaluation", "analysis", "findings", "observations",
+    "recommendations", "best practices", "patterns",
+    # Miscellaneous informational sections
+    "changelog", "version history", "release notes",
+    "known issues", "limitations", "caveats",
+    "faq", "troubleshooting", "debugging",
 }
 
 # Keywords in a ## heading that indicate an "implementation section" container.
@@ -89,6 +98,8 @@ _INFORMATIONAL_KEYWORDS = {
     "current", "proposed", "specification", "constraints", "capabilities",
     "existing", "libraries", "dependencies", "risk", "assessment",
     "color", "visual", "branding", "layout", "rules",
+    "strategy", "approach", "analysis", "comparison", "alternatives",
+    "rationale", "evaluation", "findings", "known", "limitations",
 }
 
 # Keywords in headings that strongly suggest actionable implementation content.
