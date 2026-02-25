@@ -123,7 +123,7 @@ class LLMLogger:
             "duration_ms": duration_ms,
             "input": {
                 "prompt_length": len(prompt),
-                "prompt_preview": prompt[:300],
+                "prompt": prompt,
                 **(config_summary or {}),
             },
             "output": output_summary,
