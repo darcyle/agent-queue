@@ -167,19 +167,14 @@ def format_chain_stuck(
     stuck_tasks: list[Task],
 ) -> str:
     """Format a notification about downstream tasks stuck because of a blocked task."""
-    lines = [
-        f"⛓️ **Dependency Chain Stuck:** `{blocked_task.id}` — {blocked_task.title} is BLOCKED",
-        f"Project: `{blocked_task.project_id}` | {len(stuck_tasks)} downstream task(s) are now permanently stuck:",
-    ]
-    for t in stuck_tasks[:10]:
-        lines.append(f"  • `{t.id}` — {t.title} (status: {t.status.value})")
-    if len(stuck_tasks) > 10:
-        lines.append(f"  … and {len(stuck_tasks) - 10} more")
-    lines.append(
-        f"_Use `/skip-task {blocked_task.id}` to skip the blocked task and "
-        f"unblock the chain, or `/restart-task {blocked_task.id}` to retry it._"
+    task_list = ", ".join(f"`{t.id}`" for t in stuck_tasks[:5])
+    if len(stuck_tasks) > 5:
+        task_list += f" +{len(stuck_tasks) - 5} more"
+    return (
+        f"⛓️ **Chain Stuck:** `{blocked_task.id}` BLOCKED → "
+        f"{len(stuck_tasks)} stuck: {task_list}\n"
+        f"`/skip-task {blocked_task.id}` or `/restart-task {blocked_task.id}`"
     )
-    return "\n".join(lines)
 
 
 def format_stuck_defined_task(
@@ -188,23 +183,21 @@ def format_stuck_defined_task(
     stuck_hours: float,
 ) -> str:
     """Format a notification for a DEFINED task stuck waiting on dependencies."""
-    lines = [
-        f"⏳ **Stuck Task:** `{task.id}` — {task.title}",
-        f"Project: `{task.project_id}` | Has been DEFINED for **{stuck_hours:.1f} hours** without promotion to READY.",
-    ]
     if blocking_deps:
-        lines.append("Blocked by:")
-        for dep_id, dep_title, dep_status in blocking_deps[:5]:
-            lines.append(f"  • `{dep_id}` — {dep_title} (status: {dep_status})")
-        if len(blocking_deps) > 5:
-            lines.append(f"  … and {len(blocking_deps) - 5} more")
-    else:
-        lines.append("_No unmet dependencies found — this may be a bug in promotion logic._")
-    lines.append(
-        f"_Use `/skip-task <blocking-task-id>` to skip a blocker, "
-        f"or `/restart-task <blocking-task-id>` to retry it._"
+        blockers = ", ".join(
+            f"`{dep_id}` ({dep_status})" for dep_id, _, dep_status in blocking_deps[:3]
+        )
+        if len(blocking_deps) > 3:
+            blockers += f" +{len(blocking_deps) - 3} more"
+        return (
+            f"⏳ **Stuck:** `{task.id}` — {task.title} "
+            f"(DEFINED {stuck_hours:.1f}h, blocked by {blockers})\n"
+            f"`/skip-task` or `/restart-task` the blocker to unblock"
+        )
+    return (
+        f"⏳ **Stuck:** `{task.id}` — {task.title} "
+        f"(DEFINED {stuck_hours:.1f}h, no unmet deps found — possible bug)"
     )
-    return "\n".join(lines)
 
 
 def format_budget_warning(project_name: str, usage: int, limit: int) -> str:

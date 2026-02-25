@@ -550,7 +550,6 @@ class Orchestrator:
 
         msg = format_chain_stuck(blocked_task, stuck)
         await self._notify_channel(msg, project_id=blocked_task.project_id)
-        await self._notify_channel(msg, project_id=blocked_task.project_id)
         await self.db.log_event(
             "chain_stuck",
             project_id=blocked_task.project_id,
@@ -699,38 +698,48 @@ class Orchestrator:
 
         reuse_branch = task.is_plan_subtask and task.parent_task_id
 
-        if repo.source_type == RepoSourceType.CLONE:
-            if not self.git.validate_checkout(workspace):
-                os.makedirs(os.path.dirname(workspace), exist_ok=True)
-                self.git.create_checkout(repo.url, workspace)
-            if reuse_branch:
-                self.git.switch_to_branch(workspace, branch_name)
-            else:
-                self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
-
-        elif repo.source_type == RepoSourceType.LINK:
-            if not os.path.isdir(workspace):
-                await self._notify_channel(
-                    f"**Warning:** Linked repo path `{workspace}` does not exist.",
-                    project_id=task.project_id,
-                )
-                return workspace
-            if self.git.validate_checkout(workspace):
+        # Git operations may fail (e.g. no remote for LINK repos) but should
+        # never prevent returning the correct workspace path.
+        try:
+            if repo.source_type == RepoSourceType.CLONE:
+                if not self.git.validate_checkout(workspace):
+                    os.makedirs(os.path.dirname(workspace), exist_ok=True)
+                    self.git.create_checkout(repo.url, workspace)
                 if reuse_branch:
                     self.git.switch_to_branch(workspace, branch_name)
                 else:
                     self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
 
-        elif repo.source_type == RepoSourceType.INIT:
-            if not self.git.validate_checkout(workspace):
-                self.git.init_repo(workspace)
-            if reuse_branch:
-                self.git.switch_to_branch(workspace, branch_name)
-            else:
-                self.git.create_branch(workspace, branch_name)
+            elif repo.source_type == RepoSourceType.LINK:
+                if not os.path.isdir(workspace):
+                    await self._notify_channel(
+                        f"**Warning:** Linked repo path `{workspace}` does not exist.",
+                        project_id=task.project_id,
+                    )
+                elif self.git.validate_checkout(workspace):
+                    if reuse_branch:
+                        self.git.switch_to_branch(workspace, branch_name)
+                    else:
+                        self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
 
-        # Update task branch in DB
-        await self.db.update_task(task.id, branch_name=branch_name)
+            elif repo.source_type == RepoSourceType.INIT:
+                if not self.git.validate_checkout(workspace):
+                    self.git.init_repo(workspace)
+                if reuse_branch:
+                    self.git.switch_to_branch(workspace, branch_name)
+                else:
+                    self.git.create_branch(workspace, branch_name)
+
+            # Update task branch in DB
+            await self.db.update_task(task.id, branch_name=branch_name)
+        except Exception as e:
+            # Git branch setup failed — still use the correct workspace.
+            # The agent can work in the directory without branch management.
+            await self._notify_channel(
+                f"**Git Warning:** Task `{task.id}` — branch setup failed: {e}\n"
+                f"Agent will work in `{workspace}` without branch management.",
+                project_id=task.project_id,
+            )
 
         return workspace
 

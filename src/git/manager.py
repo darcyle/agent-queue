@@ -133,6 +133,9 @@ class GitManager:
         Used for subtask branch reuse: when a plan generates multiple subtasks
         that should share a branch, this lets the second task pick up where the
         first left off rather than creating a new branch.
+
+        If the branch doesn't exist locally or on the remote (e.g. LINK repos
+        with no remote), creates it as a new local branch.
         """
         try:
             self._run(["fetch", "origin"], cwd=checkout_path)
@@ -141,9 +144,13 @@ class GitManager:
         try:
             self._run(["checkout", branch_name], cwd=checkout_path)
         except GitError:
-            # Branch may not exist locally yet — try tracking remote
-            self._run(["checkout", "-b", branch_name, f"origin/{branch_name}"],
-                       cwd=checkout_path)
+            # Branch doesn't exist locally — try tracking remote
+            try:
+                self._run(["checkout", "-b", branch_name, f"origin/{branch_name}"],
+                           cwd=checkout_path)
+            except GitError:
+                # No remote branch either (e.g. LINK repo) — create fresh
+                self._run(["checkout", "-b", branch_name], cwd=checkout_path)
         try:
             self._run(["pull", "origin", branch_name], cwd=checkout_path)
         except GitError:
