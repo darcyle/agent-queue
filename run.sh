@@ -32,10 +32,10 @@ case "${1:-start}" in
         # Acquire an exclusive lock to prevent two simultaneous starts
         if ! mkdir "$LOCK_FILE" 2>/dev/null; then
             echo "Error: another './run.sh start' is already in progress."
-            echo "(If not, remove the stale lock with: rmdir $LOCK_FILE)"
+            echo "(If not, remove the stale lock with: rm -rf $LOCK_FILE)"
             exit 1
         fi
-        trap 'rmdir "$LOCK_FILE" 2>/dev/null' EXIT
+        trap 'rm -rf "$LOCK_FILE" 2>/dev/null' EXIT
 
         # Check PID file first
         if [[ -f "$PID_FILE" ]]; then
@@ -64,7 +64,7 @@ case "${1:-start}" in
         echo "$DAEMON_PID" > "$PID_FILE"
 
         # Release lock — PID file now guards subsequent starts
-        rmdir "$LOCK_FILE" 2>/dev/null
+        rm -rf "$LOCK_FILE" 2>/dev/null
         trap - EXIT
 
         # Verify it actually started
@@ -112,6 +112,7 @@ case "${1:-start}" in
         fi
         echo "Daemon stopped."
         rm -f "$PID_FILE"
+        rm -rf "$LOCK_FILE" 2>/dev/null
         ;;
 
     restart)

@@ -959,7 +959,7 @@ def step_chat_provider(existing: dict) -> dict:
     print()
     default_model = existing_cp.get("model", "")
     if not default_model:
-        default_model = local_models[0] if local_models else "qwen2.5:32b-instruct-q3_K_M"
+        default_model = local_models[0] if local_models else "qwen3.5:35b"
 
     model = prompt("Model name", default_model)
 
