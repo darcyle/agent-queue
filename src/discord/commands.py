@@ -15,6 +15,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from src.discord.embeds import STATUS_COLORS, STATUS_EMOJIS
 from src.models import TaskStatus
 
 
@@ -241,32 +242,11 @@ def setup_commands(bot: commands.Bot) -> None:
     # Shared formatting helpers
     # ---------------------------------------------------------------------------
 
-    _STATUS_COLORS: dict[str, int] = {
-        TaskStatus.DEFINED.value:            0x95a5a6,
-        TaskStatus.READY.value:              0x3498db,
-        TaskStatus.ASSIGNED.value:           0x9b59b6,
-        TaskStatus.IN_PROGRESS.value:        0xf39c12,
-        TaskStatus.WAITING_INPUT.value:      0x1abc9c,
-        TaskStatus.PAUSED.value:             0x7f8c8d,
-        TaskStatus.VERIFYING.value:          0x2980b9,
-        TaskStatus.AWAITING_APPROVAL.value:  0xe67e22,
-        TaskStatus.COMPLETED.value:          0x2ecc71,
-        TaskStatus.FAILED.value:             0xe74c3c,
-        TaskStatus.BLOCKED.value:            0x992d22,
-    }
-    _STATUS_EMOJIS: dict[str, str] = {
-        TaskStatus.DEFINED.value:            "⚪",
-        TaskStatus.READY.value:              "🔵",
-        TaskStatus.ASSIGNED.value:           "📋",
-        TaskStatus.IN_PROGRESS.value:        "🟡",
-        TaskStatus.WAITING_INPUT.value:      "💬",
-        TaskStatus.PAUSED.value:             "⏸️",
-        TaskStatus.VERIFYING.value:          "🔍",
-        TaskStatus.AWAITING_APPROVAL.value:  "⏳",
-        TaskStatus.COMPLETED.value:          "🟢",
-        TaskStatus.FAILED.value:             "🔴",
-        TaskStatus.BLOCKED.value:            "⛔",
-    }
+    # Status visual mappings -- canonical definitions live in
+    # src/discord/embeds.py; local aliases for backward compatibility
+    # with the many references inside this function's nested closures.
+    _STATUS_COLORS = STATUS_COLORS
+    _STATUS_EMOJIS = STATUS_EMOJIS
 
     async def _send_long(interaction, text: str, *, followup: bool = False):
         """Send a potentially long response, splitting or attaching as file."""
