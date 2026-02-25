@@ -24,10 +24,12 @@ class AdapterFactory:
     ``create("claude")`` once per task assignment.
     """
 
-    def __init__(self, claude_config: ClaudeAdapterConfig | None = None):
+    def __init__(self, claude_config: ClaudeAdapterConfig | None = None,
+                 llm_logger=None):
         self._claude_config = claude_config
+        self._llm_logger = llm_logger
 
     def create(self, agent_type: str) -> AgentAdapter:
         if agent_type == "claude":
-            return ClaudeAdapter(self._claude_config)
+            return ClaudeAdapter(self._claude_config, llm_logger=self._llm_logger)
         raise ValueError(f"Unknown agent type: {agent_type}")

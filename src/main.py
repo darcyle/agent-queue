@@ -39,8 +39,9 @@ async def run(config_path: str) -> bool:
     # Ensure database directory exists
     os.makedirs(os.path.dirname(config.database_path), exist_ok=True)
 
-    adapter_factory = AdapterFactory()
-    orch = Orchestrator(config, adapter_factory=adapter_factory)
+    orch = Orchestrator(config, adapter_factory=None)
+    adapter_factory = AdapterFactory(llm_logger=orch.llm_logger)
+    orch._adapter_factory = adapter_factory
     await orch.initialize()
 
     # Start Discord bot

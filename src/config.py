@@ -130,6 +130,14 @@ class ChatProviderConfig:
 
 
 @dataclass
+class LLMLoggingConfig:
+    """Configuration for logging LLM inputs/outputs to JSONL files."""
+
+    enabled: bool = False
+    retention_days: int = 30
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration aggregating all subsystem configs.
 
@@ -151,6 +159,7 @@ class AppConfig:
     hook_engine: HookEngineConfig = field(default_factory=HookEngineConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     auto_task: AutoTaskConfig = field(default_factory=AutoTaskConfig)
+    llm_logging: LLMLoggingConfig = field(default_factory=LLMLoggingConfig)
     global_token_budget_daily: int | None = None
     rate_limits: dict[str, dict[str, int]] = field(default_factory=dict)
 
@@ -318,6 +327,13 @@ def load_config(path: str) -> AppConfig:
             max_steps_per_plan=at.get("max_steps_per_plan", 20),
             use_llm_parser=at.get("use_llm_parser", False),
             llm_parser_model=at.get("llm_parser_model", ""),
+        )
+
+    if "llm_logging" in raw:
+        ll = raw["llm_logging"]
+        config.llm_logging = LLMLoggingConfig(
+            enabled=ll.get("enabled", False),
+            retention_days=ll.get("retention_days", 30),
         )
 
     if "rate_limits" in raw:

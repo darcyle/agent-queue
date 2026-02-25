@@ -173,17 +173,20 @@ class ClaudeAdapter(AgentAdapter):
     result/token counts from the ResultMessage.
     """
 
-    def __init__(self, config: ClaudeAdapterConfig | None = None):
+    def __init__(self, config: ClaudeAdapterConfig | None = None, llm_logger=None):
         self._config = config or ClaudeAdapterConfig()
         self._task: TaskContext | None = None
         self._cancel_event = asyncio.Event()
         self._session_id: str | None = None
+        self._llm_logger = llm_logger
 
     async def start(self, task: TaskContext) -> None:
         self._task = task
         self._cancel_event.clear()
 
     async def wait(self, on_message: MessageCallback | None = None) -> AgentOutput:
+        import time as _time
+        _wait_start = _time.monotonic()
         try:
             # Strip Claude Code session markers to allow launching agent sessions
             import os
@@ -239,11 +242,13 @@ class ClaudeAdapter(AgentAdapter):
                         print(f"Claude adapter message: type={msg_type} subtype={msg_subtype}")
 
                     if self._cancel_event.is_set():
-                        return AgentOutput(
+                        output = AgentOutput(
                             result=AgentResult.FAILED,
                             summary="Cancelled",
                             error_message="Agent was stopped",
                         )
+                        self._log_session(current_prompt, output, _wait_start, _time)
+                        return output
 
                     # Capture session ID from init message.
                     # SystemMessage only has .subtype and .data (a raw dict);
@@ -290,23 +295,29 @@ class ClaudeAdapter(AgentAdapter):
                 print(f"Claude adapter error: {error_msg}")
                 print(full_traceback)
                 if "token" in error_msg.lower() or "quota" in error_msg.lower():
-                    return AgentOutput(
+                    output = AgentOutput(
                         result=AgentResult.PAUSED_TOKENS,
                         error_message=error_msg,
                     )
-                return AgentOutput(
+                    self._log_session(current_prompt, output, _wait_start, _time)
+                    return output
+                output = AgentOutput(
                     result=AgentResult.FAILED,
                     error_message=f"{error_msg}\n{full_traceback}",
                 )
+                self._log_session(current_prompt, output, _wait_start, _time)
+                return output
 
             # If the CLI reported an error result, propagate it as FAILED
             if cli_error:
                 print(f"Claude adapter: query failed with CLI error: {cli_error}")
-                return AgentOutput(
+                output = AgentOutput(
                     result=AgentResult.FAILED,
                     error_message=cli_error,
                     tokens_used=tokens_used,
                 )
+                self._log_session(current_prompt, output, _wait_start, _time)
+                return output
 
             print(f"Claude adapter: query completed, {len(summary_parts)} result parts, "
                   f"{tokens_used} tokens")
@@ -315,7 +326,7 @@ class ClaudeAdapter(AgentAdapter):
             # something went wrong (e.g. auth failure, rate limit, CLI crash).
             if tokens_used == 0 and not summary_parts:
                 print("Claude adapter: 0 tokens and no output — treating as failure")
-                return AgentOutput(
+                output = AgentOutput(
                     result=AgentResult.FAILED,
                     error_message=(
                         "Agent session ended with 0 tokens and no output. "
@@ -325,17 +336,48 @@ class ClaudeAdapter(AgentAdapter):
                     ),
                     tokens_used=0,
                 )
+                self._log_session(current_prompt, output, _wait_start, _time)
+                return output
 
-            return AgentOutput(
+            output = AgentOutput(
                 result=AgentResult.COMPLETED,
                 summary="\n".join(summary_parts) or "Completed",
                 tokens_used=tokens_used,
             )
+            self._log_session(current_prompt, output, _wait_start, _time)
+            return output
         except ImportError as e:
             return AgentOutput(
                 result=AgentResult.FAILED,
                 error_message=f"Claude Agent SDK not available: {e}",
             )
+
+    def _log_session(self, prompt: str, output: AgentOutput,
+                      start: float, time_mod) -> None:
+        """Log agent session to LLMLogger if available."""
+        if not self._llm_logger:
+            return
+        duration_ms = int((time_mod.monotonic() - start) * 1000)
+        task_id = ""
+        if self._task and self._task.description:
+            # Extract task ID from the description context if available
+            import re
+            match = re.search(r"Task-Id:\s*(\S+)", self._task.description)
+            if match:
+                task_id = match.group(1)
+        self._llm_logger.log_agent_session(
+            task_id=task_id,
+            session_id=self._session_id,
+            model=self._config.model or "(default)",
+            prompt=prompt,
+            config_summary={
+                "allowed_tools": self._config.allowed_tools,
+                "permission_mode": self._config.permission_mode,
+                "cwd": self._task.checkout_path if self._task else "",
+            },
+            output=output,
+            duration_ms=duration_ms,
+        )
 
     async def stop(self) -> None:
         self._cancel_event.set()

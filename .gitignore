@@ -9,5 +9,8 @@ __pycache__/
 *.db-wal
 spin_utility.log
 
+# LLM interaction logs
+logs/
+
 # Documentation build output
 docs_out/

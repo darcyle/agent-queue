@@ -55,7 +55,7 @@ class AgentQueueBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.config = config
         self.orchestrator = orchestrator
-        self.agent = ChatAgent(orchestrator, config)
+        self.agent = ChatAgent(orchestrator, config, llm_logger=orchestrator.llm_logger)
         # Register a callback so that project deletions (from any caller)
         # automatically purge the bot's in-memory channel caches.
         self.agent.handler._on_project_deleted = self.clear_project_channels

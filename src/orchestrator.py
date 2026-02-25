@@ -26,6 +26,7 @@ from typing import Any, Callable, Awaitable
 
 from src.adapters.base import MessageCallback
 from src.config import AppConfig
+from src.llm_logger import LLMLogger
 from src.database import Database
 from src.discord.notifications import (
     format_task_completed, format_task_failed, format_task_blocked,
@@ -108,12 +109,23 @@ class Orchestrator:
         self._create_thread: CreateThreadCallback | None = None
         self._paused: bool = False
         self._last_approval_check: float = 0.0
+        # LLM interaction logger
+        self.llm_logger = LLMLogger(
+            enabled=config.llm_logging.enabled,
+            retention_days=config.llm_logging.retention_days,
+        )
+        self._last_log_cleanup: float = 0.0
         # Chat provider for LLM-based plan parsing
         self._chat_provider = None
         if config.auto_task.use_llm_parser:
             try:
-                from src.chat_providers import create_chat_provider
-                self._chat_provider = create_chat_provider(config.chat_provider)
+                from src.chat_providers import create_chat_provider, LoggedChatProvider
+                provider = create_chat_provider(config.chat_provider)
+                if provider and self.llm_logger._enabled:
+                    provider = LoggedChatProvider(
+                        provider, self.llm_logger, caller="plan_parser"
+                    )
+                self._chat_provider = provider
             except Exception:
                 pass
         # Tracks the last time we sent a reminder for an AWAITING_APPROVAL
@@ -371,6 +383,17 @@ class Orchestrator:
             # 5. Run hook engine tick
             if self.hooks:
                 await self.hooks.tick()
+
+            # 6. Periodic log cleanup (~once per hour)
+            now = time.time()
+            if now - self._last_log_cleanup >= 3600:
+                self._last_log_cleanup = now
+                try:
+                    removed = self.llm_logger.cleanup_old_logs()
+                    if removed:
+                        print(f"LLM log cleanup: removed {removed} old directory(ies)")
+                except Exception as e:
+                    print(f"LLM log cleanup error: {e}")
         except Exception as e:
             print(f"Scheduler cycle error: {e}")
             import traceback

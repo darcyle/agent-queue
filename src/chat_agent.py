@@ -27,9 +27,10 @@ from __future__ import annotations
 import json
 import os
 
-from src.chat_providers import ChatProvider, create_chat_provider
+from src.chat_providers import ChatProvider, LoggedChatProvider, create_chat_provider
 from src.command_handler import CommandHandler
 from src.config import AppConfig
+from src.llm_logger import LLMLogger
 from src.orchestrator import Orchestrator
 
 
@@ -1140,15 +1141,22 @@ class ChatAgent:
     slash commands and the chat agent use the same code path.
     """
 
-    def __init__(self, orchestrator: Orchestrator, config: AppConfig):
+    def __init__(self, orchestrator: Orchestrator, config: AppConfig,
+                 llm_logger: LLMLogger | None = None):
         self.orchestrator = orchestrator
         self.config = config
         self._provider: ChatProvider | None = None
+        self._llm_logger = llm_logger
         self.handler = CommandHandler(orchestrator, config)
 
     def initialize(self) -> bool:
         """Create LLM provider. Returns True if provider is ready."""
-        self._provider = create_chat_provider(self.config.chat_provider)
+        provider = create_chat_provider(self.config.chat_provider)
+        if provider and self._llm_logger and self._llm_logger._enabled:
+            provider = LoggedChatProvider(
+                provider, self._llm_logger, caller="chat_agent.chat"
+            )
+        self._provider = provider
         return self._provider is not None
 
     @property
@@ -1247,6 +1255,11 @@ class ChatAgent:
         """Summarize a conversation transcript. Returns None on failure."""
         if not self._provider:
             return None
+        # Tag logged calls with the summarize caller identity
+        prev_caller = None
+        if isinstance(self._provider, LoggedChatProvider):
+            prev_caller = self._provider._caller
+            self._provider._caller = "chat_agent.summarize"
         try:
             resp = await self._provider.create_message(
                 messages=[{
@@ -1267,6 +1280,9 @@ class ChatAgent:
         except Exception as e:
             print(f"Summary generation failed: {e}")
             return None
+        finally:
+            if prev_caller is not None and isinstance(self._provider, LoggedChatProvider):
+                self._provider._caller = prev_caller
 
     async def _execute_tool(self, name: str, input_data: dict) -> dict:
         """Execute a tool call via the shared CommandHandler."""

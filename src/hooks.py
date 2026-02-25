@@ -30,7 +30,7 @@ import subprocess
 import time
 import uuid
 
-from src.chat_providers import ChatProvider, create_chat_provider
+from src.chat_providers import ChatProvider, LoggedChatProvider, create_chat_provider
 from src.config import AppConfig, ChatProviderConfig
 from src.database import Database
 from src.event_bus import EventBus
@@ -497,7 +497,13 @@ class HookEngine:
         # This is passed through the config, but we need to store it
         orchestrator = self._orchestrator
         chat_agent = ChatAgent(orchestrator, self.config)
-        chat_agent._provider = create_chat_provider(provider_config)
+        provider = create_chat_provider(provider_config)
+        # Wrap with logging if the orchestrator has an LLM logger
+        if provider and hasattr(orchestrator, 'llm_logger') and orchestrator.llm_logger._enabled:
+            provider = LoggedChatProvider(
+                provider, orchestrator.llm_logger, caller="hook_engine"
+            )
+        chat_agent._provider = provider
 
         if not chat_agent._provider:
             raise RuntimeError(
