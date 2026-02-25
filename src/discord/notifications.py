@@ -1,7 +1,13 @@
 """Notification formatting for Discord messages about task lifecycle events.
 
-Each formatter produces a human-readable markdown string (not a Discord-specific
-object) so the logic is easy to unit test without a live Discord connection.
+**String formatters** (``format_*``) produce human-readable markdown strings
+that are easy to unit test without a live Discord connection and are used for
+logging and plain-text fallback.
+
+**Embed formatters** (``format_*_embed``) produce ``discord.Embed`` objects for
+rich Discord presentation — color-coded by severity, with structured fields for
+task metadata.  The orchestrator passes both versions through the notification
+callback so the bot can choose the appropriate format.
 
 ``classify_error`` pattern-matches raw error messages against known failure modes
 and returns an actionable fix suggestion -- this turns opaque stack traces into
@@ -9,6 +15,12 @@ guidance the user can act on immediately from Discord.
 """
 from __future__ import annotations
 
+import discord
+
+from src.discord.embeds import (
+    success_embed, error_embed, warning_embed, info_embed, critical_embed,
+    truncate, LIMIT_FIELD_VALUE,
+)
 from src.models import Task, Agent, AgentOutput
 
 # ---------------------------------------------------------------------------
@@ -205,4 +217,214 @@ def format_budget_warning(project_name: str, usage: int, limit: int) -> str:
     return (
         f"**Budget Warning:** Project **{project_name}** at {pct:.0f}% "
         f"({usage:,} / {limit:,} tokens)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rich embed formatters
+# ---------------------------------------------------------------------------
+# Each function mirrors a string formatter above and returns a
+# ``discord.Embed`` for richer Discord presentation.  The string versions
+# are preserved for logging, testing, and fallback.
+
+
+def format_task_completed_embed(
+    task: Task, agent: Agent, output: AgentOutput,
+) -> discord.Embed:
+    """Rich embed version of :func:`format_task_completed`."""
+    fields: list[tuple[str, str, bool]] = [
+        ("Task ID", f"`{task.id}`", True),
+        ("Project", f"`{task.project_id}`", True),
+        ("Agent", agent.name, True),
+        ("Tokens Used", f"{output.tokens_used:,}", True),
+    ]
+    if output.summary:
+        fields.append((
+            "Summary",
+            truncate(output.summary, LIMIT_FIELD_VALUE),
+            False,
+        ))
+    if output.files_changed:
+        files_text = ", ".join(f"`{f}`" for f in output.files_changed)
+        fields.append((
+            "Files Changed",
+            truncate(files_text, LIMIT_FIELD_VALUE),
+            False,
+        ))
+    return success_embed(f"Task Completed — {task.title}", fields=fields)
+
+
+def format_task_failed_embed(
+    task: Task, agent: Agent, output: AgentOutput,
+) -> discord.Embed:
+    """Rich embed version of :func:`format_task_failed`."""
+    error_type, suggestion = classify_error(output.error_message)
+    fields: list[tuple[str, str, bool]] = [
+        ("Task ID", f"`{task.id}`", True),
+        ("Project", f"`{task.project_id}`", True),
+        ("Agent", agent.name, True),
+        ("Retries", f"{task.retry_count}/{task.max_retries}", True),
+        ("Error Type", f"**{error_type}**", True),
+    ]
+    if output.error_message:
+        # Code block markers consume ~8 chars; cap snippet to leave room.
+        snippet = output.error_message[:300]
+        if len(output.error_message) > 300:
+            snippet += "\u2026"
+        fields.append(("Error Detail", f"```\n{snippet}\n```", False))
+    fields.append(("Suggestion", f"\U0001F4A1 {suggestion}", False))
+    fields.append((
+        "Next Step",
+        f"Use `/agent-error {task.id}` for the full error log.",
+        False,
+    ))
+    return error_embed(f"Task Failed — {task.title}", fields=fields)
+
+
+def format_task_blocked_embed(
+    task: Task, last_error: str | None = None,
+) -> discord.Embed:
+    """Rich embed version of :func:`format_task_blocked`."""
+    fields: list[tuple[str, str, bool]] = [
+        ("Task ID", f"`{task.id}`", True),
+        ("Project", f"`{task.project_id}`", True),
+        ("Status", f"Max retries ({task.max_retries}) exhausted", False),
+    ]
+    if last_error:
+        error_type, suggestion = classify_error(last_error)
+        fields.append(("Last Error Type", f"**{error_type}**", True))
+        fields.append(("Suggestion", f"\U0001F4A1 {suggestion}", False))
+    fields.append((
+        "Action Required",
+        f"Use `/agent-error {task.id}` to inspect the last error.",
+        False,
+    ))
+    return critical_embed(f"Task Blocked — {task.title}", fields=fields)
+
+
+def format_pr_created_embed(task: Task, pr_url: str) -> discord.Embed:
+    """Rich embed version of :func:`format_pr_created`."""
+    fields: list[tuple[str, str, bool]] = [
+        ("Task ID", f"`{task.id}`", True),
+        ("Project", f"`{task.project_id}`", True),
+        ("Status", "AWAITING_APPROVAL", True),
+        ("Pull Request", f"[Review and merge to complete]({pr_url})", False),
+    ]
+    return info_embed(f"PR Created — {task.title}", fields=fields, url=pr_url)
+
+
+def format_agent_question_embed(
+    task: Task, agent: Agent, question: str,
+) -> discord.Embed:
+    """Rich embed version of :func:`format_agent_question`."""
+    fields: list[tuple[str, str, bool]] = [
+        ("Task ID", f"`{task.id}`", True),
+        ("Project", f"`{task.project_id}`", True),
+        ("Agent", agent.name, True),
+        ("Question", f"> {truncate(question, LIMIT_FIELD_VALUE - 2)}", False),
+    ]
+    return warning_embed(f"Agent Question — {task.title}", fields=fields)
+
+
+def format_chain_stuck_embed(
+    blocked_task: Task,
+    stuck_tasks: list[Task],
+) -> discord.Embed:
+    """Rich embed version of :func:`format_chain_stuck`."""
+    task_list = "\n".join(
+        f"\u2022 `{t.id}` \u2014 {t.title}" for t in stuck_tasks[:10]
+    )
+    if len(stuck_tasks) > 10:
+        task_list += f"\n+{len(stuck_tasks) - 10} more"
+    fields: list[tuple[str, str, bool]] = [
+        ("Blocked Task", f"`{blocked_task.id}` \u2014 {blocked_task.title}", False),
+        ("Project", f"`{blocked_task.project_id}`", True),
+        ("Affected Tasks", str(len(stuck_tasks)), True),
+        ("Downstream Tasks", truncate(task_list, LIMIT_FIELD_VALUE), False),
+        (
+            "Actions",
+            f"`/skip-task {blocked_task.id}` or `/restart-task {blocked_task.id}`",
+            False,
+        ),
+    ]
+    return critical_embed(
+        "Chain Stuck",
+        description=(
+            f"Task `{blocked_task.id}` is BLOCKED, preventing "
+            f"{len(stuck_tasks)} downstream task(s) from running."
+        ),
+        fields=fields,
+    )
+
+
+def format_stuck_defined_task_embed(
+    task: Task,
+    blocking_deps: list[tuple[str, str, str]],
+    stuck_hours: float,
+) -> discord.Embed:
+    """Rich embed version of :func:`format_stuck_defined_task`."""
+    fields: list[tuple[str, str, bool]] = [
+        ("Task ID", f"`{task.id}`", True),
+        ("Project", f"`{task.project_id}`", True),
+        ("Stuck Duration", f"{stuck_hours:.1f} hours", True),
+    ]
+    if blocking_deps:
+        blockers = "\n".join(
+            f"\u2022 `{dep_id}` ({dep_status})"
+            for dep_id, _, dep_status in blocking_deps[:5]
+        )
+        if len(blocking_deps) > 5:
+            blockers += f"\n+{len(blocking_deps) - 5} more"
+        fields.append((
+            "Blocking Dependencies",
+            truncate(blockers, LIMIT_FIELD_VALUE),
+            False,
+        ))
+        fields.append((
+            "Actions",
+            "`/skip-task` or `/restart-task` the blocker to unblock",
+            False,
+        ))
+    else:
+        fields.append((
+            "Note",
+            "No unmet dependencies found \u2014 possible bug",
+            False,
+        ))
+    return warning_embed(
+        f"Task Stuck — {task.title}",
+        description=f"DEFINED for {stuck_hours:.1f}h, waiting on dependencies.",
+        fields=fields,
+    )
+
+
+def format_budget_warning_embed(
+    project_name: str, usage: int, limit: int,
+) -> discord.Embed:
+    """Rich embed version of :func:`format_budget_warning`.
+
+    The embed color shifts from amber to orange to red as the budget
+    utilization increases, providing an at-a-glance severity indicator.
+    """
+    pct = (usage / limit * 100) if limit > 0 else 0
+    remaining = max(0, limit - usage)
+
+    # Dynamic color: amber → orange → red as budget depletes
+    if pct >= 95:
+        color = 0xE74C3C   # Red
+    elif pct >= 80:
+        color = 0xE67E22   # Orange
+    else:
+        color = 0xF39C12   # Amber
+
+    fields: list[tuple[str, str, bool]] = [
+        ("Project", f"**{project_name}**", True),
+        ("Used", f"{usage:,} tokens", True),
+        ("Limit", f"{limit:,} tokens", True),
+        ("Remaining", f"{remaining:,} tokens ({100 - pct:.0f}%)", True),
+    ]
+    return warning_embed(
+        f"Budget Warning — {pct:.0f}% Used",
+        fields=fields,
+        color_override=color,
     )

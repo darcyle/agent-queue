@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from typing import Callable, Awaitable
+from typing import Any, Callable, Awaitable
 
 from src.adapters.base import MessageCallback
 from src.config import AppConfig
@@ -30,6 +30,9 @@ from src.database import Database
 from src.discord.notifications import (
     format_task_completed, format_task_failed, format_task_blocked,
     format_pr_created, format_chain_stuck, format_stuck_defined_task,
+    format_task_completed_embed, format_task_failed_embed,
+    format_task_blocked_embed, format_pr_created_embed,
+    format_chain_stuck_embed, format_stuck_defined_task_embed,
 )
 from src.event_bus import EventBus
 from src.git.manager import GitManager
@@ -48,7 +51,9 @@ from src.tokens.budget import BudgetManager
 
 # Sends a formatted message to a Discord channel.  The optional project_id
 # lets the callback route to per-project channels instead of the global one.
-NotifyCallback = Callable[[str, str | None], Awaitable[None]]
+# When an ``embed`` kwarg is provided, the callback should prefer it over
+# the plain-text message for Discord display.
+NotifyCallback = Callable[..., Awaitable[None]]
 
 # Sends a single message into an already-created Discord thread.
 ThreadSendCallback = Callable[[str], Awaitable[None]]
@@ -231,16 +236,30 @@ class Orchestrator:
         await self._notify_stuck_chain(task)
         return None
 
-    async def _notify_channel(self, message: str, project_id: str | None = None) -> None:
+    async def _notify_channel(
+        self,
+        message: str,
+        project_id: str | None = None,
+        *,
+        embed: Any = None,
+    ) -> None:
         """Send a notification if a callback is set.
 
         When *project_id* is given the callback can route the message to a
         per-project Discord channel (falling back to the global notifications
         channel if the project has none configured).
+
+        When *embed* is provided the callback can use it for rich Discord
+        rendering while still keeping *message* for logging/fallback.
         """
         if self._notify:
             try:
-                await self._notify(message, project_id)
+                # Only pass embed kwarg when set to maintain backward
+                # compatibility with callbacks that don't accept it.
+                if embed is not None:
+                    await self._notify(message, project_id, embed=embed)
+                else:
+                    await self._notify(message, project_id)
             except Exception as e:
                 print(f"Notification error: {e}")
 
@@ -479,7 +498,11 @@ class Orchestrator:
             stuck_hours = (now - task_created_at) / 3600
 
             msg = format_stuck_defined_task(task, blocking, stuck_hours)
-            await self._notify_channel(msg, project_id=task.project_id)
+            await self._notify_channel(
+                msg,
+                project_id=task.project_id,
+                embed=format_stuck_defined_task_embed(task, blocking, stuck_hours),
+            )
 
             # Log the event
             blocking_info = ", ".join(
@@ -549,7 +572,11 @@ class Orchestrator:
             return
 
         msg = format_chain_stuck(blocked_task, stuck)
-        await self._notify_channel(msg, project_id=blocked_task.project_id)
+        await self._notify_channel(
+            msg,
+            project_id=blocked_task.project_id,
+            embed=format_chain_stuck_embed(blocked_task, stuck),
+        )
         await self.db.log_event(
             "chain_stuck",
             project_id=blocked_task.project_id,
@@ -1453,21 +1480,23 @@ class Orchestrator:
 
         # Helper: post to thread if available, otherwise to notifications channel.
         # Used for in-progress updates (e.g. git errors, paused notices).
-        async def _post(msg: str) -> None:
+        # When no thread exists and *embed* is provided, the embed is forwarded
+        # to the channel for rich rendering.
+        async def _post(msg: str, *, embed: Any = None) -> None:
             if thread_send:
                 await thread_send(msg)
             else:
-                await self._notify_channel(msg, project_id=action.project_id)
+                await self._notify_channel(msg, project_id=action.project_id, embed=embed)
 
         # Helper: post a brief notification to the main (notifications) channel.
         # When a thread exists this replies to the thread-root message so the
         # notification is visually linked to the thread.  Falls back to a plain
         # channel message when no thread is available.
-        async def _notify_brief(msg: str) -> None:
+        async def _notify_brief(msg: str, *, embed: Any = None) -> None:
             if thread_main_notify:
                 await thread_main_notify(msg)
             else:
-                await self._notify_channel(msg, project_id=action.project_id)
+                await self._notify_channel(msg, project_id=action.project_id, embed=embed)
 
         # Handle result
         if output.result == AgentResult.COMPLETED:
@@ -1496,7 +1525,10 @@ class Orchestrator:
                                         task_id=action.task_id,
                                         agent_id=action.agent_id,
                                         payload=pr_url)
-                await _post(format_pr_created(task, pr_url))
+                await _post(
+                    format_pr_created(task, pr_url),
+                    embed=format_pr_created_embed(task, pr_url),
+                )
                 brief = f"🔍 PR created for review: {task.title} (`{task.id}`)\n{pr_url}"
                 await _notify_brief(brief)
             elif task.requires_approval and not pr_url:
@@ -1533,6 +1565,7 @@ class Orchestrator:
                     await self._notify_channel(
                         format_task_completed(task, agent, output),
                         project_id=action.project_id,
+                        embed=format_task_completed_embed(task, agent, output),
                     )
                 brief = f"✅ Task completed: {task.title} (`{task.id}`)"
                 await _notify_brief(brief)
@@ -1607,11 +1640,13 @@ class Orchestrator:
                     await self._notify_channel(
                         format_task_blocked(task, last_error=output.error_message),
                         project_id=action.project_id,
+                        embed=format_task_blocked_embed(task, last_error=output.error_message),
                     )
                 else:
                     await self._notify_channel(
                         format_task_failed(task, agent, output),
                         project_id=action.project_id,
+                        embed=format_task_failed_embed(task, agent, output),
                     )
             # Brief notification → main channel (reply to thread or standalone)
             await _notify_brief(brief)

@@ -349,18 +349,29 @@ class AgentQueueBot(commands.Bot):
         """Prepend a ``[project-id]`` tag to a message for global-channel context."""
         return f"[`{project_id}`] {text}"
 
-    async def _send_message(self, text: str, project_id: str | None = None) -> None:
+    async def _send_message(
+        self,
+        text: str,
+        project_id: str | None = None,
+        *,
+        embed: discord.Embed | None = None,
+    ) -> None:
         """Send a message to the project's channel (or the global channel).
 
+        When *embed* is provided the message is sent as a rich embed; the
+        plain *text* is kept as a fallback (and remains useful for logging).
         When the message is routed to the **global** channel (because the
         project has no dedicated channel), a ``[project-id]`` tag is prepended
-        so users can tell which project the message belongs to.
+        to the text version so users can tell which project it belongs to.
         """
         channel = self._get_channel(project_id)
         if channel:
             if project_id and self._is_global_channel(channel, project_id):
                 text = self._prepend_project_tag(text, project_id)
-            await self._send_long_message(channel, text)
+            if embed is not None:
+                await channel.send(embed=embed)
+            else:
+                await self._send_long_message(channel, text)
 
     async def _create_task_thread(
         self, thread_name: str, initial_message: str, project_id: str | None = None
