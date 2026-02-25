@@ -7,6 +7,7 @@ Agent Queue is a task queue and orchestrator built for subsidized AI coding plan
 ## Quick Links
 
 - **[Getting Started](getting-started.md)** — Installation and setup
+- **[Discord Commands](discord-commands.md)** — Complete guide to slash commands and chat interactions
 - **[Architecture](architecture.md)** — How the system is designed
 - **[Specifications](specs/models-and-state-machine.md)** — Detailed specs for each module
 - **[API Reference](api/index.md)** — Auto-generated API documentation from source code

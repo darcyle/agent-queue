@@ -59,3 +59,5 @@ Once the daemon is running and connected to Discord:
 2. **Create a task** — Describe what you want done in natural language
 3. **Watch it work** — The bot creates a thread and streams agent progress
 4. **Review the PR** — When the task completes, review the generated pull request
+
+For a complete reference of all available commands, see the [Discord Commands Guide](discord-commands.md).
