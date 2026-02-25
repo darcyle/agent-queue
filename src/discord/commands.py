@@ -2180,54 +2180,48 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(
         name="git-diff",
-        description="Show diff of working tree or against a base branch",
+        description="Show git diff for a project's repo",
     )
     @app_commands.describe(
-        project_id="Project ID (auto-detected from channel)",
-        repo_id="Repository ID (optional, defaults to first repo in project)",
-        base_branch="Branch to diff against (omit for unstaged working tree changes)",
+        project_id="Project ID",
+        base_branch="Base branch to diff against (optional — shows working tree diff)",
+        repo_id="Specific repo ID (optional)",
     )
     async def git_diff_command(
         interaction: discord.Interaction,
-        project_id: str | None = None,
-        repo_id: str | None = None,
+        project_id: str,
         base_branch: str | None = None,
+        repo_id: str | None = None,
     ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
-        if not project_id:
-            await interaction.response.send_message(
-                "Could not determine project. Please provide a project_id.",
-                ephemeral=True,
-            )
-            return
-        await interaction.response.defer(ephemeral=True)
         args: dict = {"project_id": project_id}
-        if repo_id:
-            args["repo_id"] = repo_id
         if base_branch:
             args["base_branch"] = base_branch
+        if repo_id:
+            args["repo_id"] = repo_id
         result = await handler.execute("git_diff", args)
         if "error" in result:
-            await interaction.followup.send(
+            await interaction.response.send_message(
                 f"Error: {result['error']}", ephemeral=True,
             )
             return
+
         diff = result.get("diff", "(no changes)")
-        base_label = result.get("base_branch", "(working tree)")
-        repo_label = result.get("repo_id", "?")
-        header = f"**Repo:** `{repo_label}` · **Base:** `{base_label}`\n"
+        base_label = result.get("base_branch", "working tree")
+        repo_label = result.get("repo_id", project_id)
+        header = f"**Repo:** `{repo_label}` | **Diff against:** `{base_label}`\n"
+
         if len(diff) > 1800:
-            file = discord.File(
-                fp=io.BytesIO(diff.encode("utf-8")),
-                filename=f"diff-{project_id}.patch",
-            )
+            await interaction.response.defer()
             await interaction.followup.send(
-                f"{header}*Diff attached ({len(diff):,} chars)*",
-                file=file, ephemeral=True,
+                content=f"{header}*Diff attached ({len(diff):,} chars)*",
+                file=discord.File(
+                    fp=io.BytesIO(diff.encode("utf-8")),
+                    filename=f"diff-{project_id}.patch",
+                ),
             )
         else:
-            await interaction.followup.send(
-                f"{header}```diff\n{diff}\n```", ephemeral=True,
+            await interaction.response.send_message(
+                f"{header}```diff\n{diff}\n```"
             )
 
     # ===================================================================
