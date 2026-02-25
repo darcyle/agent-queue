@@ -502,6 +502,15 @@ class AgentQueueBot(commands.Bot):
         # Serialize LLM processing per channel to avoid duplicate/concurrent responses
         lock = self._channel_locks.setdefault(message.channel.id, asyncio.Lock())
         async with lock:
+            # Notify on cold model loads (Ollama first-call latency)
+            try:
+                if not await self.agent.is_model_loaded():
+                    await message.channel.send(
+                        "\u23f3 Loading model, this may take a moment..."
+                    )
+            except Exception:
+                pass  # fail-open — skip notification silently
+
             async with message.channel.typing():
                 try:
                     if not self.agent.is_ready:

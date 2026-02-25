@@ -1163,6 +1163,12 @@ class ChatAgent:
     def is_ready(self) -> bool:
         return self._provider is not None
 
+    async def is_model_loaded(self) -> bool:
+        """Check if the LLM model is loaded and ready (delegates to provider)."""
+        if not self._provider:
+            return True
+        return await self._provider.is_model_loaded()
+
     @property
     def model(self) -> str | None:
         return self._provider.model_name if self._provider else None

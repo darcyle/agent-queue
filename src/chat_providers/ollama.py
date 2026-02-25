@@ -10,7 +10,9 @@ is unavailable or cost-prohibitive.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import urllib.request
 import uuid
 
 from .base import ChatProvider
@@ -26,10 +28,38 @@ class OllamaChatProvider(ChatProvider):
 
         self._client = AsyncOpenAI(base_url=base_url, api_key="ollama")
         self._model = model
+        # Derive Ollama API root by stripping /v1 suffix
+        self._ollama_api_root = base_url.rstrip("/").removesuffix("/v1")
 
     @property
     def model_name(self) -> str:
         return self._model
+
+    async def is_model_loaded(self) -> bool:
+        """Check if the configured model is currently loaded in Ollama.
+
+        Hits ``/api/ps`` to list running models.  Returns ``False`` if the
+        model is not in the list (cold start expected).  Fail-open: returns
+        ``True`` on any error so callers never block on a failed probe.
+        """
+        def _probe() -> bool:
+            url = f"{self._ollama_api_root}/api/ps"
+            req = urllib.request.Request(url, method="GET")
+            req.add_header("Accept", "application/json")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read())
+            # Model name in /api/ps may include tag — compare base names
+            model_base = self._model.split(":")[0]
+            for entry in data.get("models", []):
+                entry_name = entry.get("name", "").split(":")[0]
+                if entry_name == model_base:
+                    return True
+            return False
+
+        try:
+            return await asyncio.to_thread(_probe)
+        except Exception:
+            return True  # fail-open
 
     async def create_message(
         self,

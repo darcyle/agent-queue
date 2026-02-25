@@ -28,3 +28,11 @@ class ChatProvider(ABC):
     @abstractmethod
     def model_name(self) -> str:
         ...
+
+    async def is_model_loaded(self) -> bool:
+        """Check whether the model is ready to serve requests.
+
+        Returns ``True`` by default (most providers are always ready).
+        Ollama overrides this to probe ``/api/ps`` for cold-start detection.
+        """
+        return True

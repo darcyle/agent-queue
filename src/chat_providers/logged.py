@@ -43,6 +43,9 @@ class LoggedChatProvider(ChatProvider):
     def model_name(self) -> str:
         return self._inner.model_name
 
+    async def is_model_loaded(self) -> bool:
+        return await self._inner.is_model_loaded()
+
     async def create_message(
         self,
         *,
