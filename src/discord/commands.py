@@ -1552,7 +1552,7 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.response.defer()
         result = await handler.execute("get_git_status", {"project_id": project_id})
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}")
+            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
 
         project_name = result.get("project_name", project_id)
@@ -1617,7 +1617,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["name"] = name
         result = await handler.execute("git_branch", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}")
+            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
 
         if "created" in result:
@@ -1662,7 +1662,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("checkout_branch", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}")
+            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
         await interaction.followup.send(_with_warning(
             f"✅ Switched to branch `{result['branch']}` on `{project_id}`",
@@ -1696,7 +1696,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("commit_changes", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}")
+            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
         if result.get("status") == "committed":
             repo_label = result.get("repo_id", "?")
@@ -1738,7 +1738,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("push_branch", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}")
+            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
         pushed_branch = result.get("branch", "?")
         await interaction.followup.send(
@@ -1772,7 +1772,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("merge_branch", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}")
+            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
         if result.get("status") == "conflict":
             target = result.get("target", "main")
@@ -1815,7 +1815,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("create_branch", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}")
+            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
         await interaction.followup.send(
             f"✅ Created and switched to branch `{result['branch']}` on `{project_id}`"
@@ -1998,7 +1998,7 @@ def setup_commands(bot: commands.Bot) -> None:
             "message": message,
         })
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}")
+            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
         if result.get("committed"):
             await interaction.followup.send(
@@ -2028,7 +2028,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["branch"] = branch
         result = await handler.execute("git_push", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}")
+            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
         await interaction.followup.send(
             f"✅ Pushed `{result['pushed']}` in `{repo_id}`"
@@ -2053,7 +2053,7 @@ def setup_commands(bot: commands.Bot) -> None:
             "branch_name": branch_name,
         })
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}")
+            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
         await interaction.followup.send(
             f"✅ Created and switched to branch `{branch_name}` in `{repo_id}`"
@@ -2080,7 +2080,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["default_branch"] = default_branch
         result = await handler.execute("git_merge", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}")
+            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
         if result.get("merged"):
             await interaction.followup.send(
@@ -2119,7 +2119,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["base"] = base
         result = await handler.execute("git_create_pr", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}")
+            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
         pr_url = result.get("pr_url", "")
         await interaction.followup.send(
@@ -2146,7 +2146,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["base_branch"] = base_branch
         result = await handler.execute("git_changed_files", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}")
+            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
             return
         files = result.get("files", [])
         count = result.get("count", 0)

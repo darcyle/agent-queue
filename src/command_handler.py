@@ -17,6 +17,7 @@ from pathlib import Path
 
 from src.config import AppConfig
 from src.discord.notifications import classify_error
+from src.git.manager import GitError
 from src.models import (
     Agent, Hook, Project, ProjectStatus, RepoConfig, RepoSourceType,
     Task, TaskStatus,
@@ -1073,7 +1074,6 @@ class CommandHandler:
 
     async def _cmd_git_commit(self, args: dict) -> dict:
         """Stage all changes and create a commit in a repository."""
-        from src.git.manager import GitError
         repo_id = args["repo_id"]
         message = args["message"]
         checkout_path, repo, err = await self._resolve_repo_path(args)
@@ -1089,7 +1089,6 @@ class CommandHandler:
 
     async def _cmd_git_push(self, args: dict) -> dict:
         """Push a branch to the remote origin."""
-        from src.git.manager import GitError
         repo_id = args["repo_id"]
         checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
@@ -1106,7 +1105,6 @@ class CommandHandler:
 
     async def _cmd_git_create_branch(self, args: dict) -> dict:
         """Create and switch to a new git branch."""
-        from src.git.manager import GitError
         repo_id = args["repo_id"]
         branch_name = args["branch_name"]
         checkout_path, repo, err = await self._resolve_repo_path(args)
@@ -1120,7 +1118,6 @@ class CommandHandler:
 
     async def _cmd_git_merge(self, args: dict) -> dict:
         """Merge a branch into the default branch."""
-        from src.git.manager import GitError
         repo_id = args["repo_id"]
         branch_name = args["branch_name"]
         checkout_path, repo, err = await self._resolve_repo_path(args)
@@ -1147,7 +1144,6 @@ class CommandHandler:
 
     async def _cmd_git_create_pr(self, args: dict) -> dict:
         """Create a GitHub pull request using the gh CLI."""
-        from src.git.manager import GitError
         repo_id = args["repo_id"]
         title = args["title"]
         body = args.get("body", "")
@@ -1207,7 +1203,6 @@ class CommandHandler:
         If ``name`` is provided a new branch is created and checked out;
         otherwise all local branches are listed.
         """
-        from src.git.manager import GitError
 
         checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
@@ -1237,7 +1232,6 @@ class CommandHandler:
 
     async def _cmd_git_checkout(self, args: dict) -> dict:
         """Switch to an existing branch."""
-        from src.git.manager import GitError
 
         checkout_path, repo, err = await self._resolve_repo_path(args)
         if err:
@@ -1275,8 +1269,8 @@ class CommandHandler:
             else:
                 # Working tree diff (unstaged changes)
                 diff = git._run(["diff"], cwd=checkout_path)
-        except Exception as e:
-            return {"error": f"Failed to get diff: {e}"}
+        except GitError as e:
+            return {"error": str(e)}
 
         return {
             "project_id": args["project_id"],
@@ -1298,8 +1292,8 @@ class CommandHandler:
         git = self.orchestrator.git
         try:
             git.create_branch(checkout_path, branch_name)
-        except Exception as e:
-            return {"error": f"Failed to create branch: {e}"}
+        except GitError as e:
+            return {"error": str(e)}
 
         return {
             "project_id": args["project_id"],
@@ -1332,9 +1326,9 @@ class CommandHandler:
 
         git = self.orchestrator.git
         try:
-            git._run(["checkout", branch_name], cwd=checkout_path)
-        except Exception as e:
-            return {"error": f"Failed to checkout branch: {e}"}
+            git.checkout_branch(checkout_path, branch_name)
+        except GitError as e:
+            return {"error": str(e)}
 
         result = {
             "project_id": args["project_id"],
@@ -1360,8 +1354,8 @@ class CommandHandler:
         git = self.orchestrator.git
         try:
             committed = git.commit_all(checkout_path, message)
-        except Exception as e:
-            return {"error": f"Failed to commit: {e}"}
+        except GitError as e:
+            return {"error": str(e)}
 
         if not committed:
             return {
@@ -1397,8 +1391,8 @@ class CommandHandler:
 
         try:
             git.push_branch(checkout_path, branch_name)
-        except Exception as e:
-            return {"error": f"Failed to push: {e}"}
+        except GitError as e:
+            return {"error": str(e)}
 
         return {
             "project_id": args["project_id"],
@@ -1422,8 +1416,8 @@ class CommandHandler:
 
         try:
             success = git.merge_branch(checkout_path, branch_name, default_branch)
-        except Exception as e:
-            return {"error": f"Failed to merge: {e}"}
+        except GitError as e:
+            return {"error": str(e)}
 
         warning = await self._warn_if_in_progress(args["project_id"])
 
