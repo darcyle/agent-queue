@@ -76,9 +76,7 @@ class _NoteDeleteButton(discord.ui.Button):
             "title": title,
         })
         if "error" in result:
-            await interaction.followup.send(
-                f"Error: {result['error']}", ephemeral=True,
-            )
+            await _send_error(interaction, result['error'], followup=True)
             return
 
         # Clean up note_viewers tracking
@@ -170,9 +168,7 @@ class _NoteViewButton(discord.ui.Button):
             "title": title,
         })
         if "error" in result:
-            await interaction.followup.send(
-                f"Error: {result['error']}", ephemeral=True,
-            )
+            await _send_error(interaction, result['error'], followup=True)
             return
         content = result["content"]
         fname = f"{self._slug}.md"
@@ -1102,11 +1098,9 @@ def setup_commands(bot: commands.Bot) -> None:
         result = await handler.execute("create_project", create_args)
         if "error" in result:
             if will_auto_create:
-                await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+                await _send_error(interaction, result['error'], followup=True)
             else:
-                await interaction.response.send_message(
-                    f"Error: {result['error']}", ephemeral=True
-                )
+                await _send_error(interaction, result['error'])
             return
 
         project_id = result["created"]
@@ -1162,7 +1156,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["max_concurrent_agents"] = max_concurrent_agents
         result = await handler.execute("edit_project", args)
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         fields = ", ".join(result.get("fields", []))
         await interaction.response.send_message(
@@ -1189,7 +1183,7 @@ def setup_commands(bot: commands.Bot) -> None:
             {"project_id": project_id, "archive_channels": do_archive},
         )
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
 
         # The command handler's _on_project_deleted callback already cleared
@@ -1247,9 +1241,7 @@ def setup_commands(bot: commands.Bot) -> None:
             "channel_id": str(channel.id),
         })
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True
-            )
+            await _send_error(interaction, result['error'])
             return
         # Update the bot's channel cache immediately
         bot.update_project_channel(project_id, channel)
@@ -1272,9 +1264,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         guild = interaction.guild
         if not guild:
-            await interaction.response.send_message(
-                "Error: Not in a guild.", ephemeral=True
-            )
+            await _send_error(interaction, "Not in a guild.")
             return
 
         # Strip leading '#' if the user included one.
@@ -1288,10 +1278,7 @@ def setup_commands(bot: commands.Bot) -> None:
                 break
 
         if not matched_channel:
-            await interaction.response.send_message(
-                f"Error: No text channel named `{channel_name}` found in this server.",
-                ephemeral=True,
-            )
+            await _send_error(interaction, f"No text channel named `{channel_name}` found in this server.")
             return
 
         result = await handler.execute("set_control_interface", {
@@ -1300,9 +1287,7 @@ def setup_commands(bot: commands.Bot) -> None:
             "_resolved_channel_id": str(matched_channel.id),
         })
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True
-            )
+            await _send_error(interaction, result['error'])
             return
         # Update the bot's channel cache immediately
         bot.update_project_channel(project_id, matched_channel)
@@ -1330,16 +1315,14 @@ def setup_commands(bot: commands.Bot) -> None:
         # Validate project exists (direct lookup)
         project_check = await handler.execute("get_project_channels", {"project_id": project_id})
         if "error" in project_check:
-            await interaction.followup.send(
-                f"Error: Project `{project_id}` not found.", ephemeral=True
-            )
+            await _send_error(interaction, f"Project `{project_id}` not found.", followup=True)
             return
 
         name = channel_name or project_id
         # Create the Discord channel
         guild = interaction.guild
         if not guild:
-            await interaction.followup.send("Error: Not in a guild.", ephemeral=True)
+            await _send_error(interaction, "Not in a guild.", followup=True)
             return
 
         topic = f"Agent Queue channel for project: {project_id}"
@@ -1352,14 +1335,10 @@ def setup_commands(bot: commands.Bot) -> None:
                 reason=f"AgentQueue: channel for project {project_id}",
             )
         except discord.Forbidden:
-            await interaction.followup.send(
-                "Error: Bot lacks permission to create channels.", ephemeral=True
-            )
+            await _send_error(interaction, "Bot lacks permission to create channels.", followup=True)
             return
         except discord.HTTPException as e:
-            await interaction.followup.send(
-                f"Error creating channel: {e}", ephemeral=True
-            )
+            await _send_error(interaction, f"Error creating channel: {e}", followup=True)
             return
 
         # Link it to the project in the database
@@ -1368,9 +1347,7 @@ def setup_commands(bot: commands.Bot) -> None:
             "channel_id": str(new_channel.id),
         })
         if "error" in result:
-            await interaction.followup.send(
-                f"Channel created but linking failed: {result['error']}", ephemeral=True
-            )
+            await _send_error(interaction, f"Channel created but linking failed: {result['error']}", followup=True)
             return
 
         # Update the bot's channel cache immediately
@@ -1399,7 +1376,7 @@ def setup_commands(bot: commands.Bot) -> None:
 
         guild = interaction.guild
         if not guild:
-            await interaction.followup.send("Error: Not in a guild.", ephemeral=True)
+            await _send_error(interaction, "Not in a guild.", followup=True)
             return
 
         # Build guild_channels list for idempotency lookup
@@ -1440,14 +1417,10 @@ def setup_commands(bot: commands.Bot) -> None:
                 )
                 created_channel_id = str(existing_channel.id)
             except discord.Forbidden:
-                await interaction.followup.send(
-                    "Error: Bot lacks permission to create channels.", ephemeral=True
-                )
+                await _send_error(interaction, "Bot lacks permission to create channels.", followup=True)
                 return
             except discord.HTTPException as e:
-                await interaction.followup.send(
-                    f"Error creating channel: {e}", ephemeral=True
-                )
+                await _send_error(interaction, f"Error creating channel: {e}", followup=True)
                 return
 
         # Delegate to the command handler for project validation + linking
@@ -1459,9 +1432,7 @@ def setup_commands(bot: commands.Bot) -> None:
         })
 
         if "error" in result:
-            await interaction.followup.send(
-                f"Error: {result['error']}", ephemeral=True
-            )
+            await _send_error(interaction, result['error'], followup=True)
             return
 
         # Update the bot's channel cache immediately
@@ -1523,11 +1494,11 @@ def setup_commands(bot: commands.Bot) -> None:
     async def pause_command(interaction: discord.Interaction):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         result = await handler.execute("pause_project", {"project_id": project_id})
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         await interaction.response.send_message(
             f"⏸ Project **{result.get('name', project_id)}** paused."
@@ -1537,11 +1508,11 @@ def setup_commands(bot: commands.Bot) -> None:
     async def resume_command(interaction: discord.Interaction):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         result = await handler.execute("resume_project", {"project_id": project_id})
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         await interaction.response.send_message(
             f"▶ Project **{result.get('name', project_id)}** resumed."
@@ -1553,7 +1524,7 @@ def setup_commands(bot: commands.Bot) -> None:
         args = {"project_id": project_id} if project_id else {}
         result = await handler.execute("set_active_project", args)
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         if result.get("active_project"):
             await interaction.response.send_message(
@@ -1968,7 +1939,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("create_agent", args)
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         agent_fields: list[tuple[str, str, bool]] = [
             ("Name", name, True),
@@ -2034,7 +2005,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         args: dict = {
             "project_id": project_id,
@@ -2049,7 +2020,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["name"] = name
         result = await handler.execute("add_repo", args)
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         embed = success_embed(
             "Repo Registered",
@@ -2072,12 +2043,12 @@ def setup_commands(bot: commands.Bot) -> None:
     async def git_status_command(interaction: discord.Interaction):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         await interaction.response.defer()
         result = await handler.execute("get_git_status", {"project_id": project_id})
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
 
         project_name = result.get("project_name", project_id)
@@ -2128,9 +2099,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(
-                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
-            )
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         await interaction.response.defer()
@@ -2141,7 +2110,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["name"] = name
         result = await handler.execute("git_branch", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
 
         if "created" in result:
@@ -2174,9 +2143,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(
-                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
-            )
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         await interaction.response.defer()
@@ -2185,7 +2152,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("checkout_branch", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         await interaction.followup.send(_with_warning(
             f"✅ Switched to branch `{result['branch']}` on `{project_id}`",
@@ -2207,9 +2174,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(
-                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
-            )
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         await interaction.response.defer()
@@ -2218,7 +2183,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("commit_changes", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         if result.get("status") == "committed":
             repo_label = result.get("repo_id", "?")
@@ -2246,9 +2211,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(
-                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
-            )
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         await interaction.response.defer()
@@ -2259,7 +2222,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("push_branch", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         pushed_branch = result.get("branch", "?")
         await interaction.followup.send(
@@ -2281,9 +2244,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(
-                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
-            )
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         await interaction.response.defer()
@@ -2292,7 +2253,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("merge_branch", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         if result.get("status") == "conflict":
             target = result.get("target", "main")
@@ -2323,9 +2284,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(
-                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
-            )
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         await interaction.response.defer()
@@ -2334,7 +2293,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("create_branch", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         await interaction.followup.send(
             f"✅ Created and switched to branch `{result['branch']}` on `{project_id}`"
@@ -2355,7 +2314,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "branch_name": branch_name}
@@ -2363,9 +2322,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("create_branch", args)
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True,
-            )
+            await _send_error(interaction, result['error'])
             return
         await interaction.response.send_message(
             f"🌿 Branch `{branch_name}` created in `{result.get('repo_id', project_id)}`"
@@ -2386,7 +2343,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "branch_name": branch_name}
@@ -2394,9 +2351,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("checkout_branch", args)
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True,
-            )
+            await _send_error(interaction, result['error'])
             return
         await interaction.response.send_message(_with_warning(
             f"🔀 Switched to branch `{branch_name}` in `{result.get('repo_id', project_id)}`",
@@ -2418,7 +2373,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "message": message}
@@ -2426,9 +2381,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("commit_changes", args)
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True,
-            )
+            await _send_error(interaction, result['error'])
             return
         if result.get("status") == "nothing_to_commit":
             await interaction.response.send_message(
@@ -2455,7 +2408,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id}
@@ -2465,9 +2418,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("push_branch", args)
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True,
-            )
+            await _send_error(interaction, result['error'])
             return
         pushed_branch = result.get("branch", branch_name or "current")
         await interaction.response.send_message(
@@ -2489,7 +2440,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "branch_name": branch_name}
@@ -2497,9 +2448,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("merge_branch", args)
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True,
-            )
+            await _send_error(interaction, result['error'])
             return
         if result.get("status") == "conflict":
             await interaction.response.send_message(_with_warning(
@@ -2539,7 +2488,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("git_commit", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         label = result.get("repo_id", project_id or "repo")
         if result.get("committed"):
@@ -2577,7 +2526,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["branch"] = branch
         result = await handler.execute("git_push", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         label = result.get("repo_id", project_id or "repo")
         await interaction.followup.send(
@@ -2608,7 +2557,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("git_create_branch", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         label = result.get("repo_id", project_id or "repo")
         await interaction.followup.send(
@@ -2643,7 +2592,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["default_branch"] = default_branch
         result = await handler.execute("git_merge", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         label = result.get("repo_id", project_id or "repo")
         if result.get("merged"):
@@ -2690,7 +2639,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["base"] = base
         result = await handler.execute("git_create_pr", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         pr_url = result.get("pr_url", "")
         await interaction.followup.send(
@@ -2724,7 +2673,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["base_branch"] = base_branch
         result = await handler.execute("git_changed_files", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         label = result.get("repo_id", project_id or "repo")
         files = result.get("files", [])
@@ -2759,7 +2708,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "count": count}
@@ -2767,7 +2716,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("git_log", args)
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         branch = result.get("branch", "?")
         log = result.get("log", "(no commits)")
@@ -2790,7 +2739,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id}
@@ -2800,9 +2749,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("git_diff", args)
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True,
-            )
+            await _send_error(interaction, result['error'])
             return
 
         diff = result.get("diff", "(no changes)")
@@ -2881,16 +2828,13 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         if trigger_type.value == "periodic":
             try:
                 interval = int(trigger_value)
             except ValueError:
-                await interaction.response.send_message(
-                    "Error: trigger_value must be an integer (seconds) for periodic hooks.",
-                    ephemeral=True,
-                )
+                await _send_error(interaction, "trigger_value must be an integer (seconds) for periodic hooks.")
                 return
             trigger = {"type": "periodic", "interval_seconds": interval}
         else:
@@ -2904,7 +2848,7 @@ def setup_commands(bot: commands.Bot) -> None:
             "cooldown_seconds": cooldown_seconds,
         })
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         await interaction.response.send_message(
             f"✅ Hook **{name}** (`{result['created']}`) created in `{project_id}`"
@@ -2933,7 +2877,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["cooldown_seconds"] = cooldown_seconds
         result = await handler.execute("edit_hook", args)
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         fields = ", ".join(result.get("fields", []))
         await interaction.response.send_message(
@@ -2945,7 +2889,7 @@ def setup_commands(bot: commands.Bot) -> None:
     async def delete_hook_command(interaction: discord.Interaction, hook_id: str):
         result = await handler.execute("delete_hook", {"hook_id": hook_id})
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         await interaction.response.send_message(
             f"🗑️ Hook **{result.get('name', hook_id)}** (`{hook_id}`) deleted."
@@ -2961,7 +2905,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         result = await handler.execute("list_hook_runs", {"hook_id": hook_id, "limit": limit})
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         runs = result.get("runs", [])
         hook_name = result.get("hook_name", hook_id)
@@ -2987,7 +2931,7 @@ def setup_commands(bot: commands.Bot) -> None:
     async def fire_hook_command(interaction: discord.Interaction, hook_id: str):
         result = await handler.execute("fire_hook", {"hook_id": hook_id})
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         await interaction.response.send_message(
             f"🔥 Hook `{hook_id}` fired — status: {result.get('status', 'running')}"
@@ -3001,13 +2945,11 @@ def setup_commands(bot: commands.Bot) -> None:
     async def notes_command(interaction: discord.Interaction):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         result = await handler.execute("list_notes", {"project_id": project_id})
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True
-            )
+            await _send_error(interaction, result['error'])
             return
 
         # Look up project name for the header
@@ -3054,7 +2996,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         result = await handler.execute("write_note", {
             "project_id": project_id,
@@ -3062,7 +3004,7 @@ def setup_commands(bot: commands.Bot) -> None:
             "content": content,
         })
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         status = result.get("status", "created")
         await interaction.response.send_message(
@@ -3079,14 +3021,14 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         result = await handler.execute("delete_note", {
             "project_id": project_id,
             "title": title,
         })
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         await interaction.response.send_message(
             f"🗑️ Note **{title}** deleted from `{project_id}`"
