@@ -1856,7 +1856,10 @@ class Orchestrator:
             brief = f"❓ Agent question on: {task.title} (`{task.id}`)"
             await _notify_brief(brief, embed=embed)
 
-        # Free agent
+        # Free agent — respect PAUSED state if set while the agent was BUSY
+        post_agent = await self.db.get_agent(action.agent_id)
+        next_state = (AgentState.PAUSED if post_agent and post_agent.state == AgentState.PAUSED
+                      else AgentState.IDLE)
         await self.db.update_agent(action.agent_id,
-                                   state=AgentState.IDLE,
+                                   state=next_state,
                                    current_task_id=None)

@@ -395,7 +395,7 @@ TOOLS = [
     },
     {
         "name": "set_agent_workspace",
-        "description": "Set the workspace directory for an agent in a specific project. Use this to tell the agent where to work for a given project.",
+        "description": "Set the workspace directory for an agent in a specific project. Also activates the agent if it is in STARTING state.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -420,6 +420,39 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "agent_id": {"type": "string", "description": "Agent ID to activate"},
+            },
+            "required": ["agent_id"],
+        },
+    },
+    {
+        "name": "pause_agent",
+        "description": "Pause an agent so it stops receiving new tasks. If the agent is currently BUSY, it will finish its current task then stay paused.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID to pause"},
+            },
+            "required": ["agent_id"],
+        },
+    },
+    {
+        "name": "resume_agent",
+        "description": "Resume a paused agent so it can receive tasks again.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID to resume"},
+            },
+            "required": ["agent_id"],
+        },
+    },
+    {
+        "name": "delete_agent",
+        "description": "Delete an agent and all its workspace mappings. Cannot delete a BUSY agent — stop its task first.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID to delete"},
             },
             "required": ["agent_id"],
         },
@@ -1204,6 +1237,11 @@ set the workspace and activate in one step.
 - For parallel work, set each agent to its own checkout directory for the same project.
 - Example: `create_agent name="Agent-2" project_id="my-project" workspace_path="/dev/checkout-2"`
 - Workspaces are cached per (agent, project) pair and reused across tasks.
+
+Agent lifecycle — manage agent state:
+- `pause_agent` — stop assigning new tasks (current task finishes first).
+- `resume_agent` — resume a paused agent.
+- `delete_agent` — remove an agent and its workspaces (must not be BUSY).
 
 Notes management — use notes to build up project knowledge:
 - Use `list_notes` to see what notes exist for a project

@@ -2140,6 +2140,63 @@ def setup_commands(bot: commands.Bot) -> None:
         )
         await interaction.response.send_message(embed=embed)
 
+    @bot.tree.command(
+        name="pause-agent",
+        description="Pause an agent so it stops receiving new tasks",
+    )
+    @app_commands.describe(agent_id="Agent ID to pause")
+    async def pause_agent_command(
+        interaction: discord.Interaction,
+        agent_id: str,
+    ):
+        result = await handler.execute("pause_agent", {"agent_id": agent_id})
+        if "error" in result:
+            await _send_error(interaction, result['error'])
+            return
+        desc = f"Agent `{agent_id}` is now paused."
+        if result.get("note"):
+            desc += f"\n{result['note']}"
+        embed = success_embed("Agent Paused", description=desc)
+        await interaction.response.send_message(embed=embed)
+
+    @bot.tree.command(
+        name="resume-agent",
+        description="Resume a paused agent so it can receive tasks again",
+    )
+    @app_commands.describe(agent_id="Agent ID to resume")
+    async def resume_agent_command(
+        interaction: discord.Interaction,
+        agent_id: str,
+    ):
+        result = await handler.execute("resume_agent", {"agent_id": agent_id})
+        if "error" in result:
+            await _send_error(interaction, result['error'])
+            return
+        embed = success_embed(
+            "Agent Resumed",
+            description=f"Agent `{agent_id}` is now IDLE and ready to receive tasks.",
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @bot.tree.command(
+        name="delete-agent",
+        description="Delete an agent and its workspace mappings",
+    )
+    @app_commands.describe(agent_id="Agent ID to delete")
+    async def delete_agent_command(
+        interaction: discord.Interaction,
+        agent_id: str,
+    ):
+        result = await handler.execute("delete_agent", {"agent_id": agent_id})
+        if "error" in result:
+            await _send_error(interaction, result['error'])
+            return
+        embed = success_embed(
+            "Agent Deleted",
+            description=f"Agent `{result['name']}` (`{agent_id}`) has been removed.",
+        )
+        await interaction.response.send_message(embed=embed)
+
     # ===================================================================
     # REPO COMMANDS
     # ===================================================================
