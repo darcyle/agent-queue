@@ -187,8 +187,9 @@ specs/
 │   └── providers.md               — ChatProvider interface, Anthropic + Ollama implementations
 ├── discord/
 │   └── discord.md                 — Bot, slash commands, notifications, channel routing, auth
-└── git/
-    └── git.md                     — GitManager operations, worktrees, PR management
+├── git/
+│   └── git.md                     — GitManager operations, worktrees, PR management
+└── setup-wizard.md                — Interactive setup CLI, connectivity tests, config generation
 ```
 
 ### Spec Conventions
