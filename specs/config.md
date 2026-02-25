@@ -104,6 +104,7 @@ Maps to `PerProjectChannelsConfig`. The YAML key within `discord` is `per_projec
 | `auto_create` | `bool` | `False` | When `True`, the bot automatically creates a Discord channel for each project. |
 | `naming_convention` | `str` | `"{project_id}"` | Template string for the generated channel name. The placeholder `{project_id}` is substituted with the project's ID at runtime. |
 | `category_name` | `str` | `""` | Name of the Discord category to place project channels under. Empty string means no category grouping. |
+| `private` | `bool` | `True` | When `True`, auto-created channels and categories are private — the `@everyone` role is denied `view_channel`, and the bot is explicitly granted `view_channel` and `send_messages`. |
 
 ### 4.3 `agents` Section
 

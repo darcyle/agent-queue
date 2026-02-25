@@ -292,7 +292,7 @@ Creates a new project. If `auto_create_channels` is true (or set to true in conf
 | `max_concurrent_agents` | int (optional, default 2) | Max simultaneous agents |
 | `auto_create_channels` | bool (optional) | Override config auto-channel creation flag |
 
-Returns an embed with project ID, workspace path, and channel info if channels were auto-created.
+Returns an embed with project ID, workspace path, and channel info if channels were auto-created. When `per_project_channels.private` is `True`, both the auto-created category and channels are created with permission overwrites that deny `view_channel` to `@everyone` and grant `view_channel` + `send_messages` to the bot.
 
 #### `/edit-project`
 Edits an existing project's settings.
@@ -366,6 +366,8 @@ Creates a new Discord text channel and links it to a project. Validates the proj
 
 #### `/create-channel-for-project`
 Idempotent variant of `/create-channel`. If a channel with the given name already exists, it is reused rather than creating a duplicate. Delegates to the `create_channel_for_project` command handler for project validation and linking.
+
+When a new channel is created and `per_project_channels.private` is `True`, the channel is created with permission overwrites that deny `view_channel` to `@everyone` and grant `view_channel` + `send_messages` to the bot.
 
 | Parameter | Type | Description |
 |---|---|---|

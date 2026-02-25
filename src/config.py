@@ -14,6 +14,7 @@ class PerProjectChannelsConfig:
     auto_create: bool = False
     naming_convention: str = "{project_id}"
     category_name: str = ""  # Discord category to group project channels (optional)
+    private: bool = True  # Make auto-created channels private (only bot + permitted users)
 
 
 @dataclass
@@ -182,6 +183,7 @@ def load_config(path: str) -> AppConfig:
                     "naming_convention", "{project_id}"
                 ),
                 category_name=pp.get("category_name", ""),
+                private=pp.get("private", True),
             )
         # Backward compat: if old config has separate control/notifications,
         # merge into single "channel" entry (prefer control since that's where

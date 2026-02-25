@@ -346,6 +346,7 @@ def _step_per_project_channels(existing: dict, discord_ok: bool) -> dict:
             "naming_convention", "{project_id}"
         ),
         "category_name": existing_ppc.get("category_name", ""),
+        "private": existing_ppc.get("private", True),
     }
 
     print()
@@ -370,6 +371,7 @@ def _step_per_project_channels(existing: dict, discord_ok: bool) -> dict:
             "auto_create": False,
             "naming_convention": defaults["naming_convention"],
             "category_name": defaults["category_name"],
+            "private": defaults["private"],
         }
 
     # ── Naming convention ──
@@ -399,6 +401,14 @@ def _step_per_project_channels(existing: dict, discord_ok: bool) -> dict:
         defaults["category_name"],
     )
 
+    # ── Private channels ──
+    print()
+    info("Private channels are only visible to the bot and users you grant access.")
+    private = prompt_yes_no(
+        "Make project channels private?",
+        default=defaults["private"],
+    )
+
     # ── Summary ──
     print()
     success("Per-project channel configuration:")
@@ -408,6 +418,7 @@ def _step_per_project_channels(existing: dict, discord_ok: bool) -> dict:
         info(f"  Category:            {category_name}")
     else:
         info(f"  Category:            (none — channels created at top level)")
+    info(f"  Private:             {'yes' if private else 'no'}")
 
     if discord_ok:
         print()
@@ -421,6 +432,7 @@ def _step_per_project_channels(existing: dict, discord_ok: bool) -> dict:
         "auto_create": True,
         "naming_convention": naming_convention,
         "category_name": category_name,
+        "private": private,
     }
 
 
@@ -1107,6 +1119,9 @@ def step_write_config(
 
         if ppc.get("category_name"):
             yaml_lines.append(f"    category_name: \"{ppc['category_name']}\"")
+
+        private = ppc.get("private", True)
+        yaml_lines.append(f"    private: {'true' if private else 'false'}")
 
     yaml_lines.append("")
 

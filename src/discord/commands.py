@@ -453,8 +453,17 @@ def setup_commands(bot: commands.Bot) -> None:
                     break
             if category is None:
                 try:
+                    cat_overwrites = {}
+                    if ppc.private:
+                        cat_overwrites[guild.default_role] = discord.PermissionOverwrite(
+                            view_channel=False
+                        )
+                        cat_overwrites[guild.me] = discord.PermissionOverwrite(
+                            view_channel=True, send_messages=True
+                        )
                     category = await guild.create_category(
                         ppc.category_name,
+                        overwrites=cat_overwrites or discord.utils.MISSING,
                         reason="AgentQueue: auto-created category for project channels",
                     )
                 except (discord.Forbidden, discord.HTTPException):
@@ -474,11 +483,20 @@ def setup_commands(bot: commands.Bot) -> None:
             # Create the channel in Discord
             try:
                 topic = f"AgentQueue channel for project: {project_id}"
+                overwrites = {}
+                if ppc.private:
+                    overwrites[guild.default_role] = discord.PermissionOverwrite(
+                        view_channel=False
+                    )
+                    overwrites[guild.me] = discord.PermissionOverwrite(
+                        view_channel=True, send_messages=True
+                    )
                 new_ch = await guild.create_text_channel(
                     name=channel_name,
                     category=category,
                     topic=topic,
                     reason=f"AgentQueue: auto-created channel for {project_id}",
+                    overwrites=overwrites or discord.utils.MISSING,
                 )
                 created_channel_id = str(new_ch.id)
                 guild_channels.append({"id": new_ch.id, "name": new_ch.name})
@@ -872,12 +890,22 @@ def setup_commands(bot: commands.Bot) -> None:
         if not existing_channel:
             # No matching channel — create one
             topic = f"Agent Queue channel for project: {project_id}"
+            ppc = bot.config.discord.per_project_channels
+            overwrites = {}
+            if ppc.private:
+                overwrites[guild.default_role] = discord.PermissionOverwrite(
+                    view_channel=False
+                )
+                overwrites[guild.me] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True
+                )
             try:
                 existing_channel = await guild.create_text_channel(
                     name=name,
                     category=category,
                     topic=topic,
                     reason=f"AgentQueue: channel for project {project_id}",
+                    overwrites=overwrites or discord.utils.MISSING,
                 )
                 created_channel_id = str(existing_channel.id)
             except discord.Forbidden:
