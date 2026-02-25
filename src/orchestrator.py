@@ -898,6 +898,37 @@ class Orchestrator:
                 raw, source_file=plan_path,
                 max_steps=config.max_steps_per_plan,
             )
+
+        # Smart LLM fallback: if the regex parser produced steps but they
+        # look low-quality (many informational headings, few actionable),
+        # automatically retry with the LLM parser for better results.
+        if (
+            plan.steps
+            and not config.use_llm_parser
+            and self._chat_provider
+        ):
+            from src.plan_parser import _score_parse_quality
+            quality = _score_parse_quality(plan.steps)
+            if quality < 0.4 and len(plan.steps) > 5:
+                print(
+                    f"Auto-task: regex parse quality low ({quality:.2f}) for "
+                    f"{plan_path}, retrying with LLM parser"
+                )
+                try:
+                    llm_plan = await parse_plan_with_llm(
+                        raw, self._chat_provider,
+                        source_file=plan_path,
+                        max_steps=config.max_steps_per_plan,
+                    )
+                    if llm_plan.steps:
+                        plan = llm_plan
+                        print(
+                            f"Auto-task: LLM parser produced {len(plan.steps)} "
+                            f"steps (replacing regex result)"
+                        )
+                except Exception as e:
+                    print(f"Auto-task: LLM fallback failed, keeping regex result: {e}")
+
         if not plan.steps:
             print(f"Auto-task: plan file {plan_path} parsed but contained no steps")
             return []
@@ -1265,7 +1296,21 @@ class Orchestrator:
                 "you MUST write the plan to `.claude/plan.md` or `plan.md` in the workspace root.\n"
                 "This is required for the system to automatically parse the plan into follow-up tasks.\n"
                 "Do NOT write plans to other locations like `docs/plans/` — they may not be detected.\n"
-                "The plan should use markdown with `## Section` headings for each step."
+                "The plan should use markdown with `## Section` headings for each step.\n"
+                "\n"
+                "**Plan format requirements** (for automatic task splitting):\n"
+                "- Each implementation phase MUST be a separate `## Phase N: <title>` heading\n"
+                "- If the plan includes background/reference sections, put them BEFORE the phases\n"
+                "- Do NOT nest implementation phases under a single heading — each phase must be\n"
+                "  a top-level `##` heading so the parser can extract them as individual tasks\n"
+                "- Example structure:\n"
+                "  ```\n"
+                "  # My Plan Title\n"
+                "  ## Background (optional reference material)\n"
+                "  ## Phase 1: Create the foundation module\n"
+                "  ## Phase 2: Update existing code to use new module\n"
+                "  ## Phase 3: Add tests and polish\n"
+                "  ```"
             )
 
         context_lines.append(f"\n## Task\n{task.description}")
