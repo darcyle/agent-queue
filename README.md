@@ -426,6 +426,10 @@ agent-queue/
   └── tests/                   — state machine + integration tests
 ```
 
+## Documentation
+
+Full API and architecture documentation is available at **[electricjack.github.io/agent-queue](https://electricjack.github.io/agent-queue/)**.
+
 ## License
 
 MIT
