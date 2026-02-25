@@ -1076,6 +1076,57 @@ class CommandHandler:
         await self.db.update_agent(agent_id, state=AgentState.IDLE)
         return {"agent_id": agent_id, "state": "IDLE"}
 
+    async def _cmd_pause_agent(self, args: dict) -> dict:
+        """Pause an agent so it stops receiving new tasks.
+
+        The agent finishes its current task (if any) but won't be assigned
+        new work until resumed.
+        """
+        agent_id = args["agent_id"]
+        agent = await self.db.get_agent(agent_id)
+        if not agent:
+            return {"error": f"Agent '{agent_id}' not found"}
+        if agent.state == AgentState.PAUSED:
+            return {"error": f"Agent '{agent_id}' is already paused"}
+        if agent.state == AgentState.BUSY:
+            await self.db.update_agent(agent_id, state=AgentState.PAUSED)
+            return {
+                "agent_id": agent_id,
+                "state": "PAUSED",
+                "note": "Agent will finish its current task, then stay paused.",
+            }
+        await self.db.update_agent(agent_id, state=AgentState.PAUSED)
+        return {"agent_id": agent_id, "state": "PAUSED"}
+
+    async def _cmd_resume_agent(self, args: dict) -> dict:
+        """Resume a paused agent so it can receive tasks again."""
+        agent_id = args["agent_id"]
+        agent = await self.db.get_agent(agent_id)
+        if not agent:
+            return {"error": f"Agent '{agent_id}' not found"}
+        if agent.state != AgentState.PAUSED:
+            return {"error": f"Agent '{agent_id}' is {agent.state.value}, not PAUSED"}
+        await self.db.update_agent(agent_id, state=AgentState.IDLE)
+        return {"agent_id": agent_id, "state": "IDLE"}
+
+    async def _cmd_delete_agent(self, args: dict) -> dict:
+        """Delete an agent and its workspace mappings.
+
+        Refuses to delete an agent that is currently BUSY with a task.
+        """
+        agent_id = args["agent_id"]
+        agent = await self.db.get_agent(agent_id)
+        if not agent:
+            return {"error": f"Agent '{agent_id}' not found"}
+        if agent.state == AgentState.BUSY:
+            return {
+                "error": f"Agent '{agent_id}' is BUSY with task "
+                f"'{agent.current_task_id}'. Stop the task first.",
+            }
+        await self.db.delete_agent_workspaces(agent_id)
+        await self.db.delete_agent(agent_id)
+        return {"deleted": agent_id, "name": agent.name}
+
     # -----------------------------------------------------------------------
     # Repo commands -- register repositories for projects.
     # Three source types: "clone" (git URL -- agents get isolated checkouts),
