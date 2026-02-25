@@ -1,3 +1,19 @@
+"""Formal task state machine definition and dependency graph validation.
+
+This module defines the authoritative set of valid task state transitions and
+provides utilities for DAG (directed acyclic graph) validation of task
+dependencies. It is the source of truth for which (TaskStatus, TaskEvent) pairs
+are legal moves in the task lifecycle.
+
+IMPORTANT: As of now, this state machine is used only for validation logging
+and lookups — the orchestrator does NOT enforce transitions through this module.
+All status changes go directly through db.update_task(). This means invalid
+transitions can occur in practice if the orchestrator has bugs. Enforcing
+transitions is a planned improvement.
+
+See specs/models-and-state-machine.md for the full behavioral specification.
+"""
+
 from __future__ import annotations
 
 from src.models import TaskStatus, TaskEvent
@@ -11,6 +27,15 @@ class InvalidTransition(Exception):
 
 
 VALID_TASK_TRANSITIONS: dict[tuple[TaskStatus, TaskEvent], TaskStatus] = {
+    # This table is organized into groups:
+    #   1. Core lifecycle — the happy path from DEFINED through COMPLETED
+    #   2. Direct shortcuts — skip intermediate FAILED state for retry/block
+    #   3. Administrative operations — manual overrides (skip, stop, restart)
+    #   4. PR lifecycle — PR closed without merge
+    #   5. Error/timeout — agent crashes, timeouts
+    #   6. Daemon recovery — requeue tasks that were in-flight when the daemon restarted
+    #
+    # Each entry maps (current_status, event) -> new_status.
     # --- Core lifecycle ---
     (TaskStatus.DEFINED, TaskEvent.DEPS_MET): TaskStatus.READY,
     (TaskStatus.READY, TaskEvent.ASSIGNED): TaskStatus.ASSIGNED,
@@ -92,7 +117,15 @@ class CyclicDependencyError(Exception):
 
 
 def validate_dag(deps: dict[str, set[str]]) -> None:
-    """Validate that the dependency graph is a DAG (no cycles). Uses DFS."""
+    """Validate that the task dependency graph contains no cycles.
+
+    Uses a three-color DFS (white/gray/black) to detect back-edges. This is
+    called when creating tasks with dependencies and when adding new dependency
+    edges to prevent circular chains that would leave tasks stuck in DEFINED
+    forever.
+
+    Raises CyclicDependencyError if a cycle is found.
+    """
     WHITE, GRAY, BLACK = 0, 1, 2
     all_nodes = set(deps.keys())
     for targets in deps.values():
@@ -117,7 +150,12 @@ def validate_dag(deps: dict[str, set[str]]) -> None:
 def validate_dag_with_new_edge(
     deps: dict[str, set[str]], task_id: str, depends_on: str
 ) -> None:
-    """Validate that adding a new edge doesn't create a cycle."""
+    """Check that adding a dependency edge (task_id -> depends_on) won't create a cycle.
+
+    Makes a copy of the dependency graph, adds the proposed edge, and runs
+    full DAG validation. Used by the command handler before persisting a new
+    dependency to the database.
+    """
     new_deps = {k: set(v) for k, v in deps.items()}
     new_deps.setdefault(task_id, set()).add(depends_on)
     validate_dag(new_deps)

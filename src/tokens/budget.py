@@ -1,3 +1,16 @@
+"""Token budget management for fair resource allocation across projects.
+
+BudgetManager calculates target token ratios from per-project credit weights
+and tracks how far each project's actual usage deviates from its target (the
+"deficit score").  The Scheduler uses these deficit scores to decide which
+project should receive the next available agent -- the most under-served
+project wins.
+
+This keeps agent time proportional to credit weights over rolling windows,
+even when projects have bursty workloads.
+
+See specs/scheduler-and-budget.md for the full specification.
+"""
 from __future__ import annotations
 
 

@@ -3,6 +3,16 @@
 This module provides the single code path for all operational commands.
 Both the Discord slash commands and the chat agent LLM tools delegate
 their business logic here, keeping formatting and presentation separate.
+
+This is the Command Pattern in action: every operation the system supports
+(50+ commands) is routed through CommandHandler.execute(name, args).  The
+two callers -- Discord slash commands and ChatAgent LLM tool-use -- never
+contain business logic themselves; they translate their inputs into a dict,
+call execute(), and format the returned dict for their respective UIs.
+
+The benefit is feature parity by construction.  A new command added here is
+immediately available to both Discord and the chat agent without duplicating
+any logic.
 """
 from __future__ import annotations
 
@@ -35,10 +45,33 @@ def _count_by(items, key_fn) -> dict[str, int]:
 
 
 class CommandHandler:
-    """Unified command execution layer for AgentQueue.
+    """Unified command execution layer for AgentQueue (Command Pattern).
 
-    Both the Discord bot and the chat agent delegate to this handler.
-    Commands accept a dict of arguments and return a dict result.
+    This is the single code path for every operation in the system.  Both
+    the Discord slash commands and the ChatAgent LLM tools call
+    ``handler.execute(name, args)`` -- neither contains business logic.
+
+    Convention for command methods:
+        Each ``_cmd_*`` method receives a flat ``dict`` of arguments and
+        returns a ``dict``.  On success the dict contains domain data
+        (e.g. ``{"task": {...}}``).  On failure it contains
+        ``{"error": "human-readable message"}``.  Callers never need to
+        catch exceptions -- ``execute()`` wraps every call in a try/except.
+
+    Active project context:
+        ``_active_project_id`` lets callers set an implicit project scope
+        so users chatting in a project's Discord channel don't have to
+        pass ``project_id`` on every command.  Many ``_cmd_*`` methods
+        fall back to this when no explicit project_id is provided.
+
+    Security helpers:
+        ``_validate_path`` sandboxes all file operations to the workspace
+        directory or a registered repo source path -- the chat agent can
+        never escape to arbitrary filesystem locations.
+
+        ``_resolve_repo_path`` centralizes the surprisingly tricky logic
+        for finding the right git checkout directory given a combination
+        of project_id, repo_id, and the active project fallback.
     """
 
     def __init__(self, orchestrator: Orchestrator, config: AppConfig):
@@ -86,7 +119,9 @@ class CommandHandler:
             return {"error": str(e)}
 
     # -----------------------------------------------------------------------
-    # Project commands
+    # Project commands -- CRUD, pause/resume, and Discord channel management.
+    # Projects are the top-level grouping: each project has its own workspace
+    # directory, scheduling weight, and optional dedicated Discord channel.
     # -----------------------------------------------------------------------
 
     async def _cmd_get_status(self, args: dict) -> dict:
@@ -435,7 +470,12 @@ class CommandHandler:
         return result
 
     # -----------------------------------------------------------------------
-    # Task commands
+    # Task commands -- CRUD plus lifecycle operations.
+    # Tasks are the unit of work assigned to agents.  Beyond basic CRUD this
+    # group includes stop (cancel a running task), restart (re-queue a
+    # failed/completed task), skip (mark as completed without running),
+    # approve (accept an AWAITING_APPROVAL task's PR), and chain-health
+    # diagnostics for dependency graphs.
     # -----------------------------------------------------------------------
 
     async def _cmd_list_tasks(self, args: dict) -> dict:
@@ -739,7 +779,10 @@ class CommandHandler:
         return info
 
     # -----------------------------------------------------------------------
-    # Agent commands
+    # Agent commands -- registration and listing.
+    # Agents are the worker processes (Claude Code instances) that execute
+    # tasks.  These commands register new agents and inspect their state;
+    # the orchestrator handles actual agent lifecycle management.
     # -----------------------------------------------------------------------
 
     async def _cmd_list_agents(self, args: dict) -> dict:
@@ -777,7 +820,10 @@ class CommandHandler:
         return result
 
     # -----------------------------------------------------------------------
-    # Repo commands
+    # Repo commands -- register repositories for projects.
+    # Three source types: "clone" (git URL -- agents get isolated checkouts),
+    # "link" (existing directory on disk -- agents work in-place), and "init"
+    # (create a new empty git repo in the project workspace).
     # -----------------------------------------------------------------------
 
     async def _cmd_add_repo(self, args: dict) -> dict:
@@ -849,7 +895,8 @@ class CommandHandler:
         }
 
     # -----------------------------------------------------------------------
-    # Events and token usage
+    # Events and token usage -- observability into system activity and
+    # LLM token consumption, broken down by project, task, or agent.
     # -----------------------------------------------------------------------
 
     async def _cmd_get_recent_events(self, args: dict) -> dict:
@@ -907,7 +954,12 @@ class CommandHandler:
             }
 
     # -----------------------------------------------------------------------
-    # Git commands
+    # Git commands -- full git workflow via GitManager.
+    # Two generations of git commands coexist here: the newer "git_*" set
+    # (git_commit, git_push, etc.) and the older "create_branch",
+    # "checkout_branch" wrappers.  Both delegate to GitManager for the
+    # actual git operations.  All commands use _resolve_repo_path to find
+    # the correct checkout directory before invoking git.
     # -----------------------------------------------------------------------
 
     async def _cmd_get_git_status(self, args: dict) -> dict:
@@ -1432,7 +1484,11 @@ class CommandHandler:
         return result
 
     # -----------------------------------------------------------------------
-    # Hook commands
+    # Hook commands -- CRUD plus manual firing.
+    # Hooks are automated routines that fire on events (e.g. task completion)
+    # or on a schedule.  They gather context via shell/file/HTTP steps and
+    # optionally invoke an LLM with full tool access to take corrective
+    # actions (like creating fix-up tasks when tests fail).
     # -----------------------------------------------------------------------
 
     async def _cmd_create_hook(self, args: dict) -> dict:
@@ -1538,7 +1594,10 @@ class CommandHandler:
             return {"error": str(e)}
 
     # -----------------------------------------------------------------------
-    # Notes commands
+    # Notes commands -- markdown documents stored in project workspaces.
+    # Notes are a lightweight knowledge base: users and hooks can write
+    # specs, brainstorms, or analysis, and later turn them into tasks.
+    # Stored as plain .md files under <workspace>/notes/.
     # -----------------------------------------------------------------------
 
     async def _cmd_list_notes(self, args: dict) -> dict:
@@ -1611,7 +1670,9 @@ class CommandHandler:
         return {"deleted": fpath, "title": args["title"]}
 
     # -----------------------------------------------------------------------
-    # System / control commands
+    # System / control commands -- orchestrator pause/resume, active project
+    # switching, and daemon restart.  These affect the global state of the
+    # system rather than any single project or task.
     # -----------------------------------------------------------------------
 
     async def _cmd_set_active_project(self, args: dict) -> dict:
@@ -1647,7 +1708,11 @@ class CommandHandler:
         return {"status": "restarting", "message": "Daemon restart initiated"}
 
     # -----------------------------------------------------------------------
-    # File / shell commands (chat-agent-only tools — no Discord slash equiv)
+    # File / shell commands -- sandboxed filesystem and shell access for the
+    # chat agent.  These have no Discord slash command equivalent; they exist
+    # so the LLM can inspect workspace files, run diagnostic commands, and
+    # search codebases.  All paths are validated through _validate_path to
+    # prevent escaping the workspace sandbox.
     # -----------------------------------------------------------------------
 
     async def _cmd_read_file(self, args: dict) -> dict:

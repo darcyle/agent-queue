@@ -1,3 +1,10 @@
+"""Convert Anthropic tool definitions to OpenAI function-calling format.
+
+This exists solely to bridge the format gap for the Ollama provider, which
+speaks OpenAI's API.  The rest of the codebase defines tools in Anthropic
+format (``name``, ``description``, ``input_schema``); this module maps them
+to OpenAI format (``type: "function"``, ``function.parameters``).
+"""
 from __future__ import annotations
 
 

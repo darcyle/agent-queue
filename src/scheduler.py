@@ -1,3 +1,28 @@
+"""Proportional fair-share scheduler for assigning tasks to idle agents.
+
+Uses a purely deterministic algorithm -- zero LLM calls. Every token budget
+is spent on agent work, not on deciding *which* work to do.
+
+The scheduling algorithm runs in two phases each time an idle agent needs
+a task:
+
+1. **Min-task guarantee** -- Projects that have completed zero tasks in the
+   current scheduling window are prioritized first.  This ensures every
+   active project gets at least one task assigned before proportional
+   allocation kicks in.
+
+2. **Deficit-based proportional allocation** -- Among projects that already
+   have at least one completion, the scheduler picks the project whose
+   actual token usage ratio is furthest *below* its target ratio (derived
+   from ``credit_weight``).  This gradually converges each project toward
+   its fair share of total agent time.
+
+Both phases respect per-project concurrency limits (``max_concurrent_agents``)
+and per-project / global budget caps.
+
+See specs/scheduler-and-budget.md for the full specification.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -9,6 +34,13 @@ from src.models import (
 
 @dataclass
 class AssignAction:
+    """A scheduling decision: assign one specific task to one specific agent.
+
+    This is the output type of the scheduler -- a list of these actions is
+    returned each scheduling round, one per idle agent that received work.
+    The orchestrator is responsible for actually executing the assignment
+    (updating the database, starting the agent process, etc.).
+    """
     agent_id: str
     task_id: str
     project_id: str
@@ -16,6 +48,15 @@ class AssignAction:
 
 @dataclass
 class SchedulerState:
+    """A snapshot of all system state the scheduler needs to make decisions.
+
+    The scheduler is a pure function: given a SchedulerState, it returns a
+    list of AssignActions with no side effects.  This stateless/functional
+    design makes the algorithm easy to test and reason about -- the
+    orchestrator builds this snapshot each tick, and the scheduler never
+    touches the database or any external resource.
+    """
+
     projects: list[Project]
     tasks: list[Task]
     agents: list[Agent]
@@ -29,6 +70,25 @@ class SchedulerState:
 class Scheduler:
     @staticmethod
     def schedule(state: SchedulerState) -> list[AssignAction]:
+        """Assign READY tasks to idle agents using proportional fair-share.
+
+        Algorithm steps:
+        1. Bail out early if the global token budget is exhausted.
+        2. Collect idle agents and group READY tasks by project.
+        3. For each idle agent (in order), rank active projects by:
+           a. Min-task guarantee -- projects with zero completions in the
+              window sort first (phase 1).
+           b. Deficit -- among the rest, the project whose actual token
+              usage is furthest below its ``credit_weight`` share sorts
+              first (phase 2).
+        4. Walk the ranked project list; skip any project that has hit its
+           budget cap or concurrency limit.  Pick the highest-priority
+           READY task from the first eligible project.
+        5. Record the assignment and move to the next idle agent.
+
+        Returns a list of :class:`AssignAction` -- one per agent that was
+        matched with a task.  May be empty if no work can be assigned.
+        """
         # Check global budget
         if (
             state.global_budget is not None

@@ -1,3 +1,12 @@
+"""Notification formatting for Discord messages about task lifecycle events.
+
+Each formatter produces a human-readable markdown string (not a Discord-specific
+object) so the logic is easy to unit test without a live Discord connection.
+
+``classify_error`` pattern-matches raw error messages against known failure modes
+and returns an actionable fix suggestion -- this turns opaque stack traces into
+guidance the user can act on immediately from Discord.
+"""
 from __future__ import annotations
 
 from src.models import Task, Agent, AgentOutput

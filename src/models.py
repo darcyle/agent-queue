@@ -1,3 +1,14 @@
+"""Shared data model types for the agent-queue system.
+
+This module is the shared vocabulary of the entire system. Every component —
+orchestrator, scheduler, database, Discord bot, agent adapters — communicates
+through the enums and dataclasses defined here. Keeping them in one place
+prevents circular imports and ensures a single source of truth for the
+structure of tasks, agents, projects, and hooks.
+
+See specs/models-and-state-machine.md for the full behavioral specification.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -5,6 +16,17 @@ from enum import Enum
 
 
 class TaskStatus(Enum):
+    """The states a task can occupy in the orchestrator's state machine.
+
+    These map directly to the state machine defined in VALID_TASK_TRANSITIONS
+    (see src/state_machine.py). The orchestrator's main loop drives tasks
+    through these states based on events like dependency resolution, agent
+    completion, rate limiting, and human approval.
+
+    Note: transitions are not enforced by the state machine in production —
+    the orchestrator writes directly via db.update_task(). The state machine
+    module is used only for validation logging. See specs/models-and-state-machine.md.
+    """
     DEFINED = "DEFINED"
     READY = "READY"
     ASSIGNED = "ASSIGNED"
@@ -19,6 +41,15 @@ class TaskStatus(Enum):
 
 
 class TaskEvent(Enum):
+    """Events that trigger transitions between TaskStatus states.
+
+    These are grouped into: core lifecycle events (DEPS_MET through PR_MERGED),
+    retry/failure events (RETRY, MAX_RETRIES), administrative overrides
+    (ADMIN_SKIP, ADMIN_STOP, ADMIN_RESTART), and error recovery events
+    (PR_CLOSED, TIMEOUT, EXECUTION_ERROR, RECOVERY). Each (TaskStatus, TaskEvent)
+    pair maps to exactly one target TaskStatus in the transitions table.
+    """
+
     DEPS_MET = "DEPS_MET"
     ASSIGNED = "ASSIGNED"
     AGENT_STARTED = "AGENT_STARTED"
@@ -46,6 +77,13 @@ class TaskEvent(Enum):
 
 
 class AgentState(Enum):
+    """Tracks the runtime state of an agent process from the orchestrator's perspective.
+
+    The orchestrator uses this to decide which agents are available for task
+    assignment (IDLE) and to detect dead agents via heartbeat checks (BUSY
+    agents that stop heartbeating are presumed crashed).
+    """
+
     IDLE = "IDLE"
     STARTING = "STARTING"
     BUSY = "BUSY"
@@ -54,6 +92,14 @@ class AgentState(Enum):
 
 
 class AgentResult(Enum):
+    """The outcome reported by an agent adapter when a task execution finishes.
+
+    The orchestrator maps these to TaskEvents: COMPLETED and FAILED are
+    straightforward; PAUSED_TOKENS and PAUSED_RATE_LIMIT cause the task to
+    enter PAUSED with a resume_after timestamp, allowing the orchestrator to
+    automatically retry once the rate limit window or token budget resets.
+    """
+
     COMPLETED = "completed"
     FAILED = "failed"
     PAUSED_TOKENS = "paused_tokens"
@@ -61,18 +107,29 @@ class AgentResult(Enum):
 
 
 class ProjectStatus(Enum):
+    """Lifecycle state of a project. PAUSED projects are skipped by the scheduler."""
+
     ACTIVE = "ACTIVE"
     PAUSED = "PAUSED"
     ARCHIVED = "ARCHIVED"
 
 
 class VerificationType(Enum):
+    """How a task's output should be verified before it can move to COMPLETED.
+
+    AUTO_TEST runs test commands from TaskContext; QA_AGENT spawns a separate
+    verification agent; HUMAN requires manual approval via Discord.
+    """
+
     AUTO_TEST = "auto_test"
     QA_AGENT = "qa_agent"
     HUMAN = "human"
 
 
 class RepoSourceType(Enum):
+    """How a project's repository was set up — cloned from a URL, linked to
+    an existing local path, or initialized as a new git repo."""
+
     CLONE = "clone"
     LINK = "link"
     INIT = "init"
@@ -80,6 +137,12 @@ class RepoSourceType(Enum):
 
 @dataclass
 class RepoConfig:
+    """Describes a git repository associated with a project.
+
+    The GitManager uses this to clone, link, or initialize the repo and to
+    create per-task worktrees branching from default_branch.
+    """
+
     id: str
     project_id: str
     source_type: RepoSourceType
@@ -91,6 +154,13 @@ class RepoConfig:
 
 @dataclass
 class Project:
+    """A project is the unit of scheduling and resource allocation.
+
+    The scheduler distributes agent capacity across projects proportionally
+    to their credit_weight. Each project may have its own Discord channel,
+    workspace directory, and token budget. max_concurrent_agents caps how
+    many agents can work on this project simultaneously.
+    """
     id: str
     name: str
     credit_weight: float = 1.0
@@ -104,6 +174,16 @@ class Project:
 
 @dataclass
 class Task:
+    """The fundamental unit of work in the system.
+
+    A task moves through the TaskStatus state machine from DEFINED to
+    COMPLETED (or BLOCKED). It carries everything the orchestrator needs:
+    scheduling metadata (priority, project_id), execution context (repo_id,
+    branch_name, assigned_agent_id), lifecycle tracking (retry_count,
+    resume_after), and plan-generation lineage (parent_task_id, plan_source,
+    is_plan_subtask).
+    """
+
     id: str
     project_id: str
     title: str
@@ -126,6 +206,13 @@ class Task:
 
 @dataclass
 class Agent:
+    """Represents a registered agent process (e.g., a Claude Code instance).
+
+    The orchestrator tracks agent state, heartbeats, and token usage. When an
+    agent is IDLE, the scheduler may assign it a task. The checkout_path and
+    repo_id indicate which worktree the agent is currently operating in.
+    """
+
     id: str
     name: str
     agent_type: str  # "claude", "codex", "cursor", "aider"
@@ -141,6 +228,15 @@ class Agent:
 
 @dataclass
 class TaskContext:
+    """The input bundle passed to an agent adapter when executing a task.
+
+    This is the adapter's entire view of the work to be done: what to build
+    (description, acceptance_criteria), how to verify it (test_commands),
+    where to work (checkout_path, branch_name), and what tools/context are
+    available. The orchestrator constructs this from the Task, its criteria,
+    context entries, and tool permissions stored in the database.
+    """
+
     description: str
     acceptance_criteria: list[str] = field(default_factory=list)
     test_commands: list[str] = field(default_factory=list)
@@ -153,6 +249,14 @@ class TaskContext:
 
 @dataclass
 class AgentOutput:
+    """The result returned by an agent adapter after task execution.
+
+    The orchestrator uses result to determine the next state transition,
+    summary for Discord notifications, files_changed for commit/PR decisions,
+    and tokens_used for budget tracking. On failure, error_message provides
+    context for retry logic.
+    """
+
     result: AgentResult
     summary: str = ""
     files_changed: list[str] = field(default_factory=list)
@@ -162,6 +266,15 @@ class AgentOutput:
 
 @dataclass
 class Hook:
+    """Definition of an automated hook that runs in response to events or on a schedule.
+
+    Hooks allow project-level automation without manual intervention: they can
+    be triggered periodically, by cron, or by task lifecycle events (via the
+    EventBus). Each hook defines context-gathering steps, an LLM prompt
+    template, and cooldown/budget limits to prevent runaway costs.
+    See specs/hooks.md.
+    """
+
     id: str
     project_id: str
     name: str
@@ -178,6 +291,14 @@ class Hook:
 
 @dataclass
 class HookRun:
+    """A single execution record of a Hook.
+
+    Captures the full lifecycle of one hook invocation: why it fired
+    (trigger_reason), what context was gathered, what prompt was sent to the
+    LLM, and what actions resulted. Used for auditing and debugging hook
+    behavior.
+    """
+
     id: str
     hook_id: str
     project_id: str

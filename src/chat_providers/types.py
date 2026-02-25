@@ -1,3 +1,10 @@
+"""Normalized response types that abstract away provider-specific API formats.
+
+``ChatResponse`` wraps a list of content blocks (``TextBlock`` for text,
+``ToolUseBlock`` for tool calls).  Each provider converts its native response
+format into these types so that ChatAgent and HookEngine can process responses
+uniformly regardless of which LLM backend produced them.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass

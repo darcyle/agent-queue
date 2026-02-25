@@ -1,3 +1,25 @@
+"""Event-driven and periodic hook engine for automated workflows.
+
+Hooks enable the system to react to task lifecycle events or run on a timer
+without human intervention.  Each hook follows a pipeline::
+
+    trigger -> gather context (shell/file/http/db/git steps)
+    -> short-circuit check -> render prompt template -> invoke LLM with tools
+
+The LLM invocation uses a full ChatAgent instance with tool access, so hooks
+can create tasks, check status, send notifications, etc. -- anything a human
+user can do via Discord chat, a hook can do autonomously.
+
+Two trigger types are supported:
+- **Periodic**: fires on a timer (``interval_seconds``), checked every
+  orchestrator tick.
+- **Event**: fires when a matching EventBus event arrives (e.g. task.completed).
+
+A cooldown mechanism prevents hooks from firing too frequently, and a
+configurable concurrency limit caps how many hooks can run simultaneously.
+
+See specs/hooks.md for the full specification.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -41,7 +63,13 @@ NAMED_QUERIES = {
 
 
 class HookEngine:
-    """Generic hook engine: trigger -> gather context -> send prompt to LLM."""
+    """Manages hook lifecycle: scheduling, context gathering, LLM invocation.
+
+    The engine subscribes to all EventBus events (wildcard ``*``) so it can
+    match event-driven hooks.  Periodic hooks are checked on each ``tick()``
+    call from the orchestrator loop.  Running hooks are tracked as asyncio
+    Tasks with a configurable concurrency cap.
+    """
 
     def __init__(self, db: Database, bus: EventBus, config: AppConfig):
         self.db = db
@@ -144,7 +172,16 @@ class HookEngine:
         trigger_reason: str,
         event_data: dict | None = None,
     ) -> None:
-        """Full hook pipeline: context steps -> short-circuit check -> render -> LLM."""
+        """Execute the full hook pipeline for a single invocation.
+
+        Steps:
+        1. Run context-gathering steps (shell, file, http, db, git) sequentially
+        2. Check short-circuit conditions -- if a step signals "nothing to do",
+           the hook is marked skipped and the LLM is never called (saves tokens)
+        3. Render the prompt template with step results and event data
+        4. Invoke the LLM via a ChatAgent instance with full tool access
+        5. Record the run outcome (completed/failed/skipped) in the database
+        """
         run = HookRun(
             id=str(uuid.uuid4())[:12],
             hook_id=hook.id,
@@ -432,9 +469,14 @@ class HookEngine:
     async def _invoke_llm(
         self, hook: Hook, prompt: str
     ) -> tuple[str, int]:
-        """Invoke the LLM with the rendered prompt using ChatAgent's tools.
+        """Invoke the LLM with the rendered prompt using ChatAgent's full tool set.
 
-        Returns (response_text, tokens_used).
+        Creates a temporary ChatAgent instance so the hook's LLM call has
+        access to all the same tools a human user would (create tasks, check
+        status, etc.).  The hook can optionally override the LLM provider/model
+        via its ``llm_config`` field.
+
+        Returns ``(response_text, estimated_tokens_used)``.
         """
         from src.chat_agent import ChatAgent
 

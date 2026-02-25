@@ -1,3 +1,22 @@
+"""GitManager -- wraps git CLI commands for the orchestrator's workspace management.
+
+All operations are synchronous subprocess calls.  Git is fast enough for the
+operations we need (clone, branch, commit, push) that async would add
+complexity without meaningful benefit.
+
+Key workflows:
+  - **Clone repos:** ``create_checkout`` clones a project's repository.
+  - **Prepare task branches:** ``prepare_for_task`` fetches latest, creates a
+    fresh branch off the default branch (handling both normal repos and
+    worktrees).
+  - **Commit agent work:** ``commit_all`` stages everything and commits if
+    there are changes.
+  - **Push and PR:** ``push_branch`` pushes to origin; ``create_pr`` and
+    ``check_pr_merged`` delegate to the ``gh`` CLI for GitHub PR operations.
+
+See specs/git/git.md for the full behavioral specification.
+"""
+
 from __future__ import annotations
 
 import json
@@ -68,6 +87,18 @@ class GitManager:
         self, checkout_path: str, branch_name: str,
         default_branch: str = "main",
     ) -> None:
+        """Fetch latest and create a task branch off the default branch.
+
+        Two code paths depending on whether the checkout is a worktree:
+        - **Normal repo:** checkout default branch, pull, then create the task
+          branch.  This is the common case for cloned repos.
+        - **Worktree:** Can't checkout the default branch (it's already checked
+          out in the main working tree), so we create the task branch directly
+          from ``origin/<default_branch>`` in a single step.
+
+        In both cases, if the branch already exists (e.g. task retried after a
+        restart), we switch to it rather than failing.
+        """
         # Check if this is a worktree
         is_worktree = self._is_worktree(checkout_path)
 
@@ -97,7 +128,12 @@ class GitManager:
                 self._run(["checkout", branch_name], cwd=checkout_path)
 
     def switch_to_branch(self, checkout_path: str, branch_name: str) -> None:
-        """Switch to an existing branch, pulling latest if available on remote."""
+        """Switch to an existing branch, pulling latest if available on remote.
+
+        Used for subtask branch reuse: when a plan generates multiple subtasks
+        that should share a branch, this lets the second task pick up where the
+        first left off rather than creating a new branch.
+        """
         try:
             self._run(["fetch", "origin"], cwd=checkout_path)
         except GitError:
@@ -183,7 +219,14 @@ class GitManager:
             return []
 
     def commit_all(self, checkout_path: str, message: str) -> bool:
-        """Stage all changes and commit. Returns True if a commit was made, False if nothing to commit."""
+        """Stage all changes and commit. Returns True if a commit was made, False if nothing to commit.
+
+        Uses add-all-then-check-staged pattern: ``git add -A`` stages
+        everything (including untracked files the agent created), then
+        ``git diff --cached --quiet`` checks whether anything is actually
+        staged.  This avoids the race condition of checking status before
+        staging.
+        """
         self._run(["add", "-A"], cwd=checkout_path)
         # git diff --cached --quiet exits 1 if there are staged changes
         result = subprocess.run(
@@ -200,7 +243,11 @@ class GitManager:
         self, checkout_path: str, branch: str, title: str, body: str,
         base: str = "main",
     ) -> str:
-        """Create a GitHub PR using the gh CLI. Returns the PR URL."""
+        """Create a GitHub PR using the ``gh`` CLI. Returns the PR URL.
+
+        Delegates to ``gh pr create`` rather than the GitHub API directly,
+        so the user's existing gh authentication is reused.
+        """
         result = subprocess.run(
             ["gh", "pr", "create", "--title", title, "--body", body,
              "--base", base, "--head", branch],
@@ -213,9 +260,11 @@ class GitManager:
         return result.stdout.strip()
 
     def check_pr_merged(self, checkout_path: str, pr_url: str) -> bool | None:
-        """Check if a PR has been merged.
+        """Check if a PR has been merged via the ``gh`` CLI.
 
         Returns True (merged), False (still open), None (closed without merge).
+        The orchestrator polls this for AWAITING_APPROVAL tasks to detect when
+        a human merges the PR and the task can be marked COMPLETED.
         """
         result = subprocess.run(
             ["gh", "pr", "view", pr_url, "--json", "state,mergedAt"],
@@ -267,4 +316,10 @@ class GitManager:
 
     @staticmethod
     def make_branch_name(task_id: str, title: str) -> str:
+        """Build a branch name in ``<task-id>/<slug>`` format.
+
+        Examples: ``brave-fox/add-retry-logic``, ``calm-river/fix-auth-bug``.
+        The task ID prefix makes branches easy to trace back to their task,
+        and the slug suffix provides human-readable context.
+        """
         return f"{task_id}/{GitManager.slugify(title)}"

@@ -1,3 +1,24 @@
+"""Persistence layer for the agent queue system.
+
+Single SQLite database using WAL journal mode for concurrent reads from
+the orchestrator loop, Discord bot, and chat agent without blocking writers.
+
+Follows the repository pattern -- all SQL is encapsulated here. The rest of
+the codebase interacts with the database exclusively through the
+:class:`Database` class, receiving and returning domain model dataclasses.
+
+The schema covers 14 tables organized around the core domain concepts:
+projects, repos, tasks (with dependencies, criteria, context, tools, and
+results), agents, token_ledger, events, rate_limits, hooks, hook_runs,
+and system_config.
+
+Migrations are applied as idempotent ``ALTER TABLE ADD COLUMN`` statements
+during initialization. If a column already exists the error is silently
+caught, so migrations are safe to re-run on every startup.
+
+See specs/database.md for the full schema and behavioral specification.
+"""
+
 from __future__ import annotations
 
 import json
@@ -15,6 +36,8 @@ from src.state_machine import is_valid_status_transition
 
 logger = logging.getLogger(__name__)
 
+# Complete DDL for all 14 tables. Executed via executescript() on startup,
+# so every statement uses CREATE TABLE IF NOT EXISTS for idempotency.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
@@ -186,6 +209,22 @@ CREATE TABLE IF NOT EXISTS hook_runs (
 
 
 class Database:
+    """Async SQLite persistence layer implementing the repository pattern.
+
+    All database access in the system goes through this class. It owns the
+    connection lifecycle, schema creation, migrations, and provides typed
+    CRUD methods that accept and return domain dataclasses from
+    :mod:`src.models`.
+
+    The connection uses WAL journal mode and has foreign keys enabled, so
+    referential integrity is enforced at the database level. Row factory is
+    set to ``aiosqlite.Row`` for dict-like column access.
+
+    State transitions go through :meth:`transition_task`, which validates
+    against the state machine but always applies the update (logging-only
+    enforcement) to avoid blocking production on unexpected edge cases.
+    """
+
     def __init__(self, path: str):
         self._path = path
         self._db: aiosqlite.Connection | None = None
@@ -219,6 +258,9 @@ class Database:
             await self._db.close()
 
     # --- Projects ---
+    # CRUD for the projects table. Each project has a credit_weight that
+    # determines its fair share in scheduling, concurrency limits, optional
+    # budget caps, and a Discord channel binding.
 
     async def create_project(self, project: Project) -> None:
         await self._db.execute(
@@ -289,6 +331,9 @@ class Database:
         )
 
     # --- Repos ---
+    # Git repository configurations attached to projects. A project may have
+    # multiple repos. Each repo knows its clone URL, default branch, and
+    # where to check out working copies on disk.
 
     async def create_repo(self, repo: RepoConfig) -> None:
         await self._db.execute(
@@ -335,6 +380,11 @@ class Database:
         )
 
     # --- Tasks ---
+    # The core work unit. Tasks flow through the state machine (DEFINED ->
+    # READY -> ASSIGNED -> IN_PROGRESS -> ... -> COMPLETED). Each task
+    # belongs to a project and optionally to a parent task (plan subtasks).
+    # Related data lives in task_criteria, task_context, task_tools, and
+    # task_results tables.
 
     async def create_task(self, task: Task) -> None:
         now = time.time()
@@ -410,13 +460,22 @@ class Database:
     ) -> None:
         """Update task status with state-machine validation.
 
-        Fetches the current status, checks it against the state machine, and
-        logs a warning if the transition is not formally valid.  The update
-        is **always applied** (logging-only mode) so that production behaviour
-        is not blocked by unexpected edge cases.
+        Fetches the current status, checks it against the formal state
+        machine defined in :mod:`src.state_machine`, and logs a warning if
+        the transition is not valid.  The update is **always applied**
+        regardless of validation outcome (logging-only enforcement).
 
-        Any extra *kwargs* (e.g. ``assigned_agent_id``, ``retry_count``) are
-        forwarded to :meth:`update_task`.
+        This deliberate design choice keeps production running when edge
+        cases produce unexpected transitions (e.g. a race between the
+        orchestrator loop and a Discord command). The warnings surface in
+        logs for investigation without blocking task progress.
+
+        If *new_status* equals the current status, no transition validation
+        occurs -- only the extra *kwargs* are applied (useful for updating
+        metadata without changing state).
+
+        Any extra *kwargs* (e.g. ``assigned_agent_id``, ``retry_count``,
+        ``resume_after``) are forwarded to :meth:`update_task`.
         """
         task = await self.get_task(task_id)
         if task is None:
@@ -504,6 +563,9 @@ class Database:
         )
 
     # --- Dependencies ---
+    # Task dependency edges form a DAG. A task cannot be promoted from
+    # DEFINED to READY until all of its upstream dependencies are COMPLETED.
+    # The state_machine module provides cycle detection at creation time.
 
     async def add_dependency(self, task_id: str, depends_on: str) -> None:
         await self._db.execute(
@@ -529,6 +591,13 @@ class Database:
         return deps
 
     async def are_dependencies_met(self, task_id: str) -> bool:
+        """Check whether all upstream dependencies of a task are satisfied.
+
+        Returns True if every task that ``task_id`` depends on has reached
+        COMPLETED status.  Also returns True if the task has no dependencies
+        at all (vacuous truth).  This is the gate that controls the
+        DEFINED -> READY promotion in the orchestrator loop.
+        """
         cursor = await self._db.execute(
             "SELECT d.depends_on_task_id, t.status "
             "FROM task_dependencies d "
@@ -604,6 +673,9 @@ class Database:
         await self._db.commit()
 
     # --- Agents ---
+    # Agent records represent running (or available) Claude Code processes.
+    # The orchestrator tracks their state (IDLE, STARTING, BUSY, etc.),
+    # heartbeat timestamps for liveness detection, and cumulative token usage.
 
     async def create_agent(self, agent: Agent) -> None:
         await self._db.execute(
@@ -669,6 +741,9 @@ class Database:
         )
 
     # --- Token Ledger ---
+    # Append-only log of token consumption. Each entry records which project,
+    # agent, and task consumed how many tokens and when. The scheduler uses
+    # windowed aggregates from this ledger to compute fair-share ratios.
 
     async def record_token_usage(
         self, project_id: str, agent_id: str, task_id: str, tokens: int
@@ -699,6 +774,9 @@ class Database:
         return row["total"]
 
     # --- Task Results ---
+    # Stores the outcome of each agent execution attempt. A task may have
+    # multiple results if it was retried. Results include the success/failure
+    # status, a summary, list of changed files, error details, and token cost.
 
     async def save_task_result(
         self, task_id: str, agent_id: str, output
@@ -749,6 +827,9 @@ class Database:
         }
 
     # --- Delete Project (cascading) ---
+    # Removes a project and all of its associated data across every table.
+    # Order matters: child rows (results, dependencies, criteria, etc.) are
+    # deleted before the parent task and project rows to satisfy FK constraints.
 
     async def delete_project(self, project_id: str) -> None:
         """Delete a project and all associated data (tasks, repos, results, ledger)."""
@@ -776,6 +857,9 @@ class Database:
         await self._db.commit()
 
     # --- Events ---
+    # Structured audit log. Every significant lifecycle event (task assigned,
+    # completed, failed, etc.) is recorded here with optional JSON payload.
+    # Used for debugging and the EventBus replay mechanism.
 
     async def log_event(
         self,
@@ -799,9 +883,11 @@ class Database:
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
-    # --- Atomic Operations ---
-
     # --- Hooks ---
+    # Hooks are project-scoped automation rules: when a trigger fires (e.g.
+    # task_completed), the hook engine gathers context, renders a prompt, and
+    # optionally invokes an LLM. Hook definitions and their execution history
+    # (hook_runs) are persisted here.
 
     async def create_hook(self, hook: Hook) -> None:
         now = time.time()
@@ -882,6 +968,9 @@ class Database:
         )
 
     # --- Hook Runs ---
+    # Execution history for hooks. Each run captures the trigger reason,
+    # gathered context, rendered prompt, LLM response, and any actions taken.
+    # Used for observability and cooldown enforcement.
 
     async def create_hook_run(self, run: HookRun) -> None:
         await self._db.execute(
@@ -949,8 +1038,25 @@ class Database:
         )
 
     # --- Atomic Operations ---
+    # Multi-table writes that must succeed or fail together. These methods
+    # perform all related updates within a single commit to avoid inconsistent
+    # states between tasks, agents, and events.
 
     async def assign_task_to_agent(self, task_id: str, agent_id: str) -> None:
+        """Atomically bind a task to an agent, updating both sides.
+
+        This is the only method that should be used to start work on a task.
+        In a single commit it:
+        1. Transitions the task from READY to ASSIGNED and sets its
+           ``assigned_agent_id``.
+        2. Transitions the agent from IDLE to STARTING and sets its
+           ``current_task_id``.
+        3. Logs a ``task_assigned`` event for the audit trail.
+
+        Performing all three writes in one commit prevents inconsistent
+        states where a task thinks it is assigned but the agent does not
+        (or vice versa).
+        """
         # Validate the READY -> ASSIGNED transition
         task = await self.get_task(task_id)
         if task and not is_valid_status_transition(task.status, TaskStatus.ASSIGNED):

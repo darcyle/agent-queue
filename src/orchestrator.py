@@ -1,3 +1,22 @@
+"""Orchestrator — the central brain of the agent queue system.
+
+Runs a ~5-second loop that drives the entire task lifecycle: promoting
+DEFINED tasks whose dependencies are met, scheduling READY tasks onto idle
+agents, launching agent execution as background asyncio tasks, managing git
+workspaces (clone/link/init), parsing plan files into chained subtasks,
+handling PR/approval workflows, and monitoring for stuck tasks.
+
+Design principle: **zero LLM calls for orchestration**.  All scheduling and
+state-machine logic is purely deterministic.  Every token budget goes to
+actual agent work, not coordination overhead.
+
+Heavy operations (agent execution, git clones) run as background asyncio
+tasks so the main loop stays responsive and can continue checking heartbeats,
+promoting tasks, and handling approvals while agents work.
+
+See ``specs/orchestrator.md`` for the full behavioral specification.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -27,18 +46,18 @@ from src.scheduler import AssignAction, Scheduler, SchedulerState
 from src.task_names import generate_task_id
 from src.tokens.budget import BudgetManager
 
-# Callback that sends a formatted string to a Discord channel.
-# Accepts an optional project_id to route to per-project channels.
+# Sends a formatted message to a Discord channel.  The optional project_id
+# lets the callback route to per-project channels instead of the global one.
 NotifyCallback = Callable[[str, str | None], Awaitable[None]]
 
-# Callback that creates a thread and returns two send functions:
-#   [0] send_to_thread  — streams content into the thread
-#   [1] notify_main     — posts a brief message to the main channel (e.g. a reply
-#                         to the thread-root message in the notifications channel)
-# Args: (thread_name, initial_message, project_id) -> (send_to_thread, notify_main) | None
-# The inner callbacks (send_to_thread, notify_main) do NOT take project_id since
-# the thread is already created in the correct channel.
+# Sends a single message into an already-created Discord thread.
 ThreadSendCallback = Callable[[str], Awaitable[None]]
+
+# Creates a Discord thread for streaming agent output and returns two
+# send functions: one for posting into the thread itself, and one for
+# posting a brief summary/reply to the parent notifications channel.
+# Args: (thread_name, initial_message, project_id)
+# Returns: (send_to_thread, notify_main) or None if thread creation failed.
 CreateThreadCallback = Callable[
     [str, str, str | None],
     Awaitable[tuple[ThreadSendCallback, ThreadSendCallback] | None],
@@ -46,6 +65,29 @@ CreateThreadCallback = Callable[
 
 
 class Orchestrator:
+    """Coordinates the full task lifecycle across multiple projects and agents.
+
+    The orchestrator is deliberately decoupled from Discord: it communicates
+    through injected callbacks (``set_notify_callback``,
+    ``set_create_thread_callback``) rather than importing Discord directly.
+    This makes it testable in isolation and keeps the transport layer
+    pluggable.
+
+    Key internal state:
+
+    * ``_running_tasks`` — maps task_id to a background ``asyncio.Task``
+      for each agent execution currently in flight.  The main loop checks
+      this dict every cycle to clean up finished work and avoid double-
+      launching.
+
+    * ``_adapters`` — maps agent_id to the live adapter instance (e.g.
+      ``ClaudeAdapter``) so we can stop or cancel a running agent from
+      admin commands like ``stop_task``.
+
+    * ``_paused`` — when True, the scheduler is skipped entirely (no new
+      work is assigned) but monitoring, approvals, and promotions continue.
+    """
+
     def __init__(self, config: AppConfig, adapter_factory=None):
         self.config = config
         self.db = Database(config.database_path)
@@ -94,8 +136,14 @@ class Orchestrator:
     async def skip_task(self, task_id: str) -> tuple[str | None, list[Task]]:
         """Skip a BLOCKED or FAILED task to unblock its dependency chain.
 
-        Marks the task as COMPLETED so downstream dependents can proceed.
-        Returns (error_string | None, list_of_unblocked_tasks).
+        This is an admin escape hatch: it marks the task as COMPLETED (even
+        though no work was done) so that downstream dependents whose only
+        remaining unmet dependency was this task can proceed.  The method
+        performs a forward walk of the dependency graph to report which
+        tasks will be unblocked, giving the operator visibility into the
+        blast radius before the next cycle promotes them.
+
+        Returns (error_string | None, list_of_tasks_that_will_be_unblocked).
         """
         task = await self.db.get_task(task_id)
         if not task:
@@ -143,7 +191,14 @@ class Orchestrator:
         return None, unblocked
 
     async def stop_task(self, task_id: str) -> str | None:
-        """Stop an in-progress task. Returns None on success, error string on failure."""
+        """Forcibly stop an in-progress task and release its agent.
+
+        Sends a stop signal to the running adapter, transitions the task to
+        BLOCKED, resets the agent to IDLE, and checks whether stopping this
+        task orphans any downstream dependency chain (notifying if so).
+
+        Returns None on success, or an error string if the task cannot be stopped.
+        """
         task = await self.db.get_task(task_id)
         if not task:
             return f"Task '{task_id}' not found"
@@ -243,7 +298,26 @@ class Orchestrator:
         await self.db.close()
 
     async def run_one_cycle(self) -> None:
-        """Run one complete scheduling + execution cycle."""
+        """Run one iteration of the orchestrator's main loop.
+
+        The ordering of checks is intentional and matters:
+
+        1. **Approvals first** — complete tasks whose PRs were merged so
+           their dependents can be promoted in the same cycle.
+        2. **Resume paused** — bring back rate-limited/token-exhausted tasks
+           whose backoff timers have expired.
+        3. **Promote DEFINED** — check dependency satisfaction and move tasks
+           to READY.  This must happen after approvals so freshly-completed
+           parent tasks unblock their children immediately.
+        4. **Stuck monitoring** — rate-limited alerts for DEFINED tasks that
+           have been waiting too long (runs after promotion so we don't
+           false-alarm on tasks that just got promoted).
+        5. **Schedule** — assign READY tasks to idle agents (skipped when
+           the orchestrator is paused).
+        6. **Launch** — fire off background asyncio tasks for each new
+           assignment.  These run concurrently with future cycles.
+        7. **Hook engine tick** — run any registered hooks.
+        """
         try:
             # 0. Check AWAITING_APPROVAL tasks for PR merge status
             await self._check_awaiting_approval()
@@ -362,8 +436,17 @@ class Orchestrator:
                                                   context="deps_met")
 
     async def _check_stuck_defined_tasks(self) -> None:
-        """Detect DEFINED tasks that have been waiting longer than the configured
-        threshold and send a rate-limited warning with blocking dependency info."""
+        """Monitoring: detect DEFINED tasks stuck waiting for dependencies.
+
+        Queries for tasks that have been in DEFINED status longer than
+        ``monitoring.stuck_task_threshold_seconds`` and sends a notification
+        with details about which upstream dependencies are blocking them.
+
+        Notifications are rate-limited to one per threshold period per task
+        (tracked in ``_stuck_notified_at``) to avoid flooding Discord.
+        The tracker is garbage-collected each cycle to remove entries for
+        tasks that are no longer stuck.
+        """
         threshold = self.config.monitoring.stuck_task_threshold_seconds
         if threshold <= 0:
             return  # Disabled
@@ -418,13 +501,18 @@ class Orchestrator:
             self._stuck_notified_at[task.id] = now
 
     async def _find_stuck_downstream(self, blocked_task_id: str) -> list[Task]:
-        """Walk the dependency graph forward and collect all DEFINED tasks
-        that are permanently stuck because *blocked_task_id* is BLOCKED.
+        """BFS walk of the dependency graph to find orphaned DEFINED tasks.
 
-        A task is considered stuck if it (directly or transitively) depends on
-        the blocked task and none of its dependency paths can reach COMPLETED.
-        In practice this means every task downstream of the blocked one whose
-        status is still DEFINED (i.e. waiting for deps).
+        Starting from a BLOCKED task, walks forward through ``get_dependents``
+        and collects every downstream task still in DEFINED status.  These
+        tasks can never proceed because their dependency chain is broken.
+
+        Only DEFINED tasks are collected — tasks that have already been
+        promoted past the dependency gate (READY, IN_PROGRESS, etc.) are
+        not affected by the upstream blockage.
+
+        Used by ``_notify_stuck_chain`` to give operators visibility into
+        the full blast radius when a task fails or is stopped.
         """
         stuck: list[Task] = []
         visited: set[str] = set()
@@ -512,7 +600,22 @@ class Orchestrator:
         return Scheduler.schedule(state)
 
     async def _prepare_workspace(self, task: Task, agent) -> str | None:
-        """Prepare a workspace for the task. Returns the workspace path, or None for fallback."""
+        """Prepare a git workspace for the task. Returns the workspace path, or None for fallback.
+
+        Handles three repo source types:
+
+        * **CLONE** — a remote repo URL.  Cloned into the agent's checkout
+          directory, then a fresh branch is created from the default branch.
+        * **LINK** — an existing local directory (e.g. a developer's working
+          copy).  We work directly in that directory to preserve .env files,
+          venvs, etc.  If the directory is a git repo we create a branch;
+          otherwise we use it as-is.
+        * **INIT** — create a new bare git repo in the agent's checkout dir.
+
+        For plan subtasks, we reuse the parent task's branch name so that
+        all steps in a plan accumulate commits on a single branch, which
+        eventually becomes one PR.
+        """
         # Use task's repo, or fall back to agent's assigned repo
         repo_id = task.repo_id or agent.repo_id
         if not repo_id:
@@ -590,7 +693,18 @@ class Orchestrator:
         return workspace
 
     async def _complete_workspace(self, task: Task, agent) -> str | None:
-        """Post-completion: commit agent work, then merge or create PR.
+        """Post-completion git workflow: commit changes, then merge or open a PR.
+
+        The workflow depends on the task and repo configuration:
+
+        1. **Always**: commit any uncommitted work on the task branch.
+        2. **Plan subtasks**: just commit — don't merge or push until the
+           final subtask in the chain completes, at which point the
+           accumulated branch is either merged or turned into a PR.
+        3. **Tasks requiring approval**: push the branch and create a PR
+           for human review.  The task moves to AWAITING_APPROVAL.
+        4. **Tasks without approval**: merge the branch into the default
+           branch and push (for CLONE repos) or just merge locally (LINK).
 
         Returns a PR URL if one was created, otherwise None.
         """
@@ -719,11 +833,25 @@ class Orchestrator:
     async def _generate_tasks_from_plan(
         self, task: Task, workspace: str
     ) -> list[Task]:
-        """Check for a plan file in the workspace and create subtasks from it.
+        """The auto-task pipeline: discover a plan file, parse it, and create subtasks.
 
-        Called after a task completes successfully.  If a plan file is found
-        (e.g. ``.claude/plan.md``), it is parsed and each step is turned
-        into a new task linked to the completed task as parent.
+        Called after a task completes successfully.  Searches the workspace
+        for a plan file (e.g. ``.claude/plan.md``) using configurable glob
+        patterns, parses it with either a regex parser or an LLM-based
+        parser, and creates one new task per plan step.
+
+        When ``chain_dependencies`` is enabled (the default), each subtask
+        depends on the previous one, forming a serial execution chain on a
+        shared git branch.  Only the final subtask in the chain inherits
+        the parent's ``requires_approval`` flag, so intermediate steps
+        don't block the chain waiting for human review.
+
+        The plan file is archived to ``.claude/plans/<task_id>-plan.md``
+        after processing to prevent re-processing if the workspace is
+        reused.
+
+        Subtasks cannot themselves generate further sub-plans (guarded by
+        ``is_plan_subtask``) to prevent recursive plan explosion.
 
         Returns the list of created tasks (empty if no plan was found or
         auto-task generation is disabled).
@@ -862,7 +990,18 @@ class Orchestrator:
     _NO_PR_AUTO_COMPLETE_GRACE: int = 120     # 2 minutes
 
     async def _check_awaiting_approval(self) -> None:
-        """Poll PR status for tasks awaiting approval. Throttled to once per 60s."""
+        """Poll PR merge status for tasks in AWAITING_APPROVAL. Throttled to once per 60s.
+
+        Two paths:
+
+        * **Tasks with a PR URL** — check whether the PR has been merged
+          (complete the task) or closed without merge (block the task and
+          alert about orphaned downstream dependents).
+        * **Tasks without a PR URL** — either auto-complete them after a
+          grace period (if they don't actually require approval, which can
+          happen for intermediate plan subtasks), or send periodic reminders
+          so they don't rot silently in the queue.
+        """
         now = time.time()
         if now - self._last_approval_check < 60:
             return
@@ -994,6 +1133,27 @@ class Orchestrator:
             await self._notify_stuck_chain(task)
 
     async def _execute_task(self, action: AssignAction) -> None:
+        """The full task execution pipeline, run as a background asyncio task.
+
+        Steps:
+        1. **Assign** — mark task IN_PROGRESS and agent BUSY in the DB.
+        2. **Workspace setup** — clone/link/init the repo, create or switch
+           to the task branch (see ``_prepare_workspace``).
+        3. **Agent launch** — create an adapter, inject system context and
+           the task description, and start the agent process.
+        4. **Stream + wait** — forward agent messages to the Discord thread
+           while waiting for completion.  If the agent hits a rate limit,
+           an exponential-backoff retry loop re-initializes and retries
+           (up to ``rate_limit_max_retries`` times) before giving up.
+        5. **Result handling** — branch on the agent result:
+           - COMPLETED: run ``_complete_workspace`` (commit/merge/PR), then
+             ``_generate_tasks_from_plan`` to create follow-up subtasks.
+           - FAILED: increment retry count; if exhausted, mark BLOCKED and
+             notify about orphaned downstream tasks.
+           - PAUSED (rate limit or tokens): set a ``resume_after`` timestamp
+             so the task is automatically retried after the backoff.
+        6. **Free agent** — reset agent to IDLE regardless of outcome.
+        """
         if not self._adapter_factory:
             print(f"Cannot execute task {action.task_id}: no adapter factory configured")
             await self._notify_channel(

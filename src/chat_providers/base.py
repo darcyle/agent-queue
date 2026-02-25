@@ -1,3 +1,10 @@
+"""Common interface (ABC) for all LLM chat providers.
+
+Every provider must implement ``create_message`` (send messages and receive a
+normalized ``ChatResponse``) and expose a ``model_name`` property.  This
+abstraction lets the rest of the codebase swap between Anthropic, Ollama, or
+future providers without any changes to calling code.
+"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

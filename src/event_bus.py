@@ -1,3 +1,17 @@
+"""Lightweight async pub/sub event bus for decoupling system components.
+
+The EventBus is the primary mechanism for loose coupling between the
+orchestrator, hook engine, and notification subsystem. Components subscribe
+to named event types (e.g., "task_completed", "agent_failed") and receive
+async callbacks when those events are emitted.
+
+A special wildcard subscription ("*") receives every event regardless of type.
+The hook engine uses this to evaluate all events against its trigger
+conditions without needing individual subscriptions per event type.
+
+See specs/event-bus.md for the full specification.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,6 +21,12 @@ from typing import Any, Callable
 
 
 class EventBus:
+    """Async event dispatcher with named channels and wildcard support.
+
+    Handlers are invoked sequentially in subscription order. Both sync and
+    async handlers are supported — sync handlers are called directly while
+    async handlers are awaited.
+    """
     def __init__(self):
         self._handlers: dict[str, list[Callable]] = defaultdict(list)
 

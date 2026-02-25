@@ -1,3 +1,18 @@
+"""YAML configuration loading with environment variable substitution.
+
+Loads the application config from a YAML file (default: ~/.agent-queue/config.yaml),
+substitutes ${ENV_VAR} references with environment variable values, and maps
+the result into typed dataclass instances. Also supports loading a .env file
+from the same directory as the config file for local development.
+
+The config is loaded once at startup and passed to all major components
+(orchestrator, Discord bot, scheduler, adapters). Individual sections are
+represented by dedicated dataclasses so each component can accept only the
+config it needs.
+
+See specs/config.md for the full specification of all configuration fields.
+"""
+
 from __future__ import annotations
 
 import os
@@ -19,6 +34,8 @@ class PerProjectChannelsConfig:
 
 @dataclass
 class DiscordConfig:
+    """Discord bot connection and channel routing settings."""
+
     bot_token: str = ""
     guild_id: str = ""
     channels: dict[str, str] = field(default_factory=lambda: {
@@ -33,6 +50,8 @@ class DiscordConfig:
 
 @dataclass
 class AgentsDefaultConfig:
+    """Default timeouts for agent health monitoring and graceful shutdown."""
+
     heartbeat_interval_seconds: int = 30
     stuck_timeout_seconds: int = 0  # 0 = no timeout (was 600)
     graceful_shutdown_timeout_seconds: int = 30
@@ -40,12 +59,26 @@ class AgentsDefaultConfig:
 
 @dataclass
 class SchedulingConfig:
+    """Controls how the scheduler distributes agent capacity across projects.
+
+    rolling_window_hours defines the lookback period for proportional credit
+    accounting. min_task_guarantee ensures every active project gets at least
+    one task slot regardless of credit balance.
+    """
+
     rolling_window_hours: int = 24
     min_task_guarantee: bool = True
 
 
 @dataclass
 class PauseRetryConfig:
+    """Backoff and retry timing for rate-limited and token-exhausted tasks.
+
+    Controls both the in-process exponential backoff (before a task is paused)
+    and the longer pause durations (after a task enters PAUSED state and waits
+    for resume_after to elapse).
+    """
+
     rate_limit_backoff_seconds: int = 60
     token_exhaustion_retry_seconds: int = 300
     # Exponential-backoff retry knobs (in-process, before the task is paused)
@@ -89,6 +122,8 @@ class HookEngineConfig:
 
 @dataclass
 class ChatProviderConfig:
+    """LLM provider settings for the Discord chat agent (not the coding agents)."""
+
     provider: str = "anthropic"  # "anthropic" or "ollama"
     model: str = ""              # Empty = provider default
     base_url: str = ""           # For Ollama
@@ -96,6 +131,12 @@ class ChatProviderConfig:
 
 @dataclass
 class AppConfig:
+    """Top-level application configuration aggregating all subsystem configs.
+
+    Instantiated once by load_config() at startup and threaded through to all
+    major components. Each component reads only its relevant sub-config.
+    """
+
     workspace_dir: str = field(
         default_factory=lambda: os.path.expanduser("~/agent-queue-workspaces")
     )
@@ -153,6 +194,13 @@ def _load_env_file(config_path: str) -> None:
 
 
 def load_config(path: str) -> AppConfig:
+    """Load and validate application configuration from a YAML file.
+
+    Processing order: load .env from the config file's directory (without
+    overriding existing env vars), parse YAML, recursively substitute
+    ${ENV_VAR} references in all string values, then map sections into
+    typed dataclass instances with sensible defaults for missing fields.
+    """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Config file not found: {path}")
 

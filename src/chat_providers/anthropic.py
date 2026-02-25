@@ -1,3 +1,18 @@
+"""Anthropic chat provider supporting four authentication methods.
+
+Credentials are tried in priority order (first match wins):
+1. **Vertex AI** -- ``GOOGLE_CLOUD_PROJECT`` / ``ANTHROPIC_VERTEX_PROJECT_ID``
+2. **Bedrock** -- ``AWS_REGION`` / ``AWS_DEFAULT_REGION``
+3. **API key** -- ``ANTHROPIC_API_KEY``
+4. **Claude Code OAuth** -- reads ``~/.claude/.credentials.json``
+
+This fall-through design means the same deployment works unchanged across
+Google Cloud, AWS, direct API, and local development with Claude Code login.
+
+Responses from the Anthropic SDK are converted into the normalized
+``ChatResponse`` / ``TextBlock`` / ``ToolUseBlock`` types so the rest of
+the codebase stays provider-agnostic.
+"""
 from __future__ import annotations
 
 import json

@@ -1,3 +1,33 @@
+"""Claude Code adapter -- runs AI agent tasks via the Claude Agent SDK.
+
+This implements AgentAdapter by wrapping the Claude Code CLI as a subprocess,
+communicating through the SDK's streaming protocol.  The orchestrator sees
+only the AgentAdapter interface; all Claude-specific concerns live here.
+
+Key design decisions:
+
+- **System CLI over bundled binary:** We use the user's installed ``claude``
+  CLI (found via ``shutil.which``) rather than the SDK's bundled binary.
+  The system CLI carries the user's login credentials (from ``claude login``
+  or ANTHROPIC_API_KEY); the bundled one does not.
+
+- **Environment scrubbing:** CLAUDECODE env vars are stripped before launching
+  to prevent the SDK from detecting it's inside an existing Claude session,
+  which would block nested agent invocations.
+
+- **Resilient query (_resilient_query):** The SDK's message parser crashes on
+  unknown message types (e.g. ``rate_limit_event``) because its async
+  generator dies on the first MessageParseError.  Our wrapper accesses SDK
+  internals to iterate raw JSON messages and parse them ourselves, silently
+  skipping unrecognised types instead of aborting the entire session.
+
+- **Message extraction (_extract_message_text):** Translates the SDK's typed
+  message objects (AssistantMessage, ResultMessage, etc.) into human-readable
+  Discord-friendly text with markdown formatting.
+
+See specs/adapters/claude.md for the full behavioral specification.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -20,12 +50,17 @@ _ToolResultBlock = None
 async def _resilient_query(prompt, options):
     """Wrap claude_agent_sdk.query() to survive MessageParseError.
 
-    The SDK's message parser raises MessageParseError for unknown message
-    types like ``rate_limit_event``.  Because ``query()`` yields from an
-    async generator, a single parse error kills the entire iterator.
+    Why this exists: The SDK's ``query()`` function yields parsed messages from
+    an async generator.  Internally it calls ``parse_message()`` on each raw
+    JSON dict from the CLI subprocess.  When the CLI emits an unknown message
+    type (like ``rate_limit_event``), ``parse_message`` raises
+    MessageParseError -- and because Python async generators can't recover
+    from mid-iteration exceptions, the entire stream dies.
 
-    This wrapper accesses the SDK internals to iterate raw JSON dicts and
-    parse them ourselves, silently skipping unknown types instead of crashing.
+    This wrapper reproduces the SDK's query setup but iterates the raw JSON
+    dicts ourselves, calling ``parse_message`` in a try/except so we can skip
+    unrecognised types and keep the session alive.  It's fragile (depends on
+    SDK internals) but necessary until the SDK handles unknown types gracefully.
     """
     from claude_agent_sdk._internal.client import InternalClient
     from claude_agent_sdk._internal.message_parser import parse_message
@@ -110,6 +145,19 @@ async def _resilient_query(prompt, options):
 
 @dataclass
 class ClaudeAdapterConfig:
+    """Configuration for the Claude Code agent adapter.
+
+    Attributes:
+        model: Model ID to pass to Claude Code.  Empty string means let the
+            CLI pick its default (usually the latest Sonnet).
+        permission_mode: Controls which tool calls require human approval.
+            "acceptEdits" auto-approves file edits but prompts for shell
+            commands; other modes are more or less permissive.
+        allowed_tools: Whitelist of tool names the agent may use.  Defaults
+            to the safe set of file and search tools.  The orchestrator may
+            extend this per-task (e.g. adding "WebSearch").
+    """
+
     model: str = ""  # Empty = let Claude Code pick the default model
     permission_mode: str = "acceptEdits"
     allowed_tools: list[str] = field(default_factory=lambda: [
@@ -118,6 +166,13 @@ class ClaudeAdapterConfig:
 
 
 class ClaudeAdapter(AgentAdapter):
+    """AgentAdapter implementation that runs tasks via the Claude Code CLI.
+
+    Each task gets a fresh SDK query (subprocess).  The adapter streams
+    messages back through the on_message callback and collects the final
+    result/token counts from the ResultMessage.
+    """
+
     def __init__(self, config: ClaudeAdapterConfig | None = None):
         self._config = config or ClaudeAdapterConfig()
         self._task: TaskContext | None = None
@@ -289,7 +344,14 @@ class ClaudeAdapter(AgentAdapter):
         return self._task is not None and not self._cancel_event.is_set()
 
     def _extract_message_text(self, message) -> str | None:
-        """Extract a human-readable string from a claude_agent_sdk message."""
+        """Translate SDK message objects into Discord-friendly markdown text.
+
+        The SDK emits typed messages (AssistantMessage with content blocks,
+        UserMessage with tool results, ResultMessage with final output).
+        This method formats each into concise, readable text suitable for
+        streaming into a Discord thread -- truncating long content, rendering
+        tool use as bold labels, and summarising costs/tokens.
+        """
         if not _sdk_types_loaded:
             return None
 
@@ -363,6 +425,12 @@ class ClaudeAdapter(AgentAdapter):
         return None
 
     def _build_prompt(self) -> str:
+        """Assemble the full prompt from TaskContext fields.
+
+        Combines the task description with optional acceptance criteria,
+        test commands, and attached context into a single markdown-formatted
+        prompt that the Claude Code agent receives as its initial instruction.
+        """
         parts = [self._task.description]
         if self._task.acceptance_criteria:
             parts.append("\n## Acceptance Criteria")

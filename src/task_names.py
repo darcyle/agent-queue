@@ -1,4 +1,14 @@
-"""Shared task-name generation used as human-friendly task IDs."""
+"""Human-friendly task ID generation using adjective-noun combinations.
+
+Task IDs like "swift-falcon" or "bold-summit" are used everywhere instead of
+UUIDs because operators interact with tasks primarily through Discord chat.
+Memorable names are easier to type, discuss, and recall than hex strings —
+especially when managing dozens of concurrent tasks across projects.
+
+The pool of ~896 combinations (28 adjectives x 32 nouns) is sufficient for
+most workloads. On collision, a two-digit numeric suffix is appended as a
+fallback.
+"""
 
 from __future__ import annotations
 

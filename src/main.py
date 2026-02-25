@@ -1,3 +1,20 @@
+"""Agent Queue daemon entry point — process lifecycle and signal handling.
+
+Startup sequence:
+  1. Load config from YAML (default: ~/.agent-queue/config.yaml)
+  2. Initialize the Orchestrator (database, event bus, scheduler)
+  3. Start the Discord bot (connects to gateway, registers commands)
+  4. Run the scheduler loop (~5s cycle: promote tasks, assign agents, execute)
+  5. Wait for SIGTERM/SIGINT to trigger graceful shutdown
+
+On shutdown, the bot and orchestrator are closed cleanly. If a restart was
+requested (via the /restart Discord command), the process replaces itself
+using os.execv() — this ensures a fresh Python interpreter with updated code
+while the systemd/supervisor unit sees a continuous process.
+
+See specs/main.md for the full specification.
+"""
+
 from __future__ import annotations
 
 import asyncio

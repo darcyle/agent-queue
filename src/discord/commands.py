@@ -1,9 +1,11 @@
 """Discord slash commands for AgentQueue.
 
-All commands delegate their business logic to the shared CommandHandler,
-ensuring feature parity with the chat agent LLM tools. Discord commands
-are thin formatting wrappers that translate between Discord interactions
-and the unified command interface.
+All commands delegate their business logic to the shared ``CommandHandler``,
+ensuring feature parity with the chat agent LLM tools.  This file is
+intentionally a thin formatting layer: each slash command calls
+``handler.execute(name, args)`` and only handles Discord-specific presentation
+(ephemeral replies, embeds, file attachments, autocomplete).  No business
+logic lives here -- see ``src/command_handler.py`` for that.
 """
 from __future__ import annotations
 

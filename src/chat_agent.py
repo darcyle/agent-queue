@@ -1,3 +1,27 @@
+"""LLM-powered chat interface for AgentQueue.
+
+This module defines two things that together turn a language model into a
+system operator:
+
+1. **TOOLS** -- a list of tool definitions (JSON Schema) that the LLM can
+   call.  Each tool maps 1:1 to a ``CommandHandler._cmd_*`` method; the
+   schemas are what the LLM "sees" as its API surface.  Adding a new tool
+   here automatically exposes the corresponding command to chat users.
+
+2. **ChatAgent** -- the multi-turn conversation loop.  The ``chat()`` method
+   sends the user message (plus history) to the LLM, checks if the response
+   contains tool-use blocks, executes those tools via ``CommandHandler``,
+   feeds the results back, and repeats until the LLM produces a final text
+   response.
+
+Design boundaries:
+    - History management (compaction, summarization, per-channel storage)
+      lives in the Discord bot layer, not here.  ChatAgent is stateless
+      between calls -- the caller passes history in and gets text out.
+    - SYSTEM_PROMPT_TEMPLATE shapes the LLM's persona and operating rules.
+      It is NOT a code-worker prompt; it instructs the LLM to act as a
+      dispatcher that plans and delegates to agents via the tool interface.
+"""
 from __future__ import annotations
 
 import json
@@ -9,7 +33,14 @@ from src.config import AppConfig
 from src.orchestrator import Orchestrator
 
 
-# Tools the LLM can call to manage the system
+# ---------------------------------------------------------------------------
+# Tool definitions -- the LLM's interface to the system.
+#
+# Each entry describes one operation the LLM can invoke during a conversation.
+# The names match CommandHandler._cmd_* methods (e.g. "create_task" calls
+# _cmd_create_task).  The input_schema tells the LLM what arguments are
+# available; the description tells it *when* to use the tool.
+# ---------------------------------------------------------------------------
 TOOLS = [
     {
         "name": "list_projects",
@@ -933,6 +964,19 @@ TOOLS = [
     },
 ]
 
+# ---------------------------------------------------------------------------
+# System prompt -- shapes the LLM's behavior and persona.
+#
+# This tells the LLM it is a *dispatcher*, not a code worker.  It should
+# understand user intent, translate it into tool calls, and present results
+# conversationally.  The prompt also documents every tool's purpose so the
+# LLM knows which one to reach for (LLMs often ignore JSON schema details
+# but read prose descriptions carefully).
+#
+# The template has one placeholder: {workspace_dir}, filled at runtime.
+# An ACTIVE PROJECT addendum is appended dynamically when the user is
+# chatting in a project-specific Discord channel.
+# ---------------------------------------------------------------------------
 SYSTEM_PROMPT_TEMPLATE = """\
 You are AgentQueue, a Discord bot that manages an AI agent task queue. You help \
 users manage projects, tasks, and agents through natural conversation.

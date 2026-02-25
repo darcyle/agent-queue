@@ -1,3 +1,13 @@
+"""Rate limit window tracking with sliding time windows.
+
+``RateLimitWindow`` implements a simple token-bucket algorithm per time period
+(per-minute, per-hour, per-day).  When token consumption within the current
+window reaches the configured maximum, ``is_exceeded()`` returns True and the
+orchestrator pauses task assignment for that agent type until the window resets.
+
+This is used to detect when agents should back off to avoid API rate limits,
+not to enforce hard quotas (the API itself handles that).
+"""
 from __future__ import annotations
 
 import time

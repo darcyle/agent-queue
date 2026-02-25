@@ -1,3 +1,15 @@
+"""Chat provider abstraction for the LLM control plane.
+
+This package is used by the ChatAgent (Discord chat interface) and the
+HookEngine (automated event-driven hooks) -- NOT by agent execution, which
+goes through the separate AgentAdapter layer in ``src/adapters/``.
+
+The factory function ``create_chat_provider`` selects between Anthropic
+(direct API, Vertex AI, Bedrock, or Claude Code OAuth) and Ollama
+(local/self-hosted via OpenAI-compatible endpoint) based on configuration.
+
+See specs/chat-providers/providers.md for the full specification.
+"""
 from __future__ import annotations
 
 from src.config import ChatProviderConfig

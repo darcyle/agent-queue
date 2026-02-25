@@ -1,3 +1,13 @@
+"""Ollama chat provider using the OpenAI-compatible ``/v1`` endpoint.
+
+Ollama exposes an OpenAI-compatible API, so this provider uses the ``openai``
+Python SDK.  The main complexity is format conversion: the rest of the
+codebase uses Anthropic-style tool definitions and message structures, so
+this module translates between the two formats on every request and response.
+
+Useful for local or self-hosted LLM inference where Anthropic API access
+is unavailable or cost-prohibitive.
+"""
 from __future__ import annotations
 
 import json

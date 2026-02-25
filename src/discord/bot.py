@@ -1,3 +1,24 @@
+"""Discord integration layer -- connects the orchestrator to Discord via discord.py.
+
+AgentQueueBot extends ``commands.Bot`` with:
+- LLM-powered chat (via ChatAgent) that lets users interact with the orchestrator
+  through natural language
+- Per-project channel routing so each project's notifications land in the right place
+- Thread-based task output streaming (one Discord thread per agent execution)
+- Message history with compaction (older messages summarized, recent kept verbatim)
+
+Key design decision: the bot maintains in-memory channel caches
+(``_project_channels``, ``_channel_to_project``) for O(1) message routing.
+On startup, these are populated from the database via ``_resolve_project_channels``,
+and kept in sync at runtime when channels are created, reassigned, or deleted.
+
+Message flow::
+
+    Discord message -> on_message routing -> _build_message_history
+    -> ChatAgent.chat() -> tool-use loop -> _send_long_message -> Discord reply
+
+See specs/discord/discord.md for the full specification.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -19,6 +40,15 @@ RECENT_KEEP = 14           # Keep this many recent messages as-is after compacti
 
 
 class AgentQueueBot(commands.Bot):
+    """Discord bot that bridges user interaction to the AgentQueue orchestrator.
+
+    Responsibilities:
+    - Registers slash commands and an authorization guard on startup
+    - Resolves per-project Discord channels from the database for fast routing
+    - Sets orchestrator callbacks for notifications and thread creation
+    - Handles incoming messages: routes them through ChatAgent for LLM responses,
+      serializing concurrent requests per channel to avoid duplicate processing
+    """
     def __init__(self, config: AppConfig, orchestrator: Orchestrator):
         intents = discord.Intents.default()
         intents.message_content = True
@@ -338,14 +368,17 @@ class AgentQueueBot(commands.Bot):
         """Create a Discord thread for streaming agent output.
 
         Returns a tuple of two async callbacks:
-          (send_to_thread, notify_main_channel)
+          ``(send_to_thread, notify_main_channel)``
 
-        send_to_thread      — streams content into the thread.
-        notify_main_channel — posts a brief message to the notifications channel
-                              as a reply to the thread-root message, so the
-                              notification is visually linked to the thread.
+        The two-callback design separates concerns:
+        - ``send_to_thread`` streams verbose agent output into the thread,
+          keeping it contained and out of the main channel.
+        - ``notify_main_channel`` posts a brief completion/failure message as
+          a reply to the thread-root message, so the notification appears in
+          the main channel feed and is visually linked to the thread.
 
-        Returns None if the notifications channel is unavailable.
+        Returns ``None`` if no notifications channel is available (the
+        orchestrator checks for this before calling).
         """
         channel = self._get_channel(project_id)
         if not channel:
@@ -394,6 +427,22 @@ class AgentQueueBot(commands.Bot):
         return send_to_thread, notify_main_channel
 
     async def on_message(self, message: discord.Message) -> None:
+        """Route incoming Discord messages to the ChatAgent for LLM processing.
+
+        Routing logic (a message is handled if ANY of these match):
+        1. Posted in the global bot channel (configured in config.yaml)
+        2. Posted in a per-project channel (O(1) reverse lookup via _channel_to_project)
+        3. The bot is @mentioned anywhere in the guild
+        4. Posted in a registered notes thread
+
+        For project channels and notes threads, implicit project context is
+        injected into the prompt so the LLM defaults to the right project
+        without requiring the user to specify it every time.
+
+        Concurrency: a per-channel asyncio.Lock serializes LLM calls to
+        prevent duplicate or interleaved responses when messages arrive faster
+        than the LLM can respond.
+        """
         # Ignore own messages
         if message.author == self.user:
             return
@@ -518,9 +567,17 @@ class AgentQueueBot(commands.Bot):
     ) -> list[dict]:
         """Fetch recent channel messages and build LLM message history.
 
-        When history exceeds COMPACT_THRESHOLD, older messages are summarized
-        into a compact description so the LLM retains context without consuming
-        excessive tokens.
+        Uses a two-tier compaction strategy to balance context quality against
+        token cost:
+        - Messages beyond ``COMPACT_THRESHOLD`` are LLM-summarized into a single
+          compact paragraph (cached per channel to avoid re-summarizing).
+        - The most recent ``RECENT_KEEP`` messages are kept verbatim so the LLM
+          has full fidelity on the immediate conversation.
+        - Consecutive same-role messages are merged (Anthropic API requirement).
+
+        This means the LLM always sees "what happened earlier" (summary) plus
+        "what just happened" (recent verbatim), keeping context windows small
+        even in long-running channels.
         """
         raw: list[discord.Message] = []
         async for msg in channel.history(
