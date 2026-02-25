@@ -15,7 +15,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from src.discord.embeds import STATUS_COLORS, STATUS_EMOJIS
+from src.discord.embeds import (
+    STATUS_COLORS, STATUS_EMOJIS, TYPE_TAGS,
+    success_embed, error_embed, warning_embed, info_embed, status_embed,
+    truncate, progress_bar, format_tree_task,
+    TREE_PIPE, TREE_SPACE, LIMIT_FIELD_VALUE,
+)
 from src.models import TaskStatus
 
 _NOTES_PER_PAGE = 20  # Max note buttons (4 rows × 5 buttons)
@@ -341,10 +346,26 @@ def setup_commands(bot: commands.Bot) -> None:
         result = await handler.execute("get_task", {"task_id": task_id})
         if "error" in result:
             return None
+
+        # Build type tag prefix
+        tags = []
+        if result.get("is_plan_subtask"):
+            tags.append(TYPE_TAGS["plan_subtask"])
+        if result.get("subtasks"):
+            tags.append(TYPE_TAGS["has_subtasks"])
+        if result.get("pr_url"):
+            tags.append(TYPE_TAGS["has_pr"])
+        if result.get("requires_approval"):
+            tags.append(TYPE_TAGS["approval_required"])
+        tag_str = " ".join(tags) + " " if tags else ""
+
+        status = result['status']
+        emoji = STATUS_EMOJIS.get(status, "⚪")
+
         lines = [
-            f"## Task `{result['id']}`",
+            f"## {tag_str}Task `{result['id']}`",
             f"**Title:** {result['title']}",
-            f"**Status:** {result['status']}",
+            f"**Status:** {emoji} {status}",
             f"**Project:** `{result['project_id']}`",
             f"**Priority:** {result['priority']}",
         ]
@@ -352,6 +373,38 @@ def setup_commands(bot: commands.Bot) -> None:
             lines.append(f"**Agent:** {result['assigned_agent']}")
         if result.get("retry_count"):
             lines.append(f"**Retries:** {result['retry_count']} / {result['max_retries']}")
+        if result.get("parent_task_id"):
+            lines.append(f"**Parent Task:** `{result['parent_task_id']}`")
+        if result.get("pr_url"):
+            lines.append(f"**PR:** {result['pr_url']}")
+
+        # Dependency visualization
+        depends_on = result.get("depends_on", [])
+        if depends_on:
+            lines.append("\n**Depends On:**")
+            for dep in depends_on:
+                dep_emoji = STATUS_EMOJIS.get(dep["status"], "⚪")
+                lines.append(f"  {dep_emoji} `{dep['id']}` — {dep['title']} ({dep['status']})")
+
+        blocks = result.get("blocks", [])
+        if blocks:
+            lines.append("\n**Blocks:**")
+            for blk in blocks:
+                blk_emoji = STATUS_EMOJIS.get(blk["status"], "⚪")
+                lines.append(f"  {blk_emoji} `{blk['id']}` — {blk['title']} ({blk['status']})")
+
+        # Subtask tree view
+        subtasks = result.get("subtasks", [])
+        if subtasks:
+            completed = sum(1 for st in subtasks if st["status"] == "COMPLETED")
+            bar = progress_bar(completed, len(subtasks), width=8)
+            lines.append(f"\n**Subtasks:** {bar}")
+            for i, st in enumerate(subtasks):
+                is_last = (i == len(subtasks) - 1)
+                st_emoji = STATUS_EMOJIS.get(st["status"], "⚪")
+                connector = "└── " if is_last else "├── "
+                lines.append(f"  {connector}{st_emoji} `{st['id']}` — {st['title']}")
+
         desc = result.get("description", "")
         if desc:
             desc = desc if len(desc) <= 800 else desc[:800] + "..."
@@ -426,12 +479,31 @@ def setup_commands(bot: commands.Bot) -> None:
                 await interaction.followup.send(detail, ephemeral=True)
 
     class TaskReportView(discord.ui.View):
-        """Grouped task report with collapsible status sections and detail select."""
+        """Grouped task report with collapsible status sections and detail select.
 
-        def __init__(self, tasks_by_status: dict[str, list], total: int) -> None:
+        Displays tasks grouped by status with tree-view for parent/subtask
+        relationships and type tags for quick identification.
+        """
+
+        def __init__(
+            self,
+            tasks_by_status: dict[str, list],
+            total: int,
+            *,
+            all_tasks: list | None = None,
+        ) -> None:
             super().__init__(timeout=600)
             self.tasks_by_status = tasks_by_status
             self.total = total
+            # Build parent→subtask lookup for tree view
+            self._all_tasks = all_tasks or []
+            self._subtask_ids: set[str] = set()
+            self._children: dict[str, list] = {}  # parent_id → [child tasks]
+            for t in self._all_tasks:
+                pid = t.get("parent_task_id")
+                if pid:
+                    self._subtask_ids.add(t["id"])
+                    self._children.setdefault(pid, []).append(t)
             self.expanded: set[str] = set()
             for status in _DEFAULT_EXPANDED:
                 if status in tasks_by_status:
@@ -443,6 +515,17 @@ def setup_commands(bot: commands.Bot) -> None:
                         self.expanded.add(status)
                         break
             self._rebuild_components()
+
+        def _get_type_tag(self, task: dict) -> str:
+            """Return a type tag emoji based on task properties."""
+            tags = []
+            if task.get("is_plan_subtask"):
+                tags.append(TYPE_TAGS["plan_subtask"])
+            if task["id"] in self._children:
+                tags.append(TYPE_TAGS["has_subtasks"])
+            if task.get("pr_url"):
+                tags.append(TYPE_TAGS["has_pr"])
+            return "".join(tags)
 
         def _rebuild_components(self) -> None:
             self.clear_items()
@@ -462,6 +545,9 @@ def setup_commands(bot: commands.Bot) -> None:
                     if len(options) >= 25:
                         break
                     title = t["title"]
+                    tag = self._get_type_tag(t)
+                    if tag:
+                        title = f"{tag} {title}"
                     if len(title) > 95:
                         title = title[:92] + "..."
                     options.append(discord.SelectOption(
@@ -474,8 +560,52 @@ def setup_commands(bot: commands.Bot) -> None:
             if options:
                 self.add_item(TaskDetailSelect(options))
 
+        def _format_task_line(self, t: dict, *, show_children: bool = True) -> list[str]:
+            """Format a task with optional tree-view subtasks."""
+            tag = self._get_type_tag(t)
+            tag_str = f"{tag} " if tag else ""
+            lines = [f"{tag_str}**{t['title']}** `{t['id']}`"]
+
+            # Show inline subtask count if parent has children
+            children = self._children.get(t["id"], [])
+            if children and show_children:
+                completed = sum(
+                    1 for c in children if c.get("status") == "COMPLETED"
+                )
+                total = len(children)
+                if total <= 4:
+                    # Show individual subtasks in tree view
+                    for i, child in enumerate(children):
+                        is_last = (i == total - 1)
+                        child_emoji = _STATUS_EMOJIS.get(child.get("status", ""), "⚪")
+                        connector = "└── " if is_last else "├── "
+                        child_tag = TYPE_TAGS["plan_subtask"] + " " if child.get("is_plan_subtask") else ""
+                        lines.append(
+                            f"  {connector}{child_emoji} {child_tag}{child['title']} `{child['id']}`"
+                        )
+                else:
+                    # Compact subtask summary
+                    bar = progress_bar(completed, total, width=6)
+                    lines.append(f"  └── {total} subtasks: {bar}")
+            return lines
+
         def build_content(self) -> str:
             lines: list[str] = []
+            # Add progress summary at top
+            all_count = sum(len(v) for v in self.tasks_by_status.values())
+            completed_count = len(self.tasks_by_status.get("COMPLETED", []))
+            active_statuses = {"IN_PROGRESS", "ASSIGNED", "VERIFYING"}
+            active_count = sum(
+                len(self.tasks_by_status.get(s, []))
+                for s in active_statuses
+            )
+            if all_count > 0:
+                bar = progress_bar(completed_count, all_count, width=10)
+                lines.append(f"**Progress:** {bar}")
+                if active_count:
+                    lines.append(f"**Active:** {active_count} task(s) running")
+                lines.append("")
+
             for status in _STATUS_ORDER:
                 if status not in self.tasks_by_status:
                     continue
@@ -487,7 +617,18 @@ def setup_commands(bot: commands.Bot) -> None:
                     lines.append(f"### {emoji} {display} ({count})")
                     shown = tasks[:_MAX_TASKS_PER_SECTION]
                     for t in shown:
-                        lines.append(f"**{t['title']}** `{t['id']}`")
+                        # Skip subtasks that are shown under their parent
+                        if t["id"] in self._subtask_ids:
+                            # Only skip if parent is in the same expanded section
+                            parent_id = t.get("parent_task_id")
+                            parent_in_section = any(
+                                pt["id"] == parent_id
+                                for pt in self.tasks_by_status.get(status, [])
+                            )
+                            if parent_in_section:
+                                continue
+                        task_lines = self._format_task_line(t)
+                        lines.extend(task_lines)
                     if count > _MAX_TASKS_PER_SECTION:
                         lines.append(
                             f"_...and {count - _MAX_TASKS_PER_SECTION} more_"
@@ -510,7 +651,9 @@ def setup_commands(bot: commands.Bot) -> None:
                         cap = 8
                         lines.append(f"### {emoji} {display} ({count})")
                         for t in tasks[:cap]:
-                            lines.append(f"**{t['title']}** `{t['id']}`")
+                            tag = self._get_type_tag(t)
+                            tag_str = f"{tag} " if tag else ""
+                            lines.append(f"{tag_str}**{t['title']}** `{t['id']}`")
                         if count > cap:
                             lines.append(f"_...and {count - cap} more_")
                         lines.append("")
@@ -556,6 +699,24 @@ def setup_commands(bot: commands.Bot) -> None:
             preview = text[:300].rstrip() + "\n\n*Full output attached.*"
             await send(preview, file=file)
 
+    async def _send_error(
+        interaction,
+        message: str,
+        *,
+        followup: bool = False,
+        ephemeral: bool = True,
+    ):
+        """Send an error response as a rich embed.
+
+        Replaces the plain-text ``f"Error: {msg}"`` pattern with a consistent
+        red embed, improving visual clarity in the Discord channel.
+        """
+        embed = error_embed("Error", description=message)
+        if followup:
+            await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+
     def _with_warning(msg: str, result: dict) -> str:
         """Append an in-progress task warning to *msg* if present in *result*."""
         warning = result.get("warning")
@@ -573,20 +734,30 @@ def setup_commands(bot: commands.Bot) -> None:
 
         tasks = result["tasks"]
         by_status = tasks.get("by_status", {})
+        total = tasks.get("total", 0)
+        completed = by_status.get("COMPLETED", 0)
+        in_progress = by_status.get("IN_PROGRESS", 0)
+        failed = by_status.get("FAILED", 0)
+
         lines = []
         if result.get("orchestrator_paused"):
             lines.append("⏸ **Orchestrator is PAUSED** — scheduling suspended")
             lines.append("")
-        lines += [
-            "## System Status",
-            f"**Tasks:** {tasks['total']} total — "
-            f"{by_status.get('IN_PROGRESS', 0)} active, "
+        lines.append("## System Status")
+
+        # Progress bar for overall completion
+        if total > 0:
+            bar = progress_bar(completed, total, width=12)
+            lines.append(f"**Progress:** {bar}")
+        lines.append(
+            f"**Tasks:** {total} total — "
+            f"{in_progress} active, "
             f"{by_status.get('READY', 0)} ready, "
-            f"{by_status.get('COMPLETED', 0)} completed, "
-            f"{by_status.get('FAILED', 0)} failed, "
-            f"{by_status.get('PAUSED', 0)} paused",
-            "",
-        ]
+            f"{completed} completed, "
+            f"{failed} failed, "
+            f"{by_status.get('PAUSED', 0)} paused"
+        )
+        lines.append("")
 
         # Agent details
         agents = result.get("agents", [])
@@ -852,12 +1023,16 @@ def setup_commands(bot: commands.Bot) -> None:
             return
 
         project_id = result["created"]
-        embed = discord.Embed(title="✅ Project Created", color=0x2ecc71)
-        embed.add_field(name="Name", value=name, inline=True)
-        embed.add_field(name="ID", value=f"`{project_id}`", inline=True)
-        embed.add_field(name="Weight", value=str(credit_weight), inline=True)
-        embed.add_field(name="Max Agents", value=str(max_concurrent_agents), inline=True)
-        embed.add_field(name="Workspace", value=f"`{result.get('workspace', '')}`", inline=False)
+        embed = success_embed(
+            "Project Created",
+            fields=[
+                ("Name", name, True),
+                ("ID", f"`{project_id}`", True),
+                ("Weight", str(credit_weight), True),
+                ("Max Agents", str(max_concurrent_agents), True),
+                ("Workspace", f"`{result.get('workspace', '')}`", False),
+            ],
+        )
 
         # Auto-create per-project channels when the handler says so.
         # The handler resolves the explicit param vs config flag for us.
@@ -1305,22 +1480,47 @@ def setup_commands(bot: commands.Bot) -> None:
     # ===================================================================
 
     @bot.tree.command(name="tasks", description="List tasks for a project")
-    async def tasks_command(interaction: discord.Interaction):
+    @app_commands.describe(
+        show_completed="Include completed tasks (default: hide completed)",
+    )
+    async def tasks_command(
+        interaction: discord.Interaction,
+        show_completed: bool = False,
+    ):
         project_id = await _resolve_project_from_context(interaction, None)
         args = {}
         if project_id:
             args["project_id"] = project_id
         result = await handler.execute("list_tasks", args)
-        tasks = result.get("tasks", [])
-        if not tasks:
-            await interaction.response.send_message("No tasks found.")
+        all_tasks = result.get("tasks", [])
+        if not all_tasks:
+            await interaction.response.send_message(
+                embed=info_embed("No Tasks", description="No tasks found for this project."),
+            )
             return
+        # Filter out completed tasks by default (active-only filter)
+        if show_completed:
+            tasks = all_tasks
+        else:
+            tasks = [t for t in all_tasks if t["status"] != "COMPLETED"]
+            if not tasks:
+                completed_count = len(all_tasks)
+                await interaction.response.send_message(
+                    embed=success_embed(
+                        "All Tasks Completed",
+                        description=(
+                            f"All {completed_count} task(s) are completed. "
+                            f"Use `/tasks show_completed:True` to view them."
+                        ),
+                    ),
+                )
+                return
         # Group tasks by status
         tasks_by_status: dict[str, list] = {}
         for t in tasks:
             tasks_by_status.setdefault(t["status"], []).append(t)
-        total = result.get("total", len(tasks))
-        view = TaskReportView(tasks_by_status, total)
+        total = result.get("total", len(all_tasks))
+        view = TaskReportView(tasks_by_status, total, all_tasks=all_tasks)
         content = view.build_content()
         await interaction.response.send_message(content, view=view)
 
@@ -1329,7 +1529,10 @@ def setup_commands(bot: commands.Bot) -> None:
     async def task_command(interaction: discord.Interaction, task_id: str):
         detail = await _format_task_detail(task_id)
         if detail is None:
-            await interaction.response.send_message(f"Task `{task_id}` not found.", ephemeral=True)
+            await interaction.response.send_message(
+                embed=error_embed("Task Not Found", description=f"Task `{task_id}` was not found."),
+                ephemeral=True,
+            )
             return
         await interaction.response.send_message(detail)
 
@@ -1348,14 +1551,18 @@ def setup_commands(bot: commands.Bot) -> None:
             "description": description,
         })
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
-        embed = discord.Embed(title="✅ Task Added", color=0x2ecc71)
-        embed.add_field(name="ID", value=f"`{result['created']}`", inline=True)
-        embed.add_field(name="Project", value=f"`{result['project_id']}`", inline=True)
-        embed.add_field(name="Status", value="🔵 READY", inline=True)
-        desc_preview = description if len(description) <= 1024 else description[:1021] + "..."
-        embed.add_field(name="Description", value=desc_preview, inline=False)
+        desc_preview = truncate(description, LIMIT_FIELD_VALUE)
+        embed = success_embed(
+            "Task Added",
+            fields=[
+                ("ID", f"`{result['created']}`", True),
+                ("Project", f"`{result['project_id']}`", True),
+                ("Status", "🔵 READY", True),
+                ("Description", desc_preview, False),
+            ],
+        )
         await interaction.response.send_message(embed=embed)
 
     @bot.tree.command(name="edit-task", description="Edit a task's title, description, or priority")
@@ -1381,7 +1588,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["priority"] = priority
         result = await handler.execute("edit_task", args)
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         fields = ", ".join(result.get("fields", []))
         await interaction.response.send_message(
@@ -1393,7 +1600,7 @@ def setup_commands(bot: commands.Bot) -> None:
     async def stop_task_command(interaction: discord.Interaction, task_id: str):
         result = await handler.execute("stop_task", {"task_id": task_id})
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         await interaction.response.send_message(f"⏹ Task `{task_id}` stopped.")
 
@@ -1402,7 +1609,7 @@ def setup_commands(bot: commands.Bot) -> None:
     async def restart_task_command(interaction: discord.Interaction, task_id: str):
         result = await handler.execute("restart_task", {"task_id": task_id})
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         await interaction.response.send_message(
             f"🔄 Task `{task_id}` restarted ({result.get('previous_status', '?')} → READY)"
@@ -1413,7 +1620,7 @@ def setup_commands(bot: commands.Bot) -> None:
     async def delete_task_command(interaction: discord.Interaction, task_id: str):
         result = await handler.execute("delete_task", {"task_id": task_id})
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         await interaction.response.send_message(
             f"🗑️ Task `{task_id}` ({result.get('title', '')}) deleted."
@@ -1424,7 +1631,7 @@ def setup_commands(bot: commands.Bot) -> None:
     async def approve_task_command(interaction: discord.Interaction, task_id: str):
         result = await handler.execute("approve_task", {"task_id": task_id})
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         await interaction.response.send_message(
             f"✅ Task `{task_id}` ({result.get('title', '')}) approved and completed."
@@ -1438,7 +1645,7 @@ def setup_commands(bot: commands.Bot) -> None:
     async def skip_task_command(interaction: discord.Interaction, task_id: str):
         result = await handler.execute("skip_task", {"task_id": task_id})
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         unblocked_count = result.get("unblocked_count", 0)
         msg = f"⏭️ Task `{task_id}` skipped (marked COMPLETED)."
@@ -1468,7 +1675,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["project_id"] = project_id
         result = await handler.execute("get_chain_health", args)
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
 
         if "task_id" in result:
@@ -1530,25 +1737,19 @@ def setup_commands(bot: commands.Bot) -> None:
             "status": status.value,
         })
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         old_status = result.get("old_status", "?")
         new_status = result.get("new_status", status.value)
-        old_emoji = _STATUS_EMOJIS.get(old_status, "❓")
-        new_emoji = _STATUS_EMOJIS.get(new_status, "❓")
-        embed = discord.Embed(
-            title="Task Status Updated",
-            color=_STATUS_COLORS.get(new_status, 0x95a5a6),
-        )
-        embed.add_field(
-            name="Task",
-            value=f"`{task_id}` — {result.get('title', '')}",
-            inline=False,
-        )
-        embed.add_field(
-            name="Status Change",
-            value=f"{old_emoji} **{old_status}** → {new_emoji} **{new_status}**",
-            inline=False,
+        old_emoji = STATUS_EMOJIS.get(old_status, "❓")
+        new_emoji = STATUS_EMOJIS.get(new_status, "❓")
+        embed = status_embed(
+            new_status,
+            "Task Status Updated",
+            fields=[
+                ("Task", f"`{task_id}` — {result.get('title', '')}", False),
+                ("Status Change", f"{old_emoji} **{old_status}** → {new_emoji} **{new_status}**", False),
+            ],
         )
         await interaction.response.send_message(embed=embed)
 
@@ -1558,30 +1759,31 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.response.defer(ephemeral=True)
         result = await handler.execute("get_task_result", {"task_id": task_id})
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
-        embed = discord.Embed(
-            title=f"Task Result: {task_id}",
-            color=0x2ecc71 if result.get("result") == "completed" else 0xe74c3c,
-        )
-        embed.add_field(name="Result", value=result.get("result", "unknown"), inline=True)
+        fields: list[tuple[str, str, bool]] = [
+            ("Result", result.get("result", "unknown"), True),
+        ]
         summary = result.get("summary") or ""
         if summary:
-            summary_text = summary[:1000] + ("…" if len(summary) > 1000 else "")
-            embed.add_field(name="Summary", value=summary_text, inline=False)
+            fields.append(("Summary", truncate(summary, LIMIT_FIELD_VALUE), False))
         files = result.get("files_changed") or []
         if files:
             file_list = "\n".join(f"• `{f}`" for f in files[:20])
             if len(files) > 20:
                 file_list += f"\n_...and {len(files) - 20} more_"
-            embed.add_field(name="Files Changed", value=file_list, inline=False)
+            fields.append(("Files Changed", truncate(file_list, LIMIT_FIELD_VALUE), False))
         tokens = result.get("tokens_used", 0)
         if tokens:
-            embed.add_field(name="Tokens Used", value=f"{tokens:,}", inline=True)
+            fields.append(("Tokens Used", f"{tokens:,}", True))
         error_msg = result.get("error_message") or ""
         if error_msg:
-            snippet = error_msg[:500] + ("…" if len(error_msg) > 500 else "")
-            embed.add_field(name="Error", value=f"```\n{snippet}\n```", inline=False)
+            snippet = truncate(error_msg, 500)
+            fields.append(("Error", f"```\n{snippet}\n```", False))
+        if result.get("result") == "completed":
+            embed = success_embed(f"Task Result: {task_id}", fields=fields)
+        else:
+            embed = error_embed(f"Task Result: {task_id}", fields=fields)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @bot.tree.command(name="task-diff", description="Show the git diff for a task's branch")
@@ -1590,7 +1792,7 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.response.defer(ephemeral=True)
         result = await handler.execute("get_task_diff", {"task_id": task_id})
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         diff = result.get("diff", "(no changes)")
         branch = result.get("branch", "?")
@@ -1618,47 +1820,36 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.response.defer(ephemeral=True)
         result = await handler.execute("get_agent_error", {"task_id": task_id})
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
-        embed = discord.Embed(
-            title=f"Agent Error Report: {task_id}",
-            color=0xe74c3c,
-        )
-        embed.add_field(name="Task", value=result.get("title", ""), inline=False)
-        embed.add_field(name="Status", value=result.get("status", ""), inline=True)
-        embed.add_field(name="Retries", value=result.get("retries", ""), inline=True)
+        fields: list[tuple[str, str, bool]] = [
+            ("Task", result.get("title", ""), False),
+            ("Status", result.get("status", ""), True),
+            ("Retries", result.get("retries", ""), True),
+        ]
 
         if result.get("message"):
-            embed.description = f"_{result['message']}_"
+            embed = error_embed(
+                f"Agent Error Report: {task_id}",
+                description=f"_{result['message']}_",
+                fields=fields,
+            )
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
-        embed.add_field(name="Result", value=result.get("result", "unknown"), inline=True)
-        embed.add_field(
-            name="Error Type",
-            value=f"**{result.get('error_type', 'unknown')}**",
-            inline=False,
-        )
+        fields.append(("Result", result.get("result", "unknown"), True))
+        fields.append(("Error Type", f"**{result.get('error_type', 'unknown')}**", False))
         error_msg = result.get("error_message") or ""
         if error_msg:
-            snippet = error_msg[:1000]
-            if len(error_msg) > 1000:
-                snippet += "\n… _(truncated)_"
-            embed.add_field(name="Error Detail", value=f"```\n{snippet}\n```", inline=False)
+            snippet = truncate(error_msg, 990)
+            fields.append(("Error Detail", f"```\n{snippet}\n```", False))
         else:
-            embed.add_field(name="Error Detail", value="_No error message recorded._", inline=False)
-        embed.add_field(
-            name="Suggested Fix",
-            value=result.get("suggested_fix", "Review the logs"),
-            inline=False,
-        )
+            fields.append(("Error Detail", "_No error message recorded._", False))
+        fields.append(("Suggested Fix", result.get("suggested_fix", "Review the logs"), False))
         summary = result.get("agent_summary") or ""
         if summary:
-            embed.add_field(
-                name="Agent Summary",
-                value=summary[:500] + ("…" if len(summary) > 500 else ""),
-                inline=False,
-            )
+            fields.append(("Agent Summary", truncate(summary, 500), False))
+        embed = error_embed(f"Agent Error Report: {task_id}", fields=fields)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ===================================================================
@@ -1692,12 +1883,14 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
             return
-        embed = discord.Embed(title="✅ Agent Registered", color=0x2ecc71)
-        embed.add_field(name="Name", value=name, inline=True)
-        embed.add_field(name="ID", value=f"`{result['created']}`", inline=True)
-        embed.add_field(name="Type", value=args.get("agent_type", "claude"), inline=True)
+        agent_fields: list[tuple[str, str, bool]] = [
+            ("Name", name, True),
+            ("ID", f"`{result['created']}`", True),
+            ("Type", args.get("agent_type", "claude"), True),
+        ]
         if repo_id:
-            embed.add_field(name="Repo", value=f"`{repo_id}`", inline=True)
+            agent_fields.append(("Repo", f"`{repo_id}`", True))
+        embed = success_embed("Agent Registered", fields=agent_fields)
         await interaction.response.send_message(embed=embed)
 
     # ===================================================================
@@ -1771,10 +1964,14 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
             return
-        embed = discord.Embed(title="✅ Repo Registered", color=0x2ecc71)
-        embed.add_field(name="ID", value=f"`{result['created']}`", inline=True)
-        embed.add_field(name="Source", value=source.value, inline=True)
-        embed.add_field(name="Project", value=f"`{project_id}`", inline=True)
+        embed = success_embed(
+            "Repo Registered",
+            fields=[
+                ("ID", f"`{result['created']}`", True),
+                ("Source", source.value, True),
+                ("Project", f"`{project_id}`", True),
+            ],
+        )
         await interaction.response.send_message(embed=embed)
 
     # ===================================================================

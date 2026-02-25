@@ -9,6 +9,10 @@ rich Discord presentation — color-coded by severity, with structured fields fo
 task metadata.  The orchestrator passes both versions through the notification
 callback so the bot can choose the appropriate format.
 
+**Interactive views** (``TaskFailedView``, ``TaskApprovalView``) attach action
+buttons to notification embeds so users can retry, skip, or approve tasks
+directly from Discord without memorizing slash commands.
+
 ``classify_error`` pattern-matches raw error messages against known failure modes
 and returns an actionable fix suggestion -- this turns opaque stack traces into
 guidance the user can act on immediately from Discord.
@@ -428,3 +432,262 @@ def format_budget_warning_embed(
         fields=fields,
         color_override=color,
     )
+
+
+# ---------------------------------------------------------------------------
+# Interactive action views for notification embeds
+# ---------------------------------------------------------------------------
+
+
+class TaskFailedView(discord.ui.View):
+    """Action buttons attached to failed task notifications.
+
+    Provides one-click Retry and Skip buttons so the user doesn't
+    have to remember ``/restart-task`` or ``/skip-task`` slash commands.
+    The handler is passed at creation time and called when buttons are pressed.
+    """
+
+    def __init__(self, task_id: str, handler=None) -> None:
+        super().__init__(timeout=3600)  # 1 hour
+        self.task_id = task_id
+        self._handler = handler
+
+    @discord.ui.button(
+        label="Retry Task",
+        style=discord.ButtonStyle.primary,
+        emoji="🔄",
+    )
+    async def retry_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not self._handler:
+            await interaction.response.send_message(
+                "Handler not available.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute(
+            "restart_task", {"task_id": self.task_id}
+        )
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not restart: {result['error']}", ephemeral=True
+            )
+        else:
+            prev = result.get("previous_status", "?")
+            await interaction.followup.send(
+                f"🔄 Task `{self.task_id}` restarted ({prev} → READY)",
+                ephemeral=True,
+            )
+            # Disable buttons after action
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+
+    @discord.ui.button(
+        label="Skip Task",
+        style=discord.ButtonStyle.secondary,
+        emoji="⏭️",
+    )
+    async def skip_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not self._handler:
+            await interaction.response.send_message(
+                "Handler not available.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute(
+            "skip_task", {"task_id": self.task_id}
+        )
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not skip: {result['error']}", ephemeral=True
+            )
+        else:
+            unblocked = result.get("unblocked_count", 0)
+            msg = f"⏭️ Task `{self.task_id}` skipped."
+            if unblocked:
+                msg += f" {unblocked} task(s) unblocked."
+            await interaction.followup.send(msg, ephemeral=True)
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+
+    @discord.ui.button(
+        label="View Error",
+        style=discord.ButtonStyle.secondary,
+        emoji="🔍",
+    )
+    async def view_error_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not self._handler:
+            await interaction.response.send_message(
+                "Handler not available.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute(
+            "get_agent_error", {"task_id": self.task_id}
+        )
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not fetch error: {result['error']}", ephemeral=True
+            )
+        else:
+            error_msg = result.get("error_message") or "No error message recorded."
+            snippet = error_msg[:1800]
+            if len(error_msg) > 1800:
+                snippet += "\n… _(truncated)_"
+            await interaction.followup.send(
+                f"**Error for `{self.task_id}`:**\n```\n{snippet}\n```",
+                ephemeral=True,
+            )
+
+
+class TaskApprovalView(discord.ui.View):
+    """Action buttons attached to PR-created / awaiting-approval notifications.
+
+    Provides one-click Approve and Restart buttons for tasks in
+    AWAITING_APPROVAL status.
+    """
+
+    def __init__(self, task_id: str, handler=None) -> None:
+        super().__init__(timeout=86400)  # 24 hours
+        self.task_id = task_id
+        self._handler = handler
+
+    @discord.ui.button(
+        label="Approve",
+        style=discord.ButtonStyle.success,
+        emoji="✅",
+    )
+    async def approve_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not self._handler:
+            await interaction.response.send_message(
+                "Handler not available.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute(
+            "approve_task", {"task_id": self.task_id}
+        )
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not approve: {result['error']}", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"✅ Task `{self.task_id}` approved and completed.",
+                ephemeral=True,
+            )
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+
+    @discord.ui.button(
+        label="Restart",
+        style=discord.ButtonStyle.secondary,
+        emoji="🔄",
+    )
+    async def restart_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not self._handler:
+            await interaction.response.send_message(
+                "Handler not available.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute(
+            "restart_task", {"task_id": self.task_id}
+        )
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not restart: {result['error']}", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"🔄 Task `{self.task_id}` restarted → READY",
+                ephemeral=True,
+            )
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+
+
+class TaskBlockedView(discord.ui.View):
+    """Action buttons for blocked task notifications.
+
+    Provides Restart and Skip buttons for tasks that have exhausted retries.
+    """
+
+    def __init__(self, task_id: str, handler=None) -> None:
+        super().__init__(timeout=86400)  # 24 hours
+        self.task_id = task_id
+        self._handler = handler
+
+    @discord.ui.button(
+        label="Restart Task",
+        style=discord.ButtonStyle.primary,
+        emoji="🔄",
+    )
+    async def restart_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not self._handler:
+            await interaction.response.send_message(
+                "Handler not available.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute(
+            "restart_task", {"task_id": self.task_id}
+        )
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not restart: {result['error']}", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"🔄 Task `{self.task_id}` restarted → READY",
+                ephemeral=True,
+            )
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+
+    @discord.ui.button(
+        label="Skip Task",
+        style=discord.ButtonStyle.secondary,
+        emoji="⏭️",
+    )
+    async def skip_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not self._handler:
+            await interaction.response.send_message(
+                "Handler not available.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute(
+            "skip_task", {"task_id": self.task_id}
+        )
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not skip: {result['error']}", ephemeral=True
+            )
+        else:
+            unblocked = result.get("unblocked_count", 0)
+            msg = f"⏭️ Task `{self.task_id}` skipped."
+            if unblocked:
+                msg += f" {unblocked} task(s) unblocked."
+            await interaction.followup.send(msg, ephemeral=True)
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)

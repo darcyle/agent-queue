@@ -498,6 +498,10 @@ class CommandHandler:
                     "status": t.status.value,
                     "priority": t.priority,
                     "assigned_agent": t.assigned_agent_id,
+                    "parent_task_id": t.parent_task_id,
+                    "is_plan_subtask": t.is_plan_subtask,
+                    "pr_url": t.pr_url,
+                    "requires_approval": t.requires_approval,
                 }
                 for t in tasks[:200]
             ],
@@ -559,9 +563,51 @@ class CommandHandler:
             "retry_count": task.retry_count,
             "max_retries": task.max_retries,
             "requires_approval": task.requires_approval,
+            "is_plan_subtask": task.is_plan_subtask,
+            "parent_task_id": task.parent_task_id,
         }
         if task.pr_url:
             info["pr_url"] = task.pr_url
+
+        # Dependency visualization: show what this task depends on and blocks
+        deps = await self.db.get_dependencies(task.id)
+        if deps:
+            dep_details = []
+            for dep_id in deps:
+                dep_task = await self.db.get_task(dep_id)
+                if dep_task:
+                    dep_details.append({
+                        "id": dep_task.id,
+                        "title": dep_task.title,
+                        "status": dep_task.status.value,
+                    })
+            info["depends_on"] = dep_details
+
+        dependents = await self.db.get_dependents(task.id)
+        if dependents:
+            dep_details = []
+            for dep_id in dependents:
+                dep_task = await self.db.get_task(dep_id)
+                if dep_task:
+                    dep_details.append({
+                        "id": dep_task.id,
+                        "title": dep_task.title,
+                        "status": dep_task.status.value,
+                    })
+            info["blocks"] = dep_details
+
+        # Subtask info
+        subtasks = await self.db.get_subtasks(task.id)
+        if subtasks:
+            info["subtasks"] = [
+                {
+                    "id": st.id,
+                    "title": st.title,
+                    "status": st.status.value,
+                }
+                for st in subtasks
+            ]
+
         return info
 
     async def _cmd_edit_task(self, args: dict) -> dict:
