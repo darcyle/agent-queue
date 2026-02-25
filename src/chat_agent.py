@@ -263,7 +263,11 @@ TOOLS = [
             "List active tasks across ALL projects, grouped by project. "
             "Returns only non-terminal tasks (excludes COMPLETED, FAILED, "
             "BLOCKED) by default. Use this when the user wants a cross-project "
-            "overview of everything that is queued, in-progress, or actionable."
+            "overview of everything that is queued, in-progress, or actionable. "
+            "Response includes 'by_project' (grouped), 'tasks' (flat list), "
+            "'total', 'project_count', and 'hidden_completed' (number of "
+            "terminal tasks not shown). When presenting results, say "
+            "'N active tasks across M projects'."
         ),
         "input_schema": {
             "type": "object",

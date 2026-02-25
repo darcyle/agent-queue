@@ -1670,45 +1670,65 @@ def setup_commands(bot: commands.Bot) -> None:
 
         by_project: dict[str, list] = result.get("by_project", {})
         total = result.get("total", 0)
+        hidden = result.get("hidden_completed", 0)
 
         if total == 0:
-            msg = (
+            desc = (
                 "No active tasks across any project."
                 if not show_completed
                 else "No tasks found across any project."
             )
+            if hidden > 0:
+                desc += (
+                    f"\n\n_{hidden} completed/failed task(s) hidden — "
+                    f"use `/active-tasks show_completed:True` to view._"
+                )
             await interaction.response.send_message(
-                embed=info_embed("No Tasks", description=msg),
+                embed=info_embed("No Tasks", description=desc),
             )
             return
 
-        # Build a grouped message: one section per project.
+        # Build embed with one field per project (up to 25 field limit).
         label = "tasks" if show_completed else "active tasks"
-        lines: list[str] = [
-            f"**{total} {label}** across **{len(by_project)} project(s)**\n",
-        ]
+        description = f"**{total} {label}** across **{len(by_project)} project(s)**"
+        if hidden > 0:
+            description += f"\n_{hidden} completed/failed task(s) hidden_"
 
+        # Build per-project fields. Each project gets one embed field.
+        # Cap tasks per project to fit within 1024-char field value limit.
+        fields: list[tuple[str, str, bool]] = []
+        max_tasks_per_field = 12  # keep field values well under 1024 chars
         for project_id in sorted(by_project.keys()):
             project_tasks = by_project[project_id]
-            lines.append(f"### `{project_id}` ({len(project_tasks)})")
-            for t in project_tasks[:15]:  # cap per-project to stay within limits
+            task_lines: list[str] = []
+            for t in project_tasks[:max_tasks_per_field]:
                 emoji = STATUS_EMOJIS.get(t["status"], "\u26AA")
                 title = t["title"]
-                if len(title) > 80:
-                    title = title[:77] + "..."
+                if len(title) > 60:
+                    title = title[:57] + "..."
                 agent_info = ""
                 if t.get("assigned_agent"):
                     agent_info = f" \u2190 `{t['assigned_agent']}`"
-                lines.append(f"{emoji} **{title}** `{t['id']}`{agent_info}")
-            if len(project_tasks) > 15:
-                lines.append(f"_...and {len(project_tasks) - 15} more_")
-            lines.append("")
+                task_lines.append(f"{emoji} **{title}** `{t['id']}`{agent_info}")
+            if len(project_tasks) > max_tasks_per_field:
+                task_lines.append(
+                    f"_...and {len(project_tasks) - max_tasks_per_field} more_"
+                )
+            field_value = "\n".join(task_lines)
+            # Truncate field value to Discord's limit as a safety net
+            field_value = truncate(field_value, LIMIT_FIELD_VALUE)
+            fields.append((
+                f"`{project_id}` ({len(project_tasks)})",
+                field_value,
+                False,  # not inline — each project gets a full-width field
+            ))
 
-        content = "\n".join(lines)
-        # Truncate if over Discord's 2000-char message limit
-        if len(content) > 1950:
-            content = content[:1947] + "..."
-        await interaction.response.send_message(content)
+        embed = info_embed(
+            "Active Tasks — All Projects",
+            description=description,
+            fields=fields,
+        )
+        await interaction.response.send_message(embed=embed)
 
     @bot.tree.command(name="task", description="Show full details of a task")
     @app_commands.describe(task_id="Task ID")

@@ -528,6 +528,75 @@ class Database:
         rows = await cursor.fetchall()
         return [self._row_to_task(r) for r in rows]
 
+    async def list_active_tasks(
+        self,
+        project_id: str | None = None,
+        exclude_statuses: set[TaskStatus] | None = None,
+    ) -> list[Task]:
+        """List non-terminal tasks, optionally filtered by project.
+
+        Unlike :meth:`list_tasks`, this method performs status filtering at the
+        SQL level so the database only returns actionable rows.  This is more
+        efficient for cross-project overviews where the majority of historical
+        tasks may be completed.
+
+        Parameters
+        ----------
+        project_id:
+            Optional project filter.  When *None*, tasks from **all** projects
+            are returned.
+        exclude_statuses:
+            Set of :class:`TaskStatus` values to exclude.  Defaults to the
+            three terminal statuses: COMPLETED, FAILED, BLOCKED.
+        """
+        if exclude_statuses is None:
+            exclude_statuses = {
+                TaskStatus.COMPLETED,
+                TaskStatus.FAILED,
+                TaskStatus.BLOCKED,
+            }
+
+        conditions: list[str] = []
+        vals: list = []
+
+        if exclude_statuses:
+            placeholders = ", ".join("?" for _ in exclude_statuses)
+            conditions.append(f"status NOT IN ({placeholders})")
+            vals.extend(s.value for s in exclude_statuses)
+
+        if project_id:
+            conditions.append("project_id = ?")
+            vals.append(project_id)
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = await self._db.execute(
+            f"SELECT * FROM tasks {where} ORDER BY priority ASC, created_at ASC",
+            vals,
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_task(r) for r in rows]
+
+    async def count_tasks_by_status(
+        self,
+        project_id: str | None = None,
+    ) -> dict[str, int]:
+        """Return a {status_value: count} mapping for quick summary stats.
+
+        Useful for reporting how many tasks were hidden when filtering.
+        """
+        conditions: list[str] = []
+        vals: list = []
+        if project_id:
+            conditions.append("project_id = ?")
+            vals.append(project_id)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = await self._db.execute(
+            f"SELECT status, COUNT(*) as cnt FROM tasks {where} GROUP BY status",
+            vals,
+        )
+        rows = await cursor.fetchall()
+        return {r["status"]: r["cnt"] for r in rows}
+
     async def update_task(self, task_id: str, **kwargs) -> None:
         sets = []
         vals = []

@@ -535,53 +535,60 @@ class CommandHandler:
         queued, in-progress, or otherwise actionable.  Terminal statuses
         (COMPLETED, FAILED, BLOCKED) are excluded by default but can be
         included via ``include_completed=True``.
-        """
-        # Fetch all tasks across every project (no project_id filter).
-        tasks = await self.db.list_tasks()
 
-        _terminal = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED}
+        Uses ``Database.list_active_tasks()`` for SQL-level filtering when
+        showing only active tasks, avoiding the need to fetch and discard
+        potentially large numbers of completed tasks.
+        """
         include_completed = args.get("include_completed", False)
+
+        if include_completed:
+            # Caller wants everything -- no status filtering.
+            tasks = await self.db.list_tasks()
+        else:
+            # SQL-level filtering excludes terminal statuses.
+            tasks = await self.db.list_active_tasks()
+
+        # Compute how many terminal tasks were hidden (for UI hints).
+        hidden_completed = 0
         if not include_completed:
-            tasks = [t for t in tasks if t.status not in _terminal]
+            status_counts = await self.db.count_tasks_by_status()
+            _terminal_values = {"COMPLETED", "FAILED", "BLOCKED"}
+            hidden_completed = sum(
+                cnt for st, cnt in status_counts.items() if st in _terminal_values
+            )
+
+        # Build a task-entry dict (reused for both grouped and flat views).
+        def _entry(t: Task, *, include_project: bool = False) -> dict:
+            d: dict = {
+                "id": t.id,
+                "title": t.title,
+                "status": t.status.value,
+                "priority": t.priority,
+                "assigned_agent": t.assigned_agent_id,
+                "parent_task_id": t.parent_task_id,
+                "is_plan_subtask": t.is_plan_subtask,
+                "pr_url": t.pr_url,
+                "requires_approval": t.requires_approval,
+            }
+            if include_project:
+                d["project_id"] = t.project_id
+            return d
 
         # Group by project_id for readability.
         by_project: dict[str, list[dict]] = {}
         for t in tasks:
-            entry = {
-                "id": t.id,
-                "title": t.title,
-                "status": t.status.value,
-                "priority": t.priority,
-                "assigned_agent": t.assigned_agent_id,
-                "parent_task_id": t.parent_task_id,
-                "is_plan_subtask": t.is_plan_subtask,
-                "pr_url": t.pr_url,
-                "requires_approval": t.requires_approval,
-            }
-            by_project.setdefault(t.project_id, []).append(entry)
+            by_project.setdefault(t.project_id, []).append(_entry(t))
 
         # Also build a flat list (capped at 200) for simple consumers.
-        flat = [
-            {
-                "id": t.id,
-                "project_id": t.project_id,
-                "title": t.title,
-                "status": t.status.value,
-                "priority": t.priority,
-                "assigned_agent": t.assigned_agent_id,
-                "parent_task_id": t.parent_task_id,
-                "is_plan_subtask": t.is_plan_subtask,
-                "pr_url": t.pr_url,
-                "requires_approval": t.requires_approval,
-            }
-            for t in tasks[:200]
-        ]
+        flat = [_entry(t, include_project=True) for t in tasks[:200]]
 
         return {
             "by_project": by_project,
             "tasks": flat,
             "total": len(tasks),
             "project_count": len(by_project),
+            "hidden_completed": hidden_completed,
         }
 
     async def _cmd_create_task(self, args: dict) -> dict:
