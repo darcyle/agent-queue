@@ -702,6 +702,52 @@ class Database:
         rows = await cursor.fetchall()
         return [self._row_to_task(r) for r in rows]
 
+    async def get_task_tree(self, root_task_id: str) -> dict | None:
+        """Return a nested dict representing the full task hierarchy.
+
+        The root task is fetched by *root_task_id*, then all descendants are
+        collected recursively via :meth:`get_subtasks`.
+
+        Returns a dict of the form::
+
+            {
+                "task": <Task>,
+                "children": [
+                    {"task": <Task>, "children": [...]},
+                    ...
+                ],
+            }
+
+        Returns ``None`` if the root task does not exist.
+        """
+        root = await self.get_task(root_task_id)
+        if root is None:
+            return None
+
+        async def _build_subtree(task: Task) -> dict:
+            children = await self.get_subtasks(task.id)
+            return {
+                "task": task,
+                "children": [await _build_subtree(c) for c in children],
+            }
+
+        return await _build_subtree(root)
+
+    async def get_parent_tasks(self, project_id: str) -> list[Task]:
+        """Return top-level tasks for a project (those with no parent).
+
+        A "parent task" here means a task whose ``parent_task_id`` is NULL --
+        i.e. it is not a subtask of any other task. Ordered by priority then
+        creation time, matching :meth:`list_tasks` ordering.
+        """
+        cursor = await self._db.execute(
+            "SELECT * FROM tasks WHERE project_id = ? AND parent_task_id IS NULL "
+            "ORDER BY priority ASC, created_at ASC",
+            (project_id,),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_task(r) for r in rows]
+
     def _row_to_task(self, row) -> Task:
         keys = row.keys()
         return Task(
@@ -886,6 +932,11 @@ class Database:
         await self._db.execute(
             f"UPDATE agents SET {', '.join(sets)} WHERE id = ?", vals
         )
+        await self._db.commit()
+
+    async def delete_agent(self, agent_id: str) -> None:
+        """Delete an agent record. Caller should remove workspaces first."""
+        await self._db.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
         await self._db.commit()
 
     def _row_to_agent(self, row) -> Agent:
