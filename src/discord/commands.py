@@ -1618,38 +1618,97 @@ def setup_commands(bot: commands.Bot) -> None:
         args = {}
         if project_id:
             args["project_id"] = project_id
+        # Delegate active/completed filtering to CommandHandler
+        args["include_completed"] = show_completed
         result = await handler.execute("list_tasks", args)
-        all_tasks = result.get("tasks", [])
-        if not all_tasks:
+        tasks = result.get("tasks", [])
+        if not tasks:
+            if not show_completed:
+                # Check if there are completed/terminal tasks being hidden
+                check_args = {**args, "include_completed": True}
+                check_result = await handler.execute("list_tasks", check_args)
+                total_count = check_result.get("total", 0)
+                if total_count > 0:
+                    await interaction.response.send_message(
+                        embed=success_embed(
+                            "All Tasks Completed",
+                            description=(
+                                f"All {total_count} task(s) are completed. "
+                                f"Use `/tasks show_completed:True` to view them."
+                            ),
+                        ),
+                    )
+                    return
             await interaction.response.send_message(
                 embed=info_embed("No Tasks", description="No tasks found for this project."),
             )
             return
-        # Filter out completed tasks by default (active-only filter)
-        if show_completed:
-            tasks = all_tasks
-        else:
-            tasks = [t for t in all_tasks if t["status"] != "COMPLETED"]
-            if not tasks:
-                completed_count = len(all_tasks)
-                await interaction.response.send_message(
-                    embed=success_embed(
-                        "All Tasks Completed",
-                        description=(
-                            f"All {completed_count} task(s) are completed. "
-                            f"Use `/tasks show_completed:True` to view them."
-                        ),
-                    ),
-                )
-                return
         # Group tasks by status
         tasks_by_status: dict[str, list] = {}
         for t in tasks:
             tasks_by_status.setdefault(t["status"], []).append(t)
-        total = result.get("total", len(all_tasks))
-        view = TaskReportView(tasks_by_status, total, all_tasks=all_tasks)
+        total = result.get("total", len(tasks))
+        view = TaskReportView(tasks_by_status, total, all_tasks=tasks)
         content = view.build_content()
         await interaction.response.send_message(content, view=view)
+
+    @bot.tree.command(
+        name="active-tasks",
+        description="List active tasks across ALL projects",
+    )
+    @app_commands.describe(
+        show_completed="Include completed/failed/blocked tasks (default: hide)",
+    )
+    async def active_tasks_command(
+        interaction: discord.Interaction,
+        show_completed: bool = False,
+    ):
+        result = await handler.execute(
+            "list_active_tasks_all_projects",
+            {"include_completed": show_completed},
+        )
+
+        by_project: dict[str, list] = result.get("by_project", {})
+        total = result.get("total", 0)
+
+        if total == 0:
+            msg = (
+                "No active tasks across any project."
+                if not show_completed
+                else "No tasks found across any project."
+            )
+            await interaction.response.send_message(
+                embed=info_embed("No Tasks", description=msg),
+            )
+            return
+
+        # Build a grouped message: one section per project.
+        label = "tasks" if show_completed else "active tasks"
+        lines: list[str] = [
+            f"**{total} {label}** across **{len(by_project)} project(s)**\n",
+        ]
+
+        for project_id in sorted(by_project.keys()):
+            project_tasks = by_project[project_id]
+            lines.append(f"### `{project_id}` ({len(project_tasks)})")
+            for t in project_tasks[:15]:  # cap per-project to stay within limits
+                emoji = STATUS_EMOJIS.get(t["status"], "\u26AA")
+                title = t["title"]
+                if len(title) > 80:
+                    title = title[:77] + "..."
+                agent_info = ""
+                if t.get("assigned_agent"):
+                    agent_info = f" \u2190 `{t['assigned_agent']}`"
+                lines.append(f"{emoji} **{title}** `{t['id']}`{agent_info}")
+            if len(project_tasks) > 15:
+                lines.append(f"_...and {len(project_tasks) - 15} more_")
+            lines.append("")
+
+        content = "\n".join(lines)
+        # Truncate if over Discord's 2000-char message limit
+        if len(content) > 1950:
+            content = content[:1947] + "..."
+        await interaction.response.send_message(content)
 
     @bot.tree.command(name="task", description="Show full details of a task")
     @app_commands.describe(task_id="Task ID")

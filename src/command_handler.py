@@ -528,6 +528,62 @@ class CommandHandler:
             "total": len(tasks),
         }
 
+    async def _cmd_list_active_tasks_all_projects(self, args: dict) -> dict:
+        """List active (non-terminal) tasks across ALL projects, grouped by project.
+
+        This gives a cross-project overview of everything that is currently
+        queued, in-progress, or otherwise actionable.  Terminal statuses
+        (COMPLETED, FAILED, BLOCKED) are excluded by default but can be
+        included via ``include_completed=True``.
+        """
+        # Fetch all tasks across every project (no project_id filter).
+        tasks = await self.db.list_tasks()
+
+        _terminal = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED}
+        include_completed = args.get("include_completed", False)
+        if not include_completed:
+            tasks = [t for t in tasks if t.status not in _terminal]
+
+        # Group by project_id for readability.
+        by_project: dict[str, list[dict]] = {}
+        for t in tasks:
+            entry = {
+                "id": t.id,
+                "title": t.title,
+                "status": t.status.value,
+                "priority": t.priority,
+                "assigned_agent": t.assigned_agent_id,
+                "parent_task_id": t.parent_task_id,
+                "is_plan_subtask": t.is_plan_subtask,
+                "pr_url": t.pr_url,
+                "requires_approval": t.requires_approval,
+            }
+            by_project.setdefault(t.project_id, []).append(entry)
+
+        # Also build a flat list (capped at 200) for simple consumers.
+        flat = [
+            {
+                "id": t.id,
+                "project_id": t.project_id,
+                "title": t.title,
+                "status": t.status.value,
+                "priority": t.priority,
+                "assigned_agent": t.assigned_agent_id,
+                "parent_task_id": t.parent_task_id,
+                "is_plan_subtask": t.is_plan_subtask,
+                "pr_url": t.pr_url,
+                "requires_approval": t.requires_approval,
+            }
+            for t in tasks[:200]
+        ]
+
+        return {
+            "by_project": by_project,
+            "tasks": flat,
+            "total": len(tasks),
+            "project_count": len(by_project),
+        }
+
     async def _cmd_create_task(self, args: dict) -> dict:
         project_id = args.get("project_id")
         if not project_id:
