@@ -278,6 +278,55 @@ class GitManager:
             self._run(["merge", "--abort"], cwd=checkout_path)
             return False
 
+    def sync_and_merge(
+        self, checkout_path: str, branch_name: str,
+        default_branch: str = "main", max_retries: int = 1,
+    ) -> tuple[bool, str]:
+        """Pull latest main, merge branch, push. Returns (success, error_msg).
+
+        Encapsulates the full sync-merge-push flow as a single higher-level
+        operation.  Callers (e.g. the orchestrator) no longer need to
+        coordinate fetch / checkout / reset / merge / push individually.
+
+        Steps:
+          1. Fetch latest remote state.
+          2. Checkout the default branch and hard-reset to ``origin/<default_branch>``.
+          3. Attempt the merge; on conflict, abort and return early.
+          4. Push with up to *max_retries* retries.  On push failure (e.g.
+             another agent pushed in the meantime), pull --rebase and retry.
+             If all retries are exhausted, return a push failure message.
+        """
+        # 1. Fetch latest
+        self._run(["fetch", "origin"], cwd=checkout_path)
+
+        # 2. Checkout and hard-reset main to origin
+        self._run(["checkout", default_branch], cwd=checkout_path)
+        self._run(["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path)
+
+        # 3. Attempt merge
+        try:
+            self._run(["merge", branch_name], cwd=checkout_path)
+        except GitError:
+            self._run(["merge", "--abort"], cwd=checkout_path)
+            return (False, "merge_conflict")
+
+        # 4. Push with retry
+        for attempt in range(max_retries + 1):
+            try:
+                self._run(["push", "origin", default_branch], cwd=checkout_path)
+                return (True, "")
+            except GitError as e:
+                if attempt < max_retries:
+                    # Pull and retry
+                    self._run(
+                        ["pull", "--rebase", "origin", default_branch],
+                        cwd=checkout_path,
+                    )
+                else:
+                    return (False, f"push_failed: {e}")
+
+        return (False, "push_failed_exhausted")
+
     def delete_branch(
         self, checkout_path: str, branch_name: str, *, delete_remote: bool = True,
     ) -> None:
