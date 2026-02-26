@@ -37,6 +37,12 @@ Resolved gaps:
     path and rebases existing branches on retry. ``switch_to_branch`` also
     rebases onto ``origin/<default_branch>`` after switching.
 
+Resolved gaps (continued):
+  - **G3 (resolved):** ``sync_and_merge`` now attempts rebase-before-merge
+    when a direct merge fails with conflicts.  The task branch is rebased
+    onto ``origin/<default_branch>`` and the merge retried.  If the rebase
+    itself conflicts, the original ``merge_conflict`` error is returned.
+
 Remaining gaps (see specs/git/git.md §11 for the full catalogue):
   - **G5:** ``push_branch`` uses plain push; should use ``--force-with-lease``
     for idempotent retries of PR branches.
@@ -264,8 +270,9 @@ class GitManager:
         local default branch matches the remote even when other agents have
         pushed since the last fetch (resolves **Gap G1**).
 
-        .. note:: **Gap G3** — On conflict this method aborts the merge and
-           returns False. There is no automated rebase-and-retry strategy.
+        .. note:: For rebase-before-merge conflict resolution, use
+           :meth:`sync_and_merge` which attempts a rebase of the task branch
+           onto ``origin/<default_branch>`` when the direct merge fails.
         """
         self._run(["checkout", default_branch], cwd=checkout_path)
         # Pull latest remote state before merging so we don't merge into
@@ -281,6 +288,34 @@ class GitManager:
             self._run(["merge", "--abort"], cwd=checkout_path)
             return False
 
+    def _try_rebase_branch(
+        self, checkout_path: str, branch_name: str,
+        default_branch: str = "main",
+    ) -> bool:
+        """Rebase a task branch onto ``origin/<default_branch>``.
+
+        Switches to the task branch, attempts the rebase, and returns
+        True if the rebase completed cleanly.  On conflict the rebase is
+        aborted and the method returns False — the branch is left in its
+        original state.
+
+        After a successful rebase the caller is responsible for switching
+        back to the default branch before retrying the merge.
+        """
+        self._run(["checkout", branch_name], cwd=checkout_path)
+        try:
+            self._run(
+                ["rebase", f"origin/{default_branch}"], cwd=checkout_path,
+            )
+            return True
+        except GitError:
+            # Rebase conflicted — abort and leave branch as-is
+            try:
+                self._run(["rebase", "--abort"], cwd=checkout_path)
+            except GitError:
+                pass  # rebase may not be in progress if it failed early
+            return False
+
     def sync_and_merge(
         self, checkout_path: str, branch_name: str,
         default_branch: str = "main", max_retries: int = 1,
@@ -294,7 +329,10 @@ class GitManager:
         Steps:
           1. Fetch latest remote state.
           2. Checkout the default branch and hard-reset to ``origin/<default_branch>``.
-          3. Attempt the merge; on conflict, abort and return early.
+          3. Attempt the merge; on conflict, try rebasing the task branch
+             onto ``origin/<default_branch>`` and retry the merge once.
+             If the rebase itself conflicts or the retry merge still fails,
+             return ``merge_conflict``.
           4. Push with up to *max_retries* retries.  On push failure (e.g.
              another agent pushed in the meantime), pull --rebase and retry.
              If all retries are exhausted, return a push failure message.
@@ -311,7 +349,30 @@ class GitManager:
             self._run(["merge", branch_name], cwd=checkout_path)
         except GitError:
             self._run(["merge", "--abort"], cwd=checkout_path)
-            return (False, "merge_conflict")
+
+            # 3a. Direct merge failed — attempt rebase-before-merge.
+            # Rebase the task branch onto origin/<default_branch> so it
+            # incorporates upstream changes, then retry the merge.
+            rebased = self._try_rebase_branch(
+                checkout_path, branch_name, default_branch,
+            )
+            if not rebased:
+                # Rebase itself conflicted — give up
+                # Switch back to default branch for a clean state
+                self._run(["checkout", default_branch], cwd=checkout_path)
+                return (False, "merge_conflict")
+
+            # 3b. Rebase succeeded — retry merge on a fresh default branch
+            self._run(["checkout", default_branch], cwd=checkout_path)
+            self._run(
+                ["reset", "--hard", f"origin/{default_branch}"],
+                cwd=checkout_path,
+            )
+            try:
+                self._run(["merge", branch_name], cwd=checkout_path)
+            except GitError:
+                self._run(["merge", "--abort"], cwd=checkout_path)
+                return (False, "merge_conflict")
 
         # 4. Push with retry
         for attempt in range(max_retries + 1):

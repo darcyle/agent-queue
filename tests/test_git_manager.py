@@ -918,3 +918,315 @@ class TestConcurrentAgentPush:
         # Verify git status is clean
         status = _git(["status", "--porcelain"], cwd=b)
         assert status == ""
+
+
+class TestRebaseBeforeMerge:
+    """Tests for the rebase-before-merge conflict resolution in sync_and_merge.
+
+    When a direct merge fails because the task branch was forked from an older
+    version of main, sync_and_merge should rebase the task branch onto the
+    latest origin/<default_branch> and retry the merge.  This resolves
+    conflicts that arise purely from branch staleness (the changes don't
+    actually conflict with upstream, they just touch files that moved).
+    """
+
+    def test_rebase_resolves_non_conflicting_divergence(self, git_repo, tmp_path):
+        """When task branch and upstream modify different files, the direct
+        merge may still fail if main has diverged significantly.  Rebase
+        should resolve this by replaying the task commits on top of the
+        latest main."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Create a task branch that modifies a new file
+        mgr.prepare_for_task(clone, "task-rebase/feature")
+        _commit_file(clone, "feature.txt", "feature work", "add feature")
+
+        # Advance origin/main with a different file (no conflict)
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "upstream.txt", "upstream work", "upstream commit")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        # sync_and_merge should succeed (direct merge or rebase-then-merge)
+        success, err = mgr.sync_and_merge(clone, "task-rebase/feature")
+        assert success is True
+        assert err == ""
+
+        # Both changes should be present
+        remote_log = _git(["log", "--oneline", "main"], cwd=git_repo["remote"])
+        assert "add feature" in remote_log
+        assert "upstream commit" in remote_log
+
+    def test_rebase_resolves_stale_branch_conflict(self, git_repo, tmp_path):
+        """When the task branch was forked from old main and upstream has
+        added a file that doesn't conflict with the task's changes, but
+        the merge fails due to tree divergence, the rebase should replay
+        the task commits cleanly on top of the new main."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Fork a task branch from current main
+        mgr.prepare_for_task(clone, "task-rebase/stale")
+        _commit_file(clone, "task-work.txt", "task work", "task commit")
+
+        # Advance origin/main significantly via another clone
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "file-a.txt", "a", "add file a")
+        _commit_file(pusher, "file-b.txt", "b", "add file b")
+        _commit_file(pusher, "file-c.txt", "c", "add file c")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        # sync_and_merge should succeed
+        success, err = mgr.sync_and_merge(clone, "task-rebase/stale")
+        assert success is True
+        assert err == ""
+
+        # All commits should be present on remote main
+        remote_log = _git(["log", "--oneline", "main"], cwd=git_repo["remote"])
+        assert "task commit" in remote_log
+        assert "add file a" in remote_log
+        assert "add file b" in remote_log
+        assert "add file c" in remote_log
+
+    def test_true_conflict_still_returns_merge_conflict(self, git_repo, tmp_path):
+        """When both the task branch and upstream modify the same file in
+        incompatible ways, even rebase cannot resolve it.  sync_and_merge
+        should return (False, 'merge_conflict')."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Task branch modifies README.md
+        mgr.prepare_for_task(clone, "task-rebase/true-conflict")
+        _commit_file(clone, "README.md", "task version of README", "task edits README")
+
+        # Upstream also modifies README.md differently
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "README.md", "upstream version of README", "upstream edits README")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        # sync_and_merge: direct merge fails, rebase also fails → merge_conflict
+        success, err = mgr.sync_and_merge(clone, "task-rebase/true-conflict")
+        assert success is False
+        assert err == "merge_conflict"
+
+        # Workspace should be on default branch and clean
+        assert _current_branch(clone) == "main"
+
+    def test_rebase_before_merge_leaves_clean_state_on_failure(self, git_repo, tmp_path):
+        """After a failed rebase-before-merge, the workspace should be in a
+        clean state (on default branch, no merge in progress, no rebase in
+        progress)."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Create conflicting changes
+        mgr.prepare_for_task(clone, "task-rebase/clean-state")
+        _commit_file(clone, "README.md", "task version", "task README")
+
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "README.md", "upstream version", "upstream README")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        success, err = mgr.sync_and_merge(clone, "task-rebase/clean-state")
+        assert success is False
+
+        # Should be on main, no merge/rebase in progress
+        assert _current_branch(clone) == "main"
+        status = _git(["status", "--porcelain"], cwd=clone)
+        assert status == ""
+
+        # main should match origin/main (the failed merge didn't leave artifacts)
+        origin_sha = _git(["rev-parse", "origin/main"], cwd=clone)
+        assert _head_sha(clone) == origin_sha
+
+    def test_rebase_before_merge_with_custom_default_branch(self, tmp_path):
+        """Rebase-before-merge should work with a non-'main' default branch."""
+        remote = tmp_path / "remote.git"
+        subprocess.run(
+            ["git", "init", "--bare", "--initial-branch=develop", str(remote)],
+            check=True, capture_output=True,
+        )
+        clone = str(tmp_path / "clone")
+        subprocess.run(["git", "clone", str(remote), clone],
+                       check=True, capture_output=True)
+        _commit_file(clone, "README.md", "init", "init")
+        _git(["push", "origin", "develop"], cwd=clone)
+
+        mgr = GitManager()
+        mgr.prepare_for_task(clone, "task-rebase/develop", default_branch="develop")
+        _commit_file(clone, "feature.txt", "feature", "add feature")
+
+        # Advance origin/develop
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", str(remote), pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "upstream.txt", "upstream", "upstream on develop")
+        _git(["push", "origin", "develop"], cwd=pusher)
+
+        success, err = mgr.sync_and_merge(
+            clone, "task-rebase/develop", default_branch="develop",
+        )
+        assert success is True
+        assert err == ""
+
+        log = _git(["log", "--oneline", "develop"], cwd=clone)
+        assert "add feature" in log
+        assert "upstream on develop" in log
+
+    def test_rebase_preserves_all_task_commits(self, git_repo, tmp_path):
+        """After a successful rebase-before-merge, all task commits should
+        be present in the merged history."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        mgr.prepare_for_task(clone, "task-rebase/multi-commit")
+        _commit_file(clone, "step1.txt", "step 1", "implement step 1")
+        _commit_file(clone, "step2.txt", "step 2", "implement step 2")
+        _commit_file(clone, "step3.txt", "step 3", "implement step 3")
+
+        # Advance origin/main
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "other.txt", "other", "other agent work")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        success, err = mgr.sync_and_merge(clone, "task-rebase/multi-commit")
+        assert success is True
+        assert err == ""
+
+        remote_log = _git(["log", "--oneline", "main"], cwd=git_repo["remote"])
+        assert "implement step 1" in remote_log
+        assert "implement step 2" in remote_log
+        assert "implement step 3" in remote_log
+        assert "other agent work" in remote_log
+
+    def test_concurrent_agents_rebase_resolves(self, tmp_path):
+        """Two agents working on non-conflicting files: the second agent's
+        merge may fail directly but should succeed after rebase."""
+        remote = tmp_path / "remote.git"
+        subprocess.run(
+            ["git", "init", "--bare", "--initial-branch=main", str(remote)],
+            check=True, capture_output=True,
+        )
+
+        agent_a = str(tmp_path / "agent-a")
+        subprocess.run(["git", "clone", str(remote), agent_a],
+                       check=True, capture_output=True)
+        _commit_file(agent_a, "README.md", "init", "init")
+        _git(["push", "origin", "main"], cwd=agent_a)
+
+        agent_b = str(tmp_path / "agent-b")
+        subprocess.run(["git", "clone", str(remote), agent_b],
+                       check=True, capture_output=True)
+
+        mgr = GitManager()
+
+        # Both agents fork branches from the same base
+        mgr.prepare_for_task(agent_a, "task-a/rebase")
+        _commit_file(agent_a, "a-feature.txt", "A", "agent A feature")
+
+        mgr.prepare_for_task(agent_b, "task-b/rebase")
+        _commit_file(agent_b, "b-feature.txt", "B", "agent B feature")
+
+        # Agent A merges and pushes first
+        success_a, _ = mgr.sync_and_merge(agent_a, "task-a/rebase")
+        assert success_a is True
+
+        # Agent B: direct merge would be against stale local main, but
+        # sync_and_merge fetches first. If that still causes issues,
+        # rebase-before-merge handles it.
+        success_b, _ = mgr.sync_and_merge(agent_b, "task-b/rebase")
+        assert success_b is True
+
+        # Both agents' work should be on remote
+        remote_log = _git(["log", "--oneline", "main"], cwd=str(remote))
+        assert "agent A feature" in remote_log
+        assert "agent B feature" in remote_log
+
+
+class TestTryRebaseBranch:
+    """Tests for the _try_rebase_branch helper method."""
+
+    def test_successful_rebase(self, git_repo, tmp_path):
+        """_try_rebase_branch should return True when rebase succeeds."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Create a task branch
+        mgr.prepare_for_task(clone, "task-try/rebase-ok")
+        _commit_file(clone, "feature.txt", "feature", "add feature")
+
+        # Advance origin/main
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "other.txt", "other", "upstream commit")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        # Fetch so origin/main is up to date
+        _git(["fetch", "origin"], cwd=clone)
+
+        result = mgr._try_rebase_branch(clone, "task-try/rebase-ok")
+        assert result is True
+        assert _current_branch(clone) == "task-try/rebase-ok"
+
+        # The branch should now be based on the latest origin/main
+        new_base = _git(["merge-base", "origin/main", "HEAD"], cwd=clone)
+        latest_main = _git(["rev-parse", "origin/main"], cwd=clone)
+        assert new_base == latest_main
+
+    def test_conflicting_rebase_returns_false(self, git_repo, tmp_path):
+        """_try_rebase_branch should return False and abort on conflict."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Create a task branch that modifies README.md
+        mgr.prepare_for_task(clone, "task-try/rebase-conflict")
+        _commit_file(clone, "README.md", "task version", "task edits README")
+        task_sha = _head_sha(clone)
+
+        # Advance origin/main with a conflicting change
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "README.md", "upstream version", "upstream edits README")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        _git(["fetch", "origin"], cwd=clone)
+
+        result = mgr._try_rebase_branch(clone, "task-try/rebase-conflict")
+        assert result is False
+
+        # Branch should still be on the task branch with original commit
+        assert _current_branch(clone) == "task-try/rebase-conflict"
+        assert _head_sha(clone) == task_sha
+
+    def test_rebase_leaves_clean_state_on_conflict(self, git_repo, tmp_path):
+        """After a failed rebase, there should be no rebase in progress."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        mgr.prepare_for_task(clone, "task-try/clean")
+        _commit_file(clone, "README.md", "task", "task commit")
+
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "README.md", "upstream", "upstream commit")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        _git(["fetch", "origin"], cwd=clone)
+        mgr._try_rebase_branch(clone, "task-try/clean")
+
+        # No rebase in progress — git status should be clean
+        status = _git(["status", "--porcelain"], cwd=clone)
+        assert status == ""

@@ -1065,11 +1065,18 @@ class Orchestrator:
 
         Uses :meth:`GitManager.sync_and_merge` which encapsulates the full
         fetch → checkout → reset → merge → push flow with automatic retry
-        on push failures.  The structured ``(success, error_msg)`` return
-        value drives targeted notifications:
+        on push failures and rebase-before-merge on merge conflicts.
+
+        ``sync_and_merge`` first attempts a direct merge.  If that conflicts,
+        it rebases the task branch onto ``origin/<default_branch>`` and retries
+        the merge.  Only if both the direct merge and the rebase-then-merge
+        fail does it return ``merge_conflict``.
+
+        The structured ``(success, error_msg)`` return value drives targeted
+        notifications:
 
         - ``merge_conflict``: notify with conflict details and suggest
-          manual resolution.
+          manual resolution (only after rebase-before-merge also failed).
         - ``push_failed``: notify that push failed after retries and the
           workspace may be diverged.
         - success: clean up the task branch as before.
