@@ -2074,29 +2074,39 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(
         name="archive-tasks",
-        description="Archive all completed tasks to clear them from active view",
+        description="Archive completed tasks (DB + markdown notes in workspace)",
     )
     @app_commands.describe(
         project_id="Project to archive completed tasks from (optional — omit for all projects)",
+        include_failed="Also archive FAILED and BLOCKED tasks (default: false)",
     )
     async def archive_tasks_command(
-        interaction: discord.Interaction, project_id: str | None = None,
+        interaction: discord.Interaction,
+        project_id: str | None = None,
+        include_failed: bool = False,
     ):
-        args: dict = {}
+        args: dict = {"include_failed": include_failed}
         if project_id:
             args["project_id"] = project_id
+        await interaction.response.defer()
         result = await handler.execute("archive_tasks", args)
         if "error" in result:
-            await _send_error(interaction, result['error'])
+            await _send_error(interaction, result['error'], followup=True)
             return
         if "message" in result:
-            await _send_info(interaction, "Nothing to Archive", description=result["message"])
+            await _send_info(
+                interaction, "Nothing to Archive",
+                description=result["message"], followup=True,
+            )
             return
         count = result.get("archived_count", 0)
         scope = f" from `{project_id}`" if project_id else ""
+        archive_dir = result.get("archive_dir")
+        desc = f"Archived **{count}** task{'s' if count != 1 else ''}{scope}."
+        if archive_dir:
+            desc += f"\nNotes written to `{archive_dir}`"
         await _send_success(
-            interaction, "Tasks Archived",
-            description=f"Archived **{count}** completed task{'s' if count != 1 else ''}{scope}.",
+            interaction, "Tasks Archived", description=desc, followup=True,
         )
 
     @bot.tree.command(
@@ -2232,53 +2242,6 @@ def setup_commands(bot: commands.Bot) -> None:
             )
             desc += f"\n{unblocked_count} task(s) unblocked: {unblocked_list}"
         await _send_success(interaction, "Task Skipped", description=desc)
-
-    @bot.tree.command(
-        name="archive-tasks",
-        description="Archive completed tasks to workspace as markdown reference notes",
-    )
-    @app_commands.describe(
-        project_id="(Optional) Project ID — defaults to current channel's project",
-        include_failed="Also archive FAILED and BLOCKED tasks (default: false)",
-    )
-    async def archive_tasks_command(
-        interaction: discord.Interaction,
-        project_id: str | None = None,
-        include_failed: bool = False,
-    ):
-        resolved = await _resolve_project_from_context(interaction, project_id)
-        if not resolved:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-        await interaction.response.defer()
-        result = await handler.execute("archive_completed_tasks", {
-            "project_id": resolved,
-            "include_failed": include_failed,
-        })
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        count = result.get("archived_count", 0)
-        if count == 0:
-            await _send_success(
-                interaction, "No Tasks to Archive",
-                description="No completed tasks found to archive.",
-                followup=True,
-            )
-            return
-        archive_dir = result.get("archive_dir", "")
-        task_lines = "\n".join(
-            f"• `{t['id']}` — {t['title']} ({t['status']})"
-            for t in result.get("archived", [])[:20]
-        )
-        if count > 20:
-            task_lines += f"\n… and {count - 20} more"
-        desc = (
-            f"**{count}** task(s) archived to:\n`{archive_dir}`\n\n{task_lines}"
-        )
-        await _send_success(
-            interaction, "Tasks Archived", description=desc, followup=True,
-        )
 
     @bot.tree.command(
         name="chain-health",

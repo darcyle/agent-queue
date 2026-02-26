@@ -631,10 +631,11 @@ TOOLS = [
     {
         "name": "archive_tasks",
         "description": (
-            "Archive all completed tasks to clear them from active task lists. "
-            "Archived tasks are preserved for reference and can be viewed with "
-            "list_archived or restored with restore_task. Optionally scope to a "
-            "specific project."
+            "Archive completed tasks to clear them from active task lists. "
+            "Tasks are moved to the archived_tasks DB table (viewable with "
+            "list_archived, restorable with restore_task) and a markdown "
+            "reference note is written to the project workspace. Optionally "
+            "also archive FAILED and BLOCKED tasks."
         ),
         "input_schema": {
             "type": "object",
@@ -642,6 +643,13 @@ TOOLS = [
                 "project_id": {
                     "type": "string",
                     "description": "Project ID to scope archiving to (optional — omit for all projects)",
+                },
+                "include_failed": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, also archive FAILED and BLOCKED tasks. "
+                        "Default false."
+                    ),
                 },
             },
             "required": [],
@@ -722,35 +730,6 @@ TOOLS = [
                 "task_id": {"type": "string", "description": "Task ID to skip"},
             },
             "required": ["task_id"],
-        },
-    },
-    {
-        "name": "archive_completed_tasks",
-        "description": (
-            "Archive all completed tasks for a project. Moves each completed "
-            "task out of the active task list and into an archived_tasks/ "
-            "folder in the project workspace as a markdown reference note. "
-            "Each note contains the task's metadata, description, result "
-            "summary, files changed, and token usage. The tasks are then "
-            "removed from the database so they no longer clutter the active "
-            "view. Optionally includes failed/blocked tasks too."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Project ID whose completed tasks to archive",
-                },
-                "include_failed": {
-                    "type": "boolean",
-                    "description": (
-                        "If true, also archive FAILED and BLOCKED tasks. "
-                        "Default false."
-                    ),
-                },
-            },
-            "required": ["project_id"],
         },
     },
     {

@@ -555,6 +555,77 @@ def format_dependency_list(task_list: list[dict]) -> str:
     return "\n".join(kept)
 
 
+def _build_archive_note(
+    task,
+    result: dict | None,
+    dependencies: set[str],
+) -> str:
+    """Build a markdown reference note for an archived task.
+
+    Produces a self-contained document that preserves the task's full
+    context for future reference -- everything needed to understand what
+    was done, why, and how well it went.
+    """
+    lines: list[str] = []
+    lines.append(f"# {task.title}")
+    lines.append("")
+    lines.append(f"**Task ID:** `{task.id}`")
+    lines.append(f"**Project:** `{task.project_id}`")
+    lines.append(f"**Status:** {task.status.value}")
+    lines.append(f"**Priority:** {task.priority}")
+    if task.task_type:
+        lines.append(f"**Type:** {task.task_type.value}")
+    if task.branch_name:
+        lines.append(f"**Branch:** `{task.branch_name}`")
+    if task.pr_url:
+        lines.append(f"**PR:** {task.pr_url}")
+    if task.parent_task_id:
+        lines.append(f"**Parent Task:** `{task.parent_task_id}`")
+    if task.is_plan_subtask:
+        lines.append("**Plan Subtask:** Yes")
+    if task.plan_source:
+        lines.append(f"**Plan Source:** `{task.plan_source}`")
+    if dependencies:
+        dep_list = ", ".join(f"`{d}`" for d in sorted(dependencies))
+        lines.append(f"**Dependencies:** {dep_list}")
+    lines.append(
+        f"**Archived:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    lines.append("")
+
+    # Description
+    lines.append("## Description")
+    lines.append("")
+    lines.append(task.description)
+    lines.append("")
+
+    # Result details
+    if result:
+        lines.append("## Result")
+        lines.append("")
+        if result.get("summary"):
+            lines.append(f"**Summary:** {result['summary']}")
+            lines.append("")
+        if result.get("files_changed"):
+            lines.append("**Files Changed:**")
+            for fc in result["files_changed"]:
+                lines.append(f"- `{fc}`")
+            lines.append("")
+        if result.get("tokens_used"):
+            lines.append(f"**Tokens Used:** {result['tokens_used']:,}")
+            lines.append("")
+        if result.get("error_message"):
+            lines.append(f"**Error:** {result['error_message']}")
+            lines.append("")
+    else:
+        lines.append("## Result")
+        lines.append("")
+        lines.append("_No execution result recorded._")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 class CommandHandler:
     """Unified command execution layer for AgentQueue (Command Pattern).
 
@@ -1942,33 +2013,78 @@ class CommandHandler:
     # permanently deleted from the archive.
 
     async def _cmd_archive_tasks(self, args: dict) -> dict:
-        """Archive all completed tasks, optionally scoped to a project.
+        """Archive completed (and optionally failed/blocked) tasks.
 
-        Moves every task in COMPLETED status into the ``archived_tasks`` table
-        so they no longer appear in regular task lists.  Returns the count and
-        IDs of the archived tasks.
+        Moves matching tasks into the ``archived_tasks`` database table and
+        writes a markdown reference note for each task into the project's
+        ``archived_tasks/`` workspace directory (when a workspace is available).
 
         Parameters
         ----------
         args : dict
             ``project_id`` – optional project scope.  When omitted, all
-            completed tasks across every project are archived.
+            matching tasks across every project are archived.
+            ``include_failed`` – if ``True``, also archive FAILED and BLOCKED
+            tasks in addition to COMPLETED.  Default ``False``.
         """
         project_id = args.get("project_id")
-        archived_ids = await self.db.archive_completed_tasks(project_id=project_id)
-        if not archived_ids:
+        include_failed = args.get("include_failed", False)
+
+        # Determine which statuses to archive.
+        statuses_to_archive = [TaskStatus.COMPLETED]
+        if include_failed:
+            statuses_to_archive.extend([TaskStatus.FAILED, TaskStatus.BLOCKED])
+
+        tasks_to_archive: list = []
+        for status in statuses_to_archive:
+            tasks_to_archive.extend(
+                await self.db.list_tasks(project_id=project_id, status=status)
+            )
+
+        if not tasks_to_archive:
             scope = f" in project `{project_id}`" if project_id else ""
             return {"message": f"No completed tasks to archive{scope}."}
 
-        for tid in archived_ids:
-            proj = project_id or "unknown"
+        # Phase 1 — gather results and dependencies before any deletions.
+        task_data: list[tuple] = []
+        for task in tasks_to_archive:
+            result = await self.db.get_task_result(task.id)
+            deps = await self.db.get_dependencies(task.id)
+            task_data.append((task, result, deps))
+
+        # Phase 2 — archive each task (DB table + optional markdown note).
+        archived: list[dict] = []
+        for task, result, deps in task_data:
+            # Write markdown note if the project has a workspace.
+            archive_path = await self._write_archive_note(task, result, deps)
+
+            # Move to the archived_tasks table.
+            await self.db.archive_task(task.id)
+
             await self.db.log_event(
-                "task_archived", project_id=proj, task_id=tid,
+                "task_archived",
+                project_id=task.project_id,
+                task_id=task.id,
             )
+            archived.append({
+                "id": task.id,
+                "title": task.title,
+                "status": task.status.value,
+                "archive_path": archive_path,
+            })
+
+        # Determine archive_dir for the response (use first task's project).
+        archive_dir = None
+        for entry in archived:
+            if entry["archive_path"]:
+                archive_dir = os.path.dirname(entry["archive_path"])
+                break
 
         return {
-            "archived_count": len(archived_ids),
-            "archived_ids": archived_ids,
+            "archived_count": len(archived),
+            "archived_ids": [a["id"] for a in archived],
+            "archived": archived,
+            "archive_dir": archive_dir,
             "project_id": project_id,
         }
 
@@ -2000,6 +2116,11 @@ class CommandHandler:
                     "Only COMPLETED, FAILED, or BLOCKED tasks can be archived."
                 ),
             }
+
+        # Gather result/deps before archiving (archive deletes child rows).
+        result = await self.db.get_task_result(task_id)
+        deps = await self.db.get_dependencies(task_id)
+        await self._write_archive_note(task, result, deps)
 
         success = await self.db.archive_task(task_id)
         if not success:
@@ -2197,176 +2318,32 @@ class CommandHandler:
             ],
         }
 
-    async def _cmd_archive_completed_tasks(self, args: dict) -> dict:
-        """Move completed tasks into an archived_tasks folder in the project workspace.
+    async def _write_archive_note(
+        self,
+        task,
+        result: dict | None,
+        dependencies: set[str],
+    ) -> str | None:
+        """Write a markdown reference note for a task to its project workspace.
 
-        For each completed task, creates a markdown reference file containing
-        the task metadata, result summary, files changed, and token usage.
-        The task is then deleted from the database so it no longer clutters
-        the active task list.
-
-        The archive file preserves all essential information for historical
-        reference: task ID, title, description, priority, type, branch name,
-        PR URL, result summary, files changed, tokens used, and timestamps.
-
-        Parameters (via *args*):
-            project_id (str): Required.  The project whose completed tasks
-                should be archived.
-            include_failed (bool): If ``True``, also archive FAILED and
-                BLOCKED tasks.  Default ``False``.
-
-        Returns a dict with ``archived`` (list of archived task summaries),
-        ``archived_count``, ``archive_dir``, and ``project_id``.
+        Returns the file path if written, or ``None`` if the project has no
+        workspace or the project could not be resolved.
         """
-        project_id = args.get("project_id") or self._active_project_id
-        if not project_id:
-            return {"error": "project_id is required"}
-
-        project = await self.db.get_project(project_id)
+        project = await self.db.get_project(task.project_id)
         if not project:
-            return {"error": f"Project '{project_id}' not found"}
+            return None
 
-        include_failed = args.get("include_failed", False)
-
-        # Gather tasks to archive -- COMPLETED always, optionally FAILED/BLOCKED.
-        statuses_to_archive = [TaskStatus.COMPLETED]
-        if include_failed:
-            statuses_to_archive.extend([TaskStatus.FAILED, TaskStatus.BLOCKED])
-
-        tasks_to_archive: list[Task] = []
-        for status in statuses_to_archive:
-            tasks_to_archive.extend(
-                await self.db.list_tasks(project_id=project_id, status=status)
-            )
-
-        if not tasks_to_archive:
-            return {
-                "project_id": project_id,
-                "archived_count": 0,
-                "archived": [],
-                "message": "No completed tasks to archive.",
-            }
-
-        # Resolve workspace path -- same pattern used by notes commands.
         workspace = project.workspace_path or os.path.join(
-            self.config.workspace_dir, project_id
+            self.config.workspace_dir, task.project_id
         )
         archive_dir = os.path.join(workspace, "archived_tasks")
         os.makedirs(archive_dir, exist_ok=True)
 
-        # Phase 1: Gather all data before any deletions.
-        # Dependencies are cascade-deleted when a task is removed, so we must
-        # capture every task's result and dependency set up-front.
-        task_data: list[tuple[Task, dict | None, set[str]]] = []
-        for task in tasks_to_archive:
-            result = await self.db.get_task_result(task.id)
-            deps = await self.db.get_dependencies(task.id)
-            task_data.append((task, result, deps))
-
-        # Phase 2: Write archive files and delete tasks from the database.
-        archived: list[dict] = []
-        for task, result, deps in task_data:
-            note = self._build_archive_note(task, result, deps)
-
-            archive_path = os.path.join(archive_dir, f"{task.id}.md")
-            with open(archive_path, "w") as f:
-                f.write(note)
-
-            archived.append({
-                "id": task.id,
-                "title": task.title,
-                "status": task.status.value,
-                "archive_path": archive_path,
-            })
-
-            # Remove the task from the database (cascades to all related tables).
-            await self.db.delete_task(task.id)
-
-        # Log the archive event.
-        await self.db.log_event(
-            "tasks_archived",
-            project_id=project_id,
-            payload=json.dumps({
-                "count": len(archived),
-                "task_ids": [a["id"] for a in archived],
-            }),
-        )
-
-        return {
-            "project_id": project_id,
-            "archived_count": len(archived),
-            "archived": archived,
-            "archive_dir": archive_dir,
-        }
-
-    @staticmethod
-    def _build_archive_note(
-        task: Task,
-        result: dict | None,
-        dependencies: set[str],
-    ) -> str:
-        """Build a markdown reference note for an archived task.
-
-        Produces a self-contained document that preserves the task's full
-        context for future reference -- everything needed to understand what
-        was done, why, and how well it went.
-        """
-        lines: list[str] = []
-        lines.append(f"# {task.title}")
-        lines.append("")
-        lines.append(f"**Task ID:** `{task.id}`")
-        lines.append(f"**Project:** `{task.project_id}`")
-        lines.append(f"**Status:** {task.status.value}")
-        lines.append(f"**Priority:** {task.priority}")
-        if task.task_type:
-            lines.append(f"**Type:** {task.task_type.value}")
-        if task.branch_name:
-            lines.append(f"**Branch:** `{task.branch_name}`")
-        if task.pr_url:
-            lines.append(f"**PR:** {task.pr_url}")
-        if task.parent_task_id:
-            lines.append(f"**Parent Task:** `{task.parent_task_id}`")
-        if task.is_plan_subtask:
-            lines.append(f"**Plan Subtask:** Yes")
-        if task.plan_source:
-            lines.append(f"**Plan Source:** `{task.plan_source}`")
-        if dependencies:
-            dep_list = ", ".join(f"`{d}`" for d in sorted(dependencies))
-            lines.append(f"**Dependencies:** {dep_list}")
-        lines.append(f"**Archived:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        lines.append("")
-
-        # Description
-        lines.append("## Description")
-        lines.append("")
-        lines.append(task.description)
-        lines.append("")
-
-        # Result details
-        if result:
-            lines.append("## Result")
-            lines.append("")
-            if result.get("summary"):
-                lines.append(f"**Summary:** {result['summary']}")
-                lines.append("")
-            if result.get("files_changed"):
-                lines.append("**Files Changed:**")
-                for fc in result["files_changed"]:
-                    lines.append(f"- `{fc}`")
-                lines.append("")
-            if result.get("tokens_used"):
-                lines.append(f"**Tokens Used:** {result['tokens_used']:,}")
-                lines.append("")
-            if result.get("error_message"):
-                lines.append(f"**Error:** {result['error_message']}")
-                lines.append("")
-        else:
-            lines.append("## Result")
-            lines.append("")
-            lines.append("_No execution result recorded._")
-            lines.append("")
-
-        return "\n".join(lines)
+        note = _build_archive_note(task, result, dependencies)
+        archive_path = os.path.join(archive_dir, f"{task.id}.md")
+        with open(archive_path, "w") as f:
+            f.write(note)
+        return archive_path
 
     async def _cmd_get_chain_health(self, args: dict) -> dict:
         """Check dependency chain health for a task or project."""

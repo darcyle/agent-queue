@@ -1,11 +1,12 @@
 """Tests for the task archiving feature.
 
-Covers the database layer (archive, list, restore, delete, auto-archive)
-and the command handler layer (archive_tasks, archive_task, list_archived,
-restore_task, archive_settings).  Also covers the orchestrator's automatic
-archiving logic.
+Covers the database layer (archive, list, restore, delete, auto-archive),
+the command handler layer (archive_tasks, archive_task, list_archived,
+restore_task, archive_settings, markdown-note export), and the
+orchestrator's automatic archiving logic.
 """
 
+import os
 import time
 
 import pytest
@@ -14,7 +15,7 @@ from unittest.mock import MagicMock
 from src.command_handler import CommandHandler
 from src.config import AppConfig, ArchiveConfig, DiscordConfig
 from src.database import Database
-from src.models import Project, Task, TaskStatus
+from src.models import Agent, AgentOutput, AgentResult, Project, Task, TaskStatus, TaskType
 from src.orchestrator import Orchestrator
 
 
@@ -30,9 +31,15 @@ async def db(tmp_path):
     await database.close()
 
 
-async def _seed_project(db: Database, pid: str = "p-1") -> None:
+async def _seed_project(
+    db: Database,
+    pid: str = "p-1",
+    workspace_path: str | None = None,
+) -> None:
     """Create a simple project for test tasks to reference."""
-    await db.create_project(Project(id=pid, name=f"project-{pid}"))
+    await db.create_project(
+        Project(id=pid, name=f"project-{pid}", workspace_path=workspace_path)
+    )
 
 
 async def _seed_task(
@@ -41,11 +48,13 @@ async def _seed_task(
     pid: str = "p-1",
     title: str = "Test Task",
     status: TaskStatus = TaskStatus.COMPLETED,
+    **kwargs,
 ) -> Task:
     """Create and persist a task, returning it."""
     task = Task(
         id=tid, project_id=pid, title=title,
         description=f"Description of {title}", status=status,
+        **kwargs,
     )
     await db.create_task(task)
     return task
@@ -234,9 +243,10 @@ class TestArchiveCommands:
     @pytest.fixture
     async def handler(self, db, tmp_path):
         """Create a CommandHandler with a real database."""
+        ws_dir = str(tmp_path / "workspaces")
         config = AppConfig(
             discord=DiscordConfig(bot_token="test-token", guild_id="123"),
-            workspace_dir=str(tmp_path / "workspaces"),
+            workspace_dir=ws_dir,
             database_path=str(tmp_path / "test.db"),
         )
         orchestrator = Orchestrator(config)
@@ -261,6 +271,30 @@ class TestArchiveCommands:
         result = await handler.execute("archive_tasks", {"project_id": "p-1"})
         assert "message" in result
         assert "No completed tasks" in result["message"]
+
+    async def test_archive_include_failed(self, handler, db):
+        """With include_failed=True, FAILED and BLOCKED tasks are also archived."""
+        await _seed_project(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "t-2", status=TaskStatus.FAILED, title="Failed")
+        await _seed_task(db, "t-3", status=TaskStatus.BLOCKED, title="Blocked")
+        await _seed_task(db, "t-4", status=TaskStatus.READY, title="Active")
+
+        result = await handler.execute("archive_tasks", {
+            "project_id": "p-1",
+            "include_failed": True,
+        })
+        assert "error" not in result
+        assert result["archived_count"] == 3
+        assert set(result["archived_ids"]) == {"t-1", "t-2", "t-3"}
+
+        # Active task should remain
+        assert await db.get_task("t-4") is not None
+
+        # All three should be in the archive table
+        assert await db.get_archived_task("t-1") is not None
+        assert await db.get_archived_task("t-2") is not None
+        assert await db.get_archived_task("t-3") is not None
 
     async def test_archive_single_task(self, handler, db):
         await _seed_project(db)
@@ -352,6 +386,148 @@ class TestArchiveCommands:
 
         result = await handler.execute("archive_settings", {})
         assert result["archived_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Markdown note export tests
+# ---------------------------------------------------------------------------
+
+class TestArchiveMarkdownNotes:
+    """Tests that archiving writes markdown reference notes to workspace."""
+
+    @pytest.fixture
+    async def handler(self, db, tmp_path):
+        ws_dir = str(tmp_path / "workspaces")
+        config = AppConfig(
+            discord=DiscordConfig(bot_token="test-token", guild_id="123"),
+            workspace_dir=ws_dir,
+            database_path=str(tmp_path / "test.db"),
+        )
+        orchestrator = Orchestrator(config)
+        orchestrator.db = db
+        orchestrator.git = MagicMock()
+        return CommandHandler(orchestrator, config)
+
+    async def test_archive_creates_markdown_files(self, handler, db, tmp_path):
+        ws = str(tmp_path / "workspaces" / "p-1")
+        await _seed_project(db, workspace_path=ws)
+        await _seed_task(db, "t-1", title="Done task", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "t-2", title="Also done", status=TaskStatus.COMPLETED)
+
+        result = await handler.execute("archive_tasks", {"project_id": "p-1"})
+        assert "error" not in result
+        assert result["archived_count"] == 2
+
+        archive_dir = result["archive_dir"]
+        assert archive_dir is not None
+        assert os.path.isdir(archive_dir)
+        assert os.path.isfile(os.path.join(archive_dir, "t-1.md"))
+        assert os.path.isfile(os.path.join(archive_dir, "t-2.md"))
+
+        with open(os.path.join(archive_dir, "t-1.md")) as f:
+            content = f.read()
+        assert "# Done task" in content
+        assert "`t-1`" in content
+        assert "COMPLETED" in content
+
+    async def test_archive_removes_from_active_keeps_in_archive_table(
+        self, handler, db, tmp_path,
+    ):
+        ws = str(tmp_path / "workspaces" / "p-1")
+        await _seed_project(db, workspace_path=ws)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+
+        await handler.execute("archive_tasks", {"project_id": "p-1"})
+
+        # Gone from active, present in archive table
+        assert await db.get_task("t-1") is None
+        assert await db.get_archived_task("t-1") is not None
+
+    async def test_archive_note_includes_result(self, handler, db, tmp_path):
+        ws = str(tmp_path / "workspaces" / "p-1")
+        await _seed_project(db, workspace_path=ws)
+        await _seed_task(db, "t-1", title="Result task", status=TaskStatus.COMPLETED)
+        await db.create_agent(Agent(id="a-1", name="Test Agent", agent_type="claude"))
+        await db.save_task_result(
+            "t-1", "a-1",
+            AgentOutput(
+                result=AgentResult.COMPLETED,
+                summary="Implemented the feature successfully",
+                files_changed=["src/main.py", "tests/test_main.py"],
+                tokens_used=5000,
+            ),
+        )
+
+        result = await handler.execute("archive_tasks", {"project_id": "p-1"})
+        archive_dir = result["archive_dir"]
+        with open(os.path.join(archive_dir, "t-1.md")) as f:
+            content = f.read()
+
+        assert "Implemented the feature successfully" in content
+        assert "`src/main.py`" in content
+        assert "`tests/test_main.py`" in content
+        assert "5,000" in content
+
+    async def test_archive_note_preserves_metadata(self, handler, db, tmp_path):
+        ws = str(tmp_path / "workspaces" / "p-1")
+        await _seed_project(db, workspace_path=ws)
+        await _seed_task(
+            db, "t-meta", title="Metadata task",
+            status=TaskStatus.COMPLETED,
+            task_type=TaskType.FEATURE,
+            branch_name="feat/metadata-task",
+            pr_url="https://github.com/org/repo/pull/42",
+        )
+
+        result = await handler.execute("archive_tasks", {"project_id": "p-1"})
+        archive_dir = result["archive_dir"]
+        with open(os.path.join(archive_dir, "t-meta.md")) as f:
+            content = f.read()
+
+        assert "feature" in content
+        assert "`feat/metadata-task`" in content
+        assert "https://github.com/org/repo/pull/42" in content
+
+    async def test_archive_note_preserves_dependencies(self, handler, db, tmp_path):
+        ws = str(tmp_path / "workspaces" / "p-1")
+        await _seed_project(db, workspace_path=ws)
+        await _seed_task(db, "t-up", title="Upstream", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "t-down", title="Downstream", status=TaskStatus.COMPLETED)
+        await db.add_dependency("t-down", "t-up")
+
+        result = await handler.execute("archive_tasks", {"project_id": "p-1"})
+        archive_dir = result["archive_dir"]
+        with open(os.path.join(archive_dir, "t-down.md")) as f:
+            content = f.read()
+
+        assert "`t-up`" in content
+        assert "Dependencies" in content
+
+    async def test_archive_note_without_result(self, handler, db, tmp_path):
+        ws = str(tmp_path / "workspaces" / "p-1")
+        await _seed_project(db, workspace_path=ws)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+
+        result = await handler.execute("archive_tasks", {"project_id": "p-1"})
+        archive_dir = result["archive_dir"]
+        with open(os.path.join(archive_dir, "t-1.md")) as f:
+            content = f.read()
+
+        assert "No execution result recorded" in content
+
+    async def test_single_task_archive_writes_note(self, handler, db, tmp_path):
+        ws = str(tmp_path / "workspaces" / "p-1")
+        await _seed_project(db, workspace_path=ws)
+        await _seed_task(db, "t-1", title="Single", status=TaskStatus.COMPLETED)
+
+        result = await handler.execute("archive_task", {"task_id": "t-1"})
+        assert "error" not in result
+
+        note_path = os.path.join(ws, "archived_tasks", "t-1.md")
+        assert os.path.isfile(note_path)
+        with open(note_path) as f:
+            content = f.read()
+        assert "# Single" in content
 
 
 # ---------------------------------------------------------------------------
