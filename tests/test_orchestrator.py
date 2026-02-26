@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+from unittest.mock import MagicMock, patch
 
 import pytest
 from src.orchestrator import Orchestrator
@@ -1027,3 +1028,267 @@ class TestIsLastSubtask:
         await orch.db.create_task(sub1)
         await orch.db.create_task(sub2)
         assert await orch._is_last_subtask(sub2) is True
+
+
+class TestPrepareWorkspaceRebase:
+    """Tests for _prepare_workspace passing rebase + default_branch to switch_to_branch."""
+
+    @pytest.fixture
+    async def setup(self, tmp_path):
+        """Create orchestrator, project, repo, agent, parent task, and subtask.
+
+        Returns a dict with all objects needed for _prepare_workspace tests.
+        """
+        workspace = tmp_path / "workspaces" / "p-1" / "agent-1" / "myrepo"
+        workspace.mkdir(parents=True)
+
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            auto_task=AutoTaskConfig(rebase_between_subtasks=False),
+        )
+        orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        await orch.initialize()
+
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_repo(RepoConfig(
+            id="repo-1", project_id="p-1",
+            source_type=RepoSourceType.CLONE,
+            url="https://github.com/org/myrepo.git",
+            default_branch="develop",
+        ))
+        await orch.db.create_agent(Agent(
+            id="a-1", name="agent-1", agent_type="claude",
+        ))
+        # Pre-populate agent workspace so _prepare_workspace doesn't try to compute it
+        await orch.db.set_agent_workspace(
+            "a-1", "p-1", str(workspace), repo_id="repo-1",
+        )
+
+        # Parent task with an existing branch
+        parent = Task(
+            id="t-parent", project_id="p-1", title="Parent Plan",
+            description="Create plan", status=TaskStatus.COMPLETED,
+            branch_name="task/t-parent/parent-plan",
+            repo_id="repo-1",
+        )
+        await orch.db.create_task(parent)
+
+        # Subtask that reuses parent's branch
+        subtask = Task(
+            id="t-sub-1", project_id="p-1", title="Step 1",
+            description="First subtask step",
+            status=TaskStatus.READY,
+            parent_task_id="t-parent",
+            is_plan_subtask=True,
+            repo_id="repo-1",
+        )
+        await orch.db.create_task(subtask)
+
+        agent = await orch.db.get_agent("a-1")
+
+        yield {
+            "orch": orch,
+            "subtask": subtask,
+            "agent": agent,
+            "workspace": str(workspace),
+        }
+
+        await _drain_running_tasks(orch)
+        await orch.shutdown()
+
+    async def test_subtask_passes_default_branch_and_rebase_false(self, setup):
+        """When rebase_between_subtasks is False, switch_to_branch is called
+        with the repo's default_branch and rebase=False."""
+        orch = setup["orch"]
+        subtask = setup["subtask"]
+        agent = setup["agent"]
+        workspace = setup["workspace"]
+
+        mock_git = MagicMock()
+        mock_git.validate_checkout.return_value = True
+        orch.git = mock_git
+
+        result = await orch._prepare_workspace(subtask, agent)
+
+        assert result == workspace
+        mock_git.switch_to_branch.assert_called_once_with(
+            workspace, "task/t-parent/parent-plan",
+            default_branch="develop",
+            rebase=False,
+        )
+        # prepare_for_task should NOT be called for subtask branch reuse
+        mock_git.prepare_for_task.assert_not_called()
+
+    async def test_subtask_passes_default_branch_and_rebase_true(self, setup):
+        """When rebase_between_subtasks is True, switch_to_branch is called
+        with rebase=True so the branch is rebased onto origin/<default_branch>."""
+        orch = setup["orch"]
+        subtask = setup["subtask"]
+        agent = setup["agent"]
+        workspace = setup["workspace"]
+
+        # Enable rebase between subtasks
+        orch.config.auto_task.rebase_between_subtasks = True
+
+        mock_git = MagicMock()
+        mock_git.validate_checkout.return_value = True
+        orch.git = mock_git
+
+        result = await orch._prepare_workspace(subtask, agent)
+
+        assert result == workspace
+        mock_git.switch_to_branch.assert_called_once_with(
+            workspace, "task/t-parent/parent-plan",
+            default_branch="develop",
+            rebase=True,
+        )
+
+    async def test_non_subtask_uses_prepare_for_task(self, setup):
+        """A non-subtask (is_plan_subtask=False) should use prepare_for_task
+        instead of switch_to_branch, regardless of rebase_between_subtasks."""
+        orch = setup["orch"]
+        agent = setup["agent"]
+        workspace = setup["workspace"]
+
+        # Enable rebase — should not affect non-subtask path
+        orch.config.auto_task.rebase_between_subtasks = True
+
+        regular_task = Task(
+            id="t-regular", project_id="p-1", title="Regular Task",
+            description="A normal task", status=TaskStatus.READY,
+            repo_id="repo-1",
+        )
+        await orch.db.create_task(regular_task)
+
+        mock_git = MagicMock()
+        mock_git.validate_checkout.return_value = True
+        orch.git = mock_git
+
+        result = await orch._prepare_workspace(regular_task, agent)
+
+        assert result == workspace
+        mock_git.switch_to_branch.assert_not_called()
+        mock_git.prepare_for_task.assert_called_once()
+        # Verify default_branch was passed to prepare_for_task
+        call_args = mock_git.prepare_for_task.call_args
+        assert call_args[0][2] == "develop"  # third positional arg is default_branch
+
+    async def test_link_repo_subtask_passes_default_branch(self, tmp_path):
+        """For LINK repos, switch_to_branch should also receive default_branch."""
+        workspace = tmp_path / "linked-repo"
+        workspace.mkdir()
+        # Initialize a git repo so validate_checkout succeeds
+        os.system(f"git init {workspace}")
+
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            auto_task=AutoTaskConfig(rebase_between_subtasks=True),
+        )
+        orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        await orch.initialize()
+
+        await orch.db.create_project(Project(id="p-1", name="beta"))
+        await orch.db.create_repo(RepoConfig(
+            id="repo-link", project_id="p-1",
+            source_type=RepoSourceType.LINK,
+            source_path=str(workspace),
+            default_branch="trunk",
+        ))
+        await orch.db.create_agent(Agent(
+            id="a-1", name="agent-1", agent_type="claude",
+        ))
+        await orch.db.set_agent_workspace(
+            "a-1", "p-1", str(workspace), repo_id="repo-link",
+        )
+
+        parent = Task(
+            id="t-parent", project_id="p-1", title="Parent",
+            description="Parent", status=TaskStatus.COMPLETED,
+            branch_name="task/t-parent/parent",
+            repo_id="repo-link",
+        )
+        await orch.db.create_task(parent)
+
+        subtask = Task(
+            id="t-sub-1", project_id="p-1", title="Sub 1",
+            description="Subtask", status=TaskStatus.READY,
+            parent_task_id="t-parent", is_plan_subtask=True,
+            repo_id="repo-link",
+        )
+        await orch.db.create_task(subtask)
+
+        agent = await orch.db.get_agent("a-1")
+
+        mock_git = MagicMock()
+        mock_git.validate_checkout.return_value = True
+        orch.git = mock_git
+
+        await orch._prepare_workspace(subtask, agent)
+
+        mock_git.switch_to_branch.assert_called_once_with(
+            str(workspace), "task/t-parent/parent",
+            default_branch="trunk",
+            rebase=True,
+        )
+
+        await orch.shutdown()
+
+    async def test_init_repo_subtask_passes_default_branch(self, tmp_path):
+        """For INIT repos, switch_to_branch should also receive default_branch."""
+        workspace = tmp_path / "workspaces" / "p-1" / "agent-1" / "initrepo"
+        workspace.mkdir(parents=True)
+
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            auto_task=AutoTaskConfig(rebase_between_subtasks=True),
+        )
+        orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        await orch.initialize()
+
+        await orch.db.create_project(Project(id="p-1", name="gamma"))
+        await orch.db.create_repo(RepoConfig(
+            id="repo-init", project_id="p-1",
+            source_type=RepoSourceType.INIT,
+            default_branch="master",
+        ))
+        await orch.db.create_agent(Agent(
+            id="a-1", name="agent-1", agent_type="claude",
+        ))
+        await orch.db.set_agent_workspace(
+            "a-1", "p-1", str(workspace), repo_id="repo-init",
+        )
+
+        parent = Task(
+            id="t-parent", project_id="p-1", title="Parent",
+            description="Parent", status=TaskStatus.COMPLETED,
+            branch_name="task/t-parent/parent",
+            repo_id="repo-init",
+        )
+        await orch.db.create_task(parent)
+
+        subtask = Task(
+            id="t-sub-1", project_id="p-1", title="Sub 1",
+            description="Subtask", status=TaskStatus.READY,
+            parent_task_id="t-parent", is_plan_subtask=True,
+            repo_id="repo-init",
+        )
+        await orch.db.create_task(subtask)
+
+        agent = await orch.db.get_agent("a-1")
+
+        mock_git = MagicMock()
+        mock_git.validate_checkout.return_value = True
+        orch.git = mock_git
+
+        await orch._prepare_workspace(subtask, agent)
+
+        mock_git.switch_to_branch.assert_called_once_with(
+            str(workspace), "task/t-parent/parent",
+            default_branch="master",
+            rebase=True,
+        )
+
+        await orch.shutdown()
