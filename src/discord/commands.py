@@ -76,9 +76,7 @@ class _NoteDeleteButton(discord.ui.Button):
             "title": title,
         })
         if "error" in result:
-            await interaction.followup.send(
-                f"Error: {result['error']}", ephemeral=True,
-            )
+            await _send_error(interaction, result['error'], followup=True)
             return
 
         # Clean up note_viewers tracking
@@ -97,9 +95,8 @@ class _NoteDeleteButton(discord.ui.Button):
             pass
 
         # Send ephemeral confirmation
-        await interaction.followup.send(
-            f"🗑️ Note **{title}** deleted.", ephemeral=True,
-        )
+        embed = success_embed(f"Note **{title}** deleted")
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
         # Auto-refresh notes TOC if available
         if bot:
@@ -170,9 +167,7 @@ class _NoteViewButton(discord.ui.Button):
             "title": title,
         })
         if "error" in result:
-            await interaction.followup.send(
-                f"Error: {result['error']}", ephemeral=True,
-            )
+            await _send_error(interaction, result['error'], followup=True)
             return
         content = result["content"]
         fname = f"{self._slug}.md"
@@ -804,8 +799,66 @@ def setup_commands(bot: commands.Bot) -> None:
         else:
             await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
 
+    async def _send_success(
+        interaction,
+        title: str,
+        *,
+        description: str | None = None,
+        followup: bool = False,
+        fields=None,
+        result: dict | None = None,
+    ):
+        """Send a success response as a rich embed.
+
+        Replaces the plain-text ``f"✅ {msg}"`` pattern with a consistent
+        green embed carrying the standard AgentQueue footer and timestamp.
+
+        If *result* contains a ``"warning"`` key the warning text is appended
+        to the embed *description* so it remains visible.
+        """
+        if result and result.get("warning"):
+            warning_text = f"⚠️ {result['warning']}"
+            description = f"{description}\n\n{warning_text}" if description else warning_text
+        embed = success_embed(title, description=description, fields=fields)
+        if followup:
+            await interaction.followup.send(embed=embed)
+        else:
+            await interaction.response.send_message(embed=embed)
+
+    async def _send_info(
+        interaction,
+        title: str,
+        *,
+        description: str | None = None,
+        followup: bool = False,
+    ):
+        """Send an informational response as a rich embed."""
+        embed = info_embed(title, description=description)
+        if followup:
+            await interaction.followup.send(embed=embed)
+        else:
+            await interaction.response.send_message(embed=embed)
+
+    async def _send_warning(
+        interaction,
+        title: str,
+        *,
+        description: str | None = None,
+        followup: bool = False,
+    ):
+        """Send a warning response as a rich embed."""
+        embed = warning_embed(title, description=description)
+        if followup:
+            await interaction.followup.send(embed=embed)
+        else:
+            await interaction.response.send_message(embed=embed)
+
     def _with_warning(msg: str, result: dict) -> str:
-        """Append an in-progress task warning to *msg* if present in *result*."""
+        """Append an in-progress task warning to *msg* if present in *result*.
+
+        .. deprecated::
+            Prefer passing ``result=result`` to ``_send_success()`` instead.
+        """
         warning = result.get("warning")
         if warning:
             return f"{msg}\n{warning}"
@@ -1102,11 +1155,9 @@ def setup_commands(bot: commands.Bot) -> None:
         result = await handler.execute("create_project", create_args)
         if "error" in result:
             if will_auto_create:
-                await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+                await _send_error(interaction, result['error'], followup=True)
             else:
-                await interaction.response.send_message(
-                    f"Error: {result['error']}", ephemeral=True
-                )
+                await _send_error(interaction, result['error'])
             return
 
         project_id = result["created"]
@@ -1162,12 +1213,10 @@ def setup_commands(bot: commands.Bot) -> None:
             args["max_concurrent_agents"] = max_concurrent_agents
         result = await handler.execute("edit_project", args)
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         fields = ", ".join(result.get("fields", []))
-        await interaction.response.send_message(
-            f"✅ Project `{project_id}` updated: {fields}"
-        )
+        await _send_success(interaction, f"Project `{project_id}` updated", description=fields)
 
     @bot.tree.command(name="delete-project", description="Delete a project and all its data")
     @app_commands.describe(
@@ -1189,7 +1238,7 @@ def setup_commands(bot: commands.Bot) -> None:
             {"project_id": project_id, "archive_channels": do_archive},
         )
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
 
         # The command handler's _on_project_deleted callback already cleared
@@ -1218,12 +1267,12 @@ def setup_commands(bot: commands.Bot) -> None:
                         except discord.Forbidden:
                             archived.append(f"#{channel.name} ({ch_type}) — no permission to archive")
 
-        msg = f"🗑️ Project **{result.get('name', project_id)}** (`{project_id}`) deleted."
+        desc = f"Project **{result.get('name', project_id)}** (`{project_id}`) has been removed."
         if archived:
-            msg += "\n📦 Archived channels: " + ", ".join(archived)
+            desc += "\n📦 Archived channels: " + ", ".join(archived)
         elif do_archive:
-            msg += "\n*(No linked channels to archive.)*"
-        await interaction.response.send_message(msg)
+            desc += "\n*(No linked channels to archive.)*"
+        await _send_success(interaction, "Project Deleted", description=desc)
 
     # -------------------------------------------------------------------
     # CHANNEL MANAGEMENT COMMANDS
@@ -1247,14 +1296,14 @@ def setup_commands(bot: commands.Bot) -> None:
             "channel_id": str(channel.id),
         })
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True
-            )
+            await _send_error(interaction, result['error'])
             return
         # Update the bot's channel cache immediately
         bot.update_project_channel(project_id, channel)
-        await interaction.response.send_message(
-            f"✅ Project `{project_id}` channel set to {channel.mention}"
+        await _send_success(
+            interaction,
+            f"Project `{project_id}` channel linked",
+            description=f"Channel set to {channel.mention}",
         )
 
     @bot.tree.command(
@@ -1272,9 +1321,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         guild = interaction.guild
         if not guild:
-            await interaction.response.send_message(
-                "Error: Not in a guild.", ephemeral=True
-            )
+            await _send_error(interaction, "Not in a guild.")
             return
 
         # Strip leading '#' if the user included one.
@@ -1288,10 +1335,7 @@ def setup_commands(bot: commands.Bot) -> None:
                 break
 
         if not matched_channel:
-            await interaction.response.send_message(
-                f"Error: No text channel named `{channel_name}` found in this server.",
-                ephemeral=True,
-            )
+            await _send_error(interaction, f"No text channel named `{channel_name}` found in this server.")
             return
 
         result = await handler.execute("set_control_interface", {
@@ -1300,14 +1344,14 @@ def setup_commands(bot: commands.Bot) -> None:
             "_resolved_channel_id": str(matched_channel.id),
         })
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True
-            )
+            await _send_error(interaction, result['error'])
             return
         # Update the bot's channel cache immediately
         bot.update_project_channel(project_id, matched_channel)
-        await interaction.response.send_message(
-            f"✅ Project `{project_id}` channel set to {matched_channel.mention}"
+        await _send_success(
+            interaction,
+            f"Project `{project_id}` channel linked",
+            description=f"Channel set to {matched_channel.mention}",
         )
 
     @bot.tree.command(
@@ -1330,16 +1374,14 @@ def setup_commands(bot: commands.Bot) -> None:
         # Validate project exists (direct lookup)
         project_check = await handler.execute("get_project_channels", {"project_id": project_id})
         if "error" in project_check:
-            await interaction.followup.send(
-                f"Error: Project `{project_id}` not found.", ephemeral=True
-            )
+            await _send_error(interaction, f"Project `{project_id}` not found.", followup=True)
             return
 
         name = channel_name or project_id
         # Create the Discord channel
         guild = interaction.guild
         if not guild:
-            await interaction.followup.send("Error: Not in a guild.", ephemeral=True)
+            await _send_error(interaction, "Not in a guild.", followup=True)
             return
 
         topic = f"Agent Queue channel for project: {project_id}"
@@ -1352,14 +1394,10 @@ def setup_commands(bot: commands.Bot) -> None:
                 reason=f"AgentQueue: channel for project {project_id}",
             )
         except discord.Forbidden:
-            await interaction.followup.send(
-                "Error: Bot lacks permission to create channels.", ephemeral=True
-            )
+            await _send_error(interaction, "Bot lacks permission to create channels.", followup=True)
             return
         except discord.HTTPException as e:
-            await interaction.followup.send(
-                f"Error creating channel: {e}", ephemeral=True
-            )
+            await _send_error(interaction, f"Error creating channel: {e}", followup=True)
             return
 
         # Link it to the project in the database
@@ -1368,15 +1406,16 @@ def setup_commands(bot: commands.Bot) -> None:
             "channel_id": str(new_channel.id),
         })
         if "error" in result:
-            await interaction.followup.send(
-                f"Channel created but linking failed: {result['error']}", ephemeral=True
-            )
+            await _send_error(interaction, f"Channel created but linking failed: {result['error']}", followup=True)
             return
 
         # Update the bot's channel cache immediately
         bot.update_project_channel(project_id, new_channel)
-        await interaction.followup.send(
-            f"✅ Created {new_channel.mention} as channel for project `{project_id}`"
+        await _send_success(
+            interaction,
+            "Channel Created",
+            description=f"Created {new_channel.mention} for project `{project_id}`",
+            followup=True,
         )
 
     @bot.tree.command(
@@ -1399,7 +1438,7 @@ def setup_commands(bot: commands.Bot) -> None:
 
         guild = interaction.guild
         if not guild:
-            await interaction.followup.send("Error: Not in a guild.", ephemeral=True)
+            await _send_error(interaction, "Not in a guild.", followup=True)
             return
 
         # Build guild_channels list for idempotency lookup
@@ -1440,14 +1479,10 @@ def setup_commands(bot: commands.Bot) -> None:
                 )
                 created_channel_id = str(existing_channel.id)
             except discord.Forbidden:
-                await interaction.followup.send(
-                    "Error: Bot lacks permission to create channels.", ephemeral=True
-                )
+                await _send_error(interaction, "Bot lacks permission to create channels.", followup=True)
                 return
             except discord.HTTPException as e:
-                await interaction.followup.send(
-                    f"Error creating channel: {e}", ephemeral=True
-                )
+                await _send_error(interaction, f"Error creating channel: {e}", followup=True)
                 return
 
         # Delegate to the command handler for project validation + linking
@@ -1459,9 +1494,7 @@ def setup_commands(bot: commands.Bot) -> None:
         })
 
         if "error" in result:
-            await interaction.followup.send(
-                f"Error: {result['error']}", ephemeral=True
-            )
+            await _send_error(interaction, result['error'], followup=True)
             return
 
         # Update the bot's channel cache immediately
@@ -1469,14 +1502,23 @@ def setup_commands(bot: commands.Bot) -> None:
 
         action = result.get("action", "linked")
         if action == "linked_existing":
-            await interaction.followup.send(
-                f"✅ Channel {existing_channel.mention} already exists — "
-                f"linked to project `{project_id}`"
+            await _send_success(
+                interaction,
+                "Channel Linked",
+                description=(
+                    f"{existing_channel.mention} already exists — "
+                    f"linked to project `{project_id}`"
+                ),
+                followup=True,
             )
         else:
-            await interaction.followup.send(
-                f"✅ Created {existing_channel.mention} as channel "
-                f"for project `{project_id}`"
+            await _send_success(
+                interaction,
+                "Channel Created",
+                description=(
+                    f"Created {existing_channel.mention} for project `{project_id}`"
+                ),
+                followup=True,
             )
 
     @bot.tree.command(
@@ -1523,11 +1565,11 @@ def setup_commands(bot: commands.Bot) -> None:
     async def pause_command(interaction: discord.Interaction):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         result = await handler.execute("pause_project", {"project_id": project_id})
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         await interaction.response.send_message(
             f"⏸ Project **{result.get('name', project_id)}** paused."
@@ -1537,11 +1579,11 @@ def setup_commands(bot: commands.Bot) -> None:
     async def resume_command(interaction: discord.Interaction):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         result = await handler.execute("resume_project", {"project_id": project_id})
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         await interaction.response.send_message(
             f"▶ Project **{result.get('name', project_id)}** resumed."
@@ -1553,7 +1595,7 @@ def setup_commands(bot: commands.Bot) -> None:
         args = {"project_id": project_id} if project_id else {}
         result = await handler.execute("set_active_project", args)
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         if result.get("active_project"):
             await interaction.response.send_message(
@@ -1575,12 +1617,31 @@ def setup_commands(bot: commands.Bot) -> None:
         show_completed: bool = False,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
-        args = {}
+        args: dict = {"include_completed": show_completed}
         if project_id:
             args["project_id"] = project_id
         result = await handler.execute("list_tasks", args)
-        all_tasks = result.get("tasks", [])
-        if not all_tasks:
+        tasks = result.get("tasks", [])
+        if not tasks:
+            # When filtering to active-only and nothing returned, check if
+            # there are completed tasks the user could reveal.
+            if not show_completed:
+                all_result = await handler.execute(
+                    "list_tasks",
+                    {**args, "include_completed": True},
+                )
+                completed_count = len(all_result.get("tasks", []))
+                if completed_count:
+                    await interaction.response.send_message(
+                        embed=success_embed(
+                            "All Tasks Completed",
+                            description=(
+                                f"All {completed_count} task(s) are completed. "
+                                f"Use `/tasks show_completed:True` to view them."
+                            ),
+                        ),
+                    )
+                    return
             await interaction.response.send_message(
                 embed=info_embed("No Tasks", description="No tasks found for this project."),
             )
@@ -1606,7 +1667,16 @@ def setup_commands(bot: commands.Bot) -> None:
         tasks_by_status: dict[str, list] = {}
         for t in tasks:
             tasks_by_status.setdefault(t["status"], []).append(t)
-        total = result.get("total", len(all_tasks))
+        total = result.get("total", len(tasks))
+        # Fetch all tasks (including completed) for the full-view report widget
+        if not show_completed:
+            all_result = await handler.execute(
+                "list_tasks",
+                {**args, "include_completed": True},
+            )
+            all_tasks = all_result.get("tasks", [])
+        else:
+            all_tasks = tasks
         view = TaskReportView(tasks_by_status, total, all_tasks=all_tasks)
         content = view.build_content()
         await interaction.response.send_message(content, view=view)
@@ -1678,9 +1748,7 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result['error'])
             return
         fields = ", ".join(result.get("fields", []))
-        await interaction.response.send_message(
-            f"✅ Task `{task_id}` updated: {fields}"
-        )
+        await _send_success(interaction, f"Task `{task_id}` updated", description=fields)
 
     @bot.tree.command(name="stop-task", description="Stop a task that is currently in progress")
     @app_commands.describe(task_id="Task ID to stop")
@@ -1689,7 +1757,7 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(f"⏹ Task `{task_id}` stopped.")
+        await _send_success(interaction, f"Task `{task_id}` stopped")
 
     @bot.tree.command(name="restart-task", description="Reset a task back to READY for re-execution")
     @app_commands.describe(task_id="Task ID to restart")
@@ -1698,8 +1766,10 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(
-            f"🔄 Task `{task_id}` restarted ({result.get('previous_status', '?')} → READY)"
+        await _send_success(
+            interaction,
+            f"Task `{task_id}` restarted",
+            description=f"{result.get('previous_status', '?')} → READY",
         )
 
     @bot.tree.command(name="delete-task", description="Delete a task")
@@ -1709,8 +1779,10 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(
-            f"🗑️ Task `{task_id}` ({result.get('title', '')}) deleted."
+        await _send_success(
+            interaction,
+            f"Task `{task_id}` deleted",
+            description=result.get("title", ""),
         )
 
     @bot.tree.command(name="approve-task", description="Approve a task that is awaiting approval")
@@ -1720,8 +1792,10 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(
-            f"✅ Task `{task_id}` ({result.get('title', '')}) approved and completed."
+        await _send_success(
+            interaction,
+            f"Task `{task_id}` approved",
+            description=result.get("title", ""),
         )
 
     @bot.tree.command(
@@ -1735,13 +1809,13 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result['error'])
             return
         unblocked_count = result.get("unblocked_count", 0)
-        msg = f"⏭️ Task `{task_id}` skipped (marked COMPLETED)."
+        desc = "Marked COMPLETED."
         if unblocked_count:
             unblocked_list = ", ".join(
                 f"`{t['id']}`" for t in result.get("unblocked", [])
             )
-            msg += f"\n{unblocked_count} task(s) unblocked: {unblocked_list}"
-        await interaction.response.send_message(msg)
+            desc += f"\n{unblocked_count} task(s) unblocked: {unblocked_list}"
+        await _send_success(interaction, f"Task `{task_id}` skipped", description=desc)
 
     @bot.tree.command(
         name="chain-health",
@@ -1768,8 +1842,9 @@ def setup_commands(bot: commands.Bot) -> None:
         if "task_id" in result:
             stuck = result.get("stuck_downstream", [])
             if not stuck:
-                await interaction.response.send_message(
-                    f"✅ No stuck downstream tasks for `{result['task_id']}`."
+                await _send_success(
+                    interaction,
+                    f"No stuck downstream tasks for `{result['task_id']}`",
                 )
             else:
                 lines = [
@@ -1784,11 +1859,10 @@ def setup_commands(bot: commands.Bot) -> None:
         else:
             chains = result.get("stuck_chains", [])
             if not chains:
-                await interaction.response.send_message(
-                    f"✅ No stuck dependency chains"
-                    + (f" in project `{result.get('project_id')}`" if result.get("project_id") else "")
-                    + "."
-                )
+                title = "No stuck dependency chains"
+                if result.get("project_id"):
+                    title += f" in project `{result.get('project_id')}`"
+                await _send_success(interaction, title)
             else:
                 lines = [f"⛓️ **{len(chains)} stuck chain(s):**"]
                 for chain in chains[:10]:
@@ -2121,7 +2195,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         args: dict = {
             "project_id": project_id,
@@ -2136,7 +2210,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["name"] = name
         result = await handler.execute("add_repo", args)
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         embed = success_embed(
             "Repo Registered",
@@ -2159,12 +2233,12 @@ def setup_commands(bot: commands.Bot) -> None:
     async def git_status_command(interaction: discord.Interaction):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         await interaction.response.defer()
         result = await handler.execute("get_git_status", {"project_id": project_id})
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
 
         project_name = result.get("project_name", project_id)
@@ -2215,9 +2289,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(
-                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
-            )
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         await interaction.response.defer()
@@ -2228,13 +2300,15 @@ def setup_commands(bot: commands.Bot) -> None:
             args["name"] = name
         result = await handler.execute("git_branch", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
 
         if "created" in result:
-            await interaction.followup.send(
-                f"✅ Created and switched to branch `{result['created']}` "
-                f"on `{project_id}`"
+            await _send_success(
+                interaction,
+                f"Branch `{result['created']}` created",
+                description=f"Switched to new branch on `{project_id}`",
+                followup=True,
             )
         else:
             current = result.get("current_branch", "?")
@@ -2261,9 +2335,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(
-                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
-            )
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         await interaction.response.defer()
@@ -2272,12 +2344,15 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("checkout_branch", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
-        await interaction.followup.send(_with_warning(
-            f"✅ Switched to branch `{result['branch']}` on `{project_id}`",
-            result,
-        ))
+        await _send_success(
+            interaction,
+            f"Switched to branch `{result['branch']}`",
+            description=f"Project: `{project_id}`",
+            followup=True,
+            result=result,
+        )
 
     @bot.tree.command(
         name="project-commit",
@@ -2294,9 +2369,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(
-                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
-            )
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         await interaction.response.defer()
@@ -2305,17 +2378,23 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("commit_changes", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         if result.get("status") == "committed":
             repo_label = result.get("repo_id", "?")
-            await interaction.followup.send(_with_warning(
-                f"✅ Committed in `{repo_label}` on `{project_id}`: {message}",
-                result,
-            ))
+            await _send_success(
+                interaction,
+                f"Committed in `{repo_label}`",
+                description=f"Project: `{project_id}`\n{message}",
+                followup=True,
+                result=result,
+            )
         else:
-            await interaction.followup.send(
-                f"ℹ️ Nothing to commit on `{project_id}` — working tree clean"
+            await _send_info(
+                interaction,
+                "Nothing to commit",
+                description=f"Working tree clean on `{project_id}`",
+                followup=True,
             )
 
     @bot.tree.command(
@@ -2333,9 +2412,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(
-                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
-            )
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         await interaction.response.defer()
@@ -2346,11 +2423,14 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("push_branch", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         pushed_branch = result.get("branch", "?")
-        await interaction.followup.send(
-            f"✅ Pushed `{pushed_branch}` to origin on `{project_id}`"
+        await _send_success(
+            interaction,
+            f"Pushed `{pushed_branch}` to origin",
+            description=f"Project: `{project_id}`",
+            followup=True,
         )
 
     @bot.tree.command(
@@ -2368,9 +2448,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(
-                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
-            )
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         await interaction.response.defer()
@@ -2379,21 +2457,27 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("merge_branch", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
+        target = result.get("target", "main")
         if result.get("status") == "conflict":
-            target = result.get("target", "main")
-            await interaction.followup.send(_with_warning(
-                f"⚠️ Merge conflict — `{branch_name}` could not be merged "
-                f"into `{target}` on `{project_id}`. Merge was aborted.",
-                result,
-            ))
+            await _send_warning(
+                interaction,
+                "Merge Conflict",
+                description=(
+                    f"`{branch_name}` could not be merged into `{target}` "
+                    f"on `{project_id}`. Merge was aborted."
+                ),
+                followup=True,
+            )
         else:
-            target = result.get("target", "main")
-            await interaction.followup.send(_with_warning(
-                f"✅ Merged `{branch_name}` into `{target}` on `{project_id}`",
-                result,
-            ))
+            await _send_success(
+                interaction,
+                f"Merged `{branch_name}` into `{target}`",
+                description=f"Project: `{project_id}`",
+                followup=True,
+                result=result,
+            )
 
     @bot.tree.command(
         name="project-create-branch",
@@ -2410,9 +2494,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(
-                f"Error: {_NO_PROJECT_MSG}", ephemeral=True,
-            )
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         await interaction.response.defer()
@@ -2421,10 +2503,13 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("create_branch", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
-        await interaction.followup.send(
-            f"✅ Created and switched to branch `{result['branch']}` on `{project_id}`"
+        await _send_success(
+            interaction,
+            f"Branch `{result['branch']}` created",
+            description=f"Switched to new branch on `{project_id}`",
+            followup=True,
         )
 
     @bot.tree.command(
@@ -2442,7 +2527,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "branch_name": branch_name}
@@ -2450,9 +2535,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("create_branch", args)
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True,
-            )
+            await _send_error(interaction, result['error'])
             return
         await interaction.response.send_message(
             f"🌿 Branch `{branch_name}` created in `{result.get('repo_id', project_id)}`"
@@ -2473,7 +2556,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "branch_name": branch_name}
@@ -2481,14 +2564,14 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("checkout_branch", args)
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True,
-            )
+            await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(_with_warning(
-            f"🔀 Switched to branch `{branch_name}` in `{result.get('repo_id', project_id)}`",
-            result,
-        ))
+        await _send_success(
+            interaction,
+            f"Switched to branch `{branch_name}`",
+            description=f"Repo: `{result.get('repo_id', project_id)}`",
+            result=result,
+        )
 
     @bot.tree.command(
         name="commit",
@@ -2505,7 +2588,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "message": message}
@@ -2513,19 +2596,21 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("commit_changes", args)
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True,
-            )
+            await _send_error(interaction, result['error'])
             return
         if result.get("status") == "nothing_to_commit":
-            await interaction.response.send_message(
-                f"ℹ️ Nothing to commit in `{result.get('repo_id', project_id)}` — working tree clean."
+            await _send_info(
+                interaction,
+                "Nothing to commit",
+                description=f"Working tree clean in `{result.get('repo_id', project_id)}`",
             )
             return
-        await interaction.response.send_message(_with_warning(
-            f"✅ Committed in `{result.get('repo_id', project_id)}`: {message}",
-            result,
-        ))
+        await _send_success(
+            interaction,
+            f"Committed in `{result.get('repo_id', project_id)}`",
+            description=message,
+            result=result,
+        )
 
     @bot.tree.command(
         name="push",
@@ -2542,7 +2627,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id}
@@ -2552,13 +2637,13 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("push_branch", args)
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True,
-            )
+            await _send_error(interaction, result['error'])
             return
         pushed_branch = result.get("branch", branch_name or "current")
-        await interaction.response.send_message(
-            f"🚀 Pushed `{pushed_branch}` in `{result.get('repo_id', project_id)}`"
+        await _send_success(
+            interaction,
+            f"Pushed `{pushed_branch}`",
+            description=f"Repo: `{result.get('repo_id', project_id)}`",
         )
 
     @bot.tree.command(
@@ -2576,7 +2661,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "branch_name": branch_name}
@@ -2584,21 +2669,24 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("merge_branch", args)
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True,
-            )
+            await _send_error(interaction, result['error'])
             return
         if result.get("status") == "conflict":
-            await interaction.response.send_message(_with_warning(
-                f"⚠️ Merge conflict when merging `{branch_name}` → `{result.get('target', 'main')}`. "
-                f"Merge was aborted.",
-                result,
-            ))
+            await _send_warning(
+                interaction,
+                "Merge Conflict",
+                description=(
+                    f"`{branch_name}` → `{result.get('target', 'main')}` "
+                    f"in `{result.get('repo_id', project_id)}`. Merge was aborted."
+                ),
+            )
             return
-        await interaction.response.send_message(_with_warning(
-            f"✅ Merged `{branch_name}` → `{result.get('target', 'main')}` in `{result.get('repo_id', project_id)}`",
-            result,
-        ))
+        await _send_success(
+            interaction,
+            f"Merged `{branch_name}` → `{result.get('target', 'main')}`",
+            description=f"Repo: `{result.get('repo_id', project_id)}`",
+            result=result,
+        )
 
     @bot.tree.command(
         name="git-commit",
@@ -2626,16 +2714,22 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("git_commit", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         label = result.get("repo_id", project_id or "repo")
         if result.get("committed"):
-            await interaction.followup.send(
-                f"✅ Committed in `{label}`: {message}"
+            await _send_success(
+                interaction,
+                f"Committed in `{label}`",
+                description=message,
+                followup=True,
             )
         else:
-            await interaction.followup.send(
-                f"ℹ️ Nothing to commit in `{label}` — working tree clean"
+            await _send_info(
+                interaction,
+                "Nothing to commit",
+                description=f"Working tree clean in `{label}`",
+                followup=True,
             )
 
     @bot.tree.command(
@@ -2664,11 +2758,14 @@ def setup_commands(bot: commands.Bot) -> None:
             args["branch"] = branch
         result = await handler.execute("git_push", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         label = result.get("repo_id", project_id or "repo")
-        await interaction.followup.send(
-            f"✅ Pushed `{result['pushed']}` in `{label}`"
+        await _send_success(
+            interaction,
+            f"Pushed `{result['pushed']}`",
+            description=f"Repo: `{label}`",
+            followup=True,
         )
 
     @bot.tree.command(
@@ -2695,11 +2792,14 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("git_create_branch", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         label = result.get("repo_id", project_id or "repo")
-        await interaction.followup.send(
-            f"✅ Created and switched to branch `{branch_name}` in `{label}`"
+        await _send_success(
+            interaction,
+            f"Branch `{branch_name}` created",
+            description=f"Switched to new branch in `{label}`",
+            followup=True,
         )
 
     @bot.tree.command(
@@ -2730,17 +2830,25 @@ def setup_commands(bot: commands.Bot) -> None:
             args["default_branch"] = default_branch
         result = await handler.execute("git_merge", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         label = result.get("repo_id", project_id or "repo")
         if result.get("merged"):
-            await interaction.followup.send(
-                f"✅ Merged `{branch_name}` into `{result['into']}` in `{label}`"
+            await _send_success(
+                interaction,
+                f"Merged `{branch_name}` into `{result['into']}`",
+                description=f"Repo: `{label}`",
+                followup=True,
             )
         else:
-            await interaction.followup.send(
-                f"⚠️ Merge conflict — `{branch_name}` could not be merged into "
-                f"`{result.get('into', 'default')}` in `{label}`. Merge was aborted."
+            await _send_warning(
+                interaction,
+                "Merge Conflict",
+                description=(
+                    f"`{branch_name}` could not be merged into "
+                    f"`{result.get('into', 'default')}` in `{label}`. Merge was aborted."
+                ),
+                followup=True,
             )
 
     @bot.tree.command(
@@ -2777,12 +2885,17 @@ def setup_commands(bot: commands.Bot) -> None:
             args["base"] = base
         result = await handler.execute("git_create_pr", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         pr_url = result.get("pr_url", "")
-        await interaction.followup.send(
-            f"✅ PR created: {pr_url}\n"
-            f"**Branch:** `{result.get('branch', '?')}` → `{result.get('base', '?')}`"
+        await _send_success(
+            interaction,
+            "PR Created",
+            description=(
+                f"[{pr_url}]({pr_url})\n"
+                f"**Branch:** `{result.get('branch', '?')}` → `{result.get('base', '?')}`"
+            ),
+            followup=True,
         )
 
     @bot.tree.command(
@@ -2811,15 +2924,18 @@ def setup_commands(bot: commands.Bot) -> None:
             args["base_branch"] = base_branch
         result = await handler.execute("git_changed_files", args)
         if "error" in result:
-            await interaction.followup.send(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'], followup=True)
             return
         label = result.get("repo_id", project_id or "repo")
         files = result.get("files", [])
         count = result.get("count", 0)
         base = result.get("base_branch", "main")
         if not files:
-            await interaction.followup.send(
-                f"No files changed in `{label}` vs `{base}`"
+            await _send_info(
+                interaction,
+                "No files changed",
+                description=f"`{label}` vs `{base}`",
+                followup=True,
             )
             return
         file_list = "\n".join(f"• `{f}`" for f in files[:50])
@@ -2846,7 +2962,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "count": count}
@@ -2854,7 +2970,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("git_log", args)
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         branch = result.get("branch", "?")
         log = result.get("log", "(no commits)")
@@ -2877,7 +2993,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id}
@@ -2887,9 +3003,7 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         result = await handler.execute("git_diff", args)
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True,
-            )
+            await _send_error(interaction, result['error'])
             return
 
         diff = result.get("diff", "(no changes)")
@@ -2968,16 +3082,13 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         if trigger_type.value == "periodic":
             try:
                 interval = int(trigger_value)
             except ValueError:
-                await interaction.response.send_message(
-                    "Error: trigger_value must be an integer (seconds) for periodic hooks.",
-                    ephemeral=True,
-                )
+                await _send_error(interaction, "trigger_value must be an integer (seconds) for periodic hooks.")
                 return
             trigger = {"type": "periodic", "interval_seconds": interval}
         else:
@@ -2991,10 +3102,12 @@ def setup_commands(bot: commands.Bot) -> None:
             "cooldown_seconds": cooldown_seconds,
         })
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(
-            f"✅ Hook **{name}** (`{result['created']}`) created in `{project_id}`"
+        await _send_success(
+            interaction,
+            f"Hook **{name}** created",
+            description=f"ID: `{result['created']}`\nProject: `{project_id}`",
         )
 
     @bot.tree.command(name="edit-hook", description="Edit an automation hook")
@@ -3020,22 +3133,22 @@ def setup_commands(bot: commands.Bot) -> None:
             args["cooldown_seconds"] = cooldown_seconds
         result = await handler.execute("edit_hook", args)
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         fields = ", ".join(result.get("fields", []))
-        await interaction.response.send_message(
-            f"✅ Hook `{hook_id}` updated: {fields}"
-        )
+        await _send_success(interaction, f"Hook `{hook_id}` updated", description=fields)
 
     @bot.tree.command(name="delete-hook", description="Delete an automation hook")
     @app_commands.describe(hook_id="Hook ID to delete")
     async def delete_hook_command(interaction: discord.Interaction, hook_id: str):
         result = await handler.execute("delete_hook", {"hook_id": hook_id})
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(
-            f"🗑️ Hook **{result.get('name', hook_id)}** (`{hook_id}`) deleted."
+        await _send_success(
+            interaction,
+            f"Hook `{hook_id}` deleted",
+            description=result.get("name", ""),
         )
 
     @bot.tree.command(name="hook-runs", description="Show recent execution history for a hook")
@@ -3048,7 +3161,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         result = await handler.execute("list_hook_runs", {"hook_id": hook_id, "limit": limit})
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         runs = result.get("runs", [])
         hook_name = result.get("hook_name", hook_id)
@@ -3074,7 +3187,7 @@ def setup_commands(bot: commands.Bot) -> None:
     async def fire_hook_command(interaction: discord.Interaction, hook_id: str):
         result = await handler.execute("fire_hook", {"hook_id": hook_id})
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         await interaction.response.send_message(
             f"🔥 Hook `{hook_id}` fired — status: {result.get('status', 'running')}"
@@ -3088,13 +3201,11 @@ def setup_commands(bot: commands.Bot) -> None:
     async def notes_command(interaction: discord.Interaction):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         result = await handler.execute("list_notes", {"project_id": project_id})
         if "error" in result:
-            await interaction.response.send_message(
-                f"Error: {result['error']}", ephemeral=True
-            )
+            await _send_error(interaction, result['error'])
             return
 
         # Look up project name for the header
@@ -3141,7 +3252,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         result = await handler.execute("write_note", {
             "project_id": project_id,
@@ -3149,11 +3260,13 @@ def setup_commands(bot: commands.Bot) -> None:
             "content": content,
         })
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
         status = result.get("status", "created")
-        await interaction.response.send_message(
-            f"📝 Note **{title}** {status} in `{project_id}`"
+        await _send_success(
+            interaction,
+            f"Note **{title}** {status}",
+            description=f"Project: `{project_id}`",
         )
 
     @bot.tree.command(name="delete-note", description="Delete a project note")
@@ -3166,17 +3279,19 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
-            await interaction.response.send_message(f"Error: {_NO_PROJECT_MSG}", ephemeral=True)
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
         result = await handler.execute("delete_note", {
             "project_id": project_id,
             "title": title,
         })
         if "error" in result:
-            await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
+            await _send_error(interaction, result['error'])
             return
-        await interaction.response.send_message(
-            f"🗑️ Note **{title}** deleted from `{project_id}`"
+        await _send_success(
+            interaction,
+            f"Note **{title}** deleted",
+            description=f"Project: `{project_id}`",
         )
 
     # ===================================================================
@@ -3195,17 +3310,20 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         result = await handler.execute("orchestrator_control", {"action": action.value})
         if action.value == "pause":
-            await interaction.response.send_message(
-                "⏸ Orchestrator paused — no new tasks will be scheduled."
+            await _send_success(
+                interaction,
+                "Orchestrator Paused",
+                description="No new tasks will be scheduled.",
             )
         elif action.value == "resume":
-            await interaction.response.send_message("▶ Orchestrator resumed.")
+            await _send_success(interaction, "Orchestrator Resumed")
         else:
             running = result.get("running_tasks", 0)
             state = "⏸ PAUSED" if result.get("status") == "paused" else "▶ RUNNING"
-            await interaction.response.send_message(
-                f"**Orchestrator status:** {state}\n"
-                f"**Running tasks:** {running}"
+            await _send_info(
+                interaction,
+                "Orchestrator Status",
+                description=f"**State:** {state}\n**Running tasks:** {running}",
             )
 
     @bot.tree.command(name="restart", description="Restart the agent-queue daemon")

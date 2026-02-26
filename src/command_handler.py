@@ -482,29 +482,42 @@ class CommandHandler:
     # diagnostics for dependency graphs.
     # -----------------------------------------------------------------------
 
-    # Terminal statuses hidden by default when include_completed is False.
-    _TERMINAL_STATUSES = {TaskStatus.COMPLETED, TaskStatus.FAILED}
+    # Statuses considered "finished" for the include_completed / completed_only
+    # filters.  BLOCKED is included because blocked tasks are not actionable
+    # until their dependencies are resolved — callers interested in the active
+    # work queue typically want these hidden.
+    _FINISHED_STATUSES: frozenset[TaskStatus] = frozenset({
+        TaskStatus.COMPLETED,
+        TaskStatus.FAILED,
+        TaskStatus.BLOCKED,
+    })
 
     async def _cmd_list_tasks(self, args: dict) -> dict:
         kwargs = {}
         if "project_id" in args:
             kwargs["project_id"] = args["project_id"]
-        if "status" in args:
-            kwargs["status"] = TaskStatus(args["status"])
-        all_tasks = await self.db.list_tasks(**kwargs)
 
-        # Filtering: by default, hide completed/failed (terminal) tasks.
-        # - include_completed=True  → show everything (no filtering)
-        # - include_completed=False → hide COMPLETED and FAILED (default)
-        # When an explicit "status" filter is provided, skip filtering so
-        # the caller gets exactly what they asked for.
-        include_completed = args.get("include_completed", False)
-        if not include_completed and "status" not in args:
-            tasks = [t for t in all_tasks if t.status not in self._TERMINAL_STATUSES]
-            hidden_count = len(all_tasks) - len(tasks)
-        else:
-            tasks = all_tasks
-            hidden_count = 0
+        # An explicit `status` filter takes precedence over the convenience
+        # boolean flags — the caller is asking for a specific status.
+        explicit_status = "status" in args
+        if explicit_status:
+            kwargs["status"] = TaskStatus(args["status"])
+
+        tasks = await self.db.list_tasks(**kwargs)
+
+        # Apply include_completed / completed_only filtering only when no
+        # explicit status filter was provided.
+        if not explicit_status:
+            include_completed: bool = args.get("include_completed", False)
+            completed_only: bool = args.get("completed_only", False)
+
+            if completed_only:
+                # Show only finished tasks.
+                tasks = [t for t in tasks if t.status in self._FINISHED_STATUSES]
+            elif not include_completed:
+                # Default: hide finished tasks so the list shows active work.
+                tasks = [t for t in tasks if t.status not in self._FINISHED_STATUSES]
+            # else: include_completed=True — return everything unfiltered.
 
         return {
             "tasks": [
@@ -715,6 +728,40 @@ class CommandHandler:
             "new_status": new_status,
             "title": task.title,
         }
+
+    async def _cmd_provide_input(self, args: dict) -> dict:
+        """Store a user's reply to an agent question for the next execution cycle.
+
+        The response is logged as an ``agent_input`` event and appended to the
+        task's context so the agent receives it when the task is next executed.
+        """
+        task_id = args["task_id"]
+        user_input = args.get("input", "")
+        if not user_input:
+            return {"error": "Input cannot be empty"}
+
+        task = await self.db.get_task(task_id)
+        if not task:
+            return {"error": f"Task '{task_id}' not found"}
+
+        # Append the user reply to the task context so the agent sees it
+        # on the next execution cycle.
+        existing_context = task.context or ""
+        separator = "\n\n" if existing_context else ""
+        updated_context = (
+            f"{existing_context}{separator}"
+            f"--- User reply (to agent question) ---\n{user_input}"
+        )
+        await self.db.update_task(task_id, context=updated_context)
+
+        # Log the event for audit trail
+        await self.db.log_event(
+            "agent_input",
+            project_id=task.project_id,
+            task_id=task_id,
+            payload=user_input[:500],
+        )
+        return {"provided_input": task_id, "title": task.title}
 
     async def _cmd_skip_task(self, args: dict) -> dict:
         """Skip a BLOCKED/FAILED task to unblock its dependency chain."""

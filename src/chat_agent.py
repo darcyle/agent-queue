@@ -210,12 +210,12 @@ TOOLS = [
         "name": "list_tasks",
         "description": (
             "List tasks, optionally filtered by project or status. "
-            "By default, completed and failed tasks are hidden — only active "
-            "tasks are returned. Set include_completed to true to see all tasks "
-            "including terminal ones. When reporting results with the default "
-            "filter, say 'N active tasks' (not just 'N tasks'). The response "
-            "includes hidden_completed (count of hidden terminal tasks) so you "
-            "can mention them if relevant, e.g. 'plus N completed'."
+            "IMPORTANT: By default, completed/failed/blocked tasks are HIDDEN "
+            "and only active tasks are returned. When presenting results from "
+            "the default filter, say 'N active tasks' (not just 'N tasks'). "
+            "Use show_all=true or include_completed=true to include finished "
+            "tasks. Use completed_only=true to see only finished tasks. "
+            "An explicit status filter overrides all convenience flags."
         ),
         "input_schema": {
             "type": "object",
@@ -227,19 +227,32 @@ TOOLS = [
                 "status": {
                     "type": "string",
                     "description": (
-                        "Filter by a specific status: DEFINED, READY, IN_PROGRESS, "
-                        "COMPLETED, FAILED, BLOCKED, etc. When set, the "
-                        "include_completed flag is ignored — you get exactly the "
-                        "status you asked for."
+                        "Filter by exact status: DEFINED, READY, IN_PROGRESS, "
+                        "COMPLETED, etc. When provided, show_all, "
+                        "include_completed, and completed_only are ignored."
+                    ),
+                },
+                "show_all": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, return ALL tasks regardless of status "
+                        "(active + completed + failed + blocked). "
+                        "Default false (only active tasks are shown)."
                     ),
                 },
                 "include_completed": {
                     "type": "boolean",
                     "description": (
-                        "If true, include completed and failed tasks in the "
-                        "results. Defaults to false (only active tasks)."
+                        "When true, return all tasks including completed/failed/"
+                        "blocked. Alias for show_all. Default false."
                     ),
-                    "default": False,
+                },
+                "completed_only": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, return only finished tasks (completed/failed/"
+                        "blocked). Default false."
+                    ),
                 },
             },
         },
@@ -1278,10 +1291,14 @@ plan. Include specific file paths, code changes, new files to create, and step-b
 implementation instructions. The more detailed the description, the better the agent \
 will execute. Never create a task with just a summary — include the complete plan.
 
-Task listing — `list_tasks` hides completed/failed tasks by default. When \
-reporting results with the default filter, say "N active tasks" (not "N tasks"). \
-If hidden_completed > 0, you may mention it, e.g. "3 active tasks (plus 5 completed)". \
-Use include_completed=true only when the user explicitly asks to see finished tasks.
+Task listing presentation — the `list_tasks` tool hides completed/failed/blocked \
+tasks by default. When presenting results from the default filter (no show_all, \
+no include_completed, no explicit status), say "N active tasks" to make it clear \
+that finished tasks are excluded. Examples:
+- "There are **3 active tasks** in `my-project`:" (default filter)
+- "Here are all **7 tasks** in `my-project`:" (show_all=true)
+- "Found **2 completed tasks**:" (completed_only=true or status=COMPLETED)
+If the user asks about completed tasks, use show_all=true or completed_only=true.
 
 Be concise in Discord messages. Use markdown formatting. When a user asks you to \
 do something, use the available tools to do it — don't just tell them to use slash commands.
@@ -1464,5 +1481,14 @@ class ChatAgent:
                 self._provider._caller = prev_caller
 
     async def _execute_tool(self, name: str, input_data: dict) -> dict:
-        """Execute a tool call via the shared CommandHandler."""
+        """Execute a tool call via the shared CommandHandler.
+
+        Performs light pre-processing to translate LLM-friendly parameter
+        aliases into the canonical names understood by CommandHandler.
+        """
+        if name == "list_tasks" and input_data.get("show_all"):
+            # show_all is an LLM-friendly alias for include_completed.
+            # Map it so CommandHandler sees the canonical parameter.
+            input_data = {**input_data, "include_completed": True}
+            input_data.pop("show_all", None)
         return await self.handler.execute(name, input_data)
