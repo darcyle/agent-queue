@@ -494,6 +494,21 @@ class Database:
         rows = await cursor.fetchall()
         return [self._row_to_repo(r) for r in rows]
 
+    async def update_repo(self, repo_id: str, **kwargs) -> None:
+        """Update repo config fields (e.g. default_branch, url)."""
+        sets = []
+        vals = []
+        for key, value in kwargs.items():
+            if isinstance(value, RepoSourceType):
+                value = value.value
+            sets.append(f"{key} = ?")
+            vals.append(value)
+        vals.append(repo_id)
+        await self._db.execute(
+            f"UPDATE repos SET {', '.join(sets)} WHERE id = ?", vals
+        )
+        await self._db.commit()
+
     async def delete_repo(self, repo_id: str) -> None:
         await self._db.execute("DELETE FROM repos WHERE id = ?", (repo_id,))
         await self._db.commit()

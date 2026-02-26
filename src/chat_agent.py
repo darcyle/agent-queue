@@ -107,7 +107,11 @@ TOOLS = [
     },
     {
         "name": "edit_project",
-        "description": "Edit a project's name, credit weight, or max concurrent agents.",
+        "description": (
+            "Edit a project's properties: name, credit_weight, max_concurrent_agents, "
+            "budget_limit, or discord_channel_id. Use this to rename projects, adjust "
+            "scheduling weight, set token budgets, or link Discord channels."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -115,49 +119,14 @@ TOOLS = [
                 "name": {"type": "string", "description": "New project name (optional)"},
                 "credit_weight": {"type": "number", "description": "New scheduling weight (optional)"},
                 "max_concurrent_agents": {"type": "integer", "description": "New max concurrent agents (optional)"},
+                "budget_limit": {"type": ["integer", "null"], "description": "Token budget limit (optional, null to clear)"},
+                "discord_channel_id": {"type": ["string", "null"], "description": "Discord channel ID to link (optional, null to unlink)"},
             },
             "required": ["project_id"],
         },
     },
-    {
-        "name": "set_project_channel",
-        "description": (
-            "Link a Discord channel to a project. "
-            "When set, task updates, threads, and chat for this project will be routed to its "
-            "dedicated channel instead of the global channel."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "channel_id": {
-                    "type": "string",
-                    "description": "Discord channel ID to link",
-                },
-            },
-            "required": ["project_id", "channel_id"],
-        },
-    },
-    {
-        "name": "set_control_interface",
-        "description": (
-            "Set a project's channel by channel name (string). "
-            "Looks up the Discord channel by name in the current server and "
-            "links it to the project. "
-            "This is a convenience wrapper around set_project_channel."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID (or project name)"},
-                "channel_name": {
-                    "type": "string",
-                    "description": "Discord channel name to link (e.g. 'my-project')",
-                },
-            },
-            "required": ["project_id", "channel_name"],
-        },
-    },
+    # Note: set_project_channel and set_control_interface have been removed.
+    # Use edit_project with discord_channel_id instead.
     {
         "name": "get_project_channels",
         "description": "Get the Discord channel ID configured for a project.",
@@ -420,6 +389,19 @@ TOOLS = [
         },
     },
     {
+        "name": "edit_repo",
+        "description": "Edit a repository's configuration: default_branch or url.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo_id": {"type": "string", "description": "Repository ID"},
+                "default_branch": {"type": "string", "description": "New default branch (optional)"},
+                "url": {"type": "string", "description": "New git URL (optional)"},
+            },
+            "required": ["repo_id"],
+        },
+    },
+    {
         "name": "list_agents",
         "description": "List all configured agents and their current state.",
         "input_schema": {"type": "object", "properties": {}},
@@ -459,26 +441,33 @@ TOOLS = [
         },
     },
     {
-        "name": "set_agent_workspace",
+        "name": "edit_agent",
         "description": (
-            "Set the workspace directory for an agent in a specific project. "
-            "Also activates the agent if it is in STARTING state."
+            "Edit an agent's properties: name, agent_type, or workspace. "
+            "Use this to rename agents, change their type, or set/update workspace paths. "
+            "To set a workspace, provide project_id and workspace_path together. "
+            "Also activates the agent if it is in STARTING state when setting workspace."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "agent_id": {"type": "string", "description": "Agent ID"},
-                "project_id": {"type": "string", "description": "Project ID"},
+                "name": {"type": "string", "description": "New display name (optional)"},
+                "agent_type": {
+                    "type": "string",
+                    "description": "New agent type: claude, codex, cursor, aider (optional)",
+                },
+                "project_id": {"type": "string", "description": "Project ID (required when setting workspace_path)"},
                 "workspace_path": {
                     "type": "string",
-                    "description": "Absolute path to the workspace directory",
+                    "description": "Absolute path to the workspace directory (requires project_id)",
                 },
                 "repo_id": {
                     "type": "string",
                     "description": "Repo ID that governs git operations for this workspace (optional)",
                 },
             },
-            "required": ["agent_id", "project_id", "workspace_path"],
+            "required": ["agent_id"],
         },
     },
     {
@@ -558,7 +547,11 @@ TOOLS = [
     },
     {
         "name": "edit_task",
-        "description": "Edit a task's title, description, priority, or task_type.",
+        "description": (
+            "Edit a task's properties: title, description, priority, task_type, "
+            "status, max_retries, or verification_type. Use this to rename tasks, "
+            "change priority, override status (admin), or adjust retry/verification settings."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -570,6 +563,17 @@ TOOLS = [
                     "type": ["string", "null"],
                     "enum": ["feature", "bugfix", "refactor", "test", "docs", "chore", "research", "plan", None],
                     "description": "New task type (optional, set to null to clear)",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["DEFINED", "READY", "IN_PROGRESS", "COMPLETED", "FAILED", "BLOCKED"],
+                    "description": "New status — admin override, bypasses state machine (optional)",
+                },
+                "max_retries": {"type": "integer", "description": "Max retry attempts (optional)"},
+                "verification_type": {
+                    "type": "string",
+                    "enum": ["auto_test", "qa_agent", "human"],
+                    "description": "How to verify task output (optional)",
                 },
             },
             "required": ["task_id"],
@@ -969,17 +973,22 @@ TOOLS = [
     },
     {
         "name": "edit_hook",
-        "description": "Update a hook's configuration (any field: enabled, trigger, context_steps, prompt_template, cooldown_seconds, llm_config).",
+        "description": (
+            "Edit a hook's configuration: name, enabled, trigger, context_steps, "
+            "prompt_template, cooldown_seconds, llm_config, or max_tokens_per_run."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "hook_id": {"type": "string", "description": "Hook ID"},
+                "name": {"type": "string", "description": "New hook name (optional)"},
                 "enabled": {"type": "boolean", "description": "Enable/disable the hook"},
                 "trigger": {"type": "object", "description": "New trigger config"},
                 "context_steps": {"type": "array", "description": "New context steps", "items": {"type": "object"}},
                 "prompt_template": {"type": "string", "description": "New prompt template"},
                 "cooldown_seconds": {"type": "integer", "description": "New cooldown"},
                 "llm_config": {"type": "object", "description": "New LLM config override"},
+                "max_tokens_per_run": {"type": ["integer", "null"], "description": "Max tokens per run (null to clear)"},
             },
             "required": ["hook_id"],
         },
@@ -1438,22 +1447,7 @@ TOOLS = [
             "required": ["action"],
         },
     },
-    {
-        "name": "set_task_status",
-        "description": "Manually override the status of a task. Bypasses the state machine — use to unstick tasks or force a status change.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string", "description": "Task ID to update"},
-                "status": {
-                    "type": "string",
-                    "enum": ["DEFINED", "READY", "IN_PROGRESS", "COMPLETED", "FAILED", "BLOCKED"],
-                    "description": "New status for the task",
-                },
-            },
-            "required": ["task_id", "status"],
-        },
-    },
+    # Note: set_task_status has been removed. Use edit_task with status instead.
     {
         "name": "get_agent_error",
         "description": "Get the last error recorded for a task, including error classification, suggested fix, and agent summary.",
@@ -1525,7 +1519,7 @@ you do NOT need to specify project_id or repo_id when an active project is set
 `edit_hook`, `delete_hook`, `list_hook_runs`, and `fire_hook`
 - Restart the daemon with `restart_daemon`
 - Pause, resume, or check the orchestrator (task scheduler) with `orchestrator_control`
-- Manually override a task's status with `set_task_status` (bypasses state machine)
+- Override a task's status with `edit_task` (set the `status` field to bypass the state machine)
 - Inspect the last error for a task with `get_agent_error` (shows error classification and suggested fix)
 - Configure per-project Discord channels with `set_project_channel`, `set_control_interface`, `get_project_channels`, and `get_project_for_channel`
 
@@ -1535,13 +1529,15 @@ Repository management — use the `add_repo` tool to connect repos to projects:
 preserving the existing environment (.env, venv, node_modules, etc.). Use when \
 the user says to "link", "connect", "use", or "point to" an existing directory/repo.
 - **init**: Create a new empty git repo. Use when starting from scratch.
+- Use `edit_repo` to change a repo's default_branch or url after creation.
 
 Agent workspaces — each agent has a per-project workspace directory:
 - **New agents start in STARTING state** and won't receive tasks until activated.
 - **Best practice:** Pass `project_id` and `workspace_path` when calling `create_agent` to \
 set the workspace and activate in one step.
-- Alternatively, call `set_agent_workspace` (which also activates the agent) or \
-`activate_agent` after creation.
+- Alternatively, call `edit_agent` with `project_id` + `workspace_path` (also activates the agent) \
+or `activate_agent` after creation.
+- Use `edit_agent` to rename agents, change agent type, or update workspaces.
 - When a task runs, the system checks agent_workspaces for the (agent, project) pair first.
 - If no workspace is set, the system auto-populates from the project's repo config.
 - For parallel work, set each agent to its own checkout directory for the same project.
@@ -1594,11 +1590,12 @@ tasks for failures.
 
 Per-project Discord channels — route notifications and chat to dedicated channels:
 - By default, all projects share the global channel.
+- Use `edit_project` with `discord_channel_id` to link a Discord channel to a project.
 - Use `set_project_channel` to link a Discord channel to a project.
 - Use `set_control_interface` to set a project's channel by name (string lookup).
 - When a project has a dedicated channel, task threads, status updates, completion notices, \
 and chat for that project are all routed there automatically.
-- Use the `/set-channel` or `/create-channel` Discord commands to manage channels interactively.
+- Use the `/edit-project` or `/create-channel` Discord commands to manage channels interactively.
 - Use `get_project_channels` to see which channel is configured for a project.
 - Use `get_project_for_channel` for reverse lookup — given a channel ID, find which project \
 it belongs to.

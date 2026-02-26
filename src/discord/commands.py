@@ -1258,6 +1258,8 @@ def setup_commands(bot: commands.Bot) -> None:
         name="New name (optional)",
         credit_weight="New scheduling weight (optional)",
         max_concurrent_agents="New max agents (optional)",
+        budget_limit="Token budget limit (optional, 0 to clear)",
+        channel="Discord channel to link to this project (optional)",
     )
     async def edit_project_command(
         interaction: discord.Interaction,
@@ -1265,6 +1267,8 @@ def setup_commands(bot: commands.Bot) -> None:
         name: str | None = None,
         credit_weight: float | None = None,
         max_concurrent_agents: int | None = None,
+        budget_limit: int | None = None,
+        channel: discord.TextChannel | None = None,
     ):
         args: dict = {"project_id": project_id}
         if name is not None:
@@ -1273,14 +1277,22 @@ def setup_commands(bot: commands.Bot) -> None:
             args["credit_weight"] = credit_weight
         if max_concurrent_agents is not None:
             args["max_concurrent_agents"] = max_concurrent_agents
+        if budget_limit is not None:
+            args["budget_limit"] = budget_limit if budget_limit > 0 else None
+        if channel is not None:
+            args["discord_channel_id"] = str(channel.id)
         result = await handler.execute("edit_project", args)
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
         fields = ", ".join(result.get("fields", []))
+        desc = f"Project `{project_id}` updated: {fields}"
+        if channel is not None:
+            desc += f"\nChannel: {channel.mention}"
+            bot.update_project_channel(project_id, channel)
         await _send_success(
             interaction, "Project Updated",
-            description=f"Project `{project_id}` updated: {fields}",
+            description=desc,
         )
 
     @bot.tree.command(name="delete-project", description="Delete a project and all its data")
@@ -1342,80 +1354,8 @@ def setup_commands(bot: commands.Bot) -> None:
     # -------------------------------------------------------------------
     # CHANNEL MANAGEMENT COMMANDS
     # -------------------------------------------------------------------
-
-    @bot.tree.command(
-        name="set-channel",
-        description="Link a Discord channel to a project",
-    )
-    @app_commands.describe(
-        project_id="Project ID",
-        channel="The Discord channel to link",
-    )
-    async def set_channel_command(
-        interaction: discord.Interaction,
-        project_id: str,
-        channel: discord.TextChannel,
-    ):
-        result = await handler.execute("set_project_channel", {
-            "project_id": project_id,
-            "channel_id": str(channel.id),
-        })
-        if "error" in result:
-            await _send_error(interaction, result['error'])
-            return
-        # Update the bot's channel cache immediately
-        bot.update_project_channel(project_id, channel)
-        await _send_success(
-            interaction, "Channel Linked",
-            description=f"Project `{project_id}` channel set to {channel.mention}",
-        )
-
-    @bot.tree.command(
-        name="set-control-interface",
-        description="Set a project's channel by name (alias for /set-channel)",
-    )
-    @app_commands.describe(
-        project_id="Project ID",
-        channel_name="Name of the Discord channel to link",
-    )
-    async def set_control_interface_command(
-        interaction: discord.Interaction,
-        project_id: str,
-        channel_name: str,
-    ):
-        guild = interaction.guild
-        if not guild:
-            await _send_error(interaction, "Not in a guild.")
-            return
-
-        # Strip leading '#' if the user included one.
-        channel_name = channel_name.lstrip("#").strip()
-
-        # Look up the channel by name in the guild.
-        matched_channel: discord.TextChannel | None = None
-        for ch in guild.text_channels:
-            if ch.name == channel_name:
-                matched_channel = ch
-                break
-
-        if not matched_channel:
-            await _send_error(interaction, f"No text channel named `{channel_name}` found in this server.")
-            return
-
-        result = await handler.execute("set_control_interface", {
-            "project_id": project_id,
-            "channel_name": channel_name,
-            "_resolved_channel_id": str(matched_channel.id),
-        })
-        if "error" in result:
-            await _send_error(interaction, result['error'])
-            return
-        # Update the bot's channel cache immediately
-        bot.update_project_channel(project_id, matched_channel)
-        await _send_success(
-            interaction, "Channel Linked",
-            description=f"Project `{project_id}` channel set to {matched_channel.mention}",
-        )
+    # Note: /set-channel and /set-control-interface have been removed.
+    # Use /edit-project with the channel parameter instead.
 
     @bot.tree.command(
         name="create-channel",
@@ -1922,12 +1862,41 @@ def setup_commands(bot: commands.Bot) -> None:
         )
         await interaction.response.send_message(embed=embed)
 
-    @bot.tree.command(name="edit-task", description="Edit a task's title, description, or priority")
+    @bot.tree.command(name="edit-task", description="Edit a task's properties")
     @app_commands.describe(
         task_id="Task ID",
         title="New title (optional)",
         description="New description (optional)",
         priority="New priority (optional)",
+        task_type="New task type (optional)",
+        status="New status — admin override (optional)",
+        max_retries="Max retry attempts (optional)",
+        verification_type="How to verify task output (optional)",
+    )
+    @app_commands.choices(
+        task_type=[
+            app_commands.Choice(name="feature",  value="feature"),
+            app_commands.Choice(name="bugfix",   value="bugfix"),
+            app_commands.Choice(name="refactor", value="refactor"),
+            app_commands.Choice(name="test",     value="test"),
+            app_commands.Choice(name="docs",     value="docs"),
+            app_commands.Choice(name="chore",    value="chore"),
+            app_commands.Choice(name="research", value="research"),
+            app_commands.Choice(name="plan",     value="plan"),
+        ],
+        status=[
+            app_commands.Choice(name="DEFINED",     value="DEFINED"),
+            app_commands.Choice(name="READY",       value="READY"),
+            app_commands.Choice(name="IN_PROGRESS", value="IN_PROGRESS"),
+            app_commands.Choice(name="COMPLETED",   value="COMPLETED"),
+            app_commands.Choice(name="FAILED",      value="FAILED"),
+            app_commands.Choice(name="BLOCKED",     value="BLOCKED"),
+        ],
+        verification_type=[
+            app_commands.Choice(name="auto_test", value="auto_test"),
+            app_commands.Choice(name="qa_agent",  value="qa_agent"),
+            app_commands.Choice(name="human",     value="human"),
+        ],
     )
     async def edit_task_command(
         interaction: discord.Interaction,
@@ -1935,6 +1904,10 @@ def setup_commands(bot: commands.Bot) -> None:
         title: str | None = None,
         description: str | None = None,
         priority: int | None = None,
+        task_type: app_commands.Choice[str] | None = None,
+        status: app_commands.Choice[str] | None = None,
+        max_retries: int | None = None,
+        verification_type: app_commands.Choice[str] | None = None,
     ):
         args: dict = {"task_id": task_id}
         if title is not None:
@@ -1943,14 +1916,28 @@ def setup_commands(bot: commands.Bot) -> None:
             args["description"] = description
         if priority is not None:
             args["priority"] = priority
+        if task_type is not None:
+            args["task_type"] = task_type.value
+        if status is not None:
+            args["status"] = status.value
+        if max_retries is not None:
+            args["max_retries"] = max_retries
+        if verification_type is not None:
+            args["verification_type"] = verification_type.value
         result = await handler.execute("edit_task", args)
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
         fields = ", ".join(result.get("fields", []))
+        desc = f"Task `{task_id}` updated: {fields}"
+        if result.get("old_status"):
+            from src.discord.embeds import STATUS_EMOJIS
+            old_emoji = STATUS_EMOJIS.get(result["old_status"], "")
+            new_emoji = STATUS_EMOJIS.get(result["new_status"], "")
+            desc += f"\n{old_emoji} **{result['old_status']}** → {new_emoji} **{result['new_status']}**"
         await _send_success(
             interaction, "Task Updated",
-            description=f"Task `{task_id}` updated: {fields}",
+            description=desc,
         )
 
     @bot.tree.command(name="stop-task", description="Stop a task that is currently in progress")
@@ -2222,44 +2209,8 @@ def setup_commands(bot: commands.Bot) -> None:
                     description="\n".join(lines),
                 )
 
-    @bot.tree.command(name="set-status", description="Change the status of a task")
-    @app_commands.describe(
-        task_id="Task ID to update",
-        status="New status for the task",
-    )
-    @app_commands.choices(status=[
-        app_commands.Choice(name="DEFINED",     value="DEFINED"),
-        app_commands.Choice(name="READY",       value="READY"),
-        app_commands.Choice(name="IN_PROGRESS", value="IN_PROGRESS"),
-        app_commands.Choice(name="COMPLETED",   value="COMPLETED"),
-        app_commands.Choice(name="FAILED",      value="FAILED"),
-        app_commands.Choice(name="BLOCKED",     value="BLOCKED"),
-    ])
-    async def set_status_command(
-        interaction: discord.Interaction,
-        task_id: str,
-        status: app_commands.Choice[str],
-    ):
-        result = await handler.execute("set_task_status", {
-            "task_id": task_id,
-            "status": status.value,
-        })
-        if "error" in result:
-            await _send_error(interaction, result['error'])
-            return
-        old_status = result.get("old_status", "?")
-        new_status = result.get("new_status", status.value)
-        old_emoji = STATUS_EMOJIS.get(old_status, "❓")
-        new_emoji = STATUS_EMOJIS.get(new_status, "❓")
-        embed = status_embed(
-            new_status,
-            "Task Status Updated",
-            fields=[
-                ("Task", f"`{task_id}` — {result.get('title', '')}", False),
-                ("Status Change", f"{old_emoji} **{old_status}** → {new_emoji} **{new_status}**", False),
-            ],
-        )
-        await interaction.response.send_message(embed=embed)
+    # Note: /set-status has been removed. Use /edit-task with the status
+    # parameter instead.
 
     @bot.tree.command(name="task-result", description="Show the results/output of a completed task")
     @app_commands.describe(task_id="Task ID to inspect")
@@ -2522,6 +2473,39 @@ def setup_commands(bot: commands.Bot) -> None:
         )
         await interaction.response.send_message(embed=embed)
 
+    @bot.tree.command(name="edit-agent", description="Edit an agent's properties")
+    @app_commands.describe(
+        agent_id="Agent ID",
+        name="New display name (optional)",
+        agent_type="New agent type (optional)",
+    )
+    @app_commands.choices(agent_type=[
+        app_commands.Choice(name="claude", value="claude"),
+        app_commands.Choice(name="codex",  value="codex"),
+        app_commands.Choice(name="cursor", value="cursor"),
+        app_commands.Choice(name="aider",  value="aider"),
+    ])
+    async def edit_agent_command(
+        interaction: discord.Interaction,
+        agent_id: str,
+        name: str | None = None,
+        agent_type: app_commands.Choice[str] | None = None,
+    ):
+        args: dict = {"agent_id": agent_id}
+        if name is not None:
+            args["name"] = name
+        if agent_type is not None:
+            args["agent_type"] = agent_type.value
+        result = await handler.execute("edit_agent", args)
+        if "error" in result:
+            await _send_error(interaction, result['error'])
+            return
+        fields = ", ".join(result.get("fields", []))
+        await _send_success(
+            interaction, "Agent Updated",
+            description=f"Agent `{agent_id}` updated: {fields}",
+        )
+
     @bot.tree.command(
         name="delete-agent",
         description="Delete an agent and its workspace mappings",
@@ -2571,6 +2555,33 @@ def setup_commands(bot: commands.Bot) -> None:
         if len(msg) > 2000:
             msg = msg[:1997] + "..."
         await interaction.response.send_message(msg)
+
+    @bot.tree.command(name="edit-repo", description="Edit a repository's configuration")
+    @app_commands.describe(
+        repo_id="Repository ID",
+        default_branch="New default branch (optional)",
+        url="New git URL (optional)",
+    )
+    async def edit_repo_command(
+        interaction: discord.Interaction,
+        repo_id: str,
+        default_branch: str | None = None,
+        url: str | None = None,
+    ):
+        args: dict = {"repo_id": repo_id}
+        if default_branch is not None:
+            args["default_branch"] = default_branch
+        if url is not None:
+            args["url"] = url
+        result = await handler.execute("edit_repo", args)
+        if "error" in result:
+            await _send_error(interaction, result['error'])
+            return
+        fields = ", ".join(result.get("fields", []))
+        await _send_success(
+            interaction, "Repo Updated",
+            description=f"Repo `{repo_id}` updated: {fields}",
+        )
 
     @bot.tree.command(name="add-repo", description="Register a repository for a project")
     @app_commands.describe(
@@ -3491,24 +3502,32 @@ def setup_commands(bot: commands.Bot) -> None:
     @bot.tree.command(name="edit-hook", description="Edit an automation hook")
     @app_commands.describe(
         hook_id="Hook ID",
+        name="New hook name (optional)",
         enabled="Enable or disable the hook",
         prompt_template="New prompt template (optional)",
         cooldown_seconds="New cooldown in seconds (optional)",
+        max_tokens_per_run="Max tokens per run (optional, 0 to clear)",
     )
     async def edit_hook_command(
         interaction: discord.Interaction,
         hook_id: str,
+        name: str | None = None,
         enabled: bool | None = None,
         prompt_template: str | None = None,
         cooldown_seconds: int | None = None,
+        max_tokens_per_run: int | None = None,
     ):
         args: dict = {"hook_id": hook_id}
+        if name is not None:
+            args["name"] = name
         if enabled is not None:
             args["enabled"] = enabled
         if prompt_template is not None:
             args["prompt_template"] = prompt_template
         if cooldown_seconds is not None:
             args["cooldown_seconds"] = cooldown_seconds
+        if max_tokens_per_run is not None:
+            args["max_tokens_per_run"] = max_tokens_per_run if max_tokens_per_run > 0 else None
         result = await handler.execute("edit_hook", args)
         if "error" in result:
             await _send_error(interaction, result['error'])

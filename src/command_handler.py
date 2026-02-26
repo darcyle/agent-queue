@@ -32,7 +32,7 @@ from src.discord.notifications import classify_error
 from src.git.manager import GitError
 from src.models import (
     Agent, AgentState, Hook, Project, ProjectStatus, RepoConfig, RepoSourceType,
-    Task, TaskStatus, TaskType, TASK_TYPE_VALUES,
+    Task, TaskStatus, TaskType, VerificationType, TASK_TYPE_VALUES,
 )
 from src.orchestrator import Orchestrator
 from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge
@@ -830,8 +830,17 @@ class CommandHandler:
             updates["credit_weight"] = args["credit_weight"]
         if "max_concurrent_agents" in args:
             updates["max_concurrent_agents"] = args["max_concurrent_agents"]
+        if "budget_limit" in args:
+            updates["budget_limit"] = args["budget_limit"]
+        if "discord_channel_id" in args:
+            updates["discord_channel_id"] = args["discord_channel_id"]
         if not updates:
-            return {"error": "No fields to update. Provide name, credit_weight, or max_concurrent_agents."}
+            return {
+                "error": (
+                    "No fields to update. Provide name, credit_weight, "
+                    "max_concurrent_agents, budget_limit, or discord_channel_id."
+                )
+            }
         await self.db.update_project(pid, **updates)
         return {"updated": pid, "fields": list(updates.keys())}
 
@@ -1868,6 +1877,24 @@ class CommandHandler:
         task = await self.db.get_task(args["task_id"])
         if not task:
             return {"error": f"Task '{args['task_id']}' not found"}
+
+        VERIFICATION_VALUES = frozenset(v.value for v in VerificationType)
+
+        # Handle status change separately — uses transition_task for logging
+        status_changed = False
+        if "status" in args:
+            new_status_raw = args["status"]
+            try:
+                new_status = TaskStatus(new_status_raw)
+            except ValueError:
+                valid = ", ".join(s.value for s in TaskStatus)
+                return {"error": f"Invalid status '{new_status_raw}'. Valid: {valid}"}
+            old_status = task.status.value
+            await self.db.transition_task(
+                args["task_id"], new_status, context="edit_task",
+            )
+            status_changed = True
+
         updates = {}
         if "title" in args:
             updates["title"] = args["title"]
@@ -1883,10 +1910,35 @@ class CommandHandler:
                 updates["task_type"] = TaskType(raw_tt)
             else:
                 return {"error": f"Invalid task_type '{raw_tt}'. Allowed: {', '.join(sorted(TASK_TYPE_VALUES))}"}
-        if not updates:
-            return {"error": "No fields to update. Provide title, description, priority, or task_type."}
-        await self.db.update_task(args["task_id"], **updates)
-        return {"updated": args["task_id"], "fields": list(updates.keys())}
+        if "max_retries" in args:
+            updates["max_retries"] = args["max_retries"]
+        if "verification_type" in args:
+            raw_vt = args["verification_type"]
+            if raw_vt in VERIFICATION_VALUES:
+                updates["verification_type"] = VerificationType(raw_vt)
+            else:
+                return {"error": f"Invalid verification_type '{raw_vt}'. Allowed: {', '.join(sorted(VERIFICATION_VALUES))}"}
+
+        if updates:
+            await self.db.update_task(args["task_id"], **updates)
+
+        all_fields = list(updates.keys())
+        if status_changed:
+            all_fields.append("status")
+
+        if not all_fields:
+            return {
+                "error": (
+                    "No fields to update. Provide title, description, priority, "
+                    "task_type, status, max_retries, or verification_type."
+                )
+            }
+
+        result = {"updated": args["task_id"], "fields": all_fields}
+        if status_changed:
+            result["old_status"] = old_status
+            result["new_status"] = new_status_raw
+        return result
 
     async def _cmd_stop_task(self, args: dict) -> dict:
         error = await self.orchestrator.stop_task(args["task_id"])
@@ -2495,6 +2547,59 @@ class CommandHandler:
             result["repo_id"] = repo_id
         return result
 
+    async def _cmd_edit_agent(self, args: dict) -> dict:
+        """Edit an agent's properties (name, agent_type).
+
+        Optionally update workspace for a specific project by providing
+        project_id and workspace_path (delegates to set_agent_workspace).
+        """
+        agent_id = args["agent_id"]
+        agent = await self.db.get_agent(agent_id)
+        if not agent:
+            return {"error": f"Agent '{agent_id}' not found"}
+
+        updates = {}
+        if "name" in args:
+            updates["name"] = args["name"]
+        if "agent_type" in args:
+            updates["agent_type"] = args["agent_type"]
+
+        fields_changed: list[str] = []
+
+        if updates:
+            await self.db.update_agent(agent_id, **updates)
+            fields_changed.extend(updates.keys())
+
+        # Handle workspace update (delegates to set_agent_workspace logic)
+        workspace_result = None
+        if "workspace_path" in args and "project_id" in args:
+            workspace_result = await self._cmd_set_agent_workspace({
+                "agent_id": agent_id,
+                "project_id": args["project_id"],
+                "workspace_path": args["workspace_path"],
+                "repo_id": args.get("repo_id"),
+            })
+            if "error" in workspace_result:
+                return workspace_result
+            fields_changed.append("workspace_path")
+
+        if not fields_changed:
+            return {
+                "error": (
+                    "No fields to update. Provide name, agent_type, "
+                    "or workspace_path with project_id."
+                )
+            }
+
+        result = {
+            "updated": agent_id,
+            "fields": fields_changed,
+            "name": args.get("name", agent.name),
+        }
+        if workspace_result and workspace_result.get("activated"):
+            result["activated"] = True
+        return result
+
     async def _cmd_activate_agent(self, args: dict) -> dict:
         """Transition an agent from STARTING to IDLE so it can receive tasks."""
         agent_id = args["agent_id"]
@@ -2626,6 +2731,22 @@ class CommandHandler:
                 for r in repos
             ]
         }
+
+    async def _cmd_edit_repo(self, args: dict) -> dict:
+        """Edit a repository's configuration (default_branch, url)."""
+        repo_id = args["repo_id"]
+        repo = await self.db.get_repo(repo_id)
+        if not repo:
+            return {"error": f"Repo '{repo_id}' not found"}
+        updates = {}
+        if "default_branch" in args:
+            updates["default_branch"] = args["default_branch"]
+        if "url" in args:
+            updates["url"] = args["url"]
+        if not updates:
+            return {"error": "No fields to update. Provide default_branch or url."}
+        await self.db.update_repo(repo_id, **updates)
+        return {"updated": repo_id, "fields": list(updates.keys())}
 
     # -----------------------------------------------------------------------
     # Events and token usage -- observability into system activity and
@@ -3266,6 +3387,8 @@ class CommandHandler:
         if not hook:
             return {"error": f"Hook '{hook_id}' not found"}
         updates = {}
+        if "name" in args:
+            updates["name"] = args["name"]
         if "enabled" in args:
             updates["enabled"] = args["enabled"]
         if "trigger" in args:
@@ -3278,6 +3401,8 @@ class CommandHandler:
             updates["cooldown_seconds"] = args["cooldown_seconds"]
         if "llm_config" in args:
             updates["llm_config"] = json.dumps(args["llm_config"])
+        if "max_tokens_per_run" in args:
+            updates["max_tokens_per_run"] = args["max_tokens_per_run"]
         if not updates:
             return {"error": "No fields to update"}
         await self.db.update_hook(hook_id, **updates)

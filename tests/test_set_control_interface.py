@@ -165,21 +165,15 @@ class TestSetControlInterfaceMissingProject:
 
 
 class TestSetControlInterfaceToolDefinition:
-    """Verify the tool is properly defined in the TOOLS list."""
+    """Verify set_control_interface was removed from the TOOLS list.
 
-    def test_tool_exists_in_tools_list(self):
+    Channel linking is now done through edit_project's discord_channel_id
+    parameter. The backend command handler method still exists for internal
+    use (e.g. create_channel_for_project delegates to it).
+    """
+
+    def test_tool_removed_from_tools_list(self):
         from src.chat_agent import TOOLS
 
-        tool_names = [t["name"] for t in TOOLS]
-        assert "set_control_interface" in tool_names
-
-    def test_tool_schema(self):
-        from src.chat_agent import TOOLS
-
-        tool = next(t for t in TOOLS if t["name"] == "set_control_interface")
-        schema = tool["input_schema"]
-        assert schema["type"] == "object"
-        assert "project_id" in schema["properties"]
-        assert "channel_name" in schema["properties"]
-        assert "project_id" in schema["required"]
-        assert "channel_name" in schema["required"]
+        tool_names = [t["name"] for t in TOOLS if isinstance(t, dict)]
+        assert "set_control_interface" not in tool_names

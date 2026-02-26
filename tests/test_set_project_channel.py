@@ -89,23 +89,22 @@ class TestSetProjectChannelErrors:
         assert "not found" in result["error"].lower()
 
 
-class TestSetProjectChannelToolDefinition:
-    """Verify the tool is properly defined in the TOOLS list."""
+class TestEditProjectChannelToolDefinition:
+    """Verify channel editing is available via edit_project in TOOLS list.
 
-    def test_tool_exists_in_tools_list(self):
+    The standalone set_project_channel tool was removed; channel linking is
+    now done through edit_project's discord_channel_id parameter.
+    """
+
+    def test_edit_project_has_channel_field(self):
         from src.chat_agent import TOOLS
 
-        tool_names = [t["name"] for t in TOOLS]
-        assert "set_project_channel" in tool_names
-
-    def test_tool_schema(self):
-        from src.chat_agent import TOOLS
-
-        tool = next(t for t in TOOLS if t["name"] == "set_project_channel")
+        tool = next(t for t in TOOLS if isinstance(t, dict) and t["name"] == "edit_project")
         schema = tool["input_schema"]
-        assert schema["type"] == "object"
-        assert "project_id" in schema["properties"]
-        assert "channel_id" in schema["properties"]
-        assert "channel_type" not in schema["properties"]
-        assert "project_id" in schema["required"]
-        assert "channel_id" in schema["required"]
+        assert "discord_channel_id" in schema["properties"]
+
+    def test_set_project_channel_removed_from_tools(self):
+        from src.chat_agent import TOOLS
+
+        tool_names = [t["name"] for t in TOOLS if isinstance(t, dict)]
+        assert "set_project_channel" not in tool_names
