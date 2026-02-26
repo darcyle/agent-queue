@@ -31,7 +31,7 @@ from src.discord.notifications import classify_error
 from src.git.manager import GitError
 from src.models import (
     Agent, Hook, Project, ProjectStatus, RepoConfig, RepoSourceType,
-    Task, TaskStatus,
+    Task, TaskStatus, TaskType,
 )
 from src.orchestrator import Orchestrator
 from src.task_names import generate_task_id
@@ -908,6 +908,7 @@ class CommandHandler:
             "assigned_agent": t.assigned_agent_id,
             "parent_task_id": t.parent_task_id,
             "is_plan_subtask": t.is_plan_subtask,
+            "task_type": t.task_type.value if t.task_type else None,
             "pr_url": t.pr_url,
             "requires_approval": t.requires_approval,
         }
@@ -934,6 +935,7 @@ class CommandHandler:
                 "assigned_agent": t.assigned_agent_id,
                 "parent_task_id": t.parent_task_id,
                 "is_plan_subtask": t.is_plan_subtask,
+                "task_type": t.task_type.value if t.task_type else None,
                 "pr_url": t.pr_url,
                 "requires_approval": t.requires_approval,
             })
@@ -1015,6 +1017,15 @@ class CommandHandler:
         task_id = await generate_task_id(self.db)
         repo_id = args.get("repo_id")
         requires_approval = args.get("requires_approval", False)
+        # Parse task_type if provided (accepts TaskType enum value strings)
+        raw_task_type = args.get("task_type")
+        task_type: TaskType | None = None
+        if raw_task_type:
+            try:
+                task_type = TaskType(raw_task_type)
+            except ValueError:
+                return {"error": f"Invalid task_type '{raw_task_type}'. "
+                        f"Allowed: {', '.join(tt.value for tt in TaskType)}"}
         task = Task(
             id=task_id,
             project_id=project_id,
@@ -1024,6 +1035,7 @@ class CommandHandler:
             status=TaskStatus.READY,
             repo_id=repo_id,
             requires_approval=requires_approval,
+            task_type=task_type,
         )
         await self.db.create_task(task)
         result = {
@@ -1035,6 +1047,8 @@ class CommandHandler:
             result["repo_id"] = repo_id
         if requires_approval:
             result["requires_approval"] = True
+        if task_type:
+            result["task_type"] = task_type.value
         return result
 
     async def _cmd_get_task(self, args: dict) -> dict:
@@ -1053,6 +1067,7 @@ class CommandHandler:
             "max_retries": task.max_retries,
             "requires_approval": task.requires_approval,
             "is_plan_subtask": task.is_plan_subtask,
+            "task_type": task.task_type.value if task.task_type else None,
             "parent_task_id": task.parent_task_id,
         }
         if task.pr_url:

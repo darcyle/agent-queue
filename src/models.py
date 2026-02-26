@@ -76,6 +76,26 @@ class TaskEvent(Enum):
     RECOVERY = "RECOVERY"
 
 
+class TaskType(Enum):
+    """Categorizes the kind of work a task represents.
+
+    Used by the Discord UI to display type-specific emoji tags and by the
+    chat agent to help the LLM understand the nature of each task at a
+    glance. The plan parser can auto-assign a type when creating subtasks.
+
+    Values are lowercase strings stored directly in the ``task_type`` column.
+    """
+
+    FEATURE = "feature"
+    BUGFIX = "bugfix"
+    REFACTOR = "refactor"
+    TEST = "test"
+    DOCS = "docs"
+    CHORE = "chore"
+    RESEARCH = "research"
+    PLAN = "plan"
+
+
 class AgentState(Enum):
     """Tracks the runtime state of an agent process from the orchestrator's perspective.
 
@@ -206,6 +226,7 @@ class Task:
     pr_url: str | None = None
     plan_source: str | None = None       # path to archived plan file that generated this task
     is_plan_subtask: bool = False         # True if auto-generated from a plan
+    task_type: TaskType | None = None     # categorization: feature, bugfix, refactor, etc.
 
 
 @dataclass

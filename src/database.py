@@ -30,7 +30,7 @@ import aiosqlite
 
 from src.models import (
     Agent, AgentState, AgentWorkspace, Hook, HookRun, Project, ProjectStatus,
-    RepoConfig, RepoSourceType, Task, TaskStatus, VerificationType,
+    RepoConfig, RepoSourceType, Task, TaskStatus, TaskType, VerificationType,
 )
 from src.state_machine import is_valid_status_transition
 
@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     pr_url TEXT,
     plan_source TEXT,
     is_plan_subtask INTEGER NOT NULL DEFAULT 0,
+    task_type TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -255,6 +256,7 @@ class Database:
             "ALTER TABLE projects ADD COLUMN discord_control_channel_id TEXT",
             "ALTER TABLE tasks ADD COLUMN plan_source TEXT",
             "ALTER TABLE tasks ADD COLUMN is_plan_subtask INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN task_type TEXT",
         ]:
             try:
                 await self._db.execute(migration)
@@ -487,14 +489,16 @@ class Database:
             "description, priority, status, verification_type, retry_count, "
             "max_retries, assigned_agent_id, branch_name, resume_after, "
             "requires_approval, pr_url, plan_source, is_plan_subtask, "
-            "created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "task_type, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (task.id, task.project_id, task.parent_task_id, task.repo_id,
              task.title, task.description, task.priority, task.status.value,
              task.verification_type.value, task.retry_count, task.max_retries,
              task.assigned_agent_id, task.branch_name, task.resume_after,
              int(task.requires_approval), task.pr_url, task.plan_source,
-             int(task.is_plan_subtask), now, now),
+             int(task.is_plan_subtask),
+             task.task_type.value if task.task_type else None,
+             now, now),
         )
         await self._db.commit()
 
@@ -553,7 +557,7 @@ class Database:
         sets = []
         vals = []
         for key, value in kwargs.items():
-            if isinstance(value, (TaskStatus, VerificationType)):
+            if isinstance(value, (TaskStatus, TaskType, VerificationType)):
                 value = value.value
             sets.append(f"{key} = ?")
             vals.append(value)
@@ -722,6 +726,7 @@ class Database:
             pr_url=row["pr_url"] if "pr_url" in keys else None,
             plan_source=row["plan_source"] if "plan_source" in keys else None,
             is_plan_subtask=bool(row["is_plan_subtask"]) if "is_plan_subtask" in keys else False,
+            task_type=TaskType(row["task_type"]) if "task_type" in keys and row["task_type"] else None,
         )
 
     # --- Dependencies ---
