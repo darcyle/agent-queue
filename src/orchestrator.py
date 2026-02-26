@@ -120,6 +120,7 @@ class Orchestrator:
             retention_days=config.llm_logging.retention_days,
         )
         self._last_log_cleanup: float = 0.0
+        self._last_auto_archive: float = 0.0
         # Chat provider for LLM-based plan parsing
         self._chat_provider = None
         if config.auto_task.use_llm_parser:
@@ -490,6 +491,8 @@ class Orchestrator:
         6. **Launch** — fire off background asyncio tasks for each new
            assignment.  These run concurrently with future cycles.
         7. **Hook engine tick** — run any registered hooks.
+        8. **Auto-archive** — sweep terminal tasks older than the configured
+           threshold into the archive so they no longer clutter active views.
         """
         try:
             # 0. Check AWAITING_APPROVAL tasks for PR merge status
@@ -536,6 +539,9 @@ class Orchestrator:
                         print(f"LLM log cleanup: removed {removed} old directory(ies)")
                 except Exception as e:
                     print(f"LLM log cleanup error: {e}")
+
+            # 7. Auto-archive stale terminal tasks (~once per hour)
+            await self._auto_archive_tasks()
         except Exception as e:
             print(f"Scheduler cycle error: {e}")
             import traceback
@@ -687,6 +693,53 @@ class Orchestrator:
             )
 
             self._stuck_notified_at[task.id] = now
+
+    async def _auto_archive_tasks(self) -> None:
+        """Automatically archive terminal tasks older than the configured threshold.
+
+        Runs at most once per hour (rate-limited via ``_last_auto_archive``)
+        and only when ``config.archive.enabled`` is True.  Tasks matching the
+        configured terminal statuses whose ``updated_at`` is older than
+        ``archive.after_hours`` are silently moved to the ``archived_tasks``
+        table so they no longer appear in active views.
+
+        This eliminates the need for agents or operators to manually run
+        ``/archive-tasks``; the orchestrator handles it automatically.
+        """
+        archive_cfg = self.config.archive
+        if not archive_cfg.enabled:
+            return
+
+        now = time.time()
+        # Rate-limit to once per hour
+        if now - self._last_auto_archive < 3600:
+            return
+        self._last_auto_archive = now
+
+        older_than_seconds = archive_cfg.after_hours * 3600
+        try:
+            archived_ids = await self.db.archive_old_terminal_tasks(
+                statuses=archive_cfg.statuses,
+                older_than_seconds=older_than_seconds,
+            )
+        except Exception as e:
+            print(f"Auto-archive error: {e}")
+            return
+
+        if archived_ids:
+            print(
+                f"Auto-archived {len(archived_ids)} terminal task(s) "
+                f"older than {archive_cfg.after_hours}h: "
+                f"{', '.join(archived_ids[:10])}"
+                f"{'...' if len(archived_ids) > 10 else ''}"
+            )
+            for tid in archived_ids:
+                try:
+                    await self.db.log_event(
+                        "task_auto_archived", task_id=tid,
+                    )
+                except Exception:
+                    pass
 
     async def _find_stuck_downstream(self, blocked_task_id: str) -> list[Task]:
         """BFS walk of the dependency graph to find orphaned DEFINED tasks.

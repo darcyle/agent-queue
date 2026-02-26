@@ -2067,6 +2067,40 @@ class CommandHandler:
             "new_status": "DEFINED",
         }
 
+    async def _cmd_archive_settings(self, args: dict) -> dict:
+        """Return the current auto-archive configuration.
+
+        Reads from ``config.archive`` and includes the count of currently
+        archived tasks and how many terminal tasks are eligible right now.
+        """
+        cfg = self.config.archive
+        archived_count = await self.db.count_archived_tasks()
+
+        # Count how many active terminal tasks would be archived now
+        older_than_seconds = cfg.after_hours * 3600
+        import time as _time
+        cutoff = _time.time() - older_than_seconds
+        eligible = 0
+        if cfg.enabled and cfg.statuses:
+            for status in cfg.statuses:
+                tasks = await self.db.list_tasks(status=TaskStatus(status))
+                for t in tasks:
+                    # Check updated_at from DB row
+                    cursor = await self.db._db.execute(
+                        "SELECT updated_at FROM tasks WHERE id = ?", (t.id,)
+                    )
+                    row = await cursor.fetchone()
+                    if row and row["updated_at"] <= cutoff:
+                        eligible += 1
+
+        return {
+            "enabled": cfg.enabled,
+            "after_hours": cfg.after_hours,
+            "statuses": cfg.statuses,
+            "archived_count": archived_count,
+            "eligible_count": eligible,
+        }
+
     async def _cmd_provide_input(self, args: dict) -> dict:
         """Provide a human reply to an agent question (WAITING_INPUT → READY).
 

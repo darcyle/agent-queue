@@ -1589,6 +1589,46 @@ class Database:
 
         return task_ids
 
+    async def archive_old_terminal_tasks(
+        self,
+        statuses: list[str],
+        older_than_seconds: float,
+    ) -> list[str]:
+        """Archive terminal tasks whose ``updated_at`` is older than the threshold.
+
+        This is the engine behind automatic archiving: the orchestrator calls
+        this once per cycle with the configured statuses and age threshold to
+        silently sweep stale terminal tasks into the archive.
+
+        Parameters
+        ----------
+        statuses
+            Task status values eligible for archiving (e.g.
+            ``["COMPLETED", "FAILED", "BLOCKED"]``).
+        older_than_seconds
+            Tasks whose ``updated_at`` timestamp is more than this many
+            seconds in the past will be archived.
+
+        Returns the list of archived task IDs.
+        """
+        if not statuses:
+            return []
+
+        cutoff = time.time() - older_than_seconds
+        placeholders = ", ".join("?" for _ in statuses)
+        cursor = await self._db.execute(
+            f"SELECT id FROM tasks "
+            f"WHERE status IN ({placeholders}) AND updated_at <= ?",
+            [*statuses, cutoff],
+        )
+        rows = await cursor.fetchall()
+        task_ids = [r["id"] for r in rows]
+
+        for tid in task_ids:
+            await self.archive_task(tid)
+
+        return task_ids
+
     async def list_archived_tasks(
         self,
         project_id: str | None = None,
