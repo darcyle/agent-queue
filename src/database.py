@@ -819,6 +819,11 @@ class Database:
         )
         await self._db.commit()
 
+    async def delete_agent(self, agent_id: str) -> None:
+        """Delete an agent record. Caller should remove workspaces first."""
+        await self._db.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
+        await self._db.commit()
+
     def _row_to_agent(self, row) -> Agent:
         return Agent(
             id=row["id"],

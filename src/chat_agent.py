@@ -333,7 +333,12 @@ TOOLS = [
     },
     {
         "name": "create_agent",
-        "description": "Register a new agent that can work on tasks.",
+        "description": (
+            "Register a new agent. Agents start in STARTING state and won't "
+            "receive tasks until activated. Pass project_id and workspace_path "
+            "to set the workspace and activate in one step, or call "
+            "set_agent_workspace or activate_agent separately."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -343,13 +348,26 @@ TOOLS = [
                     "description": "Agent type (claude, codex, cursor, aider)",
                     "default": "claude",
                 },
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project to set workspace for (activates agent immediately)"
+                    ),
+                },
+                "workspace_path": {
+                    "type": "string",
+                    "description": "Absolute path to workspace directory for the project",
+                },
             },
             "required": ["name"],
         },
     },
     {
         "name": "set_agent_workspace",
-        "description": "Set the workspace directory for an agent in a specific project. Use this to tell the agent where to work for a given project.",
+        "description": (
+            "Set the workspace directory for an agent in a specific project. "
+            "Also activates the agent if it is in STARTING state."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -365,6 +383,50 @@ TOOLS = [
                 },
             },
             "required": ["agent_id", "project_id", "workspace_path"],
+        },
+    },
+    {
+        "name": "activate_agent",
+        "description": "Activate an agent (STARTING -> IDLE) so it can receive tasks. Use after creating an agent if you didn't provide workspace_path during creation.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID to activate"},
+            },
+            "required": ["agent_id"],
+        },
+    },
+    {
+        "name": "pause_agent",
+        "description": "Pause an agent so it stops receiving new tasks. If BUSY, it finishes the current task then stays paused.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID to pause"},
+            },
+            "required": ["agent_id"],
+        },
+    },
+    {
+        "name": "resume_agent",
+        "description": "Resume a paused agent so it can receive tasks again.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID to resume"},
+            },
+            "required": ["agent_id"],
+        },
+    },
+    {
+        "name": "delete_agent",
+        "description": "Delete an agent and all its workspace mappings. Cannot delete a BUSY agent — stop its task first.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID to delete"},
+            },
+            "required": ["agent_id"],
         },
     },
     {
@@ -1137,12 +1199,21 @@ the user says to "link", "connect", "use", or "point to" an existing directory/r
 - **init**: Create a new empty git repo. Use when starting from scratch.
 
 Agent workspaces — each agent has a per-project workspace directory:
-- Use `set_agent_workspace` to explicitly set where an agent works for a specific project.
+- **New agents start in STARTING state** and won't receive tasks until activated.
+- **Best practice:** Pass `project_id` and `workspace_path` when calling `create_agent` to \
+set the workspace and activate in one step.
+- Alternatively, call `set_agent_workspace` (which also activates the agent) or \
+`activate_agent` after creation.
 - When a task runs, the system checks agent_workspaces for the (agent, project) pair first.
 - If no workspace is set, the system auto-populates from the project's repo config.
 - For parallel work, set each agent to its own checkout directory for the same project.
-- Example: `set_agent_workspace agent-1 my-project /home/dev/project-checkout-1`
+- Example: `create_agent name="Agent-2" project_id="my-project" workspace_path="/dev/checkout-2"`
 - Workspaces are cached per (agent, project) pair and reused across tasks.
+
+Agent lifecycle — manage agent state:
+- `pause_agent` — stop assigning new tasks (current task finishes first).
+- `resume_agent` — resume a paused agent.
+- `delete_agent` — remove an agent and its workspaces (must not be BUSY).
 
 Notes management — use notes to build up project knowledge:
 - Use `list_notes` to see what notes exist for a project
