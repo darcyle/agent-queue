@@ -299,44 +299,15 @@ class GitManager:
         aborted and the method returns ``False`` — the branch is left in its
         original pre-rebase state.
 
-        This is the public API for callers that need to rebase an arbitrary
-        branch onto any target (not just the default branch).  Internally,
-        :meth:`sync_and_merge` uses :meth:`_try_rebase_branch` for its
-        rebase-before-merge flow.
+        Used by :meth:`sync_and_merge` for its rebase-before-merge conflict
+        resolution (Gap G3), and available as a public API for callers that
+        need to rebase an arbitrary branch onto any target.
         """
         self._run(["checkout", branch_name], cwd=checkout_path)
         try:
             self._run(["rebase", f"origin/{target_branch}"], cwd=checkout_path)
             return True
         except GitError:
-            try:
-                self._run(["rebase", "--abort"], cwd=checkout_path)
-            except GitError:
-                pass  # rebase may not be in progress if it failed early
-            return False
-
-    def _try_rebase_branch(
-        self, checkout_path: str, branch_name: str,
-        default_branch: str = "main",
-    ) -> bool:
-        """Rebase a task branch onto ``origin/<default_branch>``.
-
-        Switches to the task branch, attempts the rebase, and returns
-        True if the rebase completed cleanly.  On conflict the rebase is
-        aborted and the method returns False — the branch is left in its
-        original state.
-
-        After a successful rebase the caller is responsible for switching
-        back to the default branch before retrying the merge.
-        """
-        self._run(["checkout", branch_name], cwd=checkout_path)
-        try:
-            self._run(
-                ["rebase", f"origin/{default_branch}"], cwd=checkout_path,
-            )
-            return True
-        except GitError:
-            # Rebase conflicted — abort and leave branch as-is
             try:
                 self._run(["rebase", "--abort"], cwd=checkout_path)
             except GitError:
@@ -380,7 +351,7 @@ class GitManager:
             # 3a. Direct merge failed — attempt rebase-before-merge.
             # Rebase the task branch onto origin/<default_branch> so it
             # incorporates upstream changes, then retry the merge.
-            rebased = self._try_rebase_branch(
+            rebased = self.rebase_onto(
                 checkout_path, branch_name, default_branch,
             )
             if not rebased:
