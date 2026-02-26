@@ -225,17 +225,19 @@ class GitManager:
 
     def switch_to_branch(
         self, checkout_path: str, branch_name: str,
-        default_branch: str = "main",
+        default_branch: str = "main", rebase: bool = False,
     ) -> None:
-        """Switch to an existing branch, pulling latest and rebasing onto main.
+        """Switch to an existing branch, pulling latest and optionally rebasing.
 
         Used for subtask branch reuse: when a plan generates multiple subtasks
         that should share a branch, this lets the second task pick up where the
         first left off rather than creating a new branch.
 
-        After switching, the branch is rebased onto ``origin/<default_branch>``
-        so subtask chains stay closer to main and reduce the chance of merge
-        conflicts when the work is eventually merged back.
+        When *rebase* is ``True``, the branch is rebased onto
+        ``origin/<default_branch>`` after switching so subtask chains stay
+        closer to main and reduce the chance of merge conflicts when the work
+        is eventually merged back.  Controlled by the
+        ``auto_task.rebase_between_subtasks`` config option.
 
         If the branch doesn't exist locally or on the remote (e.g. LINK repos
         with no remote), creates it as a new local branch.
@@ -259,9 +261,10 @@ class GitManager:
         except GitError:
             pass  # may fail if no upstream tracking
 
-        # Rebase onto origin/<default_branch> so subtask chains stay close
-        # to main and reduce merge conflicts later.
-        self._rebase_onto_default(checkout_path, default_branch)
+        if rebase:
+            # Rebase onto origin/<default_branch> so subtask chains stay close
+            # to main and reduce merge conflicts later.
+            self._rebase_onto_default(checkout_path, default_branch)
 
     def mid_chain_sync(
         self, checkout_path: str, branch_name: str,

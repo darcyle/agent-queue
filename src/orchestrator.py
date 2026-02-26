@@ -948,9 +948,13 @@ class Orchestrator:
                     os.makedirs(os.path.dirname(workspace), exist_ok=True)
                     self.git.create_checkout(repo.url, workspace)
                 if reuse_branch:
-                    # G6 resolved: switch_to_branch rebases onto origin/main,
+                    # G6 resolved: switch_to_branch optionally rebases onto
+                    # origin/main when rebase_between_subtasks is enabled,
                     # and mid_chain_sync pushes + rebases between subtasks.
-                    self.git.switch_to_branch(workspace, branch_name)
+                    self.git.switch_to_branch(
+                        workspace, branch_name,
+                        rebase=self.config.auto_task.rebase_between_subtasks,
+                    )
                 else:
                     # GAP G4: If branch already exists (retry), prepare_for_task
                     # falls back to checkout without rebase onto latest main.
@@ -966,7 +970,10 @@ class Orchestrator:
                     )
                 elif self.git.validate_checkout(workspace):
                     if reuse_branch:
-                        self.git.switch_to_branch(workspace, branch_name)
+                        self.git.switch_to_branch(
+                            workspace, branch_name,
+                            rebase=self.config.auto_task.rebase_between_subtasks,
+                        )
                     else:
                         self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
 
@@ -974,7 +981,10 @@ class Orchestrator:
                 if not self.git.validate_checkout(workspace):
                     self.git.init_repo(workspace)
                 if reuse_branch:
-                    self.git.switch_to_branch(workspace, branch_name)
+                    self.git.switch_to_branch(
+                        workspace, branch_name,
+                        rebase=self.config.auto_task.rebase_between_subtasks,
+                    )
                 else:
                     self.git.create_branch(workspace, branch_name)
 

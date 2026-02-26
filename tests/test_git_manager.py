@@ -449,8 +449,8 @@ class TestSwitchToBranchRebase:
         new_main_sha = _commit_file(pusher, "upstream.txt", "upstream", "advance main")
         _git(["push", "origin", "main"], cwd=pusher)
 
-        # switch_to_branch should rebase feature onto new main
-        mgr.switch_to_branch(clone, "feature/subtask")
+        # switch_to_branch with rebase=True should rebase feature onto new main
+        mgr.switch_to_branch(clone, "feature/subtask", rebase=True)
         assert _current_branch(clone) == "feature/subtask"
 
         new_base = _git(["merge-base", "origin/main", "HEAD"], cwd=clone)
@@ -477,11 +477,44 @@ class TestSwitchToBranchRebase:
         _commit_file(pusher, "README.md", "upstream version", "upstream edits README")
         _git(["push", "origin", "main"], cwd=pusher)
 
-        # switch_to_branch: rebase will conflict, should abort gracefully
-        mgr.switch_to_branch(clone, "feature/conflict")
+        # switch_to_branch with rebase=True: rebase will conflict, should abort gracefully
+        mgr.switch_to_branch(clone, "feature/conflict", rebase=True)
         assert _current_branch(clone) == "feature/conflict"
         # Branch should still have the feature commit (rebase aborted)
         assert _head_sha(clone) == feature_sha
+
+
+    def test_switch_to_branch_no_rebase_by_default(self, git_repo, tmp_path):
+        """When rebase=False (default), switch_to_branch should NOT rebase onto main."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Create a feature branch with a commit
+        _git(["checkout", "-b", "feature/no-rebase"], cwd=clone)
+        _commit_file(clone, "feature.txt", "feature", "feature work")
+        feature_sha = _head_sha(clone)
+        _git(["checkout", "main"], cwd=clone)
+
+        # Advance origin/main so there's something to rebase onto
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        new_main_sha = _commit_file(pusher, "upstream.txt", "upstream", "advance main")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        # switch_to_branch without rebase — should NOT rebase onto new main
+        mgr.switch_to_branch(clone, "feature/no-rebase")
+        assert _current_branch(clone) == "feature/no-rebase"
+
+        # The merge-base should still be the original main, not the new one
+        merge_base = _git(["merge-base", "origin/main", "HEAD"], cwd=clone)
+        assert merge_base != new_main_sha, (
+            "Branch should NOT have been rebased onto new main when rebase=False"
+        )
+
+        # Feature commit should still be there
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "feature work" in log
 
 
 class TestMidChainSync:
