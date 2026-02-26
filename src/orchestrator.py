@@ -1138,9 +1138,11 @@ class Orchestrator:
     ) -> str | None:
         """Push the task branch and create a PR. Returns the PR URL or None.
 
-        Known gaps (see specs/git/git.md §11):
-          - **G5:** Uses plain ``git push`` — fails on retry if the branch was
-            previously pushed. Should use ``--force-with-lease``.
+        Uses ``force_with_lease=True`` when pushing the task branch so that
+        retries (e.g. after a failed PR creation where the push succeeded)
+        don't fail with a non-fast-forward error.  ``--force-with-lease`` is
+        safe here because the task branch is owned exclusively by this agent —
+        no other user is expected to push to it (resolves **G5**).
         """
         if repo.source_type == RepoSourceType.LINK:
             # LINK repos typically have no remote — notify user to review manually
@@ -1153,8 +1155,11 @@ class Orchestrator:
             return None
 
         try:
-            # GAP G5: Plain push — fails on retry if branch was already pushed.
-            self.git.push_branch(workspace, task.branch_name)
+            # Use --force-with-lease so retries don't fail if the branch was
+            # already pushed in a previous attempt (G5 fix).
+            self.git.push_branch(
+                workspace, task.branch_name, force_with_lease=True,
+            )
         except Exception as e:
             await self._notify_channel(
                 f"**Push Failed:** Could not push branch `{task.branch_name}` "

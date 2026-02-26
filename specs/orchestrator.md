@@ -635,15 +635,13 @@ nothing was committed, log a message (not an error).
 For LINK repos: notify "Approval Required" with manual-review instructions and return `None`.
 
 For CLONE repos:
-1. `git.push_branch(workspace, branch_name)`.  On failure: notify and return `None`.
+1. `git.push_branch(workspace, branch_name, force_with_lease=True)`.  On failure: notify and return `None`.
+   Uses `--force-with-lease` so retries don't fail if the branch was previously
+   pushed (G5 fix). Task branches are agent-owned and safe to force-push.
 2. `git.create_pr(workspace, branch, title, body, base=default_branch)`.
    - PR body: `"Automated PR for task \`{id}\`.\n\n{description[:500]}"`.
 3. On PR creation failure: notify and return `None`.
 4. On success: return the PR URL.
-
-> **Gap G5 applies here.** Step 1 uses a plain `git push` which fails on retry
-> if the branch was previously pushed. Using `--force-with-lease` would make
-> the push idempotent. See `specs/git/git.md` §11 for details.
 
 ---
 

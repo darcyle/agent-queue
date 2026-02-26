@@ -125,6 +125,130 @@ class TestGitManager:
         assert result.stdout.strip() == "task-2/another-feature"
 
 
+class TestPushBranchForceWithLease:
+    """Tests for the force_with_lease parameter on push_branch (G5 fix)."""
+
+    def test_plain_push_succeeds(self, git_repo):
+        """Basic push without force_with_lease works as before."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        mgr.create_branch(clone, "feature/plain-push")
+        _commit_file(clone, "new.txt", "content", "add file")
+        mgr.push_branch(clone, "feature/plain-push")
+
+        # Verify the branch exists on the remote
+        remote_branches = _git(["branch", "-r"], cwd=clone)
+        assert "origin/feature/plain-push" in remote_branches
+
+    def test_force_with_lease_first_push(self, git_repo):
+        """force_with_lease=True works on first push (no prior remote branch)."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        mgr.create_branch(clone, "feature/fwl-first")
+        _commit_file(clone, "new.txt", "content", "add file")
+        mgr.push_branch(clone, "feature/fwl-first", force_with_lease=True)
+
+        remote_branches = _git(["branch", "-r"], cwd=clone)
+        assert "origin/feature/fwl-first" in remote_branches
+
+    def test_force_with_lease_retry_after_amend(self, git_repo):
+        """force_with_lease=True succeeds on retry after amending a commit.
+
+        This is the core G5 scenario: a task pushes a branch, then the task
+        is retried with an amended commit. A plain push would fail with
+        non-fast-forward; force_with_lease makes it succeed.
+        """
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        mgr.create_branch(clone, "feature/fwl-retry")
+        _commit_file(clone, "file.txt", "v1", "initial")
+
+        # First push succeeds
+        mgr.push_branch(clone, "feature/fwl-retry", force_with_lease=True)
+
+        # Amend the commit (simulates agent retry with modified work)
+        pathlib.Path(clone, "file.txt").write_text("v2")
+        _git(["add", "file.txt"], cwd=clone)
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
+              "commit", "--amend", "-m", "amended"], cwd=clone)
+
+        # Plain push would fail here; force_with_lease succeeds
+        mgr.push_branch(clone, "feature/fwl-retry", force_with_lease=True)
+
+        # Verify the amended commit is on the remote
+        remote_log = _git(["log", "--oneline", "origin/feature/fwl-retry", "-1"],
+                          cwd=clone)
+        assert "amended" in remote_log
+
+    def test_plain_push_fails_on_amend(self, git_repo):
+        """Confirm that plain push fails after amending (the problem G5 fixes)."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        mgr.create_branch(clone, "feature/plain-amend")
+        _commit_file(clone, "file.txt", "v1", "initial")
+
+        # First push
+        mgr.push_branch(clone, "feature/plain-amend")
+
+        # Amend
+        pathlib.Path(clone, "file.txt").write_text("v2")
+        _git(["add", "file.txt"], cwd=clone)
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
+              "commit", "--amend", "-m", "amended"], cwd=clone)
+
+        # Plain push should fail with non-fast-forward
+        with pytest.raises(GitError, match="failed"):
+            mgr.push_branch(clone, "feature/plain-amend")
+
+    def test_force_with_lease_rejects_if_remote_changed(self, git_repo, tmp_path):
+        """force_with_lease rejects push if someone else pushed to the branch.
+
+        This verifies the safety aspect: --force-with-lease only overwrites
+        if the remote ref matches what we last fetched.
+        """
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        mgr.create_branch(clone, "feature/fwl-safety")
+        _commit_file(clone, "file.txt", "v1", "agent work")
+        mgr.push_branch(clone, "feature/fwl-safety")
+
+        # Simulate another user pushing to the same branch
+        clone2 = str(tmp_path / "clone2")
+        _git(["clone", git_repo["remote"], clone2], cwd=str(tmp_path))
+        _git(["checkout", "feature/fwl-safety"], cwd=clone2)
+        _commit_file(clone2, "review.txt", "review", "reviewer comment")
+        _git(["push", "origin", "feature/fwl-safety"], cwd=clone2)
+
+        # Agent amends their commit locally (without fetching)
+        pathlib.Path(clone, "file.txt").write_text("v2")
+        _git(["add", "file.txt"], cwd=clone)
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
+              "commit", "--amend", "-m", "amended"], cwd=clone)
+
+        # force_with_lease should reject because remote was updated by someone else
+        with pytest.raises(GitError):
+            mgr.push_branch(clone, "feature/fwl-safety", force_with_lease=True)
+
+    def test_force_with_lease_with_additional_commits(self, git_repo):
+        """force_with_lease succeeds when adding commits (not just amending)."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        mgr.create_branch(clone, "feature/fwl-extra")
+        _commit_file(clone, "file1.txt", "v1", "first commit")
+        mgr.push_branch(clone, "feature/fwl-extra", force_with_lease=True)
+
+        # Add another commit and push again (fast-forward, should work
+        # with both plain push and force_with_lease)
+        _commit_file(clone, "file2.txt", "v2", "second commit")
+        mgr.push_branch(clone, "feature/fwl-extra", force_with_lease=True)
+
+        # Verify both commits exist on remote
+        remote_log = _git(["log", "--oneline", "origin/feature/fwl-extra"],
+                          cwd=clone)
+        assert "first commit" in remote_log
+        assert "second commit" in remote_log
+
+
 class TestPrepareForTaskHardReset:
     """Tests for the hard-reset path in prepare_for_task (normal clone)."""
 

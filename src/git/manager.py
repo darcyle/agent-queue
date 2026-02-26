@@ -43,9 +43,11 @@ Resolved gaps (continued):
     onto ``origin/<default_branch>`` and the merge retried.  If the rebase
     itself conflicts, the original ``merge_conflict`` error is returned.
 
-Remaining gaps (see specs/git/git.md §11 for the full catalogue):
-  - **G5:** ``push_branch`` uses plain push; should use ``--force-with-lease``
-    for idempotent retries of PR branches.
+Resolved gaps (continued):
+  - **G5 (resolved):** ``push_branch`` now accepts a ``force_with_lease``
+    keyword argument.  When ``True``, uses ``--force-with-lease`` for
+    idempotent retries of PR branches.  The orchestrator passes this flag
+    when pushing task branches for PR creation.
 
 See specs/git/git.md for the full behavioral specification.
 """
@@ -254,10 +256,25 @@ class GitManager:
         # to main and reduce merge conflicts later.
         self._rebase_onto_default(checkout_path, default_branch)
 
-    def push_branch(self, checkout_path: str, branch_name: str) -> None:
-        # GAP G5: Uses plain push — should use --force-with-lease for
-        # idempotent retries of PR branches. See specs/git/git.md §11.
-        self._run(["push", "origin", branch_name], cwd=checkout_path)
+    def push_branch(
+        self, checkout_path: str, branch_name: str, *,
+        force_with_lease: bool = False,
+    ) -> None:
+        """Push a local branch to the ``origin`` remote.
+
+        When *force_with_lease* is ``True``, uses ``--force-with-lease`` so the
+        push is safe for retries: if the branch was already pushed in a
+        previous attempt, a second push with amended/additional commits will
+        succeed as long as no *other* user pushed to the same branch in the
+        meantime.  This resolves **Gap G5** for PR branch pushes.
+
+        Plain push (default) is used for the ``sync_and_merge`` flow where
+        only the default branch is pushed and force-push is never appropriate.
+        """
+        args = ["push", "origin", branch_name]
+        if force_with_lease:
+            args.insert(2, "--force-with-lease")
+        self._run(args, cwd=checkout_path)
 
     def merge_branch(
         self, checkout_path: str, branch_name: str,

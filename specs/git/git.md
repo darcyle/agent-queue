@@ -175,12 +175,19 @@ Stages all changes and creates a commit. Returns `True` if a commit was made, `F
 4. Otherwise runs `git commit -m <message>` and returns `True`.
 5. Raises `GitError` if the commit fails.
 
-### `push_branch(checkout_path, branch_name)`
+### `push_branch(checkout_path, branch_name, *, force_with_lease=False)`
 
 Pushes a local branch to the `origin` remote.
 
 - Runs `git push origin <branch_name>`.
-- Raises `GitError` on failure (e.g. non-fast-forward, authentication error).
+- When `force_with_lease=True`, adds `--force-with-lease` to the push command.
+  This makes push idempotent for retries: if the branch was already pushed in a
+  previous attempt, a second push with amended/additional commits succeeds as long
+  as no other user pushed to the same branch in the meantime.
+- Used with `force_with_lease=True` by the orchestrator when pushing task branches
+  for PR creation (task branches are agent-owned and safe to force-push).
+- Raises `GitError` on failure (e.g. non-fast-forward without force-with-lease,
+  authentication error).
 
 ### `merge_branch(checkout_path, branch_name, default_branch="main")`
 
@@ -462,21 +469,16 @@ for existing branches does a bare `checkout` without rebase.
 **Violates:** P3 (Fresh Starting Point) — the guarantee only holds for the
 first attempt, not retries.
 
-### G5. No `--force-with-lease` for PR Branch Pushes
+### G5. No `--force-with-lease` for PR Branch Pushes — **RESOLVED**
 
-`push_branch` could fail on retry if the branch was previously pushed (e.g. a
-failed PR creation after a successful push). The method uses a plain
-`git push origin <branch>` without `--force-with-lease`, so a second push of
-the same branch after the agent has amended or added commits will be rejected
-as non-fast-forward.
+~~`push_branch` could fail on retry if the branch was previously pushed.~~
 
-**Impact:** PR creation fails silently on retry because the push step fails
-first. The user is notified but the branch may already contain the correct
-code on the remote.
-
-**Affected code:** `git.push_branch`, called from `Orchestrator._create_pr_for_task`.
-
-**Violates:** P8 (Retry Resilience) — push is not idempotent across retries.
+**Resolution:** `push_branch` now accepts a `force_with_lease` keyword argument.
+When `True`, `--force-with-lease` is added to the push command, making it
+idempotent for retries. The orchestrator's `_create_pr_for_task` passes
+`force_with_lease=True` when pushing task branches, since these branches are
+agent-owned and safe to force-push. Plain push (the default) is still used for
+the `sync_and_merge` flow where only the default branch is pushed.
 
 ### G6. Subtask Chains Accumulate Drift
 
@@ -523,6 +525,6 @@ exception where isolation is not enforced.
 | G2 | High | No rollback after failed push | P3, P8 |
 | G3 | Medium | No automated rebase-and-retry on conflict | P5 |
 | G4 | Medium | Retry uses existing branch without rebase | P3 |
-| G5 | Low | Plain push instead of `--force-with-lease` | P8 |
+| G5 | ~~Low~~ | ~~Plain push instead of `--force-with-lease`~~ | **RESOLVED** |
 | G6 | Medium | No periodic rebase during subtask chains | P3 |
 | G7 | High | LINK repos share filesystem without locking | P1 |

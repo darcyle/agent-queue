@@ -230,13 +230,15 @@ many commits behind the current remote state.
 This applies to both the normal-clone and worktree paths in
 `prepare_for_task()`.
 
-### G5. No `--force-with-lease` for PR Branch Pushes
+### G5. No `--force-with-lease` for PR Branch Pushes — **RESOLVED**
 
-`push_branch()` uses `git push origin <branch>`. On retry — where the branch
-was already pushed in a previous attempt — the push fails if the agent added
-more commits locally (non-fast-forward). Using `--force-with-lease` would
-make the push safe for retries while still preventing accidental overwrites
-of other people's changes.
+~~`push_branch()` uses `git push origin <branch>`. On retry — where the branch
+was already pushed in a previous attempt — the push fails.~~
+
+**Resolution:** `push_branch()` now accepts `force_with_lease=True`, which adds
+`--force-with-lease` to the push command. The orchestrator uses this when pushing
+task branches for PR creation, making retries idempotent while still preventing
+accidental overwrites of other people's changes.
 
 ### G6. Subtask Chains Accumulate Drift
 
@@ -279,6 +281,6 @@ mode.
 | G2 | High | None | Cascading workspace drift after first push failure |
 | G3 | Medium | Rare conflicts | Frequent conflicts as main moves fast |
 | G4 | Medium | Stale retry | Stale retry with higher conflict risk |
-| G5 | Low | Rare | PR push fails on retry |
+| G5 | ~~Low~~ | ~~Rare~~ | **RESOLVED** — `push_branch` supports `--force-with-lease` |
 | G6 | Medium | No drift (only agent) | Branch falls behind during long chains |
 | G7 | High | N/A | Filesystem corruption between concurrent agents |
