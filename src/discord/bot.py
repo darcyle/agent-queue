@@ -293,6 +293,11 @@ class AgentQueueBot(commands.Bot):
         from src.discord.commands import setup_commands
         setup_commands(self)
 
+        # Log how many commands were registered on the tree.
+        registered = self.tree.get_commands()
+        cmd_names = sorted(c.name for c in registered)
+        print(f"Registered {len(registered)} slash commands on the command tree")
+
         # Global authorization guard for all slash commands.
         # Runs before every interaction — unauthorized users receive an
         # ephemeral rejection and the command is silently dropped.
@@ -331,10 +336,25 @@ class AgentQueueBot(commands.Bot):
 
         self.tree.on_error = _on_tree_error
 
+        # Sync the command tree with Discord so slash commands appear.
+        # Guild-scoped sync is instant; global sync can take up to an hour.
         if self.config.discord.guild_id:
             guild = discord.Object(id=int(self.config.discord.guild_id))
             self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
+            try:
+                synced = await self.tree.sync(guild=guild)
+                print(f"Synced {len(synced)} slash commands to guild {self.config.discord.guild_id}")
+            except Exception as e:
+                print(f"ERROR: Failed to sync commands to guild: {e}")
+                print("Commands will NOT appear in Discord until sync succeeds.")
+                print(f"Registered commands were: {cmd_names}")
+        else:
+            # No guild_id configured — sync globally (takes up to 1 hour to propagate).
+            try:
+                synced = await self.tree.sync()
+                print(f"Synced {len(synced)} slash commands globally (no guild_id configured)")
+            except Exception as e:
+                print(f"ERROR: Failed to sync commands globally: {e}")
 
     async def on_ready(self) -> None:
         print(f"Discord bot connected as {self.user} (guild: {self.config.discord.guild_id})")
