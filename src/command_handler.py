@@ -760,8 +760,13 @@ class CommandHandler:
         For ``"tree"`` and ``"compact"`` modes, a ``project_id`` is
         required so we can query parent tasks.  If ``project_id`` is
         missing the method silently falls back to ``"flat"``.
+
+        When ``show_dependencies`` is ``True``, each task dict is enriched
+        with ``depends_on`` (list of upstream task IDs + statuses) and
+        ``blocks`` (list of downstream dependent task IDs + statuses).
         """
         display_mode: str = args.get("display_mode", "flat")
+        show_dependencies: bool = args.get("show_dependencies", False)
 
         kwargs = {}
         if "project_id" in args:
@@ -776,11 +781,15 @@ class CommandHandler:
         # ── Flat mode (default / backward-compatible) ──────────────────
         # Also used as the fallback when tree/compact lack a project_id.
         if display_mode == "flat" or "project_id" not in args:
-            return await self._list_tasks_flat(args, kwargs, explicit_status)
+            return await self._list_tasks_flat(
+                args, kwargs, explicit_status,
+                show_dependencies=show_dependencies,
+            )
 
         # ── Tree / Compact modes ───────────────────────────────────────
         return await self._list_tasks_hierarchical(
             args, kwargs, explicit_status, compact=(display_mode == "compact"),
+            show_dependencies=show_dependencies,
         )
 
     # -- private helpers for _cmd_list_tasks display modes -------------------
@@ -790,6 +799,8 @@ class CommandHandler:
         args: dict,
         db_kwargs: dict,
         explicit_status: bool,
+        *,
+        show_dependencies: bool = False,
     ) -> dict:
         """Flat list mode — the original ``_cmd_list_tasks`` behaviour."""
         tasks = await self.db.list_tasks(**db_kwargs)
@@ -799,9 +810,14 @@ class CommandHandler:
         if not explicit_status:
             tasks = self._apply_completion_filter(tasks, args)
 
+        task_dicts = [self._task_to_dict(t) for t in tasks[:200]]
+
+        if show_dependencies:
+            await self._enrich_with_dependencies(task_dicts, tasks[:200])
+
         return {
             "display_mode": "flat",
-            "tasks": [self._task_to_dict(t) for t in tasks[:200]],
+            "tasks": task_dicts,
             "total": len(tasks),
         }
 
@@ -812,6 +828,7 @@ class CommandHandler:
         explicit_status: bool,
         *,
         compact: bool,
+        show_dependencies: bool = False,
     ) -> dict:
         """Tree or compact list mode — groups tasks by parent hierarchy.
 
@@ -835,6 +852,7 @@ class CommandHandler:
 
         # 3. Build tree for each root and format.
         trees: list[dict] = []
+        included_roots: list[Task] = []  # Track Task objects for dependency enrichment
         total_tasks = 0
 
         for root in root_tasks[:200]:
@@ -865,8 +883,14 @@ class CommandHandler:
                 )
 
             trees.append(tree_entry)
+            included_roots.append(root)
             # Count root + all its subtasks
             total_tasks += 1 + subtask_total
+
+        # Enrich root task dicts with dependency info when requested.
+        if show_dependencies:
+            root_dicts = [entry["root"] for entry in trees]
+            await self._enrich_with_dependencies(root_dicts, included_roots)
 
         return {
             "display_mode": mode_name,
@@ -892,6 +916,58 @@ class CommandHandler:
             return [t for t in tasks if t.status not in self._FINISHED_STATUSES]
         # include_completed=True — return everything unfiltered.
         return tasks
+
+    async def _enrich_with_dependencies(
+        self,
+        task_dicts: list[dict],
+        tasks: list[Task],
+    ) -> None:
+        """Add ``depends_on`` and ``blocks`` keys to each task dict in-place.
+
+        ``depends_on`` contains a list of upstream dependency dicts, each with
+        ``id``, ``title``, and ``status``.  ``blocks`` contains a list of
+        downstream dependent task IDs with the same shape.
+
+        Uses the existing ``get_dependencies()`` and ``get_dependents()`` DB
+        helpers.  Lookups are batched per-task but results are cached within
+        the call to avoid redundant ``get_task()`` queries when the same
+        dependency appears across multiple tasks.
+        """
+        # Local cache so repeated dependency IDs don't trigger extra DB reads.
+        task_cache: dict[str, Task | None] = {}
+
+        async def _resolve(task_id: str) -> dict | None:
+            if task_id not in task_cache:
+                task_cache[task_id] = await self.db.get_task(task_id)
+            t = task_cache[task_id]
+            if t is None:
+                return None
+            return {"id": t.id, "title": t.title, "status": t.status.value}
+
+        for td, task in zip(task_dicts, tasks):
+            # Upstream: tasks this task depends on
+            dep_ids = await self.db.get_dependencies(task.id)
+            if dep_ids:
+                dep_details = []
+                for dep_id in dep_ids:
+                    resolved = await _resolve(dep_id)
+                    if resolved:
+                        dep_details.append(resolved)
+                td["depends_on"] = dep_details
+            else:
+                td["depends_on"] = []
+
+            # Downstream: tasks that depend on this task
+            dependent_ids = await self.db.get_dependents(task.id)
+            if dependent_ids:
+                block_details = []
+                for dep_id in dependent_ids:
+                    resolved = await _resolve(dep_id)
+                    if resolved:
+                        block_details.append(resolved)
+                td["blocks"] = block_details
+            else:
+                td["blocks"] = []
 
     @staticmethod
     def _task_to_dict(t: Task) -> dict:
