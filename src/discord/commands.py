@@ -776,29 +776,35 @@ def setup_commands(bot: commands.Bot) -> None:
                 else:
                     lines.append(f"{emoji} **{display}** ({count})")
             content = "\n".join(lines)
-            # Trim if over Discord's 2000-char message limit
+            # Trim if over Discord's 2000-char message limit.
+            # Progressively reduce the per-section cap until content fits.
             if len(content) > 1950:
-                lines = []
-                for status in _STATUS_ORDER:
-                    if status not in self.tasks_by_status:
-                        continue
-                    tasks = self.tasks_by_status[status]
-                    emoji = _STATUS_EMOJIS.get(status, "⚪")
-                    display = _STATUS_DISPLAY.get(status, status)
-                    count = len(tasks)
-                    if status in self.expanded:
-                        cap = 8
-                        lines.append(f"### {emoji} {display} ({count})")
-                        for t in tasks[:cap]:
-                            tag = self._get_type_tag(t)
-                            tag_str = f"{tag} " if tag else ""
-                            lines.append(f"{tag_str}**{t['title']}** `{t['id']}`")
-                        if count > cap:
-                            lines.append(f"_...and {count - cap} more_")
-                        lines.append("")
-                    else:
-                        lines.append(f"{emoji} **{display}** ({count})")
-                content = "\n".join(lines)
+                for cap in (8, 4, 2):
+                    lines = []
+                    for status in _STATUS_ORDER:
+                        if status not in self.tasks_by_status:
+                            continue
+                        tasks = self.tasks_by_status[status]
+                        emoji = _STATUS_EMOJIS.get(status, "⚪")
+                        display = _STATUS_DISPLAY.get(status, status)
+                        count = len(tasks)
+                        if status in self.expanded:
+                            lines.append(f"### {emoji} {display} ({count})")
+                            for t in tasks[:cap]:
+                                tag = self._get_type_tag(t)
+                                tag_str = f"{tag} " if tag else ""
+                                lines.append(f"{tag_str}**{t['title']}** `{t['id']}`")
+                            if count > cap:
+                                lines.append(f"_...and {count - cap} more_")
+                            lines.append("")
+                        else:
+                            lines.append(f"{emoji} **{display}** ({count})")
+                    content = "\n".join(lines)
+                    if len(content) <= 1950:
+                        break
+                # Final safety net: hard-truncate if still over limit
+                if len(content) > 1950:
+                    content = content[:1947] + "..."
             return content
 
     # ---------------------------------------------------------------------------
@@ -1689,86 +1695,100 @@ def setup_commands(bot: commands.Bot) -> None:
         view: app_commands.Choice[str] | None = None,
     ):
         await interaction.response.defer()
-        view_mode = view.value if view else "list"
-        project_id = await _resolve_project_from_context(interaction, None)
+        try:
+            view_mode = view.value if view else "list"
+            project_id = await _resolve_project_from_context(interaction, None)
 
-        # Map slash-command view names to command handler display_mode values
-        _VIEW_TO_DISPLAY_MODE = {"list": "flat", "tree": "tree", "compact": "compact"}
-        display_mode = _VIEW_TO_DISPLAY_MODE[view_mode]
+            # Map slash-command view names to command handler display_mode values
+            _VIEW_TO_DISPLAY_MODE = {"list": "flat", "tree": "tree", "compact": "compact"}
+            display_mode = _VIEW_TO_DISPLAY_MODE[view_mode]
 
-        args: dict = {
-            "include_completed": show_completed,
-            "display_mode": display_mode,
-        }
-        if project_id:
-            args["project_id"] = project_id
+            args: dict = {
+                "include_completed": show_completed,
+                "display_mode": display_mode,
+            }
+            if project_id:
+                args["project_id"] = project_id
 
-        # tree/compact modes require a project_id; warn if missing
-        if display_mode in ("tree", "compact") and not project_id:
-            await interaction.followup.send(
-                embed=error_embed(
-                    "Project Required",
-                    description=(
-                        "Tree and compact views require a project context. "
-                        "Set an active project with `/set-project` first."
-                    ),
-                ),
-            )
-            return
-
-        result = await handler.execute("list_tasks", args)
-
-        # ── Tree / Compact display modes ──────────────────────────
-        if display_mode in ("tree", "compact"):
-            await _send_tree_or_compact(
-                interaction, result, show_completed, display_mode,
-            )
-            return
-
-        # ── Flat / list display mode (default) ────────────────────
-        tasks = result.get("tasks", [])
-        if not tasks:
-            if not show_completed:
-                # Check if there are completed/terminal tasks being hidden
-                check_args = {**args, "include_completed": True}
-                # Always use flat mode for the hidden-tasks check
-                check_args.pop("display_mode", None)
-                check_result = await handler.execute("list_tasks", check_args)
-                total_count = check_result.get("total", 0)
-                if total_count > 0:
-                    await interaction.followup.send(
-                        embed=success_embed(
-                            "All Tasks Completed",
-                            description=(
-                                f"All {total_count} task(s) are completed. "
-                                f"Use `/tasks show_completed:True` to view them."
-                            ),
+            # tree/compact modes require a project_id; warn if missing
+            if display_mode in ("tree", "compact") and not project_id:
+                await interaction.followup.send(
+                    embed=error_embed(
+                        "Project Required",
+                        description=(
+                            "Tree and compact views require a project context. "
+                            "Set an active project with `/set-project` first."
                         ),
-                    )
-                    return
-            await interaction.followup.send(
-                embed=info_embed("No Tasks", description="No tasks found for this project."),
-            )
-            return
+                    ),
+                )
+                return
 
-        # ----- Default list view (interactive grouped report) ---------------
-        # Group tasks by status
-        tasks_by_status: dict[str, list] = {}
-        for t in tasks:
-            tasks_by_status.setdefault(t["status"], []).append(t)
-        total = result.get("total", len(tasks))
-        # Fetch all tasks (including completed) for the full-view report widget
-        if not show_completed:
-            all_result = await handler.execute(
-                "list_tasks",
-                {**args, "display_mode": "flat", "include_completed": True},
-            )
-            all_tasks = all_result.get("tasks", [])
-        else:
-            all_tasks = tasks
-        view_widget = TaskReportView(tasks_by_status, total, all_tasks=all_tasks)
-        content = view_widget.build_content()
-        await interaction.followup.send(content, view=view_widget)
+            result = await handler.execute("list_tasks", args)
+
+            if "error" in result:
+                await interaction.followup.send(
+                    embed=error_embed("Error", description=result["error"]),
+                )
+                return
+
+            # ── Tree / Compact display modes ──────────────────────────
+            if display_mode in ("tree", "compact"):
+                await _send_tree_or_compact(
+                    interaction, result, show_completed, display_mode,
+                )
+                return
+
+            # ── Flat / list display mode (default) ────────────────────
+            tasks = result.get("tasks", [])
+            if not tasks:
+                if not show_completed:
+                    # Check if there are completed/terminal tasks being hidden
+                    check_args = {**args, "include_completed": True}
+                    # Always use flat mode for the hidden-tasks check
+                    check_args.pop("display_mode", None)
+                    check_result = await handler.execute("list_tasks", check_args)
+                    total_count = check_result.get("total", 0)
+                    if total_count > 0:
+                        await interaction.followup.send(
+                            embed=success_embed(
+                                "All Tasks Completed",
+                                description=(
+                                    f"All {total_count} task(s) are completed. "
+                                    f"Use `/tasks show_completed:True` to view them."
+                                ),
+                            ),
+                        )
+                        return
+                await interaction.followup.send(
+                    embed=info_embed("No Tasks", description="No tasks found for this project."),
+                )
+                return
+
+            # ----- Default list view (interactive grouped report) ---------------
+            # Group tasks by status
+            tasks_by_status: dict[str, list] = {}
+            for t in tasks:
+                tasks_by_status.setdefault(t["status"], []).append(t)
+            total = result.get("total", len(tasks))
+            # Fetch all tasks (including completed) for the full-view report widget
+            if not show_completed:
+                all_result = await handler.execute(
+                    "list_tasks",
+                    {**args, "display_mode": "flat", "include_completed": True},
+                )
+                all_tasks = all_result.get("tasks", [])
+            else:
+                all_tasks = tasks
+            view_widget = TaskReportView(tasks_by_status, total, all_tasks=all_tasks)
+            content = view_widget.build_content()
+            await interaction.followup.send(content, view=view_widget)
+        except Exception as e:
+            try:
+                await interaction.followup.send(
+                    embed=error_embed("Error", description=f"Failed to list tasks: {e}"),
+                )
+            except Exception:
+                pass  # interaction may have expired
 
     async def _send_tree_or_compact(
         interaction: discord.Interaction,

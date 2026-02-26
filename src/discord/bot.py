@@ -27,6 +27,7 @@ import os
 import traceback
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from src.chat_agent import ChatAgent
@@ -307,6 +308,28 @@ class AgentQueueBot(commands.Bot):
             return await original_interaction_check(interaction)
 
         self.tree.interaction_check = _auth_interaction_check
+
+        # Global error handler for all slash commands.
+        # If a command throws an unhandled exception after calling defer(),
+        # Discord shows "thinking" forever because no followup is sent.
+        # This handler catches those errors and sends an error followup.
+        async def _on_tree_error(
+            interaction: discord.Interaction,
+            error: app_commands.AppCommandError,
+        ) -> None:
+            original = getattr(error, "original", error)
+            print(f"Slash command error in /{interaction.command.name if interaction.command else '?'}: "
+                  f"{original!r}\n{traceback.format_exc()}")
+            try:
+                msg = f"An unexpected error occurred: {original}"
+                if interaction.response.is_done():
+                    await interaction.followup.send(msg, ephemeral=True)
+                else:
+                    await interaction.response.send_message(msg, ephemeral=True)
+            except Exception:
+                pass  # interaction may have expired
+
+        self.tree.on_error = _on_tree_error
 
         if self.config.discord.guild_id:
             guild = discord.Object(id=int(self.config.discord.guild_id))
