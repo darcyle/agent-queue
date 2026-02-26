@@ -878,8 +878,9 @@ class Orchestrator:
         Known gaps (see specs/git/git.md §11):
           - **G4:** Retried tasks check out the existing branch without
             rebasing onto latest ``origin/main``.
-          - **G6:** Subtask chains use ``switch_to_branch`` without periodic
-            rebase, accumulating drift from ``main``.
+          - **G6 (resolved):** ``mid_chain_sync`` now pushes intermediate
+            subtask work and rebases the chain branch between subtask
+            completions when ``auto_task.mid_chain_rebase`` is enabled.
           - **G7:** LINK repos use a shared filesystem path for all agents —
             no per-agent isolation.
         """
@@ -947,8 +948,8 @@ class Orchestrator:
                     os.makedirs(os.path.dirname(workspace), exist_ok=True)
                     self.git.create_checkout(repo.url, workspace)
                 if reuse_branch:
-                    # GAP G6: switch_to_branch pulls latest branch commits but
-                    # does not rebase onto origin/main — drift accumulates.
+                    # G6 resolved: switch_to_branch rebases onto origin/main,
+                    # and mid_chain_sync pushes + rebases between subtasks.
                     self.git.switch_to_branch(workspace, branch_name)
                 else:
                     # GAP G4: If branch already exists (retry), prepare_for_task
@@ -1036,6 +1037,30 @@ class Orchestrator:
                     return await self._create_pr_for_task(task, repo, workspace)
                 else:
                     await self._merge_and_push(task, repo, workspace)
+            elif not is_last and repo and self.config.auto_task.mid_chain_rebase:
+                # Mid-chain sync: push intermediate work to remote and
+                # rebase onto latest main to reduce drift.  Non-fatal —
+                # the next subtask can still work even if sync fails.
+                try:
+                    synced = self.git.mid_chain_sync(
+                        workspace, task.branch_name, repo.default_branch,
+                    )
+                    if synced:
+                        print(
+                            f"Task {task.id}: mid-chain sync OK — "
+                            f"branch {task.branch_name} rebased onto "
+                            f"origin/{repo.default_branch}"
+                        )
+                    else:
+                        print(
+                            f"Task {task.id}: mid-chain rebase skipped "
+                            f"(conflict) — branch left as-is"
+                        )
+                except Exception as e:
+                    print(
+                        f"Task {task.id}: mid-chain sync failed "
+                        f"(non-fatal): {e}"
+                    )
             return None
 
         if repo and task.requires_approval:

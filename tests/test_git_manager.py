@@ -484,6 +484,175 @@ class TestSwitchToBranchRebase:
         assert _head_sha(clone) == feature_sha
 
 
+class TestMidChainSync:
+    """Tests for mid_chain_sync: push intermediate work and rebase mid-chain (G6 fix)."""
+
+    def test_mid_chain_sync_pushes_and_rebases(self, git_repo, tmp_path):
+        """mid_chain_sync should push the branch to remote and rebase onto
+        the latest origin/main, keeping the subtask chain close to main."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Create a subtask branch with a commit (simulates subtask 1 completing)
+        mgr.prepare_for_task(clone, "chain/subtask-branch")
+        _commit_file(clone, "step1.txt", "step 1 work", "subtask 1")
+
+        # Advance origin/main from another clone (simulates concurrent work)
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        new_main_sha = _commit_file(pusher, "other.txt", "concurrent work", "other agent")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        # mid_chain_sync should push the branch and rebase onto new main
+        result = mgr.mid_chain_sync(clone, "chain/subtask-branch")
+        assert result is True
+        assert _current_branch(clone) == "chain/subtask-branch"
+
+        # Branch should now be based on the new main commit
+        merge_base = _git(["merge-base", "origin/main", "HEAD"], cwd=clone)
+        assert merge_base == new_main_sha
+
+        # The subtask commit should still be present
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "subtask 1" in log
+
+        # Branch should be pushed to remote
+        remote_branches = _git(["branch", "-r"], cwd=clone)
+        assert "origin/chain/subtask-branch" in remote_branches
+
+    def test_mid_chain_sync_conflict_returns_false(self, git_repo, tmp_path):
+        """When rebase conflicts, mid_chain_sync should return False and
+        leave the branch in its original state."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Create a subtask branch that edits README.md
+        mgr.prepare_for_task(clone, "chain/conflict-branch")
+        _commit_file(clone, "README.md", "subtask version", "subtask edits README")
+        pre_sync_sha = _head_sha(clone)
+
+        # Advance origin/main with a conflicting change to README.md
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "README.md", "upstream version", "upstream edits README")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        # mid_chain_sync: rebase should conflict, return False
+        result = mgr.mid_chain_sync(clone, "chain/conflict-branch")
+        assert result is False
+        assert _current_branch(clone) == "chain/conflict-branch"
+        # Branch should still have the subtask commit (rebase aborted)
+        assert _head_sha(clone) == pre_sync_sha
+
+    def test_mid_chain_sync_pushes_before_rebase(self, git_repo, tmp_path):
+        """Even if rebase conflicts, the initial push should save work to remote."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Create a subtask branch with non-conflicting work
+        mgr.prepare_for_task(clone, "chain/push-test")
+        subtask_sha = _commit_file(clone, "work.txt", "important work", "subtask work")
+
+        # Advance origin/main with a conflicting change
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "work.txt", "conflicting", "conflict on work.txt")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        # mid_chain_sync: push should succeed, rebase should conflict
+        result = mgr.mid_chain_sync(clone, "chain/push-test")
+        assert result is False  # Rebase conflicted
+
+        # But the branch should have been pushed before the rebase attempt
+        remote_branches = _git(["branch", "-r"], cwd=clone)
+        assert "origin/chain/push-test" in remote_branches
+
+        # Verify the pushed commit matches what we had pre-rebase
+        verifier = str(tmp_path / "verifier")
+        subprocess.run(["git", "clone", git_repo["remote"], verifier],
+                       check=True, capture_output=True)
+        _git(["checkout", "chain/push-test"], cwd=verifier)
+        assert _head_sha(verifier) == subtask_sha
+
+    def test_mid_chain_sync_no_drift_after_sync(self, git_repo, tmp_path):
+        """After a successful mid_chain_sync, branch should be directly ahead
+        of main with no divergence."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Simulate a two-step subtask chain
+        mgr.prepare_for_task(clone, "chain/two-step")
+        _commit_file(clone, "step1.txt", "step 1", "subtask 1 done")
+
+        # Advance main concurrently
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "upstream1.txt", "u1", "upstream advance")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        # Mid-chain sync after subtask 1
+        assert mgr.mid_chain_sync(clone, "chain/two-step") is True
+
+        # Now simulate subtask 2 adding more work
+        _commit_file(clone, "step2.txt", "step 2", "subtask 2 done")
+
+        # The branch should be cleanly ahead of origin/main
+        behind_count = _git(
+            ["rev-list", "--count", "HEAD..origin/main"], cwd=clone,
+        )
+        assert behind_count == "0", "Branch should not be behind main after sync"
+
+    def test_mid_chain_sync_repeated_calls(self, git_repo, tmp_path):
+        """Calling mid_chain_sync multiple times (once per subtask) should work."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        mgr.prepare_for_task(clone, "chain/multi-sync")
+
+        # First subtask
+        _commit_file(clone, "step1.txt", "s1", "subtask 1")
+        assert mgr.mid_chain_sync(clone, "chain/multi-sync") is True
+
+        # Second subtask (advance main between syncs)
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        new_main_sha = _commit_file(pusher, "upstream.txt", "u", "upstream work")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        _commit_file(clone, "step2.txt", "s2", "subtask 2")
+        assert mgr.mid_chain_sync(clone, "chain/multi-sync") is True
+
+        # After second sync, branch should be based on latest main
+        merge_base = _git(["merge-base", "origin/main", "HEAD"], cwd=clone)
+        assert merge_base == new_main_sha
+
+        # Both subtask commits should be present
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "subtask 1" in log
+        assert "subtask 2" in log
+
+    def test_mid_chain_sync_noop_when_main_unchanged(self, git_repo):
+        """When main hasn't changed, mid_chain_sync should still succeed
+        (push work, rebase is a no-op)."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        mgr.prepare_for_task(clone, "chain/noop-sync")
+        _commit_file(clone, "work.txt", "work", "subtask work")
+        pre_sha = _head_sha(clone)
+
+        result = mgr.mid_chain_sync(clone, "chain/noop-sync")
+        assert result is True
+        # Branch should still have the same commit (rebase was no-op)
+        post_sha = _head_sha(clone)
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "subtask work" in log
+
+
 class TestMergeBranchPullBeforeMerge:
     """Tests for merge_branch pulling latest main before merging (G1 fix)."""
 

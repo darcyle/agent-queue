@@ -106,6 +106,7 @@ class AutoTaskConfig:
     max_steps_per_plan: int = 5         # Cap phases from a single plan
     use_llm_parser: bool = False        # Use LLM (Claude) for plan parsing
     llm_parser_model: str = ""          # Model override for plan parsing
+    mid_chain_rebase: bool = True       # Sync branch between subtask steps
 
 
 @dataclass
@@ -329,6 +330,7 @@ def load_config(path: str) -> AppConfig:
             max_steps_per_plan=at.get("max_steps_per_plan", 5),
             use_llm_parser=at.get("use_llm_parser", False),
             llm_parser_model=at.get("llm_parser_model", ""),
+            mid_chain_rebase=at.get("mid_chain_rebase", True),
         )
 
     if "llm_logging" in raw:

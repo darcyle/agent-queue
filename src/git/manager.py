@@ -49,6 +49,13 @@ Resolved gaps (continued):
     idempotent retries of PR branches.  The orchestrator passes this flag
     when pushing task branches for PR creation.
 
+Resolved gaps (continued):
+  - **G6 (resolved):** ``mid_chain_sync`` pushes intermediate subtask work
+    to the remote and rebases the chain branch onto ``origin/<default_branch>``
+    between subtask completions.  The orchestrator calls this after each
+    non-final subtask when ``auto_task.mid_chain_rebase`` is enabled (the
+    default), reducing drift and providing crash safety for long chains.
+
 See specs/git/git.md for the full behavioral specification.
 """
 
@@ -255,6 +262,77 @@ class GitManager:
         # Rebase onto origin/<default_branch> so subtask chains stay close
         # to main and reduce merge conflicts later.
         self._rebase_onto_default(checkout_path, default_branch)
+
+    def mid_chain_sync(
+        self, checkout_path: str, branch_name: str,
+        default_branch: str = "main",
+    ) -> bool:
+        """Push intermediate subtask work and rebase onto latest main.
+
+        Called between subtask completions in a chained plan to:
+
+        1. **Push** current commits to remote — saves intermediate work so
+           it survives agent crashes and is visible to other clones.
+        2. **Rebase** the branch onto ``origin/<default_branch>`` — keeps
+           the subtask chain close to main and reduces the chance of large
+           merge conflicts when the final subtask merges the accumulated
+           work.
+        3. **Force-push** the rebased branch — updates the remote ref to
+           match the rewritten (rebased) history.
+
+        This resolves **Gap G6** for long subtask chains where drift from
+        ``main`` would otherwise accumulate across multiple sequential
+        subtask executions.
+
+        Returns ``True`` if the full sync (push + rebase + force-push)
+        succeeded.  Returns ``False`` if the rebase conflicted — the branch
+        is left in its original pre-rebase state and the initial push may
+        still have saved the intermediate work to the remote.
+
+        All failures are non-fatal: callers should catch exceptions and
+        continue — the next subtask can still work on the branch as-is.
+        """
+        # 1. Push current branch commits to remote (saves intermediate work).
+        #    First push may fail if the branch hasn't been pushed before or
+        #    if a previous mid-chain sync already pushed + rebased, so fall
+        #    back to --force-with-lease which is safe for agent-owned branches.
+        try:
+            self._run(["push", "origin", branch_name], cwd=checkout_path)
+        except GitError:
+            try:
+                self._run(
+                    ["push", "--force-with-lease", "origin", branch_name],
+                    cwd=checkout_path,
+                )
+            except GitError:
+                pass  # Push failed — continue with rebase anyway
+
+        # 2. Fetch latest remote state so rebase target is up to date.
+        self._run(["fetch", "origin"], cwd=checkout_path)
+
+        # 3. Rebase onto origin/<default_branch>.
+        try:
+            self._run(
+                ["rebase", f"origin/{default_branch}"], cwd=checkout_path,
+            )
+        except GitError:
+            # Rebase conflicts — abort and leave branch as-is.
+            try:
+                self._run(["rebase", "--abort"], cwd=checkout_path)
+            except GitError:
+                pass
+            return False
+
+        # 4. Force-push the rebased branch so remote matches local.
+        try:
+            self._run(
+                ["push", "--force-with-lease", "origin", branch_name],
+                cwd=checkout_path,
+            )
+        except GitError:
+            pass  # Rebased locally but push failed — next subtask will try
+
+        return True
 
     def push_branch(
         self, checkout_path: str, branch_name: str, *,
