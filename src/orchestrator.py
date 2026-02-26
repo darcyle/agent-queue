@@ -1060,6 +1060,13 @@ class Orchestrator:
 
         For LINK / INIT repos (no remote), falls back to a simple local merge
         via :meth:`GitManager.merge_branch` — no push or retry is needed.
+
+        **Recovery on failure:** If the merge or push fails, the workspace is
+        reset to a clean state so it's ready for the next task.  For CLONE
+        repos this means hard-resetting the default branch to
+        ``origin/<default_branch>`` (discarding any un-pushed merge commits).
+        For LINK repos this means checking out the default branch.  Recovery
+        is best-effort — failures are silently ignored.
         """
         is_clone = repo.source_type == RepoSourceType.CLONE
 
@@ -1089,6 +1096,20 @@ class Orchestrator:
                         f"Workspace may be diverged. Details: {error}",
                         project_id=task.project_id,
                     )
+                # Recovery: reset workspace to origin state so it's clean
+                # for the next task.  After a failed push the local default
+                # branch may contain un-pushed merge commits; hard-resetting
+                # to origin discards them.
+                try:
+                    self.git._run(
+                        ["checkout", repo.default_branch], cwd=workspace,
+                    )
+                    self.git._run(
+                        ["reset", "--hard", f"origin/{repo.default_branch}"],
+                        cwd=workspace,
+                    )
+                except Exception:
+                    pass  # best-effort recovery
                 return
         else:
             # LINK / INIT repos have no remote — just merge locally.
@@ -1102,6 +1123,16 @@ class Orchestrator:
                     f"`{repo.default_branch}`. Manual resolution needed.",
                     project_id=task.project_id,
                 )
+                # Recovery: ensure we're on the default branch so the
+                # workspace is clean for the next task.  merge_branch()
+                # already aborts the merge, but we make sure we're on the
+                # right branch as a safety net.
+                try:
+                    self.git._run(
+                        ["checkout", repo.default_branch], cwd=workspace,
+                    )
+                except Exception:
+                    pass  # best-effort recovery
                 return
 
         # Clean up the task branch after successful merge

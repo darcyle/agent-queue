@@ -5,11 +5,12 @@ Now that CLONE repos delegate to ``sync_and_merge()``, these tests verify:
 - Merge-conflict and push-failure notifications include the right details.
 - LINK repos still use the simpler ``merge_branch()`` path.
 - Branch cleanup happens only on success.
+- Workspace recovery resets the default branch after failures.
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -173,6 +174,76 @@ class TestMergeAndPushClone:
 
         git.sync_and_merge.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_merge_conflict_resets_workspace(self, orch, git):
+        """After merge conflict, workspace should be reset to origin state."""
+        git.sync_and_merge.return_value = (False, "merge_conflict")
+        task = _make_task()
+        repo = _make_repo()
+
+        await orch._merge_and_push(task, repo, "/workspace")
+
+        # Recovery: checkout default branch + hard reset to origin
+        git._run.assert_any_call(["checkout", "main"], cwd="/workspace")
+        git._run.assert_any_call(
+            ["reset", "--hard", "origin/main"], cwd="/workspace",
+        )
+
+    @pytest.mark.asyncio
+    async def test_push_failed_resets_workspace(self, orch, git):
+        """After push failure, workspace should be reset to origin state."""
+        git.sync_and_merge.return_value = (False, "push_failed: rejected")
+        task = _make_task()
+        repo = _make_repo()
+
+        await orch._merge_and_push(task, repo, "/workspace")
+
+        # Recovery: checkout default branch + hard reset to origin
+        git._run.assert_any_call(["checkout", "main"], cwd="/workspace")
+        git._run.assert_any_call(
+            ["reset", "--hard", "origin/main"], cwd="/workspace",
+        )
+
+    @pytest.mark.asyncio
+    async def test_recovery_uses_repo_default_branch(self, orch, git):
+        """Recovery should use the repo's configured default branch, not 'main'."""
+        git.sync_and_merge.return_value = (False, "push_failed: rejected")
+        task = _make_task()
+        repo = _make_repo(default_branch="develop")
+
+        await orch._merge_and_push(task, repo, "/workspace")
+
+        git._run.assert_any_call(["checkout", "develop"], cwd="/workspace")
+        git._run.assert_any_call(
+            ["reset", "--hard", "origin/develop"], cwd="/workspace",
+        )
+
+    @pytest.mark.asyncio
+    async def test_recovery_failure_silently_ignored(self, orch, git):
+        """Recovery errors should be silently swallowed (best-effort)."""
+        git.sync_and_merge.return_value = (False, "push_failed: rejected")
+        git._run.side_effect = Exception("git checkout failed")
+        task = _make_task()
+        repo = _make_repo()
+
+        # Should not raise despite recovery failure
+        await orch._merge_and_push(task, repo, "/workspace")
+
+        assert len(orch._notifications) == 1
+        assert "Push Failed" in orch._notifications[0]
+
+    @pytest.mark.asyncio
+    async def test_success_does_not_trigger_recovery(self, orch, git):
+        """Successful merge-and-push should NOT invoke recovery."""
+        git.sync_and_merge.return_value = (True, "")
+        task = _make_task()
+        repo = _make_repo()
+
+        await orch._merge_and_push(task, repo, "/workspace")
+
+        # _run should not be called (recovery is only on failure)
+        git._run.assert_not_called()
+
 
 class TestMergeAndPushLink:
     """Tests for LINK repos — uses merge_branch() directly, no push."""
@@ -231,3 +302,47 @@ class TestMergeAndPushLink:
         await orch._merge_and_push(task, repo, "/workspace")
 
         assert not orch._notifications
+
+    @pytest.mark.asyncio
+    async def test_link_repo_conflict_recovery_checks_out_default(self, orch, git):
+        """LINK repo merge conflict recovery should checkout default branch."""
+        git.merge_branch.return_value = False
+        task = _make_task()
+        repo = _make_repo(source_type=RepoSourceType.LINK)
+
+        await orch._merge_and_push(task, repo, "/workspace")
+
+        # Recovery: checkout default branch (no hard reset — LINK has no origin)
+        git._run.assert_any_call(["checkout", "main"], cwd="/workspace")
+        # Should NOT attempt hard reset to origin (LINK repos have no remote)
+        reset_calls = [
+            c for c in git._run.call_args_list
+            if c[0][0][:2] == ["reset", "--hard"]
+        ]
+        assert len(reset_calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_link_repo_conflict_recovery_failure_ignored(self, orch, git):
+        """LINK repo recovery errors should be silently swallowed."""
+        git.merge_branch.return_value = False
+        git._run.side_effect = Exception("checkout failed")
+        task = _make_task()
+        repo = _make_repo(source_type=RepoSourceType.LINK)
+
+        # Should not raise
+        await orch._merge_and_push(task, repo, "/workspace")
+
+        assert len(orch._notifications) == 1
+        assert "Merge Conflict" in orch._notifications[0]
+
+    @pytest.mark.asyncio
+    async def test_link_repo_success_does_not_trigger_recovery(self, orch, git):
+        """Successful LINK merge should NOT invoke recovery."""
+        git.merge_branch.return_value = True
+        task = _make_task()
+        repo = _make_repo(source_type=RepoSourceType.LINK)
+
+        await orch._merge_and_push(task, repo, "/workspace")
+
+        # _run should not be called (no recovery needed on success)
+        git._run.assert_not_called()
