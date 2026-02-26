@@ -2072,6 +2072,112 @@ def setup_commands(bot: commands.Bot) -> None:
             description=f"Task `{task_id}` ({result.get('title', '')}) deleted.",
         )
 
+    @bot.tree.command(
+        name="archive-tasks",
+        description="Archive all completed tasks to clear them from active view",
+    )
+    @app_commands.describe(
+        project_id="Project to archive completed tasks from (optional — omit for all projects)",
+    )
+    async def archive_tasks_command(
+        interaction: discord.Interaction, project_id: str | None = None,
+    ):
+        args: dict = {}
+        if project_id:
+            args["project_id"] = project_id
+        result = await handler.execute("archive_tasks", args)
+        if "error" in result:
+            await _send_error(interaction, result['error'])
+            return
+        if "message" in result:
+            await _send_info(interaction, "Nothing to Archive", description=result["message"])
+            return
+        count = result.get("archived_count", 0)
+        scope = f" from `{project_id}`" if project_id else ""
+        await _send_success(
+            interaction, "Tasks Archived",
+            description=f"Archived **{count}** completed task{'s' if count != 1 else ''}{scope}.",
+        )
+
+    @bot.tree.command(
+        name="archive-task",
+        description="Archive a single completed/failed/blocked task",
+    )
+    @app_commands.describe(task_id="Task ID to archive")
+    async def archive_task_command(interaction: discord.Interaction, task_id: str):
+        result = await handler.execute("archive_task", {"task_id": task_id})
+        if "error" in result:
+            await _send_error(interaction, result['error'])
+            return
+        await _send_success(
+            interaction, "Task Archived",
+            description=(
+                f"Task `{task_id}` ({result.get('title', '')}) archived "
+                f"(was {result.get('status', '?')})."
+            ),
+        )
+
+    @bot.tree.command(
+        name="list-archived",
+        description="View archived tasks",
+    )
+    @app_commands.describe(
+        project_id="Filter by project (optional)",
+        limit="Max tasks to show (default 25)",
+    )
+    async def list_archived_command(
+        interaction: discord.Interaction,
+        project_id: str | None = None,
+        limit: int = 25,
+    ):
+        args: dict = {"limit": limit}
+        if project_id:
+            args["project_id"] = project_id
+        result = await handler.execute("list_archived", args)
+        if "error" in result:
+            await _send_error(interaction, result['error'])
+            return
+        tasks = result.get("tasks", [])
+        total = result.get("total", 0)
+        if not tasks:
+            scope = f" in project `{project_id}`" if project_id else ""
+            await _send_info(
+                interaction, "No Archived Tasks",
+                description=f"No archived tasks found{scope}.",
+            )
+            return
+        lines = []
+        for t in tasks:
+            status = t.get("status", "?")
+            title = t.get("title", "")
+            tid = t.get("id", "?")
+            lines.append(f"• `{tid}` — {title} ({status})")
+        body = "\n".join(lines)
+        showing = f"Showing {len(tasks)} of {total}" if total > len(tasks) else f"{len(tasks)} task{'s' if len(tasks) != 1 else ''}"
+        scope = f" in `{project_id}`" if project_id else ""
+        await _send_info(
+            interaction, f"Archived Tasks{scope}",
+            description=f"{showing}\n\n{body}",
+        )
+
+    @bot.tree.command(
+        name="restore-task",
+        description="Restore an archived task back to active status",
+    )
+    @app_commands.describe(task_id="Archived task ID to restore")
+    async def restore_task_command(interaction: discord.Interaction, task_id: str):
+        result = await handler.execute("restore_task", {"task_id": task_id})
+        if "error" in result:
+            await _send_error(interaction, result['error'])
+            return
+        await _send_success(
+            interaction, "Task Restored",
+            description=(
+                f"Task `{task_id}` ({result.get('title', '')}) restored "
+                f"with status DEFINED."
+            ),
+        )
+
     @bot.tree.command(name="approve-task", description="Approve a task that is awaiting approval")
     @app_commands.describe(task_id="Task ID to approve")
     async def approve_task_command(interaction: discord.Interaction, task_id: str):

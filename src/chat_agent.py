@@ -629,6 +629,80 @@ TOOLS = [
         },
     },
     {
+        "name": "archive_tasks",
+        "description": (
+            "Archive all completed tasks to clear them from active task lists. "
+            "Archived tasks are preserved for reference and can be viewed with "
+            "list_archived or restored with restore_task. Optionally scope to a "
+            "specific project."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to scope archiving to (optional — omit for all projects)",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "archive_task",
+        "description": (
+            "Archive a single task by ID. The task must be in a terminal status "
+            "(COMPLETED, FAILED, or BLOCKED). Archived tasks are removed from "
+            "active views but preserved for reference."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID to archive"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "list_archived",
+        "description": (
+            "List archived tasks. Shows tasks that were previously completed and "
+            "archived. Use this when the user wants to see old/finished tasks "
+            "that have been cleared from the active view."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Filter by project (optional)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max number of tasks to return (default 50)",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "restore_task",
+        "description": (
+            "Restore an archived task back into the active task list. The task "
+            "is restored with DEFINED status so it re-enters the normal "
+            "orchestrator lifecycle."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Archived task ID to restore",
+                },
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
         "name": "approve_task",
         "description": "Manually approve and complete a task that is AWAITING_APPROVAL. Use for tasks on LINK repos that don't have GitHub PRs.",
         "input_schema": {

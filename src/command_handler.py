@@ -1935,6 +1935,138 @@ class CommandHandler:
         await self.db.delete_task(args["task_id"])
         return {"deleted": args["task_id"], "title": task.title}
 
+    # -- Archive commands -----------------------------------------------------
+    # Archive moves completed tasks out of the active view into a separate
+    # ``archived_tasks`` table.  Tasks can be listed, inspected, restored, or
+    # permanently deleted from the archive.
+
+    async def _cmd_archive_tasks(self, args: dict) -> dict:
+        """Archive all completed tasks, optionally scoped to a project.
+
+        Moves every task in COMPLETED status into the ``archived_tasks`` table
+        so they no longer appear in regular task lists.  Returns the count and
+        IDs of the archived tasks.
+
+        Parameters
+        ----------
+        args : dict
+            ``project_id`` – optional project scope.  When omitted, all
+            completed tasks across every project are archived.
+        """
+        project_id = args.get("project_id")
+        archived_ids = await self.db.archive_completed_tasks(project_id=project_id)
+        if not archived_ids:
+            scope = f" in project `{project_id}`" if project_id else ""
+            return {"message": f"No completed tasks to archive{scope}."}
+
+        for tid in archived_ids:
+            proj = project_id or "unknown"
+            await self.db.log_event(
+                "task_archived", project_id=proj, task_id=tid,
+            )
+
+        return {
+            "archived_count": len(archived_ids),
+            "archived_ids": archived_ids,
+            "project_id": project_id,
+        }
+
+    async def _cmd_archive_task(self, args: dict) -> dict:
+        """Archive a single task by ID.
+
+        The task must be in a terminal status (COMPLETED, FAILED, or BLOCKED).
+        Active (non-terminal) tasks cannot be archived — stop or complete them
+        first.
+
+        Parameters
+        ----------
+        args : dict
+            ``task_id`` – the task to archive.
+        """
+        task_id = args.get("task_id")
+        if not task_id:
+            return {"error": "task_id is required"}
+
+        task = await self.db.get_task(task_id)
+        if not task:
+            return {"error": f"Task '{task_id}' not found"}
+
+        terminal = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED}
+        if task.status not in terminal:
+            return {
+                "error": (
+                    f"Cannot archive task in {task.status.value} status. "
+                    "Only COMPLETED, FAILED, or BLOCKED tasks can be archived."
+                ),
+            }
+
+        success = await self.db.archive_task(task_id)
+        if not success:
+            return {"error": f"Failed to archive task '{task_id}'"}
+
+        await self.db.log_event(
+            "task_archived", project_id=task.project_id, task_id=task_id,
+        )
+        return {
+            "archived": task_id,
+            "title": task.title,
+            "status": task.status.value,
+        }
+
+    async def _cmd_list_archived(self, args: dict) -> dict:
+        """List archived tasks, optionally scoped to a project.
+
+        Parameters
+        ----------
+        args : dict
+            ``project_id`` – optional project scope.
+            ``limit`` – max number of results (default 50).
+        """
+        project_id = args.get("project_id")
+        limit = int(args.get("limit", 50))
+        tasks = await self.db.list_archived_tasks(
+            project_id=project_id, limit=limit,
+        )
+        total = await self.db.count_archived_tasks(project_id=project_id)
+        return {
+            "tasks": tasks,
+            "count": len(tasks),
+            "total": total,
+            "project_id": project_id,
+        }
+
+    async def _cmd_restore_task(self, args: dict) -> dict:
+        """Restore an archived task back into the active task list.
+
+        The task is restored with status DEFINED so it enters the normal
+        orchestrator lifecycle (dependency check → READY → scheduling).
+
+        Parameters
+        ----------
+        args : dict
+            ``task_id`` – the archived task to restore.
+        """
+        task_id = args.get("task_id")
+        if not task_id:
+            return {"error": "task_id is required"}
+
+        archived = await self.db.get_archived_task(task_id)
+        if not archived:
+            return {"error": f"Archived task '{task_id}' not found"}
+
+        success = await self.db.restore_archived_task(task_id)
+        if not success:
+            return {"error": f"Failed to restore task '{task_id}'"}
+
+        await self.db.log_event(
+            "task_restored", project_id=archived["project_id"], task_id=task_id,
+        )
+        return {
+            "restored": task_id,
+            "title": archived["title"],
+            "new_status": "DEFINED",
+        }
+
     async def _cmd_provide_input(self, args: dict) -> dict:
         """Provide a human reply to an agent question (WAITING_INPUT → READY).
 
