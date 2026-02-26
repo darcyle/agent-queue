@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import pathlib
 import subprocess
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.config import AutoTaskConfig
 from src.git.manager import GitError, GitManager
-from src.models import RepoConfig, RepoSourceType, Task, TaskStatus
+from src.models import AgentWorkspace, RepoConfig, RepoSourceType, Task, TaskStatus
 
 
 # ---------------------------------------------------------------------------
@@ -584,3 +584,327 @@ class TestMidChainRebaseConfig:
         config = load_config(str(config_path))
         assert config.auto_task.mid_chain_rebase is True
         assert config.auto_task.mid_chain_rebase_push is False
+
+
+# ===========================================================================
+# _prepare_workspace: rebase_between_subtasks wiring
+# ===========================================================================
+
+class _FakePrepareOrchestrator:
+    """Minimal stand-in for testing _prepare_workspace rebase wiring.
+
+    Borrows _prepare_workspace from the real Orchestrator and stubs out
+    the database and notification methods so we can assert on git calls.
+    """
+
+    def __init__(self, git: GitManager, config: _FakeConfig | None = None):
+        self.git = git
+        self.config = config or _FakeConfig()
+        self.db = MagicMock()
+        self._notifications: list[str] = []
+
+    async def _notify_channel(self, message: str, *, project_id: str | None = None):
+        self._notifications.append(message)
+
+    def _get_task_repo_id(self, task):
+        return task.repo_id
+
+    def _compute_workspace_path(self, agent, project_id, repo):
+        return "/workspace"
+
+    from src.orchestrator import Orchestrator as _Orch
+    _prepare_workspace = _Orch._prepare_workspace
+
+
+class TestPrepareWorkspaceRebaseWiring:
+    """Verify _prepare_workspace passes rebase_between_subtasks to switch_to_branch."""
+
+    @pytest.fixture
+    def git(self):
+        git = MagicMock(spec=GitManager)
+        git.validate_checkout.return_value = True
+        return git
+
+    def _setup_db(self, orch, parent_task, repo):
+        """Wire up async DB stubs so _prepare_workspace can resolve workspace/repo."""
+        ws = AgentWorkspace(
+            agent_id="agent-1", project_id="proj-1",
+            workspace_path="/workspace", repo_id=repo.id,
+        )
+        orch.db.get_agent_workspace = AsyncMock(return_value=ws)
+        orch.db.get_repo = AsyncMock(return_value=repo)
+        orch.db.get_task = AsyncMock(return_value=parent_task)
+        orch.db.update_task = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_subtask_switch_passes_rebase_true(self, git):
+        """When rebase_between_subtasks=True, switch_to_branch gets rebase=True."""
+        config = _FakeConfig(rebase_between_subtasks=True)
+        orch = _FakePrepareOrchestrator(git, config)
+
+        parent = _make_task(
+            id="parent-task",
+            branch_name="parent-task/feature-branch",
+        )
+        task = _make_task(
+            id="subtask-2",
+            parent_task_id="parent-task",
+            is_plan_subtask=True,
+        )
+        repo = _make_repo(source_type=RepoSourceType.CLONE)
+        self._setup_db(orch, parent, repo)
+
+        agent = MagicMock(id="agent-1")
+        await orch._prepare_workspace(task, agent)
+
+        git.switch_to_branch.assert_called_once_with(
+            "/workspace",
+            "parent-task/feature-branch",
+            default_branch="main",
+            rebase=True,
+        )
+        git.prepare_for_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_subtask_switch_passes_rebase_false_by_default(self, git):
+        """Default rebase_between_subtasks=False → switch_to_branch gets rebase=False."""
+        config = _FakeConfig(rebase_between_subtasks=False)
+        orch = _FakePrepareOrchestrator(git, config)
+
+        parent = _make_task(
+            id="parent-task",
+            branch_name="parent-task/feature-branch",
+        )
+        task = _make_task(
+            id="subtask-2",
+            parent_task_id="parent-task",
+            is_plan_subtask=True,
+        )
+        repo = _make_repo(source_type=RepoSourceType.CLONE)
+        self._setup_db(orch, parent, repo)
+
+        agent = MagicMock(id="agent-1")
+        await orch._prepare_workspace(task, agent)
+
+        git.switch_to_branch.assert_called_once_with(
+            "/workspace",
+            "parent-task/feature-branch",
+            default_branch="main",
+            rebase=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_subtask_uses_prepare_for_task(self, git):
+        """A non-subtask should call prepare_for_task, not switch_to_branch."""
+        config = _FakeConfig(rebase_between_subtasks=True)
+        orch = _FakePrepareOrchestrator(git, config)
+
+        task = _make_task(
+            id="root-task",
+            is_plan_subtask=False,
+            parent_task_id=None,
+        )
+        repo = _make_repo(source_type=RepoSourceType.CLONE)
+        ws = AgentWorkspace(
+            agent_id="agent-1", project_id="proj-1",
+            workspace_path="/workspace", repo_id=repo.id,
+        )
+        orch.db.get_agent_workspace = AsyncMock(return_value=ws)
+        orch.db.get_repo = AsyncMock(return_value=repo)
+        orch.db.update_task = AsyncMock()
+
+        agent = MagicMock(id="agent-1")
+        await orch._prepare_workspace(task, agent)
+
+        git.prepare_for_task.assert_called_once()
+        git.switch_to_branch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_link_repo_passes_rebase_flag(self, git):
+        """LINK repos also pass the rebase flag through to switch_to_branch."""
+        config = _FakeConfig(rebase_between_subtasks=True)
+        orch = _FakePrepareOrchestrator(git, config)
+
+        parent = _make_task(
+            id="parent-task",
+            branch_name="parent-task/feature-branch",
+        )
+        task = _make_task(
+            id="subtask-2",
+            parent_task_id="parent-task",
+            is_plan_subtask=True,
+        )
+        repo = _make_repo(source_type=RepoSourceType.LINK)
+        ws = AgentWorkspace(
+            agent_id="agent-1", project_id="proj-1",
+            workspace_path="/workspace", repo_id=repo.id,
+        )
+        orch.db.get_agent_workspace = AsyncMock(return_value=ws)
+        orch.db.get_repo = AsyncMock(return_value=repo)
+        orch.db.get_task = AsyncMock(return_value=parent)
+        orch.db.update_task = AsyncMock()
+        # LINK repos check os.path.isdir
+        with patch("os.path.isdir", return_value=True):
+            agent = MagicMock(id="agent-1")
+            await orch._prepare_workspace(task, agent)
+
+        git.switch_to_branch.assert_called_once_with(
+            "/workspace",
+            "parent-task/feature-branch",
+            default_branch="main",
+            rebase=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_custom_default_branch_passed_through(self, git):
+        """Repo's default_branch (not hardcoded 'main') is forwarded."""
+        config = _FakeConfig(rebase_between_subtasks=True)
+        orch = _FakePrepareOrchestrator(git, config)
+
+        parent = _make_task(
+            id="parent-task",
+            branch_name="parent-task/feature-branch",
+        )
+        task = _make_task(
+            id="subtask-2",
+            parent_task_id="parent-task",
+            is_plan_subtask=True,
+        )
+        repo = _make_repo(default_branch="develop")
+        self._setup_db(orch, parent, repo)
+
+        agent = MagicMock(id="agent-1")
+        await orch._prepare_workspace(task, agent)
+
+        git.switch_to_branch.assert_called_once_with(
+            "/workspace",
+            "parent-task/feature-branch",
+            default_branch="develop",
+            rebase=True,
+        )
+
+
+# ===========================================================================
+# Integration: subtask chain with switch_to_branch rebase
+# ===========================================================================
+
+class TestSubtaskChainWithSwitchRebase:
+    """Integration tests: subtask chain using switch_to_branch(rebase=True)
+    between steps to keep up with origin/main.
+
+    Complements TestMidChainRebaseMultiAgent which tests mid_chain_rebase()
+    (post-completion rebase). This class tests rebase-on-switch (pre-start
+    rebase via switch_to_branch), which is the rebase_between_subtasks path.
+    """
+
+    def test_three_step_chain_with_rebase(self, two_agent_clones):
+        """Subtask chain with rebase=True picks up upstream changes each step."""
+        mgr = GitManager()
+        agent1 = two_agent_clones["agent1"]
+        agent2 = two_agent_clones["agent2"]
+        branch = "task/chain-rebase"
+
+        # Step 1: first subtask creates and works on the branch
+        mgr.switch_to_branch(agent1, branch, rebase=False)
+        _git_commit(agent1, "step1.py", "# step 1", "subtask 1 work")
+
+        # Concurrent work pushed to main by another agent
+        _git(["checkout", "main"], cwd=agent2)
+        _git_commit(agent2, "concurrent1.py", "# c1", "concurrent work 1")
+        _git(["push", "origin", "main"], cwd=agent2)
+
+        # Step 2: switch_to_branch with rebase=True (simulates _prepare_workspace)
+        mgr.switch_to_branch(agent1, branch, rebase=True)
+        log = _git(["log", "--oneline"], cwd=agent1)
+        assert "concurrent work 1" in log  # upstream picked up
+        assert "subtask 1 work" in log
+
+        _git_commit(agent1, "step2.py", "# step 2", "subtask 2 work")
+
+        # More concurrent work
+        _git(["checkout", "main"], cwd=agent2)
+        _git_commit(agent2, "concurrent2.py", "# c2", "concurrent work 2")
+        _git(["push", "origin", "main"], cwd=agent2)
+
+        # Step 3: another switch with rebase
+        mgr.switch_to_branch(agent1, branch, rebase=True)
+        log = _git(["log", "--oneline"], cwd=agent1)
+        assert "concurrent work 2" in log
+        assert "subtask 2 work" in log
+        assert "subtask 1 work" in log
+
+        _git_commit(agent1, "step3.py", "# step 3", "subtask 3 work")
+
+        # Final log should have all commits in a clean linear history
+        log = _git(["log", "--oneline"], cwd=agent1)
+        for expected in ("subtask 1 work", "subtask 2 work", "subtask 3 work",
+                         "concurrent work 1", "concurrent work 2"):
+            assert expected in log
+
+    def test_three_step_chain_without_rebase(self, two_agent_clones):
+        """Subtask chain without rebase does NOT pick up upstream changes."""
+        mgr = GitManager()
+        agent1 = two_agent_clones["agent1"]
+        agent2 = two_agent_clones["agent2"]
+        branch = "task/chain-no-rebase"
+
+        # Step 1: first subtask creates and works on the branch
+        mgr.switch_to_branch(agent1, branch, rebase=False)
+        _git_commit(agent1, "step1.py", "# step 1", "subtask 1 work")
+
+        # Concurrent work pushed to main
+        _git(["checkout", "main"], cwd=agent2)
+        _git_commit(agent2, "concurrent1.py", "# c1", "concurrent work 1")
+        _git(["push", "origin", "main"], cwd=agent2)
+
+        # Step 2: switch without rebase (default)
+        mgr.switch_to_branch(agent1, branch, rebase=False)
+        log = _git(["log", "--oneline"], cwd=agent1)
+        assert "concurrent work 1" not in log  # upstream NOT picked up
+        assert "subtask 1 work" in log
+
+        _git_commit(agent1, "step2.py", "# step 2", "subtask 2 work")
+
+        # More concurrent work
+        _git(["checkout", "main"], cwd=agent2)
+        _git_commit(agent2, "concurrent2.py", "# c2", "concurrent work 2")
+        _git(["push", "origin", "main"], cwd=agent2)
+
+        # Step 3: switch without rebase
+        mgr.switch_to_branch(agent1, branch, rebase=False)
+        log = _git(["log", "--oneline"], cwd=agent1)
+        assert "concurrent work 2" not in log
+        assert "concurrent work 1" not in log
+        # Only subtask commits present
+        assert "subtask 1 work" in log
+        assert "subtask 2 work" in log
+
+    def test_rebase_conflict_in_chain_continues_safely(self, two_agent_clones):
+        """If rebase conflicts mid-chain, the branch remains usable."""
+        mgr = GitManager()
+        agent1 = two_agent_clones["agent1"]
+        agent2 = two_agent_clones["agent2"]
+        branch = "task/chain-conflict"
+
+        # Step 1: work on a shared file
+        mgr.switch_to_branch(agent1, branch, rebase=False)
+        _git_commit(agent1, "README.md", "agent1 version", "subtask 1 edits README")
+        sha_after_step1 = _head_sha(agent1)
+
+        # Concurrent conflicting change to same file
+        _git(["checkout", "main"], cwd=agent2)
+        _git_commit(agent2, "README.md", "agent2 version", "conflict on README")
+        _git(["push", "origin", "main"], cwd=agent2)
+
+        # Step 2: switch with rebase — conflict should be handled gracefully
+        mgr.switch_to_branch(agent1, branch, rebase=True)
+
+        assert _current_branch(agent1) == branch
+        # Branch should still be functional (rebase aborted, HEAD unchanged)
+        assert _head_sha(agent1) == sha_after_step1
+
+        # Agent can still do work on the branch
+        _git_commit(agent1, "step2.py", "# step 2", "subtask 2 work")
+        log = _git(["log", "--oneline"], cwd=agent1)
+        assert "subtask 2 work" in log
+        assert "subtask 1 edits README" in log
