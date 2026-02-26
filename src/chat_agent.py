@@ -371,7 +371,12 @@ TOOLS = [
     },
     {
         "name": "create_agent",
-        "description": "Register a new agent. Agents start in STARTING state and won't receive tasks until activated. Pass project_id and workspace_path to set the workspace and activate in one step, or call set_agent_workspace or activate_agent separately.",
+        "description": (
+            "Register a new agent. Agents start in STARTING state and won't "
+            "receive tasks until activated. Pass project_id and workspace_path "
+            "to set the workspace and activate in one step, or call "
+            "set_agent_workspace or activate_agent separately."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -383,7 +388,9 @@ TOOLS = [
                 },
                 "project_id": {
                     "type": "string",
-                    "description": "Project to set workspace for (activates agent immediately)",
+                    "description": (
+                        "Project to set workspace for (activates agent immediately)"
+                    ),
                 },
                 "workspace_path": {
                     "type": "string",
@@ -395,7 +402,10 @@ TOOLS = [
     },
     {
         "name": "set_agent_workspace",
-        "description": "Set the workspace directory for an agent in a specific project. Also activates the agent if it is in STARTING state.",
+        "description": (
+            "Set the workspace directory for an agent in a specific project. "
+            "Also activates the agent if it is in STARTING state."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -415,7 +425,11 @@ TOOLS = [
     },
     {
         "name": "activate_agent",
-        "description": "Activate an agent (transition from STARTING to IDLE) so it can receive tasks. Use this after creating an agent if you didn't provide workspace_path during creation.",
+        "description": (
+            "Activate an agent (transition from STARTING to IDLE) so it can "
+            "receive tasks. Use this after creating an agent if you didn't "
+            "provide workspace_path during creation."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -426,7 +440,10 @@ TOOLS = [
     },
     {
         "name": "pause_agent",
-        "description": "Pause an agent so it stops receiving new tasks. If the agent is currently BUSY, it will finish its current task then stay paused.",
+        "description": (
+            "Pause an agent so it stops receiving new tasks. If the agent is "
+            "currently BUSY, it will finish its current task then stay paused."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {

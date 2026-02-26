@@ -864,8 +864,16 @@ def setup_commands(bot: commands.Bot) -> None:
         fields: list[tuple[str, str, bool]] | None = None,
         followup: bool = False,
         ephemeral: bool = False,
+        result: dict | None = None,
     ):
-        """Send a success response as a rich green embed."""
+        """Send a success response as a rich green embed.
+
+        If *result* contains a ``"warning"`` key the warning text is appended
+        to the embed *description* so it remains visible.
+        """
+        if result and result.get("warning"):
+            warning_text = f"⚠️ {result['warning']}"
+            description = f"{description}\n\n{warning_text}" if description else warning_text
         embed = success_embed(title, description=description, fields=fields)
         if followup:
             await interaction.followup.send(embed=embed, ephemeral=ephemeral)
@@ -905,7 +913,11 @@ def setup_commands(bot: commands.Bot) -> None:
             await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
 
     def _with_warning(msg: str, result: dict) -> str:
-        """Append an in-progress task warning to *msg* if present in *result*."""
+        """Append an in-progress task warning to *msg* if present in *result*.
+
+        .. deprecated::
+            Prefer passing ``result=result`` to ``_send_success()`` instead.
+        """
         warning = result.get("warning")
         if warning:
             return f"{msg}\n\n⚠️ {warning}"
@@ -1677,7 +1689,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ):
         view_mode = view.value if view else "list"
         project_id = await _resolve_project_from_context(interaction, None)
-        args: dict = {}
+        args: dict = {"include_completed": show_completed}
         if project_id:
             args["project_id"] = project_id
         # Delegate active/completed filtering to CommandHandler
@@ -1763,7 +1775,16 @@ def setup_commands(bot: commands.Bot) -> None:
         for t in tasks:
             tasks_by_status.setdefault(t["status"], []).append(t)
         total = result.get("total", len(tasks))
-        view_widget = TaskReportView(tasks_by_status, total, all_tasks=tasks)
+        # Fetch all tasks (including completed) for the full-view report widget
+        if not show_completed:
+            all_result = await handler.execute(
+                "list_tasks",
+                {**args, "include_completed": True},
+            )
+            all_tasks = all_result.get("tasks", [])
+        else:
+            all_tasks = tasks
+        view_widget = TaskReportView(tasks_by_status, total, all_tasks=all_tasks)
         content = view_widget.build_content()
         await interaction.response.send_message(content, view=view_widget)
 
@@ -2518,10 +2539,9 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         await _send_success(
             interaction, "Branch Switched",
-            description=_with_warning(
-                f"Switched to branch `{result['branch']}` on `{project_id}`", result,
-            ),
+            description=f"Switched to branch `{result['branch']}` on `{project_id}`",
             followup=True,
+            result=result,
         )
 
     @bot.tree.command(
@@ -2554,10 +2574,9 @@ def setup_commands(bot: commands.Bot) -> None:
             repo_label = result.get("repo_id", "?")
             await _send_success(
                 interaction, "Changes Committed",
-                description=_with_warning(
-                    f"Committed in `{repo_label}` on `{project_id}`: {message}", result,
-                ),
+                description=f"Committed in `{repo_label}` on `{project_id}`: {message}",
                 followup=True,
+                result=result,
             )
         else:
             await _send_info(
@@ -2631,19 +2650,18 @@ def setup_commands(bot: commands.Bot) -> None:
         if result.get("status") == "conflict":
             await _send_warning(
                 interaction, "Merge Conflict",
-                description=_with_warning(
-                    f"`{branch_name}` could not be merged into `{target}` on `{project_id}`. Merge was aborted.",
-                    result,
+                description=(
+                    f"`{branch_name}` could not be merged into `{target}` "
+                    f"on `{project_id}`. Merge was aborted."
                 ),
                 followup=True,
             )
         else:
             await _send_success(
                 interaction, "Branch Merged",
-                description=_with_warning(
-                    f"Merged `{branch_name}` into `{target}` on `{project_id}`", result,
-                ),
+                description=f"Merged `{branch_name}` into `{target}` on `{project_id}`",
                 followup=True,
+                result=result,
             )
 
     @bot.tree.command(
@@ -2735,9 +2753,8 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         await _send_success(
             interaction, "Branch Switched",
-            description=_with_warning(
-                f"Switched to branch `{branch_name}` in `{result.get('repo_id', project_id)}`", result,
-            ),
+            description=f"Switched to branch `{branch_name}` in `{result.get('repo_id', project_id)}`",
+            result=result,
         )
 
     @bot.tree.command(
@@ -2773,9 +2790,8 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         await _send_success(
             interaction, "Changes Committed",
-            description=_with_warning(
-                f"Committed in `{result.get('repo_id', project_id)}`: {message}", result,
-            ),
+            description=f"Committed in `{result.get('repo_id', project_id)}`: {message}",
+            result=result,
         )
 
     @bot.tree.command(
@@ -2839,18 +2855,16 @@ def setup_commands(bot: commands.Bot) -> None:
         if result.get("status") == "conflict":
             await _send_warning(
                 interaction, "Merge Conflict",
-                description=_with_warning(
-                    f"Merge conflict when merging `{branch_name}` → `{result.get('target', 'main')}`. Merge was aborted.",
-                    result,
+                description=(
+                    f"Merge conflict: `{branch_name}` → `{result.get('target', 'main')}` "
+                    f"in `{result.get('repo_id', project_id)}`. Merge was aborted."
                 ),
             )
             return
         await _send_success(
             interaction, "Branch Merged",
-            description=_with_warning(
-                f"Merged `{branch_name}` → `{result.get('target', 'main')}` in `{result.get('repo_id', project_id)}`",
-                result,
-            ),
+            description=f"Merged `{branch_name}` → `{result.get('target', 'main')}` in `{result.get('repo_id', project_id)}`",
+            result=result,
         )
 
     @bot.tree.command(

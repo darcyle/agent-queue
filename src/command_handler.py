@@ -642,6 +642,16 @@ class CommandHandler:
     # diagnostics for dependency graphs.
     # -----------------------------------------------------------------------
 
+    # Statuses considered "finished" for the include_completed / completed_only
+    # filters.  BLOCKED is included because blocked tasks are not actionable
+    # until their dependencies are resolved — callers interested in the active
+    # work queue typically want these hidden.
+    _FINISHED_STATUSES: frozenset[TaskStatus] = frozenset({
+        TaskStatus.COMPLETED,
+        TaskStatus.FAILED,
+        TaskStatus.BLOCKED,
+    })
+
     async def _resolve_root_task_id(self, task_id: str) -> str:
         """Walk up the parent chain to find the topmost ancestor task ID.
 
@@ -666,27 +676,31 @@ class CommandHandler:
         if "project_id" in args:
             kwargs["project_id"] = args["project_id"]
 
-        # When a specific status filter is provided it takes precedence over
-        # the include_completed / completed_only convenience flags.
-        has_status_filter = "status" in args
-        if has_status_filter:
+        # An explicit `status` filter takes precedence over the convenience
+        # boolean flags — the caller is asking for a specific status.
+        explicit_status = "status" in args
+        if explicit_status:
             kwargs["status"] = TaskStatus(args["status"])
 
         tasks = await self.db.list_tasks(**kwargs)
 
-        # Apply active/completed filtering only when no explicit status filter
-        # was given.  The three terminal statuses are COMPLETED, FAILED, and
-        # BLOCKED — these are excluded by default so callers see only the
-        # "active" queue.
-        if not has_status_filter:
-            _terminal = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED}
-            include_completed = args.get("include_completed", False)
-            completed_only = args.get("completed_only", False)
+        # Apply include_completed / completed_only filtering only when no
+        # explicit status filter was provided.
+        include_completed: bool = args.get("include_completed", False)
+        hidden_count = 0
+        if not explicit_status:
+            completed_only: bool = args.get("completed_only", False)
+            all_count = len(tasks)
 
             if completed_only:
-                tasks = [t for t in tasks if t.status in _terminal]
+                # Show only finished tasks.
+                tasks = [t for t in tasks if t.status in self._FINISHED_STATUSES]
+                hidden_count = all_count - len(tasks)
             elif not include_completed:
-                tasks = [t for t in tasks if t.status not in _terminal]
+                # Default: hide finished tasks so the list shows active work.
+                tasks = [t for t in tasks if t.status not in self._FINISHED_STATUSES]
+                hidden_count = all_count - len(tasks)
+            # else: include_completed=True — return everything unfiltered.
 
         # Build the base task list (shared across all display modes).
         task_list = [
@@ -748,6 +762,8 @@ class CommandHandler:
             "total": len(tasks),
             "display_mode": display_mode,
             "display": "\n\n".join(trees),
+            "hidden_completed": hidden_count,
+            "filtered": not include_completed and "status" not in args,
         }
 
     async def _cmd_list_active_tasks_all_projects(self, args: dict) -> dict:
@@ -1050,6 +1066,40 @@ class CommandHandler:
             "title": task.title,
         }
 
+    async def _cmd_provide_input(self, args: dict) -> dict:
+        """Store a user's reply to an agent question for the next execution cycle.
+
+        The response is logged as an ``agent_input`` event and appended to the
+        task's context so the agent receives it when the task is next executed.
+        """
+        task_id = args["task_id"]
+        user_input = args.get("input", "")
+        if not user_input:
+            return {"error": "Input cannot be empty"}
+
+        task = await self.db.get_task(task_id)
+        if not task:
+            return {"error": f"Task '{task_id}' not found"}
+
+        # Append the user reply to the task context so the agent sees it
+        # on the next execution cycle.
+        existing_context = task.context or ""
+        separator = "\n\n" if existing_context else ""
+        updated_context = (
+            f"{existing_context}{separator}"
+            f"--- User reply (to agent question) ---\n{user_input}"
+        )
+        await self.db.update_task(task_id, context=updated_context)
+
+        # Log the event for audit trail
+        await self.db.log_event(
+            "agent_input",
+            project_id=task.project_id,
+            task_id=task_id,
+            payload=user_input[:500],
+        )
+        return {"provided_input": task_id, "title": task.title}
+
     async def _cmd_skip_task(self, args: dict) -> dict:
         """Skip a BLOCKED/FAILED task to unblock its dependency chain."""
         error, unblocked = await self.orchestrator.skip_task(args["task_id"])
@@ -1248,7 +1298,7 @@ class CommandHandler:
     async def _cmd_set_agent_workspace(self, args: dict) -> dict:
         """Set the workspace path for an agent in a specific project.
 
-        Also activates the agent (STARTING → IDLE) so it can receive tasks.
+        Also activates the agent (STARTING -> IDLE) so it can receive tasks.
         This prevents the race condition where the scheduler assigns a task
         before the workspace is configured.
         """
@@ -1273,15 +1323,17 @@ class CommandHandler:
         )
 
         # Activate agent if it was waiting for workspace configuration
+        activated = False
         if agent.state == AgentState.STARTING:
             await self.db.update_agent(agent_id, state=AgentState.IDLE)
+            activated = True
 
         result = {
             "agent_id": agent_id,
             "project_id": project_id,
             "workspace_path": workspace_path,
         }
-        if agent.state == AgentState.STARTING:
+        if activated:
             result["activated"] = True
         if repo_id:
             result["repo_id"] = repo_id

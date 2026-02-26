@@ -305,6 +305,118 @@ class Orchestrator:
             except Exception as e:
                 print(f"Notification error: {e}")
 
+    async def _notify_agent_question(
+        self,
+        task: Task,
+        agent: Any,
+        question: str,
+        project_id: str | None = None,
+    ) -> None:
+        """Send an agent-question notification with both text and embed.
+
+        Called when the orchestrator detects that an agent is asking the user
+        a question (e.g. via the ``AskUserQuestion`` tool).  Sends the
+        notification to the project channel using both the plain-text
+        formatter (for logging) and the rich embed formatter (for Discord).
+        """
+        from src.models import Agent
+        # Ensure we have proper model objects (may receive raw DB rows)
+        if not isinstance(agent, Agent):
+            agent = await self.db.get_agent(getattr(agent, "id", agent))
+        msg = format_agent_question(task, agent, question)
+        embed = format_agent_question_embed(task, agent, question)
+        handler_ref = self._get_handler()
+        view = AgentQuestionView(task.id, handler=handler_ref)
+        await self._notify_channel(
+            msg,
+            project_id=project_id or task.project_id,
+            embed=embed,
+            view=view,
+        )
+        await self.db.log_event(
+            "agent_question",
+            project_id=task.project_id,
+            task_id=task.id,
+            agent_id=agent.id,
+            payload=question[:500],
+        )
+
+    # Budget warning thresholds — notifications are sent when project usage
+    # crosses each percentage level (ascending).  Only the highest crossed
+    # threshold triggers a notification; lower thresholds that were already
+    # notified are not re-sent.
+    _BUDGET_WARNING_THRESHOLDS: list[int] = [75, 90, 95]
+
+    async def _check_budget_warning(
+        self,
+        project_id: str,
+        tokens_just_used: int,
+    ) -> None:
+        """Check whether a project's token usage has crossed a warning threshold.
+
+        Called after recording token usage for a task.  Queries the project's
+        ``budget_limit`` and current rolling-window usage, then sends a
+        ``format_budget_warning_embed`` notification if the usage percentage
+        has crossed one of the defined thresholds since the last notification.
+
+        Rate-limited: each threshold level is notified at most once per
+        project until the budget resets (e.g. new rolling window).
+        """
+        project = await self.db.get_project(project_id)
+        if not project or not project.budget_limit:
+            return  # No budget configured — nothing to warn about
+
+        limit = project.budget_limit
+
+        # Get current usage in the rolling window
+        window_start = time.time() - (
+            self.config.scheduling.rolling_window_hours * 3600
+        )
+        usage = await self.db.get_project_token_usage(
+            project_id, since=window_start,
+        )
+
+        pct = (usage / limit * 100) if limit > 0 else 0
+        if pct < self._BUDGET_WARNING_THRESHOLDS[0]:
+            # Usage below the lowest threshold — clear any previous warnings
+            # so they can fire again in the next budget window.
+            self._budget_warned_at.pop(project_id, None)
+            return
+
+        # Find the highest threshold that has been crossed
+        crossed = 0
+        for threshold in self._BUDGET_WARNING_THRESHOLDS:
+            if pct >= threshold:
+                crossed = threshold
+
+        if crossed == 0:
+            return
+
+        # Only notify if we haven't already notified for this threshold level
+        last_warned = self._budget_warned_at.get(project_id, 0)
+        if last_warned >= crossed:
+            return  # Already warned at this level or higher
+
+        self._budget_warned_at[project_id] = crossed
+
+        project_name = project.name or project_id
+        msg = format_budget_warning(project_name, usage, limit)
+        embed = format_budget_warning_embed(project_name, usage, limit)
+        await self._notify_channel(
+            msg,
+            project_id=project_id,
+            embed=embed,
+        )
+        await self.db.log_event(
+            "budget_warning",
+            project_id=project_id,
+            payload=f"usage={usage:,}/{limit:,} ({pct:.0f}%), threshold={crossed}%",
+        )
+        print(
+            f"Budget warning: project {project_id} at {pct:.0f}% "
+            f"({usage:,}/{limit:,} tokens, threshold={crossed}%)"
+        )
+
     async def initialize(self) -> None:
         await self.db.initialize()
         await self._recover_stale_state()
@@ -1526,13 +1638,37 @@ class Orchestrator:
         )
         await adapter.start(ctx)
 
-        # Stream agent messages to the task thread (or fall back to notifications)
+        # Stream agent messages to the task thread (or fall back to notifications).
+        # Also detect agent questions (AskUserQuestion tool usage) and send a
+        # rich notification so humans are promptly alerted in Discord.
+        _question_notified = False  # avoid duplicate question notifications per task
+
         async def forward_agent_message(text: str) -> None:
+            nonlocal _question_notified
             if thread_send:
                 await thread_send(text)
             else:
                 header = f"`{task.id}` | **{agent.name}**\n"
                 await self._notify_channel(header + text, project_id=action.project_id)
+
+            # Detect agent questions — the Claude adapter formats
+            # AskUserQuestion tool use as "**[AskUserQuestion...]**".
+            # When detected, send a dedicated rich notification.
+            if not _question_notified and "**[AskUserQuestion" in text:
+                _question_notified = True
+                # Extract the question text from the message.  The
+                # full question details follow the tool-use marker in
+                # subsequent lines; use the entire text as context.
+                question_text = text.replace("**[AskUserQuestion]**", "").strip()
+                if not question_text:
+                    question_text = "(Agent is requesting user input — check the task thread for details.)"
+                try:
+                    await self._notify_agent_question(
+                        task, agent, question_text,
+                        project_id=action.project_id,
+                    )
+                except Exception as e:
+                    print(f"Agent question notification failed: {e}")
 
         # ------------------------------------------------------------------ #
         # Exponential-backoff retry loop for Claude API rate limits.
@@ -1598,7 +1734,13 @@ class Orchestrator:
                 action.project_id, action.agent_id,
                 action.task_id, output.tokens_used,
             )
-            await self._check_budget_warning(action.project_id, output.tokens_used)
+            # Check if the project's budget usage has crossed a warning threshold
+            try:
+                await self._check_budget_warning(
+                    action.project_id, output.tokens_used,
+                )
+            except Exception as e:
+                print(f"Budget warning check failed: {e}")
 
         # Persist task result
         try:
@@ -1858,7 +2000,8 @@ class Orchestrator:
 
         # Free agent — respect PAUSED state if set while the agent was BUSY
         post_agent = await self.db.get_agent(action.agent_id)
-        next_state = (AgentState.PAUSED if post_agent and post_agent.state == AgentState.PAUSED
+        next_state = (AgentState.PAUSED
+                      if post_agent and post_agent.state == AgentState.PAUSED
                       else AgentState.IDLE)
         await self.db.update_agent(action.agent_id,
                                    state=next_state,

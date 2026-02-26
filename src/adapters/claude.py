@@ -379,6 +379,13 @@ class ClaudeAdapter(AgentAdapter):
     async def is_alive(self) -> bool:
         return self._task is not None and not self._cancel_event.is_set()
 
+    def _shorten_path(self, path: str) -> str:
+        """Strip the task's checkout_path prefix to produce a relative path."""
+        root = getattr(self._task, "checkout_path", "") if self._task else ""
+        if root and path.startswith(root):
+            return path[len(root):].lstrip("/")
+        return path
+
     def _extract_message_text(self, message) -> str | None:
         """Translate SDK message objects into Discord-friendly markdown text.
 
@@ -405,7 +412,7 @@ class ClaudeAdapter(AgentAdapter):
                         preview = thinking[:500]
                         if len(thinking) > 500:
                             preview += "..."
-                        parts.append(f"*thinking:* {preview}")
+                        parts.append(f"-# *thinking: {preview}*")
                 elif isinstance(block, _TextBlock):
                     text = getattr(block, "text", "")
                     if text:
@@ -416,11 +423,14 @@ class ClaudeAdapter(AgentAdapter):
                     detail = ""
                     if name == "Bash" and isinstance(inp, dict):
                         cmd = inp.get("command", "")[:100]
-                        detail = f": `{cmd}`" if cmd else ""
+                        cmd = self._shorten_path(cmd)
+                        detail = f" · {cmd}" if cmd else ""
                     elif name in ("Read", "Write", "Edit", "Glob", "Grep") and isinstance(inp, dict):
                         path = inp.get("file_path", inp.get("path", inp.get("pattern", "")))
-                        detail = f": `{path}`" if path else ""
-                    parts.append(f"**[{name}{detail}]**")
+                        if path:
+                            path = self._shorten_path(path)
+                        detail = f" · {path}" if path else ""
+                    parts.append(f"-# {name}{detail}")
                 elif isinstance(block, _ToolResultBlock):
                     content_val = getattr(block, "content", None)
                     is_error = getattr(block, "is_error", False)
