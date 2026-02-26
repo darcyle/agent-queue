@@ -1063,42 +1063,53 @@ class Orchestrator:
     async def _merge_and_push(self, task: Task, repo: RepoConfig, workspace: str) -> None:
         """Merge the task branch into default and push (clone repos only).
 
-        ``merge_branch`` now pulls the latest remote state before merging
-        (resolves **G1**).  On push failure, local main is reset to
-        ``origin/<default_branch>`` to avoid a diverged workspace (resolves
-        **G2**).
+        Uses :meth:`GitManager.sync_and_merge` which encapsulates the full
+        fetch → checkout → reset → merge → push flow with automatic retry
+        on push failures.  The structured ``(success, error_msg)`` return
+        value drives targeted notifications:
 
-        Remaining gap:
-          - **G3:** On merge conflict, aborts and notifies without attempting
-            automated rebase-and-retry.
+        - ``merge_conflict``: notify with conflict details and suggest
+          manual resolution.
+        - ``push_failed``: notify that push failed after retries and the
+          workspace may be diverged.
+        - success: clean up the task branch as before.
         """
-        merged = self.git.merge_branch(workspace, task.branch_name, repo.default_branch)
-        if not merged:
-            # G3: Notifies but does not attempt rebase-and-retry.
-            await self._notify_channel(
-                f"**Merge Conflict:** Task `{task.id}` branch `{task.branch_name}` "
-                f"has conflicts with `{repo.default_branch}`. Manual resolution needed.",
-                project_id=task.project_id,
-            )
+        from src.discord.notifications import (
+            format_merge_conflict,
+            format_merge_conflict_embed,
+            format_push_failed,
+            format_push_failed_embed,
+        )
+
+        success, error_msg = self.git.sync_and_merge(
+            workspace, task.branch_name, repo.default_branch,
+        )
+
+        if not success:
+            if error_msg == "merge_conflict":
+                msg = format_merge_conflict(
+                    task, task.branch_name, repo.default_branch,
+                )
+                embed = format_merge_conflict_embed(
+                    task, task.branch_name, repo.default_branch,
+                )
+                await self._notify_channel(
+                    msg, project_id=task.project_id, embed=embed,
+                )
+            else:
+                # push_failed or push_failed_exhausted
+                msg = format_push_failed(
+                    task, repo.default_branch, error_msg,
+                )
+                embed = format_push_failed_embed(
+                    task, repo.default_branch, error_msg,
+                )
+                await self._notify_channel(
+                    msg, project_id=task.project_id, embed=embed,
+                )
             return
 
-        if repo.source_type == RepoSourceType.CLONE:
-            try:
-                self.git.push_branch(workspace, repo.default_branch)
-            except Exception as e:
-                # Push failed — reset local main to match remote so the
-                # workspace is not left with an un-pushed merge commit that
-                # would cause future operations to diverge (fixes G2).
-                try:
-                    self.git.pull_latest_main(workspace, repo.default_branch)
-                except Exception:
-                    pass  # best-effort reset; workspace may need manual fix
-                await self._notify_channel(
-                    f"**Push Failed:** Could not push `{repo.default_branch}` for task `{task.id}`: {e}",
-                    project_id=task.project_id,
-                )
-
-        # Clean up the task branch after successful merge
+        # Clean up the task branch after successful merge + push
         try:
             self.git.delete_branch(
                 workspace, task.branch_name,
