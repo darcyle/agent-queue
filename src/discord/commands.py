@@ -2104,6 +2104,53 @@ def setup_commands(bot: commands.Bot) -> None:
         await _send_success(interaction, "Task Skipped", description=desc)
 
     @bot.tree.command(
+        name="archive-tasks",
+        description="Archive completed tasks to workspace as markdown reference notes",
+    )
+    @app_commands.describe(
+        project_id="(Optional) Project ID — defaults to current channel's project",
+        include_failed="Also archive FAILED and BLOCKED tasks (default: false)",
+    )
+    async def archive_tasks_command(
+        interaction: discord.Interaction,
+        project_id: str | None = None,
+        include_failed: bool = False,
+    ):
+        resolved = await _resolve_project_from_context(interaction, project_id)
+        if not resolved:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        await interaction.response.defer()
+        result = await handler.execute("archive_completed_tasks", {
+            "project_id": resolved,
+            "include_failed": include_failed,
+        })
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        count = result.get("archived_count", 0)
+        if count == 0:
+            await _send_success(
+                interaction, "No Tasks to Archive",
+                description="No completed tasks found to archive.",
+                followup=True,
+            )
+            return
+        archive_dir = result.get("archive_dir", "")
+        task_lines = "\n".join(
+            f"• `{t['id']}` — {t['title']} ({t['status']})"
+            for t in result.get("archived", [])[:20]
+        )
+        if count > 20:
+            task_lines += f"\n… and {count - 20} more"
+        desc = (
+            f"**{count}** task(s) archived to:\n`{archive_dir}`\n\n{task_lines}"
+        )
+        await _send_success(
+            interaction, "Tasks Archived", description=desc, followup=True,
+        )
+
+    @bot.tree.command(
         name="chain-health",
         description="Check dependency chain health for stuck tasks",
     )
