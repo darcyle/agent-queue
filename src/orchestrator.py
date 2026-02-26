@@ -1052,51 +1052,54 @@ class Orchestrator:
     ) -> None:
         """Merge the task branch into default and push (clone repos only).
 
-        ``merge_branch`` now fetches and hard-resets the default branch to
-        ``origin/<default_branch>`` before merging, so each attempt works
-        against the latest remote state.
+        For CLONE repos, delegates to :meth:`GitManager.sync_and_merge` which
+        handles the full fetch → hard-reset → merge → push-with-retry cycle.
+        The *_max_retries* parameter controls total push attempts (including
+        the initial one); internally this maps to
+        ``max_retries = _max_retries - 1``.
 
-        For CLONE repos, if the push is rejected (e.g. another agent pushed
-        between our fetch and push), we retry the full merge-then-push cycle
-        up to *_max_retries* times.  On each retry, ``merge_branch`` will
-        re-fetch and re-reset, incorporating whatever was pushed in the
-        meantime.
-
-        LINK repos have no remote to push to, so no retry is needed — one
-        merge attempt suffices.
+        For LINK / INIT repos (no remote), falls back to a simple local merge
+        via :meth:`GitManager.merge_branch` — no push or retry is needed.
         """
-        for attempt in range(_max_retries):
-            # Switch the task branch back before re-merging so merge_branch
-            # can check out the default branch cleanly.
-            if attempt > 0:
-                try:
-                    self.git.checkout_branch(workspace, task.branch_name)
-                except Exception:
-                    pass  # best-effort; merge_branch will checkout default anyway
+        is_clone = repo.source_type == RepoSourceType.CLONE
 
-            merged = self.git.merge_branch(workspace, task.branch_name, repo.default_branch)
+        if is_clone:
+            # sync_and_merge handles fetch, hard-reset, merge, and push
+            # with retry.  max_retries counts *retries* after the first
+            # attempt, so subtract 1 from _max_retries (total attempts).
+            success, error = self.git.sync_and_merge(
+                workspace,
+                task.branch_name,
+                repo.default_branch,
+                max_retries=max(_max_retries - 1, 0),
+            )
+            if not success:
+                if error == "merge_conflict":
+                    await self._notify_channel(
+                        f"**Merge Conflict:** Task `{task.id}` branch "
+                        f"`{task.branch_name}` has conflicts with "
+                        f"`{repo.default_branch}`. Manual resolution needed.",
+                        project_id=task.project_id,
+                    )
+                else:
+                    # error starts with "push_failed: …"
+                    await self._notify_channel(
+                        f"**Push Failed:** Could not push `{repo.default_branch}` "
+                        f"for task `{task.id}` after {_max_retries} attempts. "
+                        f"Workspace may be diverged. Details: {error}",
+                        project_id=task.project_id,
+                    )
+                return
+        else:
+            # LINK / INIT repos have no remote — just merge locally.
+            merged = self.git.merge_branch(
+                workspace, task.branch_name, repo.default_branch,
+            )
             if not merged:
                 await self._notify_channel(
-                    f"**Merge Conflict:** Task `{task.id}` branch `{task.branch_name}` "
-                    f"has conflicts with `{repo.default_branch}`. Manual resolution needed.",
-                    project_id=task.project_id,
-                )
-                return
-
-            if repo.source_type != RepoSourceType.CLONE:
-                break  # LINK repos don't push — we're done
-
-            try:
-                self.git.push_branch(workspace, repo.default_branch)
-                break  # push succeeded
-            except Exception as e:
-                if attempt < _max_retries - 1:
-                    # Push rejected — likely another agent pushed first.
-                    # Retry: merge_branch will re-fetch and re-reset.
-                    continue
-                await self._notify_channel(
-                    f"**Push Failed:** Could not push `{repo.default_branch}` "
-                    f"for task `{task.id}` after {_max_retries} attempts: {e}",
+                    f"**Merge Conflict:** Task `{task.id}` branch "
+                    f"`{task.branch_name}` has conflicts with "
+                    f"`{repo.default_branch}`. Manual resolution needed.",
                     project_id=task.project_id,
                 )
                 return
@@ -1105,7 +1108,7 @@ class Orchestrator:
         try:
             self.git.delete_branch(
                 workspace, task.branch_name,
-                delete_remote=repo.source_type == RepoSourceType.CLONE,
+                delete_remote=is_clone,
             )
         except Exception:
             pass  # branch cleanup is best-effort
