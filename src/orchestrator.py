@@ -874,6 +874,15 @@ class Orchestrator:
 
         For plan subtasks, reuses the parent task's branch name so all steps
         accumulate commits on a single branch.
+
+        Known gaps (see specs/git/git.md §11):
+          - **G4:** Retried tasks check out the existing branch without
+            rebasing onto latest ``origin/main``.
+          - **G6 (resolved):** ``mid_chain_sync`` now pushes intermediate
+            subtask work and rebases the chain branch between subtask
+            completions when ``auto_task.rebase_between_subtasks`` is enabled.
+          - **G7:** LINK repos use a shared filesystem path for all agents —
+            no per-agent isolation.
         """
         # 1. Check agent_workspaces cache
         ws = await self.db.get_agent_workspace(agent.id, task.project_id)
@@ -940,15 +949,23 @@ class Orchestrator:
                     os.makedirs(os.path.dirname(workspace), exist_ok=True)
                     self.git.create_checkout(repo.url, workspace)
                 if reuse_branch:
+                    # G6 resolved: switch_to_branch optionally rebases onto
+                    # origin/<default_branch> when rebase_between_subtasks is
+                    # enabled, and mid_chain_sync pushes + rebases between
+                    # subtasks.
                     self.git.switch_to_branch(
                         workspace, branch_name,
                         default_branch=repo.default_branch,
                         rebase=rebase_on_switch,
                     )
                 else:
+                    # GAP G4: If branch already exists (retry), prepare_for_task
+                    # falls back to checkout without rebase onto latest main.
                     self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
 
             elif repo.source_type == RepoSourceType.LINK:
+                # GAP G7: All agents share this same workspace path — no
+                # per-agent isolation for LINK repos.
                 if not os.path.isdir(workspace):
                     await self._notify_channel(
                         f"**Warning:** Linked repo path `{workspace}` does not exist.",
@@ -1035,11 +1052,30 @@ class Orchestrator:
                     return await self._create_pr_for_task(task, repo, workspace)
                 else:
                     await self._merge_and_push(task, repo, workspace)
-            elif not is_last and repo and task.branch_name:
-                # Mid-chain rebase: rebase the shared branch onto latest
-                # main between subtasks to reduce drift.  This catches
-                # conflicts early and keeps the branch close to main.
-                await self._mid_chain_rebase(task, repo, workspace)
+            elif not is_last and repo and self.config.auto_task.rebase_between_subtasks:
+                # Mid-chain sync: push intermediate work to remote and
+                # rebase onto latest main to reduce drift.  Non-fatal —
+                # the next subtask can still work even if sync fails.
+                try:
+                    synced = self.git.mid_chain_sync(
+                        workspace, task.branch_name, repo.default_branch,
+                    )
+                    if synced:
+                        print(
+                            f"Task {task.id}: mid-chain sync OK — "
+                            f"branch {task.branch_name} rebased onto "
+                            f"origin/{repo.default_branch}"
+                        )
+                    else:
+                        print(
+                            f"Task {task.id}: mid-chain rebase skipped "
+                            f"(conflict) — branch left as-is"
+                        )
+                except Exception as e:
+                    print(
+                        f"Task {task.id}: mid-chain sync failed "
+                        f"(non-fatal): {e}"
+                    )
             return None
 
         if repo and task.requires_approval:
@@ -1063,67 +1099,6 @@ class Orchestrator:
             if sibling.status != TaskStatus.COMPLETED:
                 return False
         return True
-
-    async def _mid_chain_rebase(
-        self, task: Task, repo: RepoConfig, workspace: str,
-    ) -> bool:
-        """Optionally rebase the shared subtask branch onto latest main mid-chain.
-
-        Called after an intermediate subtask commits its work (not the final
-        subtask).  When ``auto_task.mid_chain_rebase`` is enabled, this
-        rebases the shared branch onto ``origin/<default_branch>`` so that
-        drift from main is reduced incrementally rather than accumulating
-        until the final merge.
-
-        Benefits:
-        - **Early conflict detection:** Conflicts are surfaced after each
-          subtask rather than as a giant conflict at the end of the chain.
-        - **Smaller diffs at merge time:** The final merge stays close to
-          a fast-forward, reducing the risk of push rejections.
-        - **Backed up progress:** With ``mid_chain_rebase_push`` enabled,
-          intermediate progress is pushed to the remote.
-
-        If the rebase fails (conflicts with main), it is silently aborted.
-        The branch remains unchanged and the next subtask proceeds normally.
-        Conflicts will be resolved at final merge time via the existing
-        rebase-before-merge fallback.
-
-        Returns True if the rebase succeeded, False otherwise.
-        """
-        config = self.config.auto_task
-        if not config.mid_chain_rebase:
-            return False
-
-        # Only rebase when chain_dependencies is enabled — without chained
-        # deps the subtasks may run in parallel on different branches.
-        if not config.chain_dependencies:
-            return False
-
-        try:
-            rebased = self.git.mid_chain_rebase(
-                workspace,
-                task.branch_name,
-                repo.default_branch,
-                push=config.mid_chain_rebase_push,
-            )
-            if rebased:
-                print(
-                    f"Mid-chain rebase: task {task.id} branch "
-                    f"{task.branch_name} rebased onto {repo.default_branch}"
-                )
-            else:
-                print(
-                    f"Mid-chain rebase: task {task.id} branch "
-                    f"{task.branch_name} had conflicts — skipped "
-                    f"(will resolve at final merge)"
-                )
-            return rebased
-        except Exception as e:
-            # Mid-chain rebase is best-effort — never block the chain
-            print(
-                f"Mid-chain rebase: task {task.id} failed unexpectedly: {e}"
-            )
-            return False
 
     async def _merge_and_push(
         self, task: Task, repo: RepoConfig, workspace: str,
@@ -1180,13 +1155,7 @@ class Orchestrator:
                 # branch may contain un-pushed merge commits; hard-resetting
                 # to origin discards them.
                 try:
-                    self.git._run(
-                        ["checkout", repo.default_branch], cwd=workspace,
-                    )
-                    self.git._run(
-                        ["reset", "--hard", f"origin/{repo.default_branch}"],
-                        cwd=workspace,
-                    )
+                    self.git.recover_workspace(workspace, repo.default_branch)
                 except Exception:
                     pass  # best-effort recovery
                 return
@@ -1225,7 +1194,17 @@ class Orchestrator:
                     pass  # best-effort recovery
                 return
 
-        # Clean up the task branch after successful merge
+            # Clean up the task branch after successful local merge
+            try:
+                self.git.delete_branch(
+                    workspace, task.branch_name,
+                    delete_remote=False,
+                )
+            except Exception:
+                pass  # branch cleanup is best-effort
+            return
+
+        # Clean up the task branch after successful merge + push
         try:
             self.git.delete_branch(
                 workspace, task.branch_name,
@@ -1237,7 +1216,14 @@ class Orchestrator:
     async def _create_pr_for_task(
         self, task: Task, repo: RepoConfig, workspace: str,
     ) -> str | None:
-        """Push the task branch and create a PR. Returns the PR URL or None."""
+        """Push the task branch and create a PR. Returns the PR URL or None.
+
+        Uses ``force_with_lease=True`` when pushing the task branch so that
+        retries (e.g. after a failed PR creation where the push succeeded)
+        don't fail with a non-fast-forward error.  ``--force-with-lease`` is
+        safe here because the task branch is owned exclusively by this agent —
+        no other user is expected to push to it (resolves **G5**).
+        """
         if repo.source_type == RepoSourceType.LINK:
             # LINK repos typically have no remote — notify user to review manually
             await self._notify_channel(

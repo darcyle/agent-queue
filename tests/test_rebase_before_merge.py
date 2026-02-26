@@ -217,7 +217,7 @@ class TestSyncAndMergeRebaseFallback:
             with patch.object(mgr, "rebase_onto", return_value=True) as mock_rebase:
                 success, err = mgr.sync_and_merge("/ws", "task/feat")
 
-        mock_rebase.assert_called_once_with("/ws", "task/feat", "origin/main")
+        mock_rebase.assert_called_once_with("/ws", "task/feat", "main")
         assert success is True
 
     def test_rebase_failure_returns_merge_conflict(self):
@@ -391,13 +391,14 @@ class TestRebaseOntoMocked:
 
         def mock_run(args, cwd=None):
             call_log.append(args)
+            if args == ["rev-parse", "--abbrev-ref", "HEAD"]:
+                return "main"
             if args[:1] == ["rebase"] and "--abort" not in args:
                 raise GitError("rebase conflict")
             return ""
 
         with patch.object(mgr, "_run", side_effect=mock_run):
-            with patch.object(mgr, "get_current_branch", return_value="main"):
-                result = mgr.rebase_onto("/ws", "task/feat", "origin/main")
+            result = mgr.rebase_onto("/ws", "task/feat", "origin/main")
 
         assert result is False
         assert ["rebase", "--abort"] in call_log
@@ -411,11 +412,12 @@ class TestRebaseOntoMocked:
 
         def mock_run(args, cwd=None):
             call_log.append(args)
+            if args == ["rev-parse", "--abbrev-ref", "HEAD"]:
+                return "main"
             return ""
 
         with patch.object(mgr, "_run", side_effect=mock_run):
-            with patch.object(mgr, "get_current_branch", return_value="main"):
-                result = mgr.rebase_onto("/ws", "task/feat", "origin/main")
+            result = mgr.rebase_onto("/ws", "task/feat", "origin/main")
 
         assert result is True
         assert ["checkout", "task/feat"] in call_log

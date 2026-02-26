@@ -657,6 +657,7 @@ class TestForceWithLeasePushBehavior:
         with pytest.raises(GitError):
             mgr.push_branch(clone1, branch, force_with_lease=True)
 
+    @pytest.mark.skip(reason="mid_chain_rebase replaced by mid_chain_sync")
     def test_mid_chain_rebase_push_uses_force_with_lease(self, two_agent_clones):
         """mid_chain_rebase(push=True) uses --force-with-lease internally."""
         mgr = GitManager()
@@ -693,6 +694,7 @@ class TestForceWithLeasePushBehavior:
 # 6. Subtask chain drift and mid-chain rebase
 # ===========================================================================
 
+@pytest.mark.skip(reason="mid_chain_rebase replaced by mid_chain_sync; see test_git_manager.py")
 class TestSubtaskChainDrift:
     """End-to-end tests for subtask chain drift reduction.
 
@@ -892,7 +894,7 @@ class _FakeOrchestrator:
 
     from src.orchestrator import Orchestrator as _Orch
     _merge_and_push = _Orch._merge_and_push
-    _mid_chain_rebase = _Orch._mid_chain_rebase
+    # _mid_chain_rebase was removed; now inlined in orchestrator using git.mid_chain_sync
 
 
 class TestOrchestratorMergeAndPushIntegration:
@@ -916,10 +918,7 @@ class TestOrchestratorMergeAndPushIntegration:
         await orch._merge_and_push(task, repo, "/workspace")
 
         # Recovery should use "develop", not "main"
-        git._run.assert_any_call(["checkout", "develop"], cwd="/workspace")
-        git._run.assert_any_call(
-            ["reset", "--hard", "origin/develop"], cwd="/workspace",
-        )
+        git.recover_workspace.assert_called_once_with("/workspace", "develop")
 
     @pytest.mark.asyncio
     async def test_push_failure_recovery_and_notification(self, orch, git):
@@ -939,10 +938,8 @@ class TestOrchestratorMergeAndPushIntegration:
         assert "5 attempts" in msg
         assert "diverged" in msg
 
-        # Recovery: hard-reset to origin
-        git._run.assert_any_call(
-            ["reset", "--hard", "origin/main"], cwd="/workspace",
-        )
+        # Recovery via recover_workspace
+        git.recover_workspace.assert_called_once_with("/workspace", "main")
 
     @pytest.mark.asyncio
     async def test_success_cleans_up_branch(self, orch, git):
@@ -980,6 +977,7 @@ class TestOrchestratorMergeAndPushIntegration:
         )
 
 
+@pytest.mark.skip(reason="mid_chain_rebase replaced by mid_chain_sync; see test_git_manager.py")
 class TestOrchestratorMidChainRebaseIntegration:
     """Orchestrator-level tests for mid-chain rebase wiring."""
 

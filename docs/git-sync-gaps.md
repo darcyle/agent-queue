@@ -176,42 +176,17 @@ forked from a now-stale version of `main`. The agent may:
 
 ---
 
-## Gap 5 — No `--force-with-lease` for PR Branch Pushes
+## Gap 5 — No `--force-with-lease` for PR Branch Pushes — **RESOLVED**
 
-**Files:** `src/git/manager.py` (`push_branch`, lines 159–160),
-`src/orchestrator.py` (`_create_pr_for_task`, line 910)
+**Resolution:** `push_branch()` now accepts a `force_with_lease` keyword argument.
+When `True`, `--force-with-lease` is added to the push command.  The orchestrator's
+`_create_pr_for_task()` passes `force_with_lease=True` when pushing task branches
+for PR creation, making retries idempotent while preventing accidental overwrites
+of other people's changes.
 
-### What happens today
-
-```python
-def push_branch(self, checkout_path: str, branch_name: str) -> None:
-    self._run(["push", "origin", branch_name], cwd=checkout_path)
-```
-
-`push_branch` uses a plain `git push origin <branch>`. There is no
-`--force-with-lease` flag, and no `-u` (set-upstream) flag.
-
-### Failure mode
-
-1. **Retry after previous push:** If a task was previously pushed (e.g. the PR
-   was created but the task errored later and is retried), the branch already
-   exists on the remote. A plain `git push` will fail with a non-fast-forward
-   error if the local branch was rebased or amended.
-
-2. **Force-push risk (future):** If a future fix adds `--force` to work around
-   the above, it could overwrite remote changes (e.g. review commits added to
-   the PR branch). `--force-with-lease` is the safe alternative.
-
-3. **No upstream tracking:** Without `-u`, subsequent `git pull` calls on the
-   branch may fail with "no tracking information" warnings, which are currently
-   swallowed by `try/except`.
-
-### Impact
-
-- **PR retry failures:** Retried tasks that need to re-push a branch will fail
-  silently (error is notified but not recovered from).
-- **Safety:** No protection against accidentally overwriting remote branch
-  state.
+**Previously:** `push_branch` used a plain `git push origin <branch>` without
+`--force-with-lease`, causing retry failures when the branch had already been
+pushed in a previous attempt.
 
 ---
 
@@ -311,7 +286,7 @@ Two agents assigned tasks on the same LINK repo will:
 | 2 | Push failure leaves diverged local main | No rollback after failed push | **High** |
 | 3 | No merge conflict recovery | Abort + notify only, no rebase/retry | **Medium** |
 | 4 | Retried tasks work on stale branches | No rebase on retry, just `checkout` | **Medium** |
-| 5 | PR branch push lacks `--force-with-lease` | Plain `git push` without safety flags | **Medium** |
+| 5 | ~~PR branch push lacks `--force-with-lease`~~ | ~~Plain `git push` without safety flags~~ | **RESOLVED** |
 | 6 | Subtask chains drift from main | No periodic rebase during subtask chain | **Medium** |
 | 7 | LINK repos share filesystem across agents | `_compute_workspace_path` returns same path | **High** |
 

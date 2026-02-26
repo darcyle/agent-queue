@@ -641,6 +641,75 @@ def _extract_description_snippet(description: str, *, max_len: int = 120) -> str
 
 
 # ---------------------------------------------------------------------------
+# Merge / push notification formatters
+# ---------------------------------------------------------------------------
+
+
+def format_merge_conflict(task: Task, branch_name: str, default_branch: str) -> str:
+    """Plain-text notification for a merge conflict during sync-and-merge."""
+    return (
+        f"**Merge Conflict:** Task `{task.id}` — {task.title}\n"
+        f"Project: `{task.project_id}`\n"
+        f"Branch `{branch_name}` has conflicts with `{default_branch}`.\n"
+        f"Manual resolution needed — check out the branch locally and resolve conflicts."
+    )
+
+
+def format_merge_conflict_embed(
+    task: Task, branch_name: str, default_branch: str,
+) -> discord.Embed:
+    """Rich embed for a merge conflict during sync-and-merge."""
+    fields: list[tuple[str, str, bool]] = [
+        ("Task ID", f"`{task.id}`", True),
+        ("Project", f"`{task.project_id}`", True),
+        ("Branch", f"`{branch_name}`", True),
+        ("Target", f"`{default_branch}`", True),
+        (
+            "Action Required",
+            f"Branch `{branch_name}` has conflicts with `{default_branch}`.\n"
+            f"Check out the branch locally and resolve conflicts manually.",
+            False,
+        ),
+    ]
+    return error_embed(f"Merge Conflict — {task.title}", fields=fields)
+
+
+def format_push_failed(
+    task: Task, default_branch: str, error_detail: str,
+) -> str:
+    """Plain-text notification for a push failure after retries."""
+    return (
+        f"**Push Failed:** Task `{task.id}` — {task.title}\n"
+        f"Project: `{task.project_id}`\n"
+        f"Could not push `{default_branch}` after retries. "
+        f"The workspace may be diverged and require manual intervention.\n"
+        f"```\n{error_detail[:300]}\n```"
+    )
+
+
+def format_push_failed_embed(
+    task: Task, default_branch: str, error_detail: str,
+) -> discord.Embed:
+    """Rich embed for a push failure after retries."""
+    snippet = error_detail[:300]
+    if len(error_detail) > 300:
+        snippet += "…"
+    fields: list[tuple[str, str, bool]] = [
+        ("Task ID", f"`{task.id}`", True),
+        ("Project", f"`{task.project_id}`", True),
+        ("Branch", f"`{default_branch}`", True),
+        ("Error Detail", f"```\n{snippet}\n```", False),
+        (
+            "Action Required",
+            "Push failed after retries. The workspace may be diverged.\n"
+            "Inspect the workspace and push manually, or restart the task.",
+            False,
+        ),
+    ]
+    return warning_embed(f"Push Failed — {task.title}", fields=fields)
+
+
+# ---------------------------------------------------------------------------
 # Interactive action views for notification embeds
 # ---------------------------------------------------------------------------
 

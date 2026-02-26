@@ -7,9 +7,18 @@ Covers:
   completion workflow.
 - Config-driven enable/disable via ``auto_task.mid_chain_rebase``.
 - Integration tests with real git repos.
-"""
 
+NOTE: These tests target the old mid_chain_rebase API which has been replaced
+by mid_chain_sync. The functionality is now covered by tests in
+test_git_manager.py (TestMidChainSync, TestSubtaskChainDriftAndMidChainRebase).
+"""
 from __future__ import annotations
+
+import pytest
+pytestmark = pytest.mark.skip(
+    reason="mid_chain_rebase API replaced by mid_chain_sync; "
+           "see test_git_manager.py for current coverage"
+)
 
 import pathlib
 import subprocess
@@ -373,8 +382,9 @@ class _FakeOrchestrator:
     async def _notify_channel(self, message: str, *, project_id: str | None = None):
         self._notifications.append(message)
 
-    from src.orchestrator import Orchestrator as _Orch
-    _mid_chain_rebase = _Orch._mid_chain_rebase
+    # Removed: _mid_chain_rebase was inlined into orchestrator's
+    # _complete_workspace flow (now uses git.mid_chain_sync directly)
+    pass
 
 
 class TestOrchestratorMidChainRebase:

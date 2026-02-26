@@ -296,7 +296,7 @@ class TestSyncAndMergeRebaseOnConflict:
         assert success is False
         assert err == "merge_conflict"
         # Verify rebase_onto was actually called as a fallback
-        spy_rebase.assert_called_once_with(agent2, "task/a2-readme", "origin/main")
+        spy_rebase.assert_called_once_with(agent2, "task/a2-readme", "main")
 
     def test_workspace_clean_after_failed_rebase_fallback(self, two_agent_clones):
         """After failed merge + failed rebase, workspace has no uncommitted changes.
