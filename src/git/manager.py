@@ -170,16 +170,19 @@ class GitManager:
     def switch_to_branch(
         self, checkout_path: str, branch_name: str,
         default_branch: str = "main",
+        rebase: bool = False,
     ) -> None:
-        """Switch to an existing branch, pulling latest and rebasing onto main.
+        """Switch to an existing branch, pulling latest changes.
 
         Used for subtask branch reuse: when a plan generates multiple subtasks
         that should share a branch, this lets the second task pick up where the
         first left off rather than creating a new branch.
 
-        After switching, we rebase onto ``origin/<default_branch>`` so that
-        subtask chains stay closer to main and don't accumulate drift that
-        would only surface as conflicts at merge time.
+        When *rebase* is ``True``, the branch is rebased onto
+        ``origin/<default_branch>`` after switching so that subtask chains
+        stay closer to main and don't accumulate drift that would only
+        surface as conflicts at merge time.  If the rebase encounters
+        conflicts it is aborted silently — drift is acceptable.
 
         If the branch doesn't exist locally or on the remote (e.g. LINK repos
         with no remote), creates it as a new local branch.
@@ -203,18 +206,20 @@ class GitManager:
         except GitError:
             pass  # may fail if no upstream tracking
 
-        # Rebase onto latest origin/<default_branch> so subtask chains stay
-        # close to main and conflicts are discovered early rather than at
-        # final merge time.
-        try:
-            self._run(["rebase", f"origin/{default_branch}"], cwd=checkout_path)
-        except GitError:
-            # Rebase conflict — abort and keep the branch as-is.
-            # The agent can still work; conflicts will be handled at merge time.
+        if rebase:
+            # Rebase onto latest origin/<default_branch> so subtask chains
+            # stay close to main and conflicts are discovered early rather
+            # than at final merge time.
             try:
-                self._run(["rebase", "--abort"], cwd=checkout_path)
+                self._run(["rebase", f"origin/{default_branch}"], cwd=checkout_path)
             except GitError:
-                pass  # rebase may not be in progress
+                # Rebase conflict — abort and keep the branch as-is.
+                # The agent can still work; conflicts will be handled at
+                # merge time.
+                try:
+                    self._run(["rebase", "--abort"], cwd=checkout_path)
+                except GitError:
+                    pass  # rebase may not be in progress
 
     def mid_chain_rebase(
         self, checkout_path: str, branch_name: str,

@@ -309,7 +309,7 @@ class TestSwitchToBranchRebase:
     """Tests for rebase-onto-main behavior in switch_to_branch()."""
 
     def test_switch_to_branch_rebases_onto_main(self, git_repo, tmp_path):
-        """switch_to_branch() should rebase onto origin/main after switching."""
+        """switch_to_branch(rebase=True) should rebase onto origin/main."""
         mgr = GitManager()
         clone = git_repo["clone"]
         branch = "subtask/chain-branch"
@@ -327,12 +327,41 @@ class TestSwitchToBranchRebase:
         _git(["push", "origin", "main"], cwd=clone2)
 
         # switch_to_branch should switch and rebase onto latest origin/main
-        mgr.switch_to_branch(clone, branch)
+        mgr.switch_to_branch(clone, branch, rebase=True)
 
         assert _current_branch(clone) == branch
         log = _git(["log", "--oneline"], cwd=clone)
         assert "subtask commit" in log
         assert "upstream commit" in log
+
+    def test_switch_to_branch_no_rebase_by_default(self, git_repo, tmp_path):
+        """switch_to_branch() without rebase=True should NOT rebase."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        branch = "subtask/no-rebase-branch"
+
+        # Create a branch with some work
+        mgr.create_branch(clone, branch)
+        _git_commit(clone, "subtask.txt", "subtask work", "subtask commit")
+        branch_sha = _head_sha(clone)
+        _git(["checkout", "main"], cwd=clone)
+
+        # Advance origin/main via a second clone
+        clone2 = str(tmp_path / "clone2")
+        subprocess.run(["git", "clone", git_repo["remote"], clone2],
+                       check=True, capture_output=True)
+        _git_commit(clone2, "upstream.txt", "upstream", "upstream commit")
+        _git(["push", "origin", "main"], cwd=clone2)
+
+        # switch_to_branch without rebase should NOT include upstream commit
+        mgr.switch_to_branch(clone, branch)
+
+        assert _current_branch(clone) == branch
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "subtask commit" in log
+        assert "upstream commit" not in log
+        # Branch HEAD should remain at original position
+        assert _head_sha(clone) == branch_sha
 
     def test_switch_to_branch_rebase_conflict_aborts(self, git_repo, tmp_path):
         """If rebase conflicts during switch_to_branch, it aborts gracefully."""
@@ -354,7 +383,7 @@ class TestSwitchToBranchRebase:
         _git(["push", "origin", "main"], cwd=clone2)
 
         # switch_to_branch should not raise even if rebase conflicts
-        mgr.switch_to_branch(clone, branch)
+        mgr.switch_to_branch(clone, branch, rebase=True)
 
         assert _current_branch(clone) == branch
         # Branch should retain its original commit since rebase was aborted

@@ -930,6 +930,7 @@ class Orchestrator:
             branch_name = GitManager.make_branch_name(task.id, task.title)
 
         reuse_branch = task.is_plan_subtask and task.parent_task_id
+        rebase_on_switch = self.config.auto_task.rebase_between_subtasks
 
         # Git operations may fail (e.g. no remote for LINK repos) but should
         # never prevent returning the correct workspace path.
@@ -939,7 +940,11 @@ class Orchestrator:
                     os.makedirs(os.path.dirname(workspace), exist_ok=True)
                     self.git.create_checkout(repo.url, workspace)
                 if reuse_branch:
-                    self.git.switch_to_branch(workspace, branch_name)
+                    self.git.switch_to_branch(
+                        workspace, branch_name,
+                        default_branch=repo.default_branch,
+                        rebase=rebase_on_switch,
+                    )
                 else:
                     self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
 
@@ -951,7 +956,11 @@ class Orchestrator:
                     )
                 elif self.git.validate_checkout(workspace):
                     if reuse_branch:
-                        self.git.switch_to_branch(workspace, branch_name)
+                        self.git.switch_to_branch(
+                            workspace, branch_name,
+                            default_branch=repo.default_branch,
+                            rebase=rebase_on_switch,
+                        )
                     else:
                         self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
 
@@ -959,7 +968,11 @@ class Orchestrator:
                 if not self.git.validate_checkout(workspace):
                     self.git.init_repo(workspace)
                 if reuse_branch:
-                    self.git.switch_to_branch(workspace, branch_name)
+                    self.git.switch_to_branch(
+                        workspace, branch_name,
+                        default_branch=repo.default_branch,
+                        rebase=rebase_on_switch,
+                    )
                 else:
                     self.git.create_branch(workspace, branch_name)
 
