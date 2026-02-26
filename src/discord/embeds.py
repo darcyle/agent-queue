@@ -670,3 +670,211 @@ def status_embed(
             )
 
     return embed
+
+
+# ---------------------------------------------------------------------------
+# Tree view embed builder
+# ---------------------------------------------------------------------------
+
+# Overhead for the code block fences (``` + newline on each end)
+_CODE_BLOCK_OVERHEAD = len("```\n") + len("\n```")
+
+# Reserve space for embed fields, footer, and title so the description
+# doesn't consume the entire 6,000-char total budget.
+_DESCRIPTION_BUDGET = LIMIT_DESCRIPTION - _CODE_BLOCK_OVERHEAD
+
+
+def tree_view_embed(
+    trees: list[dict],
+    *,
+    total_root_tasks: int = 0,
+    total_tasks: int = 0,
+    display_mode: str = "tree",
+    show_completed: bool = False,
+    project_name: str | None = None,
+) -> list[discord.Embed]:
+    """Build one or more embeds that render a task tree (or compact list).
+
+    The tree body is placed inside a code block in the embed *description*
+    for monospace alignment of box-drawing characters.  A summary line and
+    optional metadata are rendered as embed *fields*.
+
+    Parameters
+    ----------
+    trees:
+        List of tree entry dicts as returned by the command handler's
+        hierarchical list mode.  Each entry has at minimum::
+
+            {
+                "root": {<task dict>},
+                "formatted": "<pre-rendered tree text>",
+                "subtask_completed": int,
+                "subtask_total": int,
+                "progress_bar": str | None,   # compact mode only
+            }
+
+    total_root_tasks:
+        Number of root-level tasks (used in the summary field).
+    total_tasks:
+        Total tasks including subtasks (used in the summary field).
+    display_mode:
+        ``"tree"`` for full hierarchical view or ``"compact"`` for root-only
+        summaries.  Controls code-block wrapping and title.
+    show_completed:
+        Whether completed tasks are included.  Used to show a hint when the
+        list is empty.
+    project_name:
+        Optional project name shown in the embed footer.
+
+    Returns
+    -------
+    list[discord.Embed]
+        One embed per page.  Callers should send the first as the
+        interaction response and subsequent ones via ``followup.send()``.
+        An empty *trees* list returns a single informational embed.
+    """
+    # ── Empty state ──────────────────────────────────────────────────
+    if not trees:
+        hint = ""
+        if not show_completed:
+            hint = " Use `/tasks show_completed:True` to include completed."
+        return [
+            info_embed(
+                "No Tasks",
+                description=f"No tasks found for this project.{hint}",
+            )
+        ]
+
+    is_tree = display_mode == "tree"
+    mode_label = "Tree View" if is_tree else "Compact View"
+
+    # ── Collect formatted blocks ─────────────────────────────────────
+    blocks: list[str] = []
+    for entry in trees:
+        formatted: str = entry.get("formatted", "")
+        # In compact mode, append the progress bar inline if available
+        bar = entry.get("progress_bar")
+        if bar and not is_tree:
+            formatted += f"\n  {bar}"
+        blocks.append(formatted)
+
+    # ── Build summary field value ────────────────────────────────────
+    summary_parts: list[str] = []
+    summary_parts.append(f"**{total_root_tasks}** root task(s)")
+    summary_parts.append(f"**{total_tasks}** total")
+
+    # Aggregate completion stats across all trees
+    agg_completed = sum(e.get("subtask_completed", 0) for e in trees)
+    agg_subtotal = sum(e.get("subtask_total", 0) for e in trees)
+    if agg_subtotal > 0:
+        pct = agg_completed / agg_subtotal * 100
+        summary_parts.append(
+            f"{agg_completed}/{agg_subtotal} subtasks complete ({pct:.0f}%)"
+        )
+
+    summary_value = " \u00b7 ".join(summary_parts)
+
+    # ── Build metadata field (status breakdown) ──────────────────────
+    status_counts: dict[str, int] = {}
+    for entry in trees:
+        root = entry.get("root", {})
+        st = root.get("status", "DEFINED")
+        status_counts[st] = status_counts.get(st, 0) + 1
+
+    if status_counts:
+        status_lines: list[str] = []
+        for st, count in status_counts.items():
+            emoji = STATUS_EMOJIS.get(st, "\u26AA")
+            label = st.replace("_", " ").title()
+            status_lines.append(f"{emoji} {label}: **{count}**")
+        metadata_value = " \u00b7 ".join(status_lines)
+    else:
+        metadata_value = ""
+
+    # ── Separator between blocks ─────────────────────────────────────
+    separator = "\n\n" if is_tree else "\n"
+
+    # ── Paginate into embeds respecting description limit ────────────
+    # Each embed's description holds a code block (tree mode) or plain
+    # text (compact mode).  When the body exceeds the budget we split
+    # across multiple embeds.
+
+    pages: list[str] = []
+    current_page_blocks: list[str] = []
+    current_len = 0
+
+    for block in blocks:
+        block_len = len(block) + len(separator)  # cost of adding this block
+        if current_page_blocks and (current_len + block_len) > _DESCRIPTION_BUDGET:
+            # Flush current page
+            pages.append(separator.join(current_page_blocks))
+            current_page_blocks = [block]
+            current_len = len(block)
+        else:
+            current_page_blocks.append(block)
+            current_len += block_len
+
+    # Flush final page
+    if current_page_blocks:
+        pages.append(separator.join(current_page_blocks))
+
+    # ── Build embed(s) ───────────────────────────────────────────────
+    embeds: list[discord.Embed] = []
+    total_pages = len(pages)
+
+    for idx, page_body in enumerate(pages):
+        is_first = idx == 0
+        is_last_page = idx == total_pages - 1
+        page_num = idx + 1
+
+        # Wrap tree mode in a code block for monospace alignment
+        if is_tree:
+            description = f"```\n{truncate(page_body, _DESCRIPTION_BUDGET)}\n```"
+        else:
+            description = truncate(page_body, LIMIT_DESCRIPTION)
+
+        # Title: include page number when paginated
+        if total_pages > 1:
+            title = f"{mode_label} (Page {page_num}/{total_pages})"
+        else:
+            title = mode_label
+
+        embed = make_embed(
+            EmbedStyle.INFO,
+            title,
+            description=description,
+        )
+
+        # Fields only on the first page to avoid clutter on continuations
+        if is_first:
+            embed.add_field(
+                name="Summary",
+                value=truncate(summary_value, LIMIT_FIELD_VALUE),
+                inline=False,
+            )
+            if metadata_value:
+                embed.add_field(
+                    name="Status Breakdown",
+                    value=truncate(metadata_value, LIMIT_FIELD_VALUE),
+                    inline=False,
+                )
+
+        # Show hint on last page when completed tasks are hidden
+        if is_last_page and not show_completed:
+            embed.add_field(
+                name="\U0001f4a1 Tip",
+                value="Use `/tasks show_completed:True` to include completed tasks.",
+                inline=False,
+            )
+
+        # Project name in footer (with page info if paginated)
+        footer_parts: list[str] = [_DEFAULT_FOOTER]
+        if project_name:
+            footer_parts.append(project_name)
+        if total_pages > 1:
+            footer_parts.append(f"Page {page_num}/{total_pages}")
+        embed.set_footer(text=" \u00b7 ".join(footer_parts))
+
+        embeds.append(embed)
+
+    return embeds

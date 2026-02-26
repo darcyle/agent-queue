@@ -77,13 +77,14 @@ class TaskEvent(Enum):
 
 
 class TaskType(Enum):
-    """Categorizes the nature of a task for display and filtering.
+    """Categorizes the kind of work a task represents.
 
-    Used by the Discord UI to show type-specific emoji tags and by the
-    ChatAgent to filter task listings.  The plan parser auto-assigns a
-    TaskType when creating subtasks from a plan file.
+    Used by the Discord UI to display type-specific emoji tags and by the
+    chat agent to help the LLM understand the nature of each task at a
+    glance. The plan parser can auto-assign a type when creating subtasks
+    from a plan file.
 
-    Values are lowercase strings suitable for storage in a TEXT column.
+    Values are lowercase strings stored directly in the ``task_type`` column.
     """
 
     FEATURE = "feature"

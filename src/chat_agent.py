@@ -216,9 +216,9 @@ TOOLS = [
             "Use show_all=true or include_completed=true to include finished "
             "tasks. Use completed_only=true to see only finished tasks. "
             "An explicit status filter overrides all convenience flags. "
-            "Supports display_mode='tree' for a hierarchical view with "
-            "box-drawing characters showing parent/subtask relationships, or "
-            "'compact' for a condensed view with progress bars. Default is 'flat'. "
+            "Supports three display modes: 'flat' (default list), 'tree' "
+            "(hierarchical view with subtasks), and 'compact' (root tasks "
+            "with progress bars). Tree and compact modes require project_id. "
             "Use show_dependencies=true to annotate each task with its upstream "
             "depends_on and downstream blocks relationships — useful for "
             "understanding blocking chains."
@@ -228,7 +228,7 @@ TOOLS = [
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": "Filter by project ID (optional)",
+                    "description": "Filter by project ID (optional, but required for tree/compact modes)",
                 },
                 "status": {
                     "type": "string",
@@ -320,10 +320,11 @@ TOOLS = [
         "description": (
             "Get the subtask hierarchy for a specific parent task, rendered as "
             "a tree with box-drawing characters. Returns a 'display' field with "
-            "pre-formatted text showing the full parent→child hierarchy, status "
+            "pre-formatted text showing the full parent->child hierarchy, status "
             "emojis, and a progress summary. Use this when the user asks about "
             "subtasks of a specific task or wants to inspect a plan's structure. "
-            "For listing all tasks as a tree, use list_tasks with display_mode='tree' instead."
+            "For a project-wide tree view, use list_tasks with "
+            "display_mode='tree' instead."
         ),
         "input_schema": {
             "type": "object",
@@ -332,19 +333,19 @@ TOOLS = [
                     "type": "string",
                     "description": "The root/parent task ID whose subtree to display",
                 },
+                "compact": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, show only the root task with a subtask "
+                        "count and progress bar instead of the full expanded "
+                        "tree. Default false (full tree)."
+                    ),
+                },
                 "max_depth": {
                     "type": "integer",
                     "description": (
                         "Maximum nesting depth to render (default 4). "
-                        "Deeper levels are collapsed with a count summary."
-                    ),
-                },
-                "compact": {
-                    "type": "boolean",
-                    "description": (
-                        "When true, show only the root task line and an "
-                        "aggregate progress summary instead of the full tree. "
-                        "Default false."
+                        "Deeper subtasks are collapsed into a summary."
                     ),
                 },
             },
@@ -1439,16 +1440,22 @@ that finished tasks are excluded. Examples:
 - "Found **2 completed tasks**:" (completed_only=true or status=COMPLETED)
 If the user asks about completed tasks, use show_all=true or completed_only=true.
 
-Tree display mode — when tasks have subtasks or the user asks for a hierarchical \
-view (e.g. "show me the task tree", "list tasks as a tree"), use display_mode="tree" \
-with the `list_tasks` tool. This returns a 'display' field with pre-formatted text \
-using box-drawing characters. Present this text directly in a code block. \
-Use display_mode="compact" for a condensed view with progress bars per root task. \
-For inspecting a single task's subtree, use `get_task_tree` instead.
+Task tree views — `list_tasks` supports three display modes via the `display_mode` parameter:
+- **flat** (default): Plain list of task dicts, one per row. Best for simple listings.
+- **tree**: Hierarchical view that groups tasks under their parent with box-drawing \
+characters. Each root task shows its full subtask tree. The response \
+includes pre-formatted text in the `display` field. Use when the user asks to \
+"show the tree", "show hierarchy", or wants to see subtask structure.
+- **compact**: Shows only root tasks with subtask counts and progress bars. Ideal \
+for dense overviews. Use when the user asks for a "summary" or "overview" of tasks.
+Tree and compact modes require `project_id`; without it they fall back to flat. \
+When presenting tree/compact results, use the `display` field directly in a code block — \
+it is pre-rendered with proper indentation and status emojis.
 
-Task tree inspection — use `get_task_tree` when the user wants to see the subtask \
-hierarchy for a specific parent task (e.g. "show me the subtasks of task-123", \
-"what's the tree for that plan?"). The response includes a pre-formatted 'display' \
+Subtask hierarchy — use `get_task_tree` to inspect the full hierarchy under a \
+single parent task. This is more targeted than `list_tasks display_mode=tree` \
+(which shows all root tasks). Use it when the user asks about a specific task's \
+subtasks or plan breakdown. The response includes a pre-formatted 'display' \
 field — present it directly in a code block.
 
 Task dependencies — use `get_task_dependencies` when the user asks why a task is \
@@ -1460,9 +1467,12 @@ IN_PROGRESS." For a broader view, use `list_tasks` with show_dependencies=true t
 annotate every task with its dependency relationships. For stuck dependency chains, \
 use `get_chain_health`.
 
-Cross-project overview — use `list_active_tasks_all_projects` when the user asks \
-about active work across all projects (e.g. "what's running?", "show me everything \
-in progress", "any active tasks?"). Results are grouped by project for readability.
+Cross-project overview — when the user asks about active work across the system \
+(e.g., "what's running?", "show all active tasks", "workload overview"), use \
+`list_active_tasks_all_projects` instead of calling `list_tasks` once per project. \
+Present results grouped by project:
+- "There are **5 active tasks** across **2 projects**:"
+- Then list each project with its tasks.
 
 Be concise in Discord messages. Use markdown formatting. When a user asks you to \
 do something, use the available tools to do it — don't just tell them to use slash commands.
