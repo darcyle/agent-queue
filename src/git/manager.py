@@ -53,8 +53,8 @@ Resolved gaps (continued):
   - **G6 (resolved):** ``mid_chain_sync`` pushes intermediate subtask work
     to the remote and rebases the chain branch onto ``origin/<default_branch>``
     between subtask completions.  The orchestrator calls this after each
-    non-final subtask when ``auto_task.mid_chain_rebase`` is enabled (the
-    default), reducing drift and providing crash safety for long chains.
+    non-final subtask when ``auto_task.rebase_between_subtasks`` is enabled,
+    reducing drift and providing crash safety for long chains.
 
 See specs/git/git.md for the full behavioral specification.
 """

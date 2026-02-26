@@ -880,7 +880,7 @@ class Orchestrator:
             rebasing onto latest ``origin/main``.
           - **G6 (resolved):** ``mid_chain_sync`` now pushes intermediate
             subtask work and rebases the chain branch between subtask
-            completions when ``auto_task.mid_chain_rebase`` is enabled.
+            completions when ``auto_task.rebase_between_subtasks`` is enabled.
           - **G7:** LINK repos use a shared filesystem path for all agents —
             no per-agent isolation.
         """
@@ -1037,7 +1037,7 @@ class Orchestrator:
                     return await self._create_pr_for_task(task, repo, workspace)
                 else:
                     await self._merge_and_push(task, repo, workspace)
-            elif not is_last and repo and self.config.auto_task.mid_chain_rebase:
+            elif not is_last and repo and self.config.auto_task.rebase_between_subtasks:
                 # Mid-chain sync: push intermediate work to remote and
                 # rebase onto latest main to reduce drift.  Non-fatal —
                 # the next subtask can still work even if sync fails.
