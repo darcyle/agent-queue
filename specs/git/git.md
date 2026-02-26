@@ -95,6 +95,16 @@ Returns all local branch names as a list of strings.
 - Each entry in the returned list has leading/trailing whitespace stripped. The current branch retains the `*` prefix that git adds (e.g. `"* main"`).
 - Returns an empty list on `GitError` rather than raising.
 
+### `pull_latest_main(checkout_path, default_branch="main")`
+
+Fetches from origin and hard-resets the default branch to match remote. This is the canonical way to sync a workspace's default branch with `origin`.
+
+1. Runs `git fetch origin` to get the latest remote state.
+2. Runs `git checkout <default_branch>` to switch to the default branch.
+3. Runs `git reset --hard origin/<default_branch>` to discard any local divergence.
+
+A hard reset (rather than pull) ensures the local default branch always matches the remote even if a previous `_merge_and_push` left it diverged (e.g. un-pushed merge commits). The caller must have the default branch checked out or be prepared for the checkout side-effect.
+
 ### `prepare_for_task(checkout_path, branch_name, default_branch="main")`
 
 Full pre-task branch setup. Handles both normal clones and git worktrees differently.
@@ -103,22 +113,28 @@ Full pre-task branch setup. Handles both normal clones and git worktrees differe
 2. Runs `git fetch origin` unconditionally.
 3. **Worktree path:**
    - Creates the task branch directly from `origin/<default_branch>` with `git checkout -b <branch_name> origin/<default_branch>`.
-   - If that fails (branch already exists), falls back to `git checkout <branch_name>`.
+   - If that fails (branch already exists — task is being retried), switches to `git checkout <branch_name>` and rebases onto `origin/<default_branch>` so the agent works on the latest code rather than a stale snapshot.
+   - If the rebase encounters conflicts, it is aborted silently — the agent works with whatever is on the branch as-is.
    - Avoids checking out the default branch locally because it may already be checked out in the main working tree, which git forbids.
 4. **Normal clone path:**
    - Checks out `default_branch` locally.
-   - Attempts `git pull origin <default_branch>`. Silently ignores `GitError` (e.g. no upstream tracking configured).
+   - Hard-resets to `origin/<default_branch>` to discard any stale local state (e.g. un-pushed merge commits from a prior task). This replaces the previous `git pull` approach.
    - Creates the task branch with `git checkout -b <branch_name>`.
-   - If that fails (task is being retried after a restart), falls back to `git checkout <branch_name>`.
+   - If that fails (task is being retried after a restart), switches to `git checkout <branch_name>` and rebases onto `origin/<default_branch>` so the agent starts from the latest code.
+   - If the rebase encounters conflicts, it is aborted silently — the agent works with whatever is on the branch as-is.
 
-### `switch_to_branch(checkout_path, branch_name)`
+### `switch_to_branch(checkout_path, branch_name, default_branch="main", rebase=False)`
 
-Switches to a branch and pulls the latest remote state.
+Switches to an existing branch and pulls the latest remote state. Used for subtask branch reuse: when a plan generates multiple subtasks that share a branch, this lets the next task pick up where the previous one left off.
 
 1. Attempts `git fetch origin`. Silently ignores `GitError` (no remote configured).
 2. Attempts `git checkout <branch_name>`.
    - If that fails (branch exists only on the remote), tries `git checkout -b <branch_name> origin/<branch_name>` to create a local tracking branch.
+   - If that also fails (no remote branch either, e.g. LINK repos), creates a fresh local branch with `git checkout -b <branch_name>`.
 3. Attempts `git pull origin <branch_name>`. Silently ignores `GitError` (no upstream tracking).
+4. **Rebase (when `rebase=True`):** Rebases the branch onto `origin/<default_branch>` so subtask chains stay close to main and conflicts are discovered early rather than at final merge time. If the rebase encounters conflicts, it is aborted silently — the agent works with the branch as-is and conflicts will be handled at merge time.
+
+The `rebase` parameter is controlled by `config.auto_task.rebase_between_subtasks` and is passed by `_prepare_workspace()` when switching to a shared subtask branch.
 
 ### `delete_branch(checkout_path, branch_name, *, delete_remote=True)`
 
@@ -175,21 +191,73 @@ Stages all changes and creates a commit. Returns `True` if a commit was made, `F
 4. Otherwise runs `git commit -m <message>` and returns `True`.
 5. Raises `GitError` if the commit fails.
 
-### `push_branch(checkout_path, branch_name)`
+### `push_branch(checkout_path, branch_name, *, force_with_lease=False)`
 
 Pushes a local branch to the `origin` remote.
 
-- Runs `git push origin <branch_name>`.
-- Raises `GitError` on failure (e.g. non-fast-forward, authentication error).
+- Constructs the command as `git push origin <branch_name>`.
+- When `force_with_lease=True`, inserts `--force-with-lease` into the command: `git push origin --force-with-lease <branch_name>`. This allows the push to succeed even when the remote branch has been previously pushed (e.g. task retries or subtask chains that push intermediate results). It is safe for task branches because they are owned by a single agent and are never concurrently updated by others.
+- The `force_with_lease` parameter is keyword-only to prevent accidental positional use.
+- Raises `GitError` on failure (e.g. non-fast-forward without the flag, authentication error, or remote ref updated by another clone when using `--force-with-lease`).
 
 ### `merge_branch(checkout_path, branch_name, default_branch="main")`
 
 Merges a feature branch into the default branch. Returns `True` on success, `False` on conflict.
 
-1. Checks out `default_branch`.
-2. Attempts `git merge <branch_name>`.
-3. If the merge raises `GitError` (conflict), runs `git merge --abort` to restore the working tree and returns `False`.
-4. Returns `True` on a clean merge.
+1. Attempts `git fetch origin`. Silently ignores `GitError` (no remote configured, e.g. LINK repos).
+2. Checks out `default_branch`.
+3. Attempts `git reset --hard origin/<default_branch>` to sync with the latest remote state. Silently ignores `GitError` (no remote tracking branch — uses local state as-is).
+4. Attempts `git merge <branch_name>`.
+5. If the merge raises `GitError` (conflict), runs `git merge --abort` to restore the working tree and returns `False`.
+6. Returns `True` on a clean merge.
+
+The fetch-and-hard-reset step (added for workspace sync) ensures that concurrent agents always merge against the latest remote state, preventing stale-main problems. For repos without a remote (LINK repos), the method falls through to merge against whatever local state is available.
+
+### `rebase_onto(checkout_path, branch_name, onto="main")`
+
+Rebases a task branch onto a target branch. Returns `True` if the rebase succeeded, `False` if it was aborted due to conflicts.
+
+1. Records the currently checked-out branch.
+2. Checks out `branch_name`.
+3. Runs `git rebase <onto>`.
+4. On conflict (`GitError`): runs `git rebase --abort` to restore the branch, then attempts to return to the original branch. Returns `False`.
+5. On success: attempts to return to the original branch. Returns `True`.
+
+The caller is responsible for ensuring `onto` is up-to-date (e.g. via a prior fetch + hard-reset). Used as a fallback in `sync_and_merge` when a direct merge fails — rebasing the task branch onto the latest default branch resolves drift-related conflicts before retrying the merge.
+
+### `mid_chain_rebase(checkout_path, branch_name, default_branch="main", *, push=False)`
+
+Rebases a task branch onto the latest `origin/<default_branch>` between subtask completions. Designed for long subtask chains to catch conflicts early and keep the branch close to main, preventing large conflict surfaces at final merge time.
+
+Steps:
+1. `git fetch origin` to get the latest remote state. Returns `False` if fetch fails (no remote).
+2. `git checkout <branch_name>` to ensure we're on the task branch. Returns `False` if checkout fails.
+3. `git rebase origin/<default_branch>` to replay task commits on top of the latest main.
+4. If rebase conflicts: runs `git rebase --abort` and returns `False`. The branch is left unchanged.
+5. If `push=True` and rebase succeeded: pushes the rebased branch with `--force-with-lease` via `push_branch(force_with_lease=True)`. Push failures are silently ignored (rebase still succeeded).
+
+The `push` parameter is keyword-only. When enabled, intermediate progress is backed up on the remote.
+
+Returns `True` if the rebase (and optional push) succeeded, `False` if the rebase had conflicts or the fetch/checkout failed.
+
+### `sync_and_merge(checkout_path, branch_name, default_branch="main", max_retries=1)`
+
+Comprehensive sync-merge-push flow used by the orchestrator after an agent finishes work on a task branch. Encapsulates the full workflow for CLONE repos:
+
+1. **Fetch:** `git fetch origin` to get the latest remote state.
+2. **Reset:** Checkout `default_branch` and `git reset --hard origin/<default_branch>` — discards any stale local state (e.g. un-pushed merge commits from a prior attempt).
+3. **Merge:** Attempt `git merge <branch_name>`.
+   - On conflict: run `git merge --abort`.
+   - **Rebase fallback:** Call `rebase_onto(branch_name, "origin/<default_branch>")` to replay the task branch's commits on top of the latest main. If the rebase succeeds, re-checkout `default_branch` and retry the merge. If either the rebase or the retry merge fails, return `(False, "merge_conflict")`.
+4. **Push with retry:** Attempt `git push origin <default_branch>` up to `max_retries + 1` times total.
+   - On push rejection (another agent pushed between our fetch and push): run `git pull --rebase origin <default_branch>` to incorporate the new commits, then retry.
+   - If all attempts fail: return `(False, "push_failed: <details>")`.
+5. On success: return `(True, "")`.
+
+Returns a `(success: bool, error_msg: str)` tuple. Error messages are one of:
+- `""` — success
+- `"merge_conflict"` — the task branch conflicts with the default branch (even after rebase attempt)
+- `"push_failed: <details>"` — all push attempts were rejected
 
 ---
 

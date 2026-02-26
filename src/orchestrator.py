@@ -930,6 +930,7 @@ class Orchestrator:
             branch_name = GitManager.make_branch_name(task.id, task.title)
 
         reuse_branch = task.is_plan_subtask and task.parent_task_id
+        rebase_on_switch = self.config.auto_task.rebase_between_subtasks
 
         # Git operations may fail (e.g. no remote for LINK repos) but should
         # never prevent returning the correct workspace path.
@@ -939,7 +940,11 @@ class Orchestrator:
                     os.makedirs(os.path.dirname(workspace), exist_ok=True)
                     self.git.create_checkout(repo.url, workspace)
                 if reuse_branch:
-                    self.git.switch_to_branch(workspace, branch_name)
+                    self.git.switch_to_branch(
+                        workspace, branch_name,
+                        default_branch=repo.default_branch,
+                        rebase=rebase_on_switch,
+                    )
                 else:
                     self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
 
@@ -951,7 +956,11 @@ class Orchestrator:
                     )
                 elif self.git.validate_checkout(workspace):
                     if reuse_branch:
-                        self.git.switch_to_branch(workspace, branch_name)
+                        self.git.switch_to_branch(
+                            workspace, branch_name,
+                            default_branch=repo.default_branch,
+                            rebase=rebase_on_switch,
+                        )
                     else:
                         self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
 
@@ -959,7 +968,11 @@ class Orchestrator:
                 if not self.git.validate_checkout(workspace):
                     self.git.init_repo(workspace)
                 if reuse_branch:
-                    self.git.switch_to_branch(workspace, branch_name)
+                    self.git.switch_to_branch(
+                        workspace, branch_name,
+                        default_branch=repo.default_branch,
+                        rebase=rebase_on_switch,
+                    )
                 else:
                     self.git.create_branch(workspace, branch_name)
 
@@ -1022,6 +1035,11 @@ class Orchestrator:
                     return await self._create_pr_for_task(task, repo, workspace)
                 else:
                     await self._merge_and_push(task, repo, workspace)
+            elif not is_last and repo and task.branch_name:
+                # Mid-chain rebase: rebase the shared branch onto latest
+                # main between subtasks to reduce drift.  This catches
+                # conflicts early and keeps the branch close to main.
+                await self._mid_chain_rebase(task, repo, workspace)
             return None
 
         if repo and task.requires_approval:
@@ -1046,31 +1064,172 @@ class Orchestrator:
                 return False
         return True
 
-    async def _merge_and_push(self, task: Task, repo: RepoConfig, workspace: str) -> None:
-        """Merge the task branch into default and push (clone repos only)."""
-        merged = self.git.merge_branch(workspace, task.branch_name, repo.default_branch)
-        if not merged:
-            await self._notify_channel(
-                f"**Merge Conflict:** Task `{task.id}` branch `{task.branch_name}` "
-                f"has conflicts with `{repo.default_branch}`. Manual resolution needed.",
-                project_id=task.project_id,
-            )
-            return
+    async def _mid_chain_rebase(
+        self, task: Task, repo: RepoConfig, workspace: str,
+    ) -> bool:
+        """Optionally rebase the shared subtask branch onto latest main mid-chain.
 
-        if repo.source_type == RepoSourceType.CLONE:
-            try:
-                self.git.push_branch(workspace, repo.default_branch)
-            except Exception as e:
+        Called after an intermediate subtask commits its work (not the final
+        subtask).  When ``auto_task.mid_chain_rebase`` is enabled, this
+        rebases the shared branch onto ``origin/<default_branch>`` so that
+        drift from main is reduced incrementally rather than accumulating
+        until the final merge.
+
+        Benefits:
+        - **Early conflict detection:** Conflicts are surfaced after each
+          subtask rather than as a giant conflict at the end of the chain.
+        - **Smaller diffs at merge time:** The final merge stays close to
+          a fast-forward, reducing the risk of push rejections.
+        - **Backed up progress:** With ``mid_chain_rebase_push`` enabled,
+          intermediate progress is pushed to the remote.
+
+        If the rebase fails (conflicts with main), it is silently aborted.
+        The branch remains unchanged and the next subtask proceeds normally.
+        Conflicts will be resolved at final merge time via the existing
+        rebase-before-merge fallback.
+
+        Returns True if the rebase succeeded, False otherwise.
+        """
+        config = self.config.auto_task
+        if not config.mid_chain_rebase:
+            return False
+
+        # Only rebase when chain_dependencies is enabled — without chained
+        # deps the subtasks may run in parallel on different branches.
+        if not config.chain_dependencies:
+            return False
+
+        try:
+            rebased = self.git.mid_chain_rebase(
+                workspace,
+                task.branch_name,
+                repo.default_branch,
+                push=config.mid_chain_rebase_push,
+            )
+            if rebased:
+                print(
+                    f"Mid-chain rebase: task {task.id} branch "
+                    f"{task.branch_name} rebased onto {repo.default_branch}"
+                )
+            else:
+                print(
+                    f"Mid-chain rebase: task {task.id} branch "
+                    f"{task.branch_name} had conflicts — skipped "
+                    f"(will resolve at final merge)"
+                )
+            return rebased
+        except Exception as e:
+            # Mid-chain rebase is best-effort — never block the chain
+            print(
+                f"Mid-chain rebase: task {task.id} failed unexpectedly: {e}"
+            )
+            return False
+
+    async def _merge_and_push(
+        self, task: Task, repo: RepoConfig, workspace: str,
+        *, _max_retries: int = 3,
+    ) -> None:
+        """Merge the task branch into default and push (clone repos only).
+
+        For CLONE repos, delegates to :meth:`GitManager.sync_and_merge` which
+        handles the full fetch → hard-reset → merge → push-with-retry cycle.
+        The *_max_retries* parameter controls total push attempts (including
+        the initial one); internally this maps to
+        ``max_retries = _max_retries - 1``.
+
+        For LINK / INIT repos (no remote), falls back to a simple local merge
+        via :meth:`GitManager.merge_branch` — no push or retry is needed.
+
+        **Recovery on failure:** If the merge or push fails, the workspace is
+        reset to a clean state so it's ready for the next task.  For CLONE
+        repos this means hard-resetting the default branch to
+        ``origin/<default_branch>`` (discarding any un-pushed merge commits).
+        For LINK repos this means checking out the default branch.  Recovery
+        is best-effort — failures are silently ignored.
+        """
+        is_clone = repo.source_type == RepoSourceType.CLONE
+
+        if is_clone:
+            # sync_and_merge handles fetch, hard-reset, merge, and push
+            # with retry.  max_retries counts *retries* after the first
+            # attempt, so subtract 1 from _max_retries (total attempts).
+            success, error = self.git.sync_and_merge(
+                workspace,
+                task.branch_name,
+                repo.default_branch,
+                max_retries=max(_max_retries - 1, 0),
+            )
+            if not success:
+                if error == "merge_conflict":
+                    await self._notify_channel(
+                        f"**Merge Conflict:** Task `{task.id}` branch "
+                        f"`{task.branch_name}` has conflicts with "
+                        f"`{repo.default_branch}`. Manual resolution needed.",
+                        project_id=task.project_id,
+                    )
+                else:
+                    # error starts with "push_failed: …"
+                    await self._notify_channel(
+                        f"**Push Failed:** Could not push `{repo.default_branch}` "
+                        f"for task `{task.id}` after {_max_retries} attempts. "
+                        f"Workspace may be diverged. Details: {error}",
+                        project_id=task.project_id,
+                    )
+                # Recovery: reset workspace to origin state so it's clean
+                # for the next task.  After a failed push the local default
+                # branch may contain un-pushed merge commits; hard-resetting
+                # to origin discards them.
+                try:
+                    self.git._run(
+                        ["checkout", repo.default_branch], cwd=workspace,
+                    )
+                    self.git._run(
+                        ["reset", "--hard", f"origin/{repo.default_branch}"],
+                        cwd=workspace,
+                    )
+                except Exception:
+                    pass  # best-effort recovery
+                return
+        else:
+            # LINK / INIT repos have no remote — just merge locally.
+            merged = self.git.merge_branch(
+                workspace, task.branch_name, repo.default_branch,
+            )
+            if not merged:
+                # Rebase fallback: rebase the task branch onto the default
+                # branch and retry the merge.  This resolves conflicts caused
+                # by the task branch being based on a stale snapshot.
+                rebased = self.git.rebase_onto(
+                    workspace, task.branch_name, repo.default_branch,
+                )
+                if rebased:
+                    merged = self.git.merge_branch(
+                        workspace, task.branch_name, repo.default_branch,
+                    )
+            if not merged:
                 await self._notify_channel(
-                    f"**Push Failed:** Could not push `{repo.default_branch}` for task `{task.id}`: {e}",
+                    f"**Merge Conflict:** Task `{task.id}` branch "
+                    f"`{task.branch_name}` has conflicts with "
+                    f"`{repo.default_branch}`. Manual resolution needed.",
                     project_id=task.project_id,
                 )
+                # Recovery: ensure we're on the default branch so the
+                # workspace is clean for the next task.  merge_branch()
+                # already aborts the merge, but we make sure we're on the
+                # right branch as a safety net.
+                try:
+                    self.git._run(
+                        ["checkout", repo.default_branch], cwd=workspace,
+                    )
+                except Exception:
+                    pass  # best-effort recovery
+                return
 
         # Clean up the task branch after successful merge
         try:
             self.git.delete_branch(
                 workspace, task.branch_name,
-                delete_remote=repo.source_type == RepoSourceType.CLONE,
+                delete_remote=is_clone,
             )
         except Exception:
             pass  # branch cleanup is best-effort
@@ -1090,7 +1249,13 @@ class Orchestrator:
             return None
 
         try:
-            self.git.push_branch(workspace, task.branch_name)
+            # Use --force-with-lease so the push succeeds even when the
+            # branch was previously pushed (e.g. task retries or subtask
+            # chains that push intermediate results).  Task branches are
+            # owned by a single agent, so force-pushing is safe.
+            self.git.push_branch(
+                workspace, task.branch_name, force_with_lease=True,
+            )
         except Exception as e:
             await self._notify_channel(
                 f"**Push Failed:** Could not push branch `{task.branch_name}` "
@@ -1564,7 +1729,14 @@ class Orchestrator:
                 "When you have finished, you MUST commit your work:\n"
                 "1. `git add` the files you changed\n"
                 "2. `git commit` with a descriptive message\n"
-                "Do NOT push — the system handles pushing and PR creation."
+                "Do NOT push — the system handles pushing and PR creation.\n"
+                "\n## Important: Keeping Your Workspace in Sync\n"
+                "Before starting work, pull the latest changes from the main branch:\n"
+                "1. `git fetch origin`\n"
+                "2. `git rebase origin/main` (if on a task branch)\n"
+                "This ensures you're working with the latest code and reduces merge conflicts.\n"
+                "If a rebase has conflicts you cannot resolve, proceed with your work anyway —\n"
+                "the system will handle conflicts during the merge phase."
             )
         else:
             # Root task prompt: may write plans
@@ -1578,6 +1750,13 @@ class Orchestrator:
                 "1. `git add` the files you changed\n"
                 "2. `git commit` with a descriptive message\n"
                 "Do NOT push — the system handles pushing and PR creation.\n"
+                "\n## Important: Keeping Your Workspace in Sync\n"
+                "Before starting work, pull the latest changes from the main branch:\n"
+                "1. `git fetch origin`\n"
+                "2. `git rebase origin/main` (if on a task branch)\n"
+                "This ensures you're working with the latest code and reduces merge conflicts.\n"
+                "If a rebase has conflicts you cannot resolve, proceed with your work anyway —\n"
+                "the system will handle conflicts during the merge phase.\n"
                 "\n## CRITICAL: Writing Implementation Plans\n"
                 "Most tasks do NOT require writing a plan — just implement the changes directly.\n"
                 "Only write a plan if the task explicitly asks you to create an implementation plan,\n"

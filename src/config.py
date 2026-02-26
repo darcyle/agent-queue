@@ -102,6 +102,9 @@ class AutoTaskConfig:
     inherit_approval: bool = True       # Subtasks inherit parent's requires_approval
     base_priority: int = 100            # Base priority for generated tasks
     chain_dependencies: bool = True     # Tasks depend on previous step
+    rebase_between_subtasks: bool = False  # Rebase onto main between subtasks
+    mid_chain_rebase: bool = True       # Rebase onto main between subtasks to reduce drift
+    mid_chain_rebase_push: bool = False # Push rebased branch to remote between subtasks
     max_plan_depth: int = 1             # Max nesting of plan-generated tasks
     max_steps_per_plan: int = 5         # Cap phases from a single plan
     use_llm_parser: bool = False        # Use LLM (Claude) for plan parsing
@@ -325,6 +328,9 @@ def load_config(path: str) -> AppConfig:
             inherit_approval=at.get("inherit_approval", True),
             base_priority=at.get("base_priority", 100),
             chain_dependencies=at.get("chain_dependencies", True),
+            rebase_between_subtasks=at.get("rebase_between_subtasks", False),
+            mid_chain_rebase=at.get("mid_chain_rebase", True),
+            mid_chain_rebase_push=at.get("mid_chain_rebase_push", False),
             max_plan_depth=at.get("max_plan_depth", 1),
             max_steps_per_plan=at.get("max_steps_per_plan", 5),
             use_llm_parser=at.get("use_llm_parser", False),

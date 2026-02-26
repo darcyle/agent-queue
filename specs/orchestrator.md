@@ -526,33 +526,44 @@ Always returns the absolute path to the workspace directory (never None).
 
 **`reuse_branch` flag.**  True when `task.is_plan_subtask and task.parent_task_id` is set.
 
+**`rebase_on_switch` flag.**  Set to `config.auto_task.rebase_between_subtasks` (default
+`False`).  When `True`, subtask branch switches include a rebase onto
+`origin/<default_branch>` to reduce drift between the shared branch and main.
+
 **By source type:**
 
 *CLONE repos:*
 - If `validate_checkout(workspace)` fails: call `git.create_checkout(repo.url, workspace)`
   (which `git clone`s the repo into `workspace`, creating parent directories as needed).
-- If `reuse_branch`: call `git.switch_to_branch(workspace, branch_name)` — fetches from
-  origin and checks out the existing branch, pulling latest if available.
+- If `reuse_branch`: call `git.switch_to_branch(workspace, branch_name, default_branch=repo.default_branch, rebase=rebase_on_switch)` — fetches from
+  origin and checks out the existing branch, pulling latest if available.  When
+  `rebase_on_switch` is True, also rebases onto `origin/<default_branch>`.
 - Otherwise: call `git.prepare_for_task(workspace, branch_name, repo.default_branch)` —
-  fetches from origin, checks out `default_branch`, pulls latest, then creates a new branch
-  named `branch_name` (or switches to it if it already exists from a previous attempt).
+  fetches from origin, hard-resets default branch to `origin/<default_branch>`, then
+  creates a new branch named `branch_name` (or switches to it and rebases if it already
+  exists from a previous attempt).
 
 *LINK repos:*
 - If `workspace` does not exist as a directory: send a Discord warning notification
   via `_notify_channel` and return the path as-is.
 - If the directory is a git repo (`validate_checkout` passes): apply the same branch logic
-  as CLONE (`switch_to_branch` or `prepare_for_task`).
+  as CLONE (`switch_to_branch` with `rebase=rebase_on_switch` or `prepare_for_task`).
 - If not a git repo: use the directory as-is (no git operations).
 
 *INIT repos:*
 - If `validate_checkout(workspace)` fails: call `git.init_repo(workspace)` to initialise
   a new repository.
-- If `reuse_branch`: call `git.switch_to_branch(workspace, branch_name)`.
+- If `reuse_branch`: call `git.switch_to_branch(workspace, branch_name, default_branch=repo.default_branch, rebase=rebase_on_switch)`.
 - Otherwise: call `git.create_branch(workspace, branch_name)` — runs `git checkout -b`,
   switching to the branch instead if it already exists.
 
 **Database updates.**  After the git operations:
 `db.update_task(task.id, branch_name=branch_name)`
+
+**Error handling.**  All git operations in `_prepare_workspace` are wrapped in a
+try/except.  If any git operation fails, a warning notification is sent but the method
+still returns the correct workspace path — the agent can work in the directory without
+branch management.
 
 ---
 
@@ -577,11 +588,14 @@ nothing was committed, log a message (not an error).
   - `_is_last_subtask` fetches all sibling subtasks (same `parent_task_id`) via
     `db.get_subtasks(parent_task_id)` and returns `True` only when every sibling other
     than this task has status `COMPLETED`.
-- If not the last subtask: return `None` (commit is sufficient; PR/merge waits for final).
 - If last subtask and repo exists: fetch the parent task record.
   - If parent task exists and has `requires_approval`: return `await _create_pr_for_task(...)`,
     which may return a PR URL or `None`.
   - Otherwise: call `_merge_and_push`.
+- If not the last subtask and repo exists and branch_name is set:
+  call `_mid_chain_rebase(task, repo, workspace)` to optionally rebase the shared branch
+  onto latest main between subtask completions.  This catches conflicts early and keeps
+  the branch close to main.
 - Return `None`.
 
 **Root task path.**
@@ -589,22 +603,86 @@ nothing was committed, log a message (not an error).
 - If repo exists and no approval needed: call `_merge_and_push`, return `None`.
 - If no repo: changes remain committed on the branch but nothing is pushed, return `None`.
 
-### `_merge_and_push(task, repo, workspace)`
+### `_is_last_subtask(task) -> bool`
 
-1. `git.merge_branch(workspace, branch_name, default_branch)`.
-2. On conflict: notify channel with a "Merge Conflict" message; return.
-3. If repo is CLONE: `git.push_branch(workspace, default_branch)`.  On push failure: notify.
-4. Best-effort: `git.delete_branch(workspace, branch_name, delete_remote=(repo is CLONE))`.
+Checks if all sibling subtasks (same `parent_task_id`) are COMPLETED except this one.
+Returns `True` if the task has no `parent_task_id` or if every sibling's status is
+`COMPLETED`.
+
+### `_mid_chain_rebase(task, repo, workspace) -> bool`
+
+Optionally rebases the shared subtask branch onto latest main between subtask completions.
+Called after an intermediate subtask commits its work (not the final subtask).
+
+**Preconditions (skip if not met):**
+- `config.auto_task.mid_chain_rebase` must be `True` (default).
+- `config.auto_task.chain_dependencies` must be `True` — without chained dependencies
+  the subtasks may run in parallel on different branches, so mid-chain rebase is not
+  applicable.
+
+**Execution:**
+- Calls `git.mid_chain_rebase(workspace, branch_name, default_branch, push=config.auto_task.mid_chain_rebase_push)`.
+- Logs the outcome (success or conflict skip).
+- Returns `True` if the rebase succeeded, `False` otherwise.
+
+**Error handling:**  All exceptions are caught silently — mid-chain rebase is best-effort
+and never blocks the subtask chain.
+
+**Benefits:**
+- **Early conflict detection:** Conflicts are surfaced after each subtask rather than as a
+  giant conflict at the end of the chain.
+- **Smaller diffs at merge time:** The final merge stays close to a fast-forward, reducing
+  the risk of push rejections.
+- **Backed up progress:** With `mid_chain_rebase_push` enabled, intermediate progress is
+  pushed to the remote.
+
+### `_merge_and_push(task, repo, workspace, *, _max_retries=3)`
+
+Merges the task branch into the default branch and pushes.  The workflow differs by repo
+type:
+
+**CLONE repos** — delegates to `git.sync_and_merge()`:
+
+1. Calls `sync_and_merge(workspace, branch_name, default_branch, max_retries=_max_retries-1)`.
+   The `_max_retries` parameter represents total push attempts; internally this maps to
+   `max_retries = _max_retries - 1` (retries after the initial attempt).
+2. Handles the `(success, error_msg)` return value:
+   - **Success:** Clean up the task branch locally and on the remote via `delete_branch(delete_remote=True)`.
+   - **`"merge_conflict"`:** Send a "Merge Conflict" notification suggesting manual
+     resolution.  Reset the workspace to a clean state by checking out the default branch
+     and running `git reset --hard origin/<default_branch>` to discard any un-pushed merge
+     commits.
+   - **`"push_failed: ..."`:** Send a "Push Failed" notification with attempt count and
+     divergence warning.  Same workspace recovery as merge conflict.
+3. Workspace recovery after failure is best-effort — errors are silently ignored.
+
+**LINK / INIT repos** — no remote push:
+
+1. Calls `git.merge_branch(workspace, branch_name, default_branch)`.
+2. If merge fails with conflict: attempt `rebase_onto(branch_name, default_branch)` as a
+   fallback, then retry the merge.  If still failing, send a "Merge Conflict" notification
+   and recover by checking out the default branch (no hard reset — LINK repos have no
+   remote).
+3. On success: clean up the task branch locally via `delete_branch(delete_remote=False)`.
+
+Branch cleanup and workspace recovery are always best-effort — failures are silently ignored.
 
 ### `_create_pr_for_task(task, repo, workspace) -> str | None`
 
-For LINK repos: notify "Approval Required" with manual-review instructions and return `None`.
+Pushes the task branch and creates a PR. Returns the PR URL or `None`.
 
-For CLONE repos:
-1. `git.push_branch(workspace, branch_name)`.  On failure: notify and return `None`.
-2. `git.create_pr(workspace, branch, title, body, base=default_branch)`.
+**LINK repos:**
+- Notify "Approval Required" with manual-review instructions (LINK repos typically have
+  no remote). Return `None`.
+
+**CLONE repos:**
+1. Push the branch with `git.push_branch(workspace, branch_name, force_with_lease=True)`.
+   The `--force-with-lease` flag allows the push to succeed even when the branch was
+   previously pushed (e.g. task retries or subtask chains that push intermediate results).
+   On push failure: notify and return `None`.
+2. Create the PR via `git.create_pr(workspace, branch, title, body, base=default_branch)`.
    - PR body: `"Automated PR for task \`{id}\`.\n\n{description[:500]}"`.
-3. On PR creation failure: notify and return `None`.
+3. On PR creation failure: notify and return `None` (branch was already pushed).
 4. On success: return the PR URL.
 
 ---
@@ -847,7 +925,7 @@ When `_create_thread` is not set, all output falls back to `_notify_channel`.
 
 ---
 
-## Appendix: Key Constants
+## Appendix A: Key Constants
 
 | Constant | Default | Location | Purpose |
 |---|---|---|---|
@@ -857,3 +935,33 @@ When `_create_thread` is not set, all output falls back to `_notify_channel`.
 | `_NO_PR_AUTO_COMPLETE_GRACE` | 120s | `Orchestrator` | Grace period before auto-completing non-approval tasks with no PR |
 | Approval poll interval | 60s | `_check_awaiting_approval` | Rate limit on PR status checks |
 | Shutdown timeout | 10s | `shutdown` | Max wait for running tasks before close |
+
+---
+
+## Appendix B: Git Sync Configuration
+
+The following `auto_task` configuration fields control the workspace sync behavior:
+
+| Field | Type | Default | Purpose |
+|---|---|---|---|
+| `rebase_between_subtasks` | `bool` | `False` | Pass `rebase=True` to `switch_to_branch()` when switching to a shared subtask branch.  Rebases the branch onto `origin/<default_branch>` before the next subtask begins. |
+| `mid_chain_rebase` | `bool` | `True` | After an intermediate subtask completes, rebase the shared branch onto latest `origin/<default_branch>`.  Catches conflicts early and reduces drift. |
+| `mid_chain_rebase_push` | `bool` | `False` | When mid-chain rebase succeeds, push the rebased branch with `--force-with-lease` to back up intermediate progress. |
+| `chain_dependencies` | `bool` | `True` | When `True`, subtasks depend on the previous step.  Required for mid-chain rebase (without it, subtasks may run in parallel). |
+
+### Two drift-reduction mechanisms
+
+The system provides two complementary mechanisms for keeping subtask chains close to main:
+
+1. **Pre-start rebase** (`rebase_between_subtasks`): Controlled by `switch_to_branch(rebase=True)`.
+   When the orchestrator prepares a workspace for the next subtask in a chain, it rebases the
+   shared branch onto `origin/<default_branch>`.  This brings in upstream changes *before* the
+   agent starts working.
+
+2. **Post-completion rebase** (`mid_chain_rebase`): Controlled by `_mid_chain_rebase()`.
+   After an intermediate subtask commits and before the next subtask is scheduled, the shared
+   branch is rebased onto `origin/<default_branch>`.  This is best-effort and never blocks the
+   chain.
+
+Both mechanisms abort silently on conflict.  Conflicts are deferred to final merge time,
+where `sync_and_merge()` applies its rebase-before-merge fallback.
