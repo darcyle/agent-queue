@@ -248,6 +248,65 @@ class GitManager:
             self._run(["merge", "--abort"], cwd=checkout_path)
             return False
 
+    def sync_and_merge(
+        self, checkout_path: str, branch_name: str,
+        default_branch: str = "main", max_retries: int = 1,
+    ) -> tuple[bool, str]:
+        """Pull latest default branch, merge task branch, and push.
+
+        Encapsulates the full sync-merge-push flow that the orchestrator
+        uses after an agent finishes work on a task branch.  The steps:
+
+        1. Fetch from origin so we have the latest remote state.
+        2. Checkout the default branch and hard-reset it to
+           ``origin/<default_branch>`` — this discards any stale local
+           state (e.g. un-pushed merge commits from a prior attempt).
+        3. Merge the task branch into the default branch.
+        4. Push the default branch to origin, retrying up to
+           *max_retries* times if the push is rejected (e.g. another
+           agent pushed between our fetch and push).
+
+        Returns:
+            A ``(success, error_msg)`` tuple.  On success, *error_msg*
+            is the empty string.  On failure, it is one of:
+
+            - ``"merge_conflict"`` — the task branch conflicts with
+              the default branch.
+            - ``"push_failed: <details>"`` — all push attempts failed.
+        """
+        # 1. Fetch latest remote state
+        self._run(["fetch", "origin"], cwd=checkout_path)
+
+        # 2. Checkout default branch and hard-reset to origin
+        self._run(["checkout", default_branch], cwd=checkout_path)
+        self._run(["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path)
+
+        # 3. Attempt merge
+        try:
+            self._run(["merge", branch_name], cwd=checkout_path)
+        except GitError:
+            self._run(["merge", "--abort"], cwd=checkout_path)
+            return (False, "merge_conflict")
+
+        # 4. Push with retry
+        for attempt in range(max_retries + 1):
+            try:
+                self._run(["push", "origin", default_branch], cwd=checkout_path)
+                return (True, "")
+            except GitError as e:
+                if attempt < max_retries:
+                    # Re-pull (rebase) to incorporate whatever was pushed
+                    # in the meantime, then retry the push.
+                    self._run(
+                        ["pull", "--rebase", "origin", default_branch],
+                        cwd=checkout_path,
+                    )
+                else:
+                    return (False, f"push_failed: {e}")
+
+        # Unreachable, but satisfies the type checker.
+        return (False, "push_failed_exhausted")  # pragma: no cover
+
     def delete_branch(
         self, checkout_path: str, branch_name: str, *, delete_remote: bool = True,
     ) -> None:
