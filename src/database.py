@@ -654,6 +654,53 @@ class Database:
         rows = await cursor.fetchall()
         return [self._row_to_task(r) for r in rows]
 
+    async def get_task_tree(self, root_task_id: str) -> dict | None:
+        """Return a nested dict representing the full task hierarchy.
+
+        The returned structure looks like::
+
+            {
+                "task": <Task>,          # the root Task object
+                "children": [            # list of child sub-trees
+                    {"task": <Task>, "children": [...]},
+                    ...
+                ],
+            }
+
+        Uses :meth:`get_subtasks` as the building block and recurses
+        through all descendants.  Returns ``None`` if *root_task_id*
+        does not exist in the database.
+        """
+        root = await self.get_task(root_task_id)
+        if root is None:
+            return None
+
+        async def _build_subtree(task: Task) -> dict:
+            children = await self.get_subtasks(task.id)
+            # Sort children by priority then creation order for deterministic output
+            child_nodes = []
+            for child in children:
+                child_nodes.append(await _build_subtree(child))
+            return {"task": task, "children": child_nodes}
+
+        return await _build_subtree(root)
+
+    async def get_parent_tasks(self, project_id: str) -> list[Task]:
+        """Return top-level tasks for a project (those with no parent).
+
+        A "parent task" in this context is a task whose
+        ``parent_task_id`` is ``NULL`` — i.e. it is not a subtask of
+        any other task.  Results are ordered by priority ascending,
+        then creation time ascending, matching :meth:`list_tasks`.
+        """
+        cursor = await self._db.execute(
+            "SELECT * FROM tasks WHERE project_id = ? AND parent_task_id IS NULL "
+            "ORDER BY priority ASC, created_at ASC",
+            (project_id,),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_task(r) for r in rows]
+
     def _row_to_task(self, row) -> Task:
         keys = row.keys()
         return Task(
