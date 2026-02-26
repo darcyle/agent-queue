@@ -72,6 +72,68 @@ def _status_emoji(status: TaskStatus) -> str:
     return STATUS_EMOJIS.get(status.value, "⚪")
 
 
+def _dep_annotation(task_id: str, dep_map: dict[str, dict] | None) -> str:
+    """Build a concise dependency annotation suffix for a tree node.
+
+    When *dep_map* is provided and contains entries for *task_id*, the
+    function returns a parenthesised annotation like ``(← needs #abc)``
+    or ``(← blocks #xyz)`` (or both).  Returns an empty string when
+    there's nothing to annotate.
+
+    Parameters
+    ----------
+    task_id:
+        The ID of the task being rendered.
+    dep_map:
+        Mapping of ``task_id`` → ``{"depends_on": [...], "blocks": [...]}``
+        as produced by :meth:`CommandHandler._build_dep_map`.  Each list
+        element is a dict with at least an ``"id"`` key.  May be ``None``.
+    """
+    if not dep_map:
+        return ""
+    info = dep_map.get(task_id)
+    if not info:
+        return ""
+
+    parts: list[str] = []
+
+    depends_on = info.get("depends_on", [])
+    if depends_on:
+        ids = ", ".join(f"#{d['id']}" for d in depends_on)
+        parts.append(f"needs {ids}")
+
+    blocks = info.get("blocks", [])
+    if blocks:
+        ids = ", ".join(f"#{b['id']}" for b in blocks)
+        parts.append(f"blocks {ids}")
+
+    if not parts:
+        return ""
+    return " (← " + ", ".join(parts) + ")"
+
+
+def _collect_tree_tasks(children: list[dict]) -> list["Task"]:
+    """Recursively collect all :class:`Task` objects from tree children.
+
+    Parameters
+    ----------
+    children:
+        A list of ``{"task": Task, "children": [...]}`` dicts, matching
+        the shape returned by ``Database.get_task_tree()``.
+
+    Returns
+    -------
+    list[Task]
+        Flat list of every Task in the subtree (does **not** include the
+        root — the caller should prepend it if needed).
+    """
+    result: list[Task] = []
+    for node in children:
+        result.append(node["task"])
+        result.extend(_collect_tree_tasks(node.get("children", [])))
+    return result
+
+
 def _count_subtree(children: list[dict]) -> tuple[int, int]:
     """Recursively count ``(completed, total)`` tasks in a tree node list.
 
@@ -108,6 +170,7 @@ def _render_tree_node(
     max_depth: int,
     prefix: str,
     is_last: bool,
+    dep_map: dict[str, dict] | None = None,
 ) -> list[str]:
     """Render a single tree node and its descendants as lines of text.
 
@@ -130,17 +193,23 @@ def _render_tree_node(
         (e.g. ``"│   "`` or ``"    "``).
     is_last:
         Whether this node is the last sibling at its level.
+    dep_map:
+        Optional dependency mapping produced by
+        :meth:`CommandHandler._build_dep_map`.  When provided, each node
+        gets an inline annotation showing upstream/downstream dependencies
+        (e.g. ``(← needs #abc, blocks #xyz)``).
     """
     lines: list[str] = []
     emoji = _status_emoji(task.status)
+    dep_suffix = _dep_annotation(task.id, dep_map)
 
     # -- Format the current node's line --------------------------------------
     if depth == 0:
         # Root task: bold title + inline task id
-        lines.append(f"{emoji} **{task.title}** `{task.id}`")
+        lines.append(f"{emoji} **{task.title}** `{task.id}`{dep_suffix}")
     else:
         connector = _TREE_LAST if is_last else _TREE_BRANCH
-        lines.append(f"{prefix}{connector}{emoji} {task.title}")
+        lines.append(f"{prefix}{connector}{emoji} {task.title}{dep_suffix}")
 
     if not children:
         return lines
@@ -171,6 +240,7 @@ def _render_tree_node(
             max_depth=max_depth,
             prefix=child_prefix,
             is_last=is_last_child,
+            dep_map=dep_map,
         )
         lines.extend(child_lines)
 
@@ -184,6 +254,7 @@ def _format_task_tree(
     depth: int = 0,
     max_depth: int = 4,
     compact: bool = False,
+    dep_map: dict[str, dict] | None = None,
 ) -> str:
     """Format a task and its subtask tree as readable text with box-drawing chars.
 
@@ -207,6 +278,12 @@ def _format_task_tree(
     compact:
         If ``True``, show only the root task header and a summary count
         line — no child tree at all.  Useful for dense list views.
+    dep_map:
+        Optional dependency mapping produced by
+        :meth:`CommandHandler._build_dep_map`.  When provided, each tree
+        node gets an inline annotation showing upstream/downstream
+        dependencies (e.g. ``(← needs #abc, blocks #xyz)``).  Ignored
+        in compact mode (too dense for annotations).
 
     Returns
     -------
@@ -234,6 +311,16 @@ def _format_task_tree(
         ├── ⚪ Write tests
         └── ⚪ Security review
 
+    With dependency annotations (``dep_map`` provided)::
+
+        🟡 **Implement auth** `task-abc`
+          2/5 subtasks complete
+        ├── 🟢 Set up OAuth
+        ├── 🟢 Create login page
+        ├── 🟡 Add session management (← blocks #task-xyz)
+        ├── ⚪ Write tests (← needs #task-def)
+        └── ⚪ Security review
+
     Compact::
 
         🟡 **Implement auth** `task-abc`
@@ -248,6 +335,8 @@ def _format_task_tree(
         summary_line = None
 
     # -- Compact mode: root + summary only -----------------------------------
+    # Dependency annotations are intentionally omitted in compact mode —
+    # the format is too dense and the annotations would dominate the output.
     if compact:
         emoji = _status_emoji(root_task.status)
         lines = [f"{emoji} **{root_task.title}** `{root_task.id}`"]
@@ -264,6 +353,7 @@ def _format_task_tree(
             max_depth=effective_max_depth,
             prefix="",
             is_last=True,
+            dep_map=dep_map,
         )
         # Insert summary line right after the root header
         if summary_line:
@@ -851,8 +941,16 @@ class CommandHandler:
             root_tasks = self._apply_completion_filter(root_tasks, args)
 
         # 3. Build tree for each root and format.
+        #    When show_dependencies is active we need two passes:
+        #      a) collect all trees so we know every task in every subtree,
+        #      b) build a dep_map for the full set, then re-format with
+        #         annotations.  The first pass still stores a provisional
+        #         ``formatted`` string (without annotations) so that if
+        #         dep_map turns out empty the output is unchanged.
         trees: list[dict] = []
         included_roots: list[Task] = []  # Track Task objects for dependency enrichment
+        # raw_trees stores (root, children) pairs for a second formatting pass
+        raw_trees: list[tuple[Task, list[dict]]] = []
         total_tasks = 0
 
         for root in root_tasks[:200]:
@@ -884,6 +982,7 @@ class CommandHandler:
 
             trees.append(tree_entry)
             included_roots.append(root)
+            raw_trees.append((root, children))
             # Count root + all its subtasks
             total_tasks += 1 + subtask_total
 
@@ -891,6 +990,22 @@ class CommandHandler:
         if show_dependencies:
             root_dicts = [entry["root"] for entry in trees]
             await self._enrich_with_dependencies(root_dicts, included_roots)
+
+            # Build dep_map across ALL tasks in all trees and re-format
+            # expanded trees with inline annotations.  Compact mode is
+            # skipped — annotations are too dense for the summary format.
+            if not compact:
+                all_tasks: list[Task] = []
+                for root, children in raw_trees:
+                    all_tasks.append(root)
+                    all_tasks.extend(_collect_tree_tasks(children))
+
+                dep_map = await self._build_dep_map(all_tasks)
+                if dep_map:
+                    for i, (root, children) in enumerate(raw_trees):
+                        trees[i]["formatted"] = _format_task_tree(
+                            root, children, compact=False, dep_map=dep_map,
+                        )
 
         return {
             "display_mode": mode_name,
@@ -969,6 +1084,60 @@ class CommandHandler:
             else:
                 td["blocks"] = []
 
+    async def _build_dep_map(
+        self, tasks: list[Task],
+    ) -> dict[str, dict]:
+        """Build a dependency map for annotating tree nodes.
+
+        Returns a dict mapping ``task_id`` → ``{"depends_on": [...], "blocks": [...]}``
+        where each list element is ``{"id": str, "title": str, "status": str}``.
+
+        Only tasks that have at least one dependency or dependent are included
+        in the returned map — callers can treat a missing key as "no
+        dependencies".
+
+        This is similar to :meth:`_enrich_with_dependencies` but returns a
+        standalone mapping suitable for passing to :func:`_format_task_tree`
+        instead of mutating task dicts in-place.
+        """
+        # Local cache so repeated dependency IDs don't trigger extra DB reads.
+        task_cache: dict[str, Task | None] = {}
+
+        async def _resolve(task_id: str) -> dict | None:
+            if task_id not in task_cache:
+                task_cache[task_id] = await self.db.get_task(task_id)
+            t = task_cache[task_id]
+            if t is None:
+                return None
+            return {"id": t.id, "title": t.title, "status": t.status.value}
+
+        dep_map: dict[str, dict] = {}
+
+        for task in tasks:
+            # Upstream: tasks this task depends on
+            dep_ids = await self.db.get_dependencies(task.id)
+            depends_on: list[dict] = []
+            for dep_id in dep_ids:
+                resolved = await _resolve(dep_id)
+                if resolved:
+                    depends_on.append(resolved)
+
+            # Downstream: tasks that depend on this task
+            dependent_ids = await self.db.get_dependents(task.id)
+            blocks: list[dict] = []
+            for dep_id in dependent_ids:
+                resolved = await _resolve(dep_id)
+                if resolved:
+                    blocks.append(resolved)
+
+            if depends_on or blocks:
+                dep_map[task.id] = {
+                    "depends_on": depends_on,
+                    "blocks": blocks,
+                }
+
+        return dep_map
+
     @staticmethod
     def _task_to_dict(t: Task) -> dict:
         """Serialize a :class:`Task` to the standard dict used in list
@@ -1044,10 +1213,14 @@ class CommandHandler:
                 summary only).  Default ``False``.
             max_depth (int): Maximum nesting depth before collapsing.
                 Default 4.
+            show_dependencies (bool): If ``True``, annotate tree nodes with
+                inline dependency arrows (e.g. ``← needs #abc``).
+                Default ``False``.
         """
         task_id: str = args["task_id"]
         compact: bool = args.get("compact", False)
         max_depth: int = args.get("max_depth", 4)
+        show_dependencies: bool = args.get("show_dependencies", False)
 
         tree_data = await self.db.get_task_tree(task_id)
         if tree_data is None:
@@ -1058,8 +1231,18 @@ class CommandHandler:
 
         completed, subtask_total = _count_subtree(children)
 
+        # Build dependency map for tree annotations when requested.
+        dep_map: dict[str, dict] | None = None
+        if show_dependencies and not compact:
+            all_tasks = [root_task] + _collect_tree_tasks(children)
+            dep_map = await self._build_dep_map(all_tasks)
+            # Only pass dep_map if it actually contains entries.
+            if not dep_map:
+                dep_map = None
+
         formatted = _format_task_tree(
             root_task, children, compact=compact, max_depth=max_depth,
+            dep_map=dep_map,
         )
 
         result: dict = {
