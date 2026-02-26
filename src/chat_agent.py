@@ -364,6 +364,11 @@ TOOLS = [
                     "description": "If true, agent work creates a PR instead of auto-merging. Human must approve/merge the PR.",
                     "default": False,
                 },
+                "task_type": {
+                    "type": "string",
+                    "enum": ["feature", "bugfix", "refactor", "test", "docs", "chore", "research", "plan"],
+                    "description": "Categorize the task type for display and filtering (optional)",
+                },
             },
             "required": ["title", "description"],
         },
@@ -553,7 +558,7 @@ TOOLS = [
     },
     {
         "name": "edit_task",
-        "description": "Edit a task's title, description, or priority.",
+        "description": "Edit a task's title, description, priority, or task_type.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -561,6 +566,11 @@ TOOLS = [
                 "title": {"type": "string", "description": "New title (optional)"},
                 "description": {"type": "string", "description": "New description (optional)"},
                 "priority": {"type": "integer", "description": "New priority (optional)"},
+                "task_type": {
+                    "type": ["string", "null"],
+                    "enum": ["feature", "bugfix", "refactor", "test", "docs", "chore", "research", "plan", None],
+                    "description": "New task type (optional, set to null to clear)",
+                },
             },
             "required": ["task_id"],
         },

@@ -76,6 +76,30 @@ class TaskEvent(Enum):
     RECOVERY = "RECOVERY"
 
 
+class TaskType(Enum):
+    """Categorizes the nature of a task for display and filtering.
+
+    Used by the Discord UI to show type-specific emoji tags and by the
+    ChatAgent to filter task listings.  The plan parser auto-assigns a
+    TaskType when creating subtasks from a plan file.
+
+    Values are lowercase strings suitable for storage in a TEXT column.
+    """
+
+    FEATURE = "feature"
+    BUGFIX = "bugfix"
+    REFACTOR = "refactor"
+    TEST = "test"
+    DOCS = "docs"
+    CHORE = "chore"
+    RESEARCH = "research"
+    PLAN = "plan"
+
+
+# Convenience set for validation without constructing enum members.
+TASK_TYPE_VALUES = frozenset(t.value for t in TaskType)
+
+
 class AgentState(Enum):
     """Tracks the runtime state of an agent process from the orchestrator's perspective.
 
@@ -209,6 +233,7 @@ class Task:
     pr_url: str | None = None
     plan_source: str | None = None       # path to archived plan file that generated this task
     is_plan_subtask: bool = False         # True if auto-generated from a plan
+    task_type: TaskType | None = None     # categorization: feature, bugfix, refactor, etc.
 
 
 @dataclass
