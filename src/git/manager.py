@@ -288,6 +288,33 @@ class GitManager:
             self._run(["merge", "--abort"], cwd=checkout_path)
             return False
 
+    def rebase_onto(
+        self, checkout_path: str, branch_name: str,
+        target_branch: str = "main",
+    ) -> bool:
+        """Rebase branch onto target. Returns True on success, False on conflict.
+
+        Switches to *branch_name*, then rebases it onto
+        ``origin/<target_branch>``.  If the rebase encounters conflicts it is
+        aborted and the method returns ``False`` — the branch is left in its
+        original pre-rebase state.
+
+        This is the public API for callers that need to rebase an arbitrary
+        branch onto any target (not just the default branch).  Internally,
+        :meth:`sync_and_merge` uses :meth:`_try_rebase_branch` for its
+        rebase-before-merge flow.
+        """
+        self._run(["checkout", branch_name], cwd=checkout_path)
+        try:
+            self._run(["rebase", f"origin/{target_branch}"], cwd=checkout_path)
+            return True
+        except GitError:
+            try:
+                self._run(["rebase", "--abort"], cwd=checkout_path)
+            except GitError:
+                pass  # rebase may not be in progress if it failed early
+            return False
+
     def _try_rebase_branch(
         self, checkout_path: str, branch_name: str,
         default_branch: str = "main",

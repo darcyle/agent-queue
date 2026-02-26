@@ -1230,3 +1230,112 @@ class TestTryRebaseBranch:
         # No rebase in progress — git status should be clean
         status = _git(["status", "--porcelain"], cwd=clone)
         assert status == ""
+
+
+class TestRebaseOnto:
+    """Tests for the public rebase_onto() method."""
+
+    def test_successful_rebase_returns_true(self, git_repo, tmp_path):
+        """rebase_onto should return True when the rebase succeeds cleanly."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Create a task branch and commit a new file
+        mgr.prepare_for_task(clone, "task-rebase-onto/ok")
+        _commit_file(clone, "feature.txt", "new feature", "add feature")
+
+        # Push a non-conflicting upstream commit to main via another clone
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "other.txt", "upstream change", "upstream commit")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        # Fetch so origin/main is up-to-date in the clone
+        _git(["fetch", "origin"], cwd=clone)
+
+        result = mgr.rebase_onto(clone, "task-rebase-onto/ok", "main")
+        assert result is True
+        assert _current_branch(clone) == "task-rebase-onto/ok"
+
+        # The rebased branch should contain the upstream commit
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "upstream commit" in log
+        assert "add feature" in log
+
+    def test_conflicting_rebase_returns_false(self, git_repo, tmp_path):
+        """rebase_onto should return False and abort on conflict."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Create a task branch that modifies README.md
+        mgr.prepare_for_task(clone, "task-rebase-onto/conflict")
+        task_sha = _commit_file(clone, "README.md", "task version", "task edit")
+
+        # Push a conflicting upstream commit
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "README.md", "upstream version", "upstream edit")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        _git(["fetch", "origin"], cwd=clone)
+
+        result = mgr.rebase_onto(clone, "task-rebase-onto/conflict", "main")
+        assert result is False
+        # Branch should still be checked out with original commit (rebase aborted)
+        assert _current_branch(clone) == "task-rebase-onto/conflict"
+        assert _head_sha(clone) == task_sha
+
+    def test_rebase_onto_custom_target_branch(self, tmp_path):
+        """rebase_onto should work with a non-default target branch."""
+        # Set up a repo with 'develop' as the branch to rebase onto
+        remote = tmp_path / "remote.git"
+        subprocess.run(["git", "init", "--bare", "--initial-branch=develop",
+                        str(remote)], check=True, capture_output=True)
+        clone = str(tmp_path / "clone")
+        subprocess.run(["git", "clone", str(remote), clone],
+                       check=True, capture_output=True)
+        _commit_file(clone, "README.md", "init", "initial commit")
+        _git(["push", "origin", "develop"], cwd=clone)
+
+        mgr = GitManager()
+        mgr.prepare_for_task(clone, "task-rebase-onto/develop",
+                             default_branch="develop")
+        _commit_file(clone, "feature.txt", "feature", "add feature")
+
+        # Push an upstream commit on develop
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", str(remote), pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "other.txt", "upstream", "upstream on develop")
+        _git(["push", "origin", "develop"], cwd=pusher)
+
+        _git(["fetch", "origin"], cwd=clone)
+
+        result = mgr.rebase_onto(clone, "task-rebase-onto/develop", "develop")
+        assert result is True
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "upstream on develop" in log
+        assert "add feature" in log
+
+    def test_rebase_leaves_clean_state_on_conflict(self, git_repo, tmp_path):
+        """After a failed rebase_onto, no rebase should be in progress."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        mgr.prepare_for_task(clone, "task-rebase-onto/clean")
+        _commit_file(clone, "README.md", "task", "task commit")
+
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "README.md", "upstream", "upstream commit")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        _git(["fetch", "origin"], cwd=clone)
+        mgr.rebase_onto(clone, "task-rebase-onto/clean", "main")
+
+        # No rebase in progress — git status should be clean
+        status = _git(["status", "--porcelain"], cwd=clone)
+        assert status == ""
