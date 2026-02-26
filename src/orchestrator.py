@@ -1170,7 +1170,13 @@ class Orchestrator:
             return None
 
         try:
-            self.git.push_branch(workspace, task.branch_name)
+            # Use --force-with-lease so the push succeeds even when the
+            # branch was previously pushed (e.g. task retries or subtask
+            # chains that push intermediate results).  Task branches are
+            # owned by a single agent, so force-pushing is safe.
+            self.git.push_branch(
+                workspace, task.branch_name, force_with_lease=True,
+            )
         except Exception as e:
             await self._notify_channel(
                 f"**Push Failed:** Could not push branch `{task.branch_name}` "

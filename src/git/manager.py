@@ -216,8 +216,25 @@ class GitManager:
             except GitError:
                 pass  # rebase may not be in progress
 
-    def push_branch(self, checkout_path: str, branch_name: str) -> None:
-        self._run(["push", "origin", branch_name], cwd=checkout_path)
+    def push_branch(
+        self, checkout_path: str, branch_name: str,
+        *, force_with_lease: bool = False,
+    ) -> None:
+        """Push a branch to origin.
+
+        Args:
+            checkout_path: Path to the local git checkout.
+            branch_name: The branch to push.
+            force_with_lease: If True, use ``--force-with-lease`` so the push
+                succeeds even when the remote branch has been previously pushed
+                (e.g. task retries or subtask chains that push intermediate
+                results).  This is safe because task branches are owned by a
+                single agent and are never concurrently updated by others.
+        """
+        args = ["push", "origin", branch_name]
+        if force_with_lease:
+            args.insert(2, "--force-with-lease")
+        self._run(args, cwd=checkout_path)
 
     def rebase_onto(
         self, checkout_path: str, branch_name: str,
