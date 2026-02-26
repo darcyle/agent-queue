@@ -950,6 +950,7 @@ def setup_commands(bot: commands.Bot) -> None:
             lines.append(f"**Progress:** {bar}")
         lines.append(
             f"**Tasks:** {total} total — "
+            f"{by_status.get('DEFINED', 0)} pending, "
             f"{in_progress} active, "
             f"{by_status.get('READY', 0)} ready, "
             f"{completed} completed, "
@@ -2264,7 +2265,7 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(name="create-agent", description="Register a new agent")
     @app_commands.describe(
-        name="Agent display name",
+        name="Agent display name (leave empty for auto-generated creative name)",
         agent_type="Agent type (claude, codex, cursor, aider)",
         repo_id="Repository ID to assign as workspace (optional)",
         project_id="Project to set workspace for (activates agent immediately)",
@@ -2278,13 +2279,15 @@ def setup_commands(bot: commands.Bot) -> None:
     ])
     async def create_agent_command(
         interaction: discord.Interaction,
-        name: str,
+        name: str | None = None,
         agent_type: app_commands.Choice[str] | None = None,
         repo_id: str | None = None,
         project_id: str | None = None,
         workspace_path: str | None = None,
     ):
-        args: dict = {"name": name}
+        args: dict = {}
+        if name:
+            args["name"] = name
         if agent_type:
             args["agent_type"] = agent_type.value
         if repo_id:
@@ -2298,7 +2301,7 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result['error'])
             return
         agent_fields: list[tuple[str, str, bool]] = [
-            ("Name", name, True),
+            ("Name", result.get("name", name), True),
             ("ID", f"`{result['created']}`", True),
             ("Type", args.get("agent_type", "claude"), True),
             ("State", result.get("state", "STARTING"), True),

@@ -28,6 +28,7 @@ from pathlib import Path
 from src.config import AppConfig
 from src.discord.embeds import STATUS_EMOJIS, TREE_BRANCH, TREE_LAST, TREE_PIPE, TREE_SPACE, progress_bar
 from src.discord.notifications import classify_error
+from src.discord.embeds import STATUS_EMOJIS
 from src.git.manager import GitError
 from src.models import (
     Agent, AgentState, Hook, Project, ProjectStatus, RepoConfig, RepoSourceType,
@@ -880,7 +881,139 @@ class CommandHandler:
             result.update(batch_result)
         return result
 
+    async def _enrich_with_dependencies(self, task_dicts: list[dict]) -> None:
+        """Add ``depends_on`` and ``blocks`` keys to each task dict **in-place**.
+
+        For every task in *task_dicts*, this looks up upstream dependencies
+        (tasks it depends on) and downstream dependents (tasks it blocks).
+        Each entry is a small ``{id, title, status}`` dict.
+
+        A per-call ``task_cache`` avoids redundant ``get_task()`` queries when
+        the same dependency ID appears across multiple tasks.  Both keys are
+        always set (empty list ``[]`` when no relationships exist) so callers
+        get a consistent output shape.
+        """
+        task_cache: dict[str, Task | None] = {}
+
+        async def _resolve(task_id: str) -> dict | None:
+            """Fetch a task (with caching) and return a summary dict."""
+            if task_id not in task_cache:
+                task_cache[task_id] = await self.db.get_task(task_id)
+            t = task_cache[task_id]
+            if t is None:
+                return None
+            return {"id": t.id, "title": t.title, "status": t.status.value}
+
+        for td in task_dicts:
+            tid = td["id"]
+
+            # Upstream: tasks this one depends on
+            dep_ids = await self.db.get_dependencies(tid)
+            depends_on = []
+            for dep_id in sorted(dep_ids):
+                info = await _resolve(dep_id)
+                if info:
+                    depends_on.append(info)
+            td["depends_on"] = depends_on
+
+            # Downstream: tasks that depend on this one
+            dependent_ids = await self.db.get_dependents(tid)
+            blocks = []
+            for dep_id in sorted(dependent_ids):
+                info = await _resolve(dep_id)
+                if info:
+                    blocks.append(info)
+            td["blocks"] = blocks
+
+    @staticmethod
+    def format_task_with_dependencies(task: dict) -> str:
+        """Format a single task dict with optional dependency annotation lines.
+
+        Produces output like::
+
+            🔵 #12: Set up database [READY]
+               ↳ depends on: #10 (COMPLETED ✅), #11 (IN_PROGRESS 🟡)
+
+        or::
+
+            🟡 #14: Build API endpoints [IN_PROGRESS]
+               ↳ blocks: #15, #16, #17
+
+        Tasks with no dependencies or dependents get a single line with no
+        annotation.  The status emoji for the main task is looked up from
+        ``STATUS_EMOJIS``; dependency references also include their status
+        emoji for quick visual scanning.
+
+        Parameters
+        ----------
+        task : dict
+            A task dict as returned by ``_cmd_list_tasks`` when
+            ``show_dependencies=True``.  Must contain at least ``id``,
+            ``title``, and ``status`` keys.  May contain ``depends_on`` and
+            ``blocks`` lists (each entry: ``{id, title, status}``).
+
+        Returns
+        -------
+        str
+            One or more lines of formatted text.
+        """
+        status = task.get("status", "DEFINED")
+        emoji = STATUS_EMOJIS.get(status, "⚪")
+        line = f"{emoji} #{task['id']}: {task['title']} [{status}]"
+        lines = [line]
+
+        # depends_on annotation
+        depends_on = task.get("depends_on", [])
+        if depends_on:
+            parts = []
+            for dep in depends_on:
+                dep_emoji = STATUS_EMOJIS.get(dep["status"], "⚪")
+                parts.append(f"#{dep['id']} ({dep['status']} {dep_emoji})")
+            lines.append(f"   ↳ depends on: {', '.join(parts)}")
+
+        # blocks annotation
+        blocks = task.get("blocks", [])
+        if blocks:
+            parts = [f"#{b['id']}" for b in blocks]
+            lines.append(f"   ↳ blocks: {', '.join(parts)}")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def format_task_list_with_dependencies(tasks: list[dict]) -> str:
+        """Format a full task list with dependency annotations.
+
+        Convenience wrapper around :meth:`format_task_with_dependencies` that
+        joins all task blocks with a newline separator.
+
+        Parameters
+        ----------
+        tasks : list[dict]
+            Task dicts as returned by ``_cmd_list_tasks`` (the ``"tasks"``
+            value) when ``show_dependencies=True``.
+
+        Returns
+        -------
+        str
+            Multi-line formatted text ready for display.
+        """
+        return "\n".join(
+            CommandHandler.format_task_with_dependencies(t) for t in tasks
+        )
+
     async def _cmd_list_tasks(self, args: dict) -> dict:
+        """List tasks with optional dependency annotations.
+
+        Parameters
+        ----------
+        args : dict
+            ``project_id`` – filter by project (optional).
+            ``status`` – filter by a specific TaskStatus value (optional).
+            ``include_completed`` – if True, include terminal tasks (default False).
+            ``show_dependencies`` – if True, enrich each task dict with
+            ``depends_on`` and ``blocks`` lists and include a pre-formatted
+            ``formatted`` key with the dependency-aware text representation.
+        """
         kwargs = {}
         if "project_id" in args:
             kwargs["project_id"] = args["project_id"]
@@ -1128,6 +1261,13 @@ class CommandHandler:
             "completed_count": completed,
             "has_children": len(children) > 0,
         }
+
+        # When dependencies are requested, include a ready-to-display text
+        # block so presentation layers can use it directly.
+        if show_dependencies:
+            result["formatted"] = self.format_task_list_with_dependencies(task_dicts)
+
+        return result
 
     async def _cmd_create_task(self, args: dict) -> dict:
         project_id = args.get("project_id")
@@ -1637,7 +1777,13 @@ class CommandHandler:
         }
 
     async def _cmd_create_agent(self, args: dict) -> dict:
-        agent_id = args["name"].lower().replace(" ", "-")
+        from .agent_names import generate_unique_agent_name
+
+        name = args.get("name")
+        if not name:
+            name = await generate_unique_agent_name(self.db)
+
+        agent_id = name.lower().replace(" ", "-")
         project_id = args.get("project_id")
         workspace_path = args.get("workspace_path")
 
@@ -1647,7 +1793,7 @@ class CommandHandler:
         # is called — or immediately below when workspace_path is provided.
         agent = Agent(
             id=agent_id,
-            name=args["name"],
+            name=name,
             agent_type=args.get("agent_type", "claude"),
             state=AgentState.STARTING,
         )

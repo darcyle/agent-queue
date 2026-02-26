@@ -446,7 +446,8 @@ TOOLS = [
     {
         "name": "create_agent",
         "description": (
-            "Register a new agent. Agents start in STARTING state and won't "
+            "Register a new agent. If no name is provided, a creative unique "
+            "name is auto-generated. Agents start in STARTING state and won't "
             "receive tasks until activated. Pass project_id and workspace_path "
             "to set the workspace and activate in one step, or call "
             "set_agent_workspace or activate_agent separately."
@@ -454,7 +455,10 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Agent display name"},
+                "name": {
+                    "type": "string",
+                    "description": "Agent display name. Leave empty to auto-generate a creative name.",
+                },
                 "agent_type": {
                     "type": "string",
                     "description": "Agent type (claude, codex, cursor, aider)",
@@ -471,7 +475,6 @@ TOOLS = [
                     "description": "Absolute path to workspace directory for the project",
                 },
             },
-            "required": ["name"],
         },
     },
     {
