@@ -1966,6 +1966,56 @@ class CommandHandler:
             "previous_status": old_status,
         }
 
+    async def _cmd_reopen_with_feedback(self, args: dict) -> dict:
+        """Reopen a task with QA feedback appended to its description.
+
+        Used when a completed or failed task needs to be retried because QA
+        found issues.  The feedback is appended to the task description so the
+        agent sees it on re-execution, and the task is reset to READY.
+
+        Required args: task_id, feedback (the QA feedback text).
+        """
+        task_id = args.get("task_id")
+        feedback = args.get("feedback", "").strip()
+        if not task_id:
+            return {"error": "task_id is required"}
+        if not feedback:
+            return {"error": "feedback text is required"}
+
+        task = await self.db.get_task(task_id)
+        if not task:
+            return {"error": f"Task '{task_id}' not found"}
+        if task.status == TaskStatus.IN_PROGRESS:
+            return {"error": "Task is currently in progress. Stop it first."}
+
+        old_status = task.status.value
+
+        # Append QA feedback to the task description so the agent sees it
+        # when the task is re-executed.
+        separator = "\n\n---\n**QA Feedback:**\n"
+        updated_description = task.description + separator + feedback
+
+        await self.db.transition_task(
+            task_id,
+            TaskStatus.READY,
+            context="reopen_with_feedback",
+            description=updated_description,
+            retry_count=0,
+            assigned_agent_id=None,
+        )
+        await self.db.log_event(
+            "reopen_with_feedback",
+            project_id=task.project_id,
+            task_id=task_id,
+            payload=feedback[:500],
+        )
+        return {
+            "reopened": task_id,
+            "title": task.title,
+            "previous_status": old_status,
+            "status": "READY",
+        }
+
     async def _cmd_delete_task(self, args: dict) -> dict:
         task = await self.db.get_task(args["task_id"])
         if not task:

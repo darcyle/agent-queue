@@ -602,6 +602,28 @@ TOOLS = [
         },
     },
     {
+        "name": "reopen_with_feedback",
+        "description": (
+            "Reopen a task with QA feedback. Use this when a fix failed QA or "
+            "needs rework — the feedback is appended to the task description so "
+            "the agent sees it on re-execution, and the task is reset to READY."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID to reopen"},
+                "feedback": {
+                    "type": "string",
+                    "description": (
+                        "QA feedback explaining what went wrong or what needs "
+                        "to be fixed (appended to task description)"
+                    ),
+                },
+            },
+            "required": ["task_id", "feedback"],
+        },
+    },
+    {
         "name": "delete_task",
         "description": "Delete a task. Cannot delete a task that is currently in progress.",
         "input_schema": {

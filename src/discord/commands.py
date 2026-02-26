@@ -1961,6 +1961,33 @@ def setup_commands(bot: commands.Bot) -> None:
             description=f"Task `{task_id}` restarted ({result.get('previous_status', '?')} → READY)",
         )
 
+    @bot.tree.command(
+        name="reopen-with-feedback",
+        description="Reopen a task with QA feedback appended to its description",
+    )
+    @app_commands.describe(
+        task_id="Task ID to reopen",
+        feedback="QA feedback explaining what went wrong or needs fixing",
+    )
+    async def reopen_with_feedback_command(
+        interaction: discord.Interaction, task_id: str, feedback: str,
+    ):
+        result = await handler.execute(
+            "reopen_with_feedback", {"task_id": task_id, "feedback": feedback},
+        )
+        if "error" in result:
+            await _send_error(interaction, result['error'])
+            return
+        prev = result.get('previous_status', '?')
+        title = result.get('title', '')
+        await _send_success(
+            interaction, "Task Reopened with Feedback",
+            description=(
+                f"Task `{task_id}` ({title}) reopened ({prev} → READY).\n\n"
+                f"**Feedback added:**\n{feedback[:500]}"
+            ),
+        )
+
     @bot.tree.command(name="delete-task", description="Delete a task")
     @app_commands.describe(task_id="Task ID to delete")
     async def delete_task_command(interaction: discord.Interaction, task_id: str):
