@@ -26,7 +26,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from src.config import AppConfig
-from src.discord.embeds import STATUS_EMOJIS
+from src.discord.embeds import STATUS_EMOJIS, progress_bar
 from src.discord.notifications import classify_error
 from src.git.manager import GitError
 from src.models import (
@@ -736,6 +736,33 @@ class CommandHandler:
     })
 
     async def _cmd_list_tasks(self, args: dict) -> dict:
+        """List tasks with configurable display mode.
+
+        Supports three ``display_mode`` values:
+
+        ``"flat"`` (default)
+            The original flat list of task dicts — every task is an
+            independent row.  This is backward-compatible with all
+            existing callers.
+
+        ``"tree"``
+            Group tasks by parent and render each root task's hierarchy
+            using :func:`_format_task_tree` (expanded, with box-drawing
+            characters).  The response includes both the pre-formatted
+            text and structured data so callers can choose how to present
+            it.
+
+        ``"compact"``
+            Show only root (parent) tasks with a subtask count and
+            progress bar.  Uses :func:`_format_task_tree` in compact
+            mode.  Ideal for dense overview lists.
+
+        For ``"tree"`` and ``"compact"`` modes, a ``project_id`` is
+        required so we can query parent tasks.  If ``project_id`` is
+        missing the method silently falls back to ``"flat"``.
+        """
+        display_mode: str = args.get("display_mode", "flat")
+
         kwargs = {}
         if "project_id" in args:
             kwargs["project_id"] = args["project_id"]
@@ -746,39 +773,143 @@ class CommandHandler:
         if explicit_status:
             kwargs["status"] = TaskStatus(args["status"])
 
-        tasks = await self.db.list_tasks(**kwargs)
+        # ── Flat mode (default / backward-compatible) ──────────────────
+        # Also used as the fallback when tree/compact lack a project_id.
+        if display_mode == "flat" or "project_id" not in args:
+            return await self._list_tasks_flat(args, kwargs, explicit_status)
+
+        # ── Tree / Compact modes ───────────────────────────────────────
+        return await self._list_tasks_hierarchical(
+            args, kwargs, explicit_status, compact=(display_mode == "compact"),
+        )
+
+    # -- private helpers for _cmd_list_tasks display modes -------------------
+
+    async def _list_tasks_flat(
+        self,
+        args: dict,
+        db_kwargs: dict,
+        explicit_status: bool,
+    ) -> dict:
+        """Flat list mode — the original ``_cmd_list_tasks`` behaviour."""
+        tasks = await self.db.list_tasks(**db_kwargs)
 
         # Apply include_completed / completed_only filtering only when no
         # explicit status filter was provided.
         if not explicit_status:
-            include_completed: bool = args.get("include_completed", False)
-            completed_only: bool = args.get("completed_only", False)
-
-            if completed_only:
-                # Show only finished tasks.
-                tasks = [t for t in tasks if t.status in self._FINISHED_STATUSES]
-            elif not include_completed:
-                # Default: hide finished tasks so the list shows active work.
-                tasks = [t for t in tasks if t.status not in self._FINISHED_STATUSES]
-            # else: include_completed=True — return everything unfiltered.
+            tasks = self._apply_completion_filter(tasks, args)
 
         return {
-            "tasks": [
-                {
-                    "id": t.id,
-                    "project_id": t.project_id,
-                    "title": t.title,
-                    "status": t.status.value,
-                    "priority": t.priority,
-                    "assigned_agent": t.assigned_agent_id,
-                    "parent_task_id": t.parent_task_id,
-                    "is_plan_subtask": t.is_plan_subtask,
-                    "pr_url": t.pr_url,
-                    "requires_approval": t.requires_approval,
-                }
-                for t in tasks[:200]
-            ],
+            "display_mode": "flat",
+            "tasks": [self._task_to_dict(t) for t in tasks[:200]],
             "total": len(tasks),
+        }
+
+    async def _list_tasks_hierarchical(
+        self,
+        args: dict,
+        db_kwargs: dict,
+        explicit_status: bool,
+        *,
+        compact: bool,
+    ) -> dict:
+        """Tree or compact list mode — groups tasks by parent hierarchy.
+
+        Fetches root (parentless) tasks for the project, then builds the
+        full subtask tree for each root task using
+        ``Database.get_task_tree()``.  The caller receives both
+        pre-formatted text (ready for Discord) and structured data.
+        """
+        project_id: str = db_kwargs["project_id"]
+        mode_name = "compact" if compact else "tree"
+
+        # 1. Get all root-level tasks for the project.
+        root_tasks = await self.db.get_parent_tasks(project_id)
+
+        # 2. Apply status filtering to root tasks.
+        if explicit_status:
+            status_filter = TaskStatus(args["status"])
+            root_tasks = [t for t in root_tasks if t.status == status_filter]
+        else:
+            root_tasks = self._apply_completion_filter(root_tasks, args)
+
+        # 3. Build tree for each root and format.
+        trees: list[dict] = []
+        total_tasks = 0
+
+        for root in root_tasks[:200]:
+            tree_data = await self.db.get_task_tree(root.id)
+            if tree_data is None:
+                # Shouldn't happen — root was just fetched — but be safe.
+                continue
+
+            children = tree_data.get("children", [])
+            completed, subtask_total = _count_subtree(children)
+
+            formatted = _format_task_tree(
+                root, children, compact=compact,
+            )
+
+            tree_entry: dict = {
+                "root": self._task_to_dict(root),
+                "formatted": formatted,
+                "subtask_completed": completed,
+                "subtask_total": subtask_total,
+            }
+
+            # In compact mode, also include a text progress bar for
+            # callers that want to display it inline.
+            if compact and subtask_total > 0:
+                tree_entry["progress_bar"] = progress_bar(
+                    completed, subtask_total,
+                )
+
+            trees.append(tree_entry)
+            # Count root + all its subtasks
+            total_tasks += 1 + subtask_total
+
+        return {
+            "display_mode": mode_name,
+            "trees": trees,
+            "total_root_tasks": len(trees),
+            "total_tasks": total_tasks,
+        }
+
+    # -- shared helpers ------------------------------------------------------
+
+    def _apply_completion_filter(
+        self, tasks: list[Task], args: dict,
+    ) -> list[Task]:
+        """Filter a task list by the ``include_completed`` / ``completed_only``
+        convenience flags.  Used by both flat and hierarchical modes.
+        """
+        include_completed: bool = args.get("include_completed", False)
+        completed_only: bool = args.get("completed_only", False)
+
+        if completed_only:
+            return [t for t in tasks if t.status in self._FINISHED_STATUSES]
+        if not include_completed:
+            return [t for t in tasks if t.status not in self._FINISHED_STATUSES]
+        # include_completed=True — return everything unfiltered.
+        return tasks
+
+    @staticmethod
+    def _task_to_dict(t: Task) -> dict:
+        """Serialize a :class:`Task` to the standard dict used in list
+        responses.  Centralises the field selection so flat and
+        hierarchical modes stay consistent.
+        """
+        return {
+            "id": t.id,
+            "project_id": t.project_id,
+            "title": t.title,
+            "status": t.status.value,
+            "priority": t.priority,
+            "assigned_agent": t.assigned_agent_id,
+            "parent_task_id": t.parent_task_id,
+            "is_plan_subtask": t.is_plan_subtask,
+            "pr_url": t.pr_url,
+            "requires_approval": t.requires_approval,
         }
 
     async def _cmd_list_active_tasks_all_projects(self, args: dict) -> dict:
