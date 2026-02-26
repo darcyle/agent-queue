@@ -1752,3 +1752,433 @@ class TestRebaseOnto:
         # No rebase in progress — git status should be clean
         status = _git(["status", "--porcelain"], cwd=clone)
         assert status == ""
+
+
+class TestConcurrentPushRaceConditions:
+    """Tests for push race conditions between multiple agents.
+
+    When two agents complete tasks concurrently, their sync_and_merge calls
+    race to push to origin/main. These tests verify the retry logic handles
+    this correctly.
+    """
+
+    @pytest.fixture
+    def three_agent_setup(self, tmp_path):
+        """Create a bare remote and three independent agent clones."""
+        remote = tmp_path / "remote.git"
+        subprocess.run(
+            ["git", "init", "--bare", "--initial-branch=main", str(remote)],
+            check=True, capture_output=True,
+        )
+        agents = []
+        for name in ["agent-a", "agent-b", "agent-c"]:
+            path = str(tmp_path / name)
+            subprocess.run(["git", "clone", str(remote), path],
+                           check=True, capture_output=True)
+            agents.append(path)
+
+        # Initial commit from first agent
+        _commit_file(agents[0], "README.md", "init", "init")
+        _git(["push", "origin", "main"], cwd=agents[0])
+        # Fetch so all agents are up to date
+        for a in agents[1:]:
+            _git(["fetch", "origin"], cwd=a)
+            _git(["reset", "--hard", "origin/main"], cwd=a)
+        return {"remote": str(remote), "agents": agents}
+
+    def test_three_concurrent_agents_all_touch_different_files(self, three_agent_setup):
+        """Three agents working on non-conflicting files should all succeed
+        when they sync_and_merge sequentially (simulating near-concurrent completion)."""
+        mgr = GitManager()
+        agents = three_agent_setup["agents"]
+        remote = three_agent_setup["remote"]
+
+        # All three prepare branches before any pushes
+        for i, agent in enumerate(agents):
+            mgr.prepare_for_task(agent, f"task-{i}/feature")
+            _commit_file(agent, f"feature-{i}.txt", f"agent {i} work",
+                         f"agent {i} concurrent commit")
+
+        # Sync and merge sequentially (simulating near-concurrent completion)
+        for i, agent in enumerate(agents):
+            success, err = mgr.sync_and_merge(agent, f"task-{i}/feature")
+            assert success is True, f"Agent {i} failed: {err}"
+
+        # All three commits should be on remote
+        remote_log = _git(["log", "--oneline", "main"], cwd=remote)
+        for i in range(3):
+            assert f"agent {i} concurrent commit" in remote_log
+
+    def test_concurrent_push_race_with_conflicting_file_second_fails(
+        self, three_agent_setup,
+    ):
+        """When two agents modify the same file, the second agent's merge
+        should report merge_conflict (after rebase also fails)."""
+        mgr = GitManager()
+        agents = three_agent_setup["agents"]
+
+        # Both agents edit the same file
+        mgr.prepare_for_task(agents[0], "task-a/edit-readme")
+        _commit_file(agents[0], "README.md", "agent A edits", "agent A")
+
+        mgr.prepare_for_task(agents[1], "task-b/edit-readme")
+        _commit_file(agents[1], "README.md", "agent B edits", "agent B")
+
+        # Agent A succeeds
+        success_a, _ = mgr.sync_and_merge(agents[0], "task-a/edit-readme")
+        assert success_a is True
+
+        # Agent B should fail with merge conflict (both agents touched README.md)
+        success_b, err_b = mgr.sync_and_merge(agents[1], "task-b/edit-readme")
+        assert success_b is False
+        assert err_b == "merge_conflict"
+
+    def test_recover_and_continue_after_race_conflict(self, three_agent_setup):
+        """After a merge conflict from a race, recover_workspace + new task should work."""
+        mgr = GitManager()
+        agents = three_agent_setup["agents"]
+        remote = three_agent_setup["remote"]
+
+        # Create conflict
+        mgr.prepare_for_task(agents[0], "task-a/conflict")
+        _commit_file(agents[0], "README.md", "A version", "agent A conflict")
+        mgr.prepare_for_task(agents[1], "task-b/conflict")
+        _commit_file(agents[1], "README.md", "B version", "agent B conflict")
+
+        mgr.sync_and_merge(agents[0], "task-a/conflict")
+        success_b, _ = mgr.sync_and_merge(agents[1], "task-b/conflict")
+        assert success_b is False
+
+        # Recover agent B's workspace
+        mgr.recover_workspace(agents[1])
+        assert _current_branch(agents[1]) == "main"
+
+        # Agent B should be able to do non-conflicting work now
+        mgr.prepare_for_task(agents[1], "task-b/after-recovery")
+        _commit_file(agents[1], "new-file.txt", "new work", "post-recovery")
+        success, err = mgr.sync_and_merge(agents[1], "task-b/after-recovery")
+        assert success is True
+
+        remote_log = _git(["log", "--oneline", "main"], cwd=remote)
+        assert "post-recovery" in remote_log
+
+    def test_interleaved_push_retry_succeeds(self, three_agent_setup, monkeypatch):
+        """When the first push fails because another agent pushed between
+        fetch and push, the retry mechanism (pull --rebase) should resolve it."""
+        mgr = GitManager()
+        agents = three_agent_setup["agents"]
+
+        # Agent A and B both prepare non-conflicting work
+        mgr.prepare_for_task(agents[0], "task-a/interleave")
+        _commit_file(agents[0], "a.txt", "A work", "agent A work")
+        mgr.prepare_for_task(agents[1], "task-b/interleave")
+        _commit_file(agents[1], "b.txt", "B work", "agent B work")
+
+        # Agent A pushes successfully
+        success_a, _ = mgr.sync_and_merge(agents[0], "task-a/interleave")
+        assert success_a is True
+
+        # Agent B pushes — sync_and_merge fetches first so it sees A's push
+        success_b, _ = mgr.sync_and_merge(agents[1], "task-b/interleave")
+        assert success_b is True
+
+
+class TestMergeConflictDetectionAndRecovery:
+    """End-to-end tests for merge conflict detection, rebase recovery,
+    and workspace cleanup after failed operations."""
+
+    def test_conflict_with_rebase_recovery_succeeds(self, git_repo, tmp_path):
+        """When branches diverge on different files, sync_and_merge handles
+        it even if the direct merge is tricky."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        mgr.prepare_for_task(clone, "task/diverged")
+        # Multiple commits on the task branch
+        _commit_file(clone, "feature1.txt", "f1", "feature 1")
+        _commit_file(clone, "feature2.txt", "f2", "feature 2")
+
+        # Advance origin/main with multiple non-conflicting commits
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "upstream1.txt", "u1", "upstream 1")
+        _commit_file(pusher, "upstream2.txt", "u2", "upstream 2")
+        _commit_file(pusher, "upstream3.txt", "u3", "upstream 3")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        success, err = mgr.sync_and_merge(clone, "task/diverged")
+        assert success is True
+
+        # All commits should be present
+        log = _git(["log", "--oneline", "main"], cwd=git_repo["remote"])
+        assert "feature 1" in log
+        assert "feature 2" in log
+        assert "upstream 1" in log
+        assert "upstream 2" in log
+        assert "upstream 3" in log
+
+    def test_workspace_clean_after_conflict_recovery_failure(self, git_repo, tmp_path):
+        """After sync_and_merge fails + recover_workspace, the workspace should
+        have no local-only commits, no merge/rebase in progress, and be on the
+        default branch."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        mgr.prepare_for_task(clone, "task/conflict-cleanup")
+        _commit_file(clone, "README.md", "task edit", "task conflict")
+
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "README.md", "upstream edit", "upstream conflict")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        success, _ = mgr.sync_and_merge(clone, "task/conflict-cleanup")
+        assert success is False
+
+        mgr.recover_workspace(clone)
+
+        # Verify clean state
+        assert _current_branch(clone) == "main"
+        status = _git(["status", "--porcelain"], cwd=clone)
+        assert status == ""
+        origin_sha = _git(["rev-parse", "origin/main"], cwd=clone)
+        assert _head_sha(clone) == origin_sha
+
+        # No merge or rebase in progress
+        assert not pathlib.Path(clone, ".git", "MERGE_HEAD").exists()
+        assert not pathlib.Path(clone, ".git", "rebase-merge").exists()
+        assert not pathlib.Path(clone, ".git", "rebase-apply").exists()
+
+    def test_sync_and_merge_idempotent_after_failure(self, git_repo, tmp_path):
+        """Calling sync_and_merge again after a failure + recovery should work
+        if the conflict is resolved (e.g. branch rebased manually)."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        mgr.prepare_for_task(clone, "task/idempotent")
+        _commit_file(clone, "feature.txt", "feature", "feature work")
+
+        # Advance main
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "upstream.txt", "upstream", "upstream work")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        # First sync_and_merge should succeed (non-conflicting)
+        success, err = mgr.sync_and_merge(clone, "task/idempotent")
+        assert success is True
+
+        # Verify remote has both
+        remote_log = _git(["log", "--oneline", "main"], cwd=git_repo["remote"])
+        assert "feature work" in remote_log
+        assert "upstream work" in remote_log
+
+
+class TestSubtaskChainDriftAndMidChainRebase:
+    """End-to-end tests for subtask chain drift reduction using mid_chain_sync
+    and switch_to_branch(rebase=True)."""
+
+    def test_full_subtask_chain_with_mid_chain_sync(self, git_repo, tmp_path):
+        """Simulate a 3-subtask chain with mid-chain syncs between each subtask.
+        Each sync should keep the branch close to main despite concurrent work."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Simulate the parent task creating a branch
+        mgr.prepare_for_task(clone, "chain/full-test")
+
+        for step in range(3):
+            # Each subtask does some work
+            _commit_file(clone, f"step{step}.txt", f"step {step}", f"subtask {step}")
+
+            if step < 2:
+                # Advance main between subtasks (simulates concurrent agent work)
+                pusher = str(tmp_path / f"pusher-{step}")
+                subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                               check=True, capture_output=True)
+                _commit_file(pusher, f"concurrent-{step}.txt", f"c{step}",
+                             f"concurrent work {step}")
+                _git(["push", "origin", "main"], cwd=pusher)
+
+                # Mid-chain sync
+                synced = mgr.mid_chain_sync(clone, "chain/full-test")
+                assert synced is True
+                assert _current_branch(clone) == "chain/full-test"
+
+        # After all subtasks, the branch should be close to main
+        behind_count = _git(["rev-list", "--count", "HEAD..origin/main"], cwd=clone)
+        assert behind_count == "0", "Branch should not be behind main"
+
+        # Final merge should succeed cleanly
+        success, err = mgr.sync_and_merge(clone, "chain/full-test")
+        assert success is True
+
+        # All commits should be on remote
+        remote_log = _git(["log", "--oneline", "main"], cwd=git_repo["remote"])
+        for step in range(3):
+            assert f"subtask {step}" in remote_log
+        for step in range(2):
+            assert f"concurrent work {step}" in remote_log
+
+    def test_switch_to_branch_with_rebase_reduces_drift(self, git_repo, tmp_path):
+        """switch_to_branch(rebase=True) should rebase the subtask branch onto
+        latest main, reducing drift before the next subtask starts."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Create initial branch with work (subtask 1)
+        mgr.prepare_for_task(clone, "chain/switch-rebase")
+        _commit_file(clone, "step1.txt", "s1", "subtask 1 work")
+
+        # Advance main concurrently
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        new_main = _commit_file(pusher, "concurrent.txt", "c", "concurrent push")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        # Simulate subtask 2 starting: switch back to the branch with rebase
+        _git(["checkout", "main"], cwd=clone)
+        mgr.switch_to_branch(clone, "chain/switch-rebase", rebase=True)
+        assert _current_branch(clone) == "chain/switch-rebase"
+
+        # Branch should now be based on the new main
+        merge_base = _git(["merge-base", "origin/main", "HEAD"], cwd=clone)
+        assert merge_base == new_main
+
+        # Previous subtask work should be preserved
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "subtask 1 work" in log
+
+    def test_chain_without_mid_chain_sync_still_works(self, git_repo, tmp_path):
+        """Without mid-chain sync, the chain should still merge at the end,
+        just with more potential for conflicts."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        mgr.prepare_for_task(clone, "chain/no-sync")
+
+        # Two subtasks without mid-chain sync
+        _commit_file(clone, "step1.txt", "s1", "subtask 1 no-sync")
+        _commit_file(clone, "step2.txt", "s2", "subtask 2 no-sync")
+
+        # Advance main
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "other.txt", "other", "concurrent no-sync")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        # Final merge should still work (non-conflicting files)
+        success, err = mgr.sync_and_merge(clone, "chain/no-sync")
+        assert success is True
+
+    def test_mid_chain_sync_preserves_all_subtask_commits(self, git_repo, tmp_path):
+        """After mid_chain_sync, all previously committed subtask work should
+        be preserved in the rebased history."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        mgr.prepare_for_task(clone, "chain/preserve-commits")
+
+        # Subtask 1: multiple commits
+        _commit_file(clone, "a.txt", "a", "commit a")
+        _commit_file(clone, "b.txt", "b", "commit b")
+
+        # Advance main
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "upstream.txt", "u", "upstream push")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        synced = mgr.mid_chain_sync(clone, "chain/preserve-commits")
+        assert synced is True
+
+        # All commits should be in the log
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "commit a" in log
+        assert "commit b" in log
+        assert "upstream push" in log
+
+        # Subtask 2: more work on top
+        _commit_file(clone, "c.txt", "c", "commit c")
+
+        # Final merge
+        success, _ = mgr.sync_and_merge(clone, "chain/preserve-commits")
+        assert success is True
+
+        remote_log = _git(["log", "--oneline", "main"], cwd=git_repo["remote"])
+        assert "commit a" in remote_log
+        assert "commit b" in remote_log
+        assert "commit c" in remote_log
+
+
+class TestRetryBranchRebaseComprehensive:
+    """Additional tests for retry-rebase behavior covering edge cases."""
+
+    def test_retry_with_no_remote_changes_is_noop(self, git_repo):
+        """When main hasn't changed, retry rebase should be effectively a no-op."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        mgr.prepare_for_task(clone, "task-retry/noop")
+        _commit_file(clone, "work.txt", "work", "agent work")
+        original_sha = _head_sha(clone)
+
+        # "Retry" — prepare_for_task on existing branch without main advancing
+        mgr.prepare_for_task(clone, "task-retry/noop")
+        assert _current_branch(clone) == "task-retry/noop"
+
+        # Work should still be present
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "agent work" in log
+
+    def test_retry_with_multiple_commits_on_branch(self, git_repo, tmp_path):
+        """When a branch has multiple commits, retry rebase should replay all."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        mgr.prepare_for_task(clone, "task-retry/multi")
+        _commit_file(clone, "f1.txt", "1", "first commit")
+        _commit_file(clone, "f2.txt", "2", "second commit")
+        _commit_file(clone, "f3.txt", "3", "third commit")
+
+        # Advance main
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        new_main = _commit_file(pusher, "upstream.txt", "u", "upstream")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        # Retry
+        mgr.prepare_for_task(clone, "task-retry/multi")
+
+        # All commits preserved, rebased onto new main
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "first commit" in log
+        assert "second commit" in log
+        assert "third commit" in log
+
+        new_base = _git(["merge-base", "origin/main", "HEAD"], cwd=clone)
+        assert new_base == new_main
+
+    def test_force_with_lease_idempotent_pr_push(self, git_repo):
+        """Multiple force-with-lease pushes of the same branch should all succeed
+        when no other user has pushed (simulates PR creation retry)."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        mgr.create_branch(clone, "pr/idempotent")
+        _commit_file(clone, "pr.txt", "v1", "pr work")
+
+        # Push three times with force_with_lease — all should succeed
+        mgr.push_branch(clone, "pr/idempotent", force_with_lease=True)
+        mgr.push_branch(clone, "pr/idempotent", force_with_lease=True)
+        mgr.push_branch(clone, "pr/idempotent", force_with_lease=True)
+
+        remote_branches = _git(["branch", "-r"], cwd=clone)
+        assert "origin/pr/idempotent" in remote_branches

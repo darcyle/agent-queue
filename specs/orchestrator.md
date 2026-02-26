@@ -516,19 +516,24 @@ See `specs/git/git.md` §10 for the full design principles reference.
 | **Graceful degradation** | Git errors during workspace setup are caught and logged; a valid workspace path is always returned so the agent can start work. |
 | **Retry resilience** | Existing branches are reused on task retry rather than causing errors. |
 
-### Known Gaps
+### Resolved Gaps
 
-The workspace sync workflow has several identified gaps that affect correctness
-under concurrent multi-agent operation. See `specs/git/git.md` §11 for the full
-gap catalogue (G1–G7). The most critical gaps relative to this spec are:
+Most previously identified workspace sync gaps have been resolved. See
+`specs/git/git.md` §11 for the full gap catalogue.
+
+| Gap | Location in this spec | Resolution |
+|-----|----------------------|------------|
+| **G1** | §11 `_merge_and_push` | `sync_and_merge` fetches and hard-resets before merging. |
+| **G2** | §11 `_merge_and_push` | `recover_workspace` resets local default branch after failed sync_and_merge. |
+| **G3** | §11 `_merge_and_push` | `sync_and_merge` attempts rebase-before-merge on conflict. |
+| **G4** | §10 `_prepare_workspace` | `prepare_for_task` rebases existing branches on retry. |
+| **G5** | §11 `_create_pr_for_task` | `push_branch(force_with_lease=True)` for idempotent PR retries. |
+| **G6** | §10/§11 | `mid_chain_sync` + `switch_to_branch(rebase=True)` reduce subtask chain drift. |
+
+### Remaining Gap
 
 | Gap | Location in this spec | Issue |
 |-----|----------------------|-------|
-| **G1** | §11 `_merge_and_push` | No `git pull` before merge — push fails if another agent advanced `main`. |
-| **G2** | §11 `_merge_and_push` | Failed push leaves local `main` diverged; no rollback to clean state. |
-| **G3** | §11 `_merge_and_push` | Merge conflict triggers notify-and-stop; no automated rebase-and-retry. |
-| **G4** | §10 `_prepare_workspace` | Retried tasks check out existing branch without rebasing onto latest `origin/main`. |
-| **G6** | §10 `_prepare_workspace` | Subtask chains use `switch_to_branch` without periodic rebase, accumulating drift. |
 | **G7** | §10 `_prepare_workspace` | LINK repos share a single directory across agents — no file-level isolation. |
 
 `_prepare_workspace(task, agent) -> str`
@@ -560,23 +565,25 @@ Always returns the absolute path to the workspace directory (never None).
 *CLONE repos:*
 - If `validate_checkout(workspace)` fails: call `git.create_checkout(repo.url, workspace)`
   (which `git clone`s the repo into `workspace`, creating parent directories as needed).
-- If `reuse_branch`: call `git.switch_to_branch(workspace, branch_name)` — fetches from
-  origin and checks out the existing branch, pulling latest if available.
+- If `reuse_branch`: call `git.switch_to_branch(workspace, branch_name, default_branch=repo.default_branch, rebase=config.auto_task.rebase_between_subtasks)` — fetches from
+  origin, checks out the existing branch, pulls latest, and optionally rebases onto
+  `origin/<default_branch>` to reduce subtask chain drift (G6 fix).
 - Otherwise: call `git.prepare_for_task(workspace, branch_name, repo.default_branch)` —
-  fetches from origin, checks out `default_branch`, pulls latest, then creates a new branch
-  named `branch_name` (or switches to it if it already exists from a previous attempt).
+  fetches from origin, checks out `default_branch`, hard-resets to `origin/<default_branch>`,
+  then creates a new branch named `branch_name` (or switches to it and rebases if it
+  already exists from a previous attempt — G4 fix).
 
 *LINK repos:*
 - If `workspace` does not exist as a directory: send a Discord warning notification
   via `_notify_channel` and return the path as-is.
 - If the directory is a git repo (`validate_checkout` passes): apply the same branch logic
-  as CLONE (`switch_to_branch` or `prepare_for_task`).
+  as CLONE (`switch_to_branch` with `default_branch` and `rebase` args, or `prepare_for_task`).
 - If not a git repo: use the directory as-is (no git operations).
 
 *INIT repos:*
 - If `validate_checkout(workspace)` fails: call `git.init_repo(workspace)` to initialise
   a new repository.
-- If `reuse_branch`: call `git.switch_to_branch(workspace, branch_name)`.
+- If `reuse_branch`: call `git.switch_to_branch(workspace, branch_name, default_branch=repo.default_branch, rebase=config.auto_task.rebase_between_subtasks)`.
 - Otherwise: call `git.create_branch(workspace, branch_name)` — runs `git checkout -b`,
   switching to the branch instead if it already exists.
 
@@ -606,11 +613,15 @@ nothing was committed, log a message (not an error).
   - `_is_last_subtask` fetches all sibling subtasks (same `parent_task_id`) via
     `db.get_subtasks(parent_task_id)` and returns `True` only when every sibling other
     than this task has status `COMPLETED`.
-- If not the last subtask: return `None` (commit is sufficient; PR/merge waits for final).
 - If last subtask and repo exists: fetch the parent task record.
   - If parent task exists and has `requires_approval`: return `await _create_pr_for_task(...)`,
     which may return a PR URL or `None`.
   - Otherwise: call `_merge_and_push`.
+- If not the last subtask and repo exists and `config.auto_task.rebase_between_subtasks`
+  is enabled: call `git.mid_chain_sync(workspace, branch_name, repo.default_branch)`
+  inside a try/except. This pushes intermediate work to the remote and rebases the
+  chain branch onto `origin/<default_branch>`, reducing drift for the next subtask.
+  Log success/failure but continue regardless (non-fatal).
 - Return `None`.
 
 **Root task path.**
@@ -620,15 +631,27 @@ nothing was committed, log a message (not an error).
 
 ### `_merge_and_push(task, repo, workspace)`
 
-1. `git.merge_branch(workspace, branch_name, default_branch)`.
-2. On conflict: notify channel with a "Merge Conflict" message; return.
-3. If repo is CLONE: `git.push_branch(workspace, default_branch)`.  On push failure: notify.
-4. Best-effort: `git.delete_branch(workspace, branch_name, delete_remote=(repo is CLONE))`.
+Uses `git.sync_and_merge(workspace, branch_name, repo.default_branch)` which
+encapsulates the full sync-merge-push flow:
 
-> **Gaps G1–G3 apply here.** Step 1 merges into a potentially stale local
-> `main` (G1). Step 3 notifies but does not roll back the local merge on push
-> failure (G2). Step 2 aborts the merge on conflict without attempting a rebase
-> (G3). See `specs/git/git.md` §11 for details.
+1. Fetch latest remote state.
+2. Checkout default branch and hard-reset to `origin/<default_branch>` (**G1 fix**).
+3. Attempt merge; on conflict, rebase task branch onto `origin/<default_branch>` and
+   retry (**G3 fix**).
+4. Push with retry (pull --rebase on push failure).
+
+On failure (merge conflict or push failure):
+- Notify channel with structured error details (merge conflict or push failure message).
+- Call `git.recover_workspace(workspace, repo.default_branch)` to reset the local default
+  branch back to `origin/<default_branch>`, undoing any local merge commit (**G2 fix**).
+  Best-effort: exceptions are silently ignored.
+
+On success:
+- Best-effort: `git.delete_branch(workspace, branch_name, delete_remote=(repo is CLONE))`.
+
+> **Gaps G1–G3 are resolved.** `sync_and_merge` handles stale-main pulls (G1),
+> `recover_workspace` resets after failures (G2), and rebase-before-merge resolves
+> conflicts caused by branch staleness (G3).
 
 ### `_create_pr_for_task(task, repo, workspace) -> str | None`
 

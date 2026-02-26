@@ -103,22 +103,31 @@ Full pre-task branch setup. Handles both normal clones and git worktrees differe
 2. Runs `git fetch origin` unconditionally.
 3. **Worktree path:**
    - Creates the task branch directly from `origin/<default_branch>` with `git checkout -b <branch_name> origin/<default_branch>`.
-   - If that fails (branch already exists), falls back to `git checkout <branch_name>`.
+   - If that fails (branch already exists — retry scenario), falls back to `git checkout <branch_name>`, then calls `_rebase_onto_default` to rebase the branch onto the latest `origin/<default_branch>`.
    - Avoids checking out the default branch locally because it may already be checked out in the main working tree, which git forbids.
 4. **Normal clone path:**
    - Checks out `default_branch` locally.
-   - Attempts `git pull origin <default_branch>`. Silently ignores `GitError` (e.g. no upstream tracking configured).
+   - Runs `git reset --hard origin/<default_branch>` to force the local default branch to match the remote exactly. This is used instead of `git pull` because pull can fail when local has diverged (e.g. from un-pushed merge commits left by `_merge_and_push`). **Resolves G4 for fresh branches.**
    - Creates the task branch with `git checkout -b <branch_name>`.
-   - If that fails (task is being retried after a restart), falls back to `git checkout <branch_name>`.
+   - If that fails (task is being retried after a restart), falls back to `git checkout <branch_name>`, then calls `_rebase_onto_default` to rebase the branch onto the latest `origin/<default_branch>` so the agent doesn't work on stale code. **Resolves G4 for retried branches.**
 
-### `switch_to_branch(checkout_path, branch_name)`
+### `switch_to_branch(checkout_path, branch_name, default_branch="main", rebase=False)`
 
-Switches to a branch and pulls the latest remote state.
+Switches to an existing branch, pulling latest, and optionally rebasing onto the
+default branch.
+
+Used for subtask branch reuse: when a plan generates multiple subtasks that share
+a branch, this lets subsequent subtasks pick up where the previous one left off.
 
 1. Attempts `git fetch origin`. Silently ignores `GitError` (no remote configured).
 2. Attempts `git checkout <branch_name>`.
    - If that fails (branch exists only on the remote), tries `git checkout -b <branch_name> origin/<branch_name>` to create a local tracking branch.
+   - If that also fails (no remote branch either, e.g. LINK repo), creates a fresh local branch with `git checkout -b <branch_name>`.
 3. Attempts `git pull origin <branch_name>`. Silently ignores `GitError` (no upstream tracking).
+4. If `rebase` is `True`: calls `_rebase_onto_default(checkout_path, default_branch)` to
+   rebase the branch onto `origin/<default_branch>`, keeping subtask chains closer to main
+   and reducing merge conflicts at the end. Controlled by the `auto_task.rebase_between_subtasks`
+   config option. If the rebase conflicts, it is aborted and the branch is left as-is.
 
 ### `delete_branch(checkout_path, branch_name, *, delete_remote=True)`
 
@@ -128,6 +137,48 @@ Deletes a branch locally and optionally on the remote.
 2. If that fails, attempts `git branch -D <branch_name>` (force delete — handles squash-merged PRs).
 3. If both local deletes fail, silently suppresses the error (branch may not exist locally).
 4. If `delete_remote=True`, runs `git push origin --delete <branch_name>`. Silently ignores `GitError` (branch may not exist on the remote).
+
+### `pull_latest_main(checkout_path, default_branch="main")`
+
+Convenience method that fetches from origin and hard-resets the default branch
+to match the remote exactly.
+
+1. Runs `git fetch origin`.
+2. Runs `git reset --hard origin/<default_branch>`.
+
+This is safer than `git pull` because pull can fail when the local branch has
+diverged (e.g. from un-pushed merge commits left by `_merge_and_push`). A hard
+reset unconditionally moves the branch pointer to match the remote.
+
+Must be called while the default branch is checked out.
+
+### `_rebase_onto_default(checkout_path, default_branch="main")` (internal)
+
+Attempts to rebase the currently checked-out branch onto `origin/<default_branch>`.
+
+1. Runs `git rebase origin/<default_branch>`.
+2. If the rebase encounters conflicts, runs `git rebase --abort` and leaves the branch
+   in its original pre-rebase state. The agent can still work with the branch — it
+   just won't have the latest main changes incorporated.
+3. If `rebase --abort` itself fails (rebase may not be in progress if it failed early),
+   silently ignores the error.
+
+Used internally by `prepare_for_task` (retry path), `switch_to_branch` (when
+`rebase=True`), and `mid_chain_sync`.
+
+### `rebase_onto(checkout_path, branch_name, target_branch="main")`
+
+Public API for rebasing an arbitrary branch onto a target. Returns `True` on success,
+`False` on conflict.
+
+1. Runs `git checkout <branch_name>`.
+2. Runs `git rebase origin/<target_branch>`.
+3. If the rebase conflicts, runs `git rebase --abort` and returns `False`. The branch
+   is left in its original pre-rebase state.
+4. Returns `True` on clean rebase.
+
+Used by `sync_and_merge` for its rebase-before-merge conflict resolution (Gap G3),
+and available for callers that need to rebase an arbitrary branch onto any target.
 
 ---
 
@@ -194,9 +245,83 @@ Pushes a local branch to the `origin` remote.
 Merges a feature branch into the default branch. Returns `True` on success, `False` on conflict.
 
 1. Checks out `default_branch`.
-2. Attempts `git merge <branch_name>`.
-3. If the merge raises `GitError` (conflict), runs `git merge --abort` to restore the working tree and returns `False`.
-4. Returns `True` on a clean merge.
+2. Runs `git fetch origin` to get the latest remote state.
+3. Runs `git reset --hard origin/<default_branch>` to force the local default branch to
+   match the remote. This ensures the merge incorporates the latest remote changes even
+   if other agents have pushed since the last fetch. **Resolves G1.**
+4. Attempts `git merge <branch_name>`.
+5. If the merge raises `GitError` (conflict), runs `git merge --abort` to restore the working tree and returns `False`.
+6. Returns `True` on a clean merge.
+
+> **Note:** For rebase-before-merge conflict resolution, use `sync_and_merge` which
+> attempts a rebase of the task branch onto `origin/<default_branch>` when the direct
+> merge fails.
+
+### `sync_and_merge(checkout_path, branch_name, default_branch="main", max_retries=1)`
+
+High-level merge-and-push flow. Returns `(success: bool, error_msg: str)`.
+
+Encapsulates the full sync-merge-push flow as a single operation. Callers (e.g. the
+orchestrator's `_merge_and_push`) no longer need to coordinate fetch / checkout /
+reset / merge / push individually. **Resolves G1, G2, G3.**
+
+**Steps:**
+
+1. **Fetch:** `git fetch origin` to get latest remote state.
+2. **Reset:** Checkout `default_branch` and hard-reset to `origin/<default_branch>`.
+3. **Merge:** Attempt `git merge <branch_name>`.
+   - On conflict: abort the merge, then attempt rebase-before-merge recovery:
+     - Call `rebase_onto(checkout_path, branch_name, default_branch)` to rebase the
+       task branch onto `origin/<default_branch>`.
+     - If rebase conflicts: return `(False, "merge_conflict")`. Switch back to
+       `default_branch` for a clean state.
+     - If rebase succeeds: checkout `default_branch`, hard-reset again, retry the merge.
+     - If retry merge still fails: return `(False, "merge_conflict")`.
+4. **Push with retry:** Attempt `git push origin <default_branch>`. On push failure
+   (e.g. another agent pushed in the meantime):
+   - Run `git pull --rebase origin <default_branch>` and retry.
+   - Repeat up to `max_retries` times.
+   - If all retries exhausted: return `(False, "push_failed: <error>")`.
+5. On success: return `(True, "")`.
+
+**Return values:**
+
+| Result | Meaning |
+|--------|---------|
+| `(True, "")` | Merge and push succeeded |
+| `(False, "merge_conflict")` | Both direct merge and rebase-before-merge failed |
+| `(False, "push_failed: ...")` | Push failed after all retries |
+
+### `mid_chain_sync(checkout_path, branch_name, default_branch="main")`
+
+Push intermediate subtask work and rebase onto latest main. Returns `True` on success,
+`False` on rebase conflict. **Resolves G6.**
+
+Called between subtask completions in a chained plan to:
+
+1. **Push** current commits to remote — saves intermediate work so it survives agent
+   crashes and is visible to other clones. First attempts a plain push; if that fails
+   (e.g. branch was previously pushed and rebased), falls back to `--force-with-lease`.
+2. **Fetch** latest remote state via `git fetch origin`.
+3. **Rebase** the branch onto `origin/<default_branch>` — keeps the subtask chain
+   close to main and reduces the chance of large merge conflicts when the final subtask
+   merges the accumulated work. If the rebase conflicts, aborts and returns `False`.
+4. **Force-push** the rebased branch with `--force-with-lease` — updates the remote ref
+   to match the rewritten (rebased) history.
+
+All failures are non-fatal: callers should catch exceptions and continue — the next
+subtask can still work on the branch as-is.
+
+### `recover_workspace(checkout_path, default_branch="main")`
+
+Reset workspace to a clean state after a failed merge-and-push. **Resolves G2.**
+
+1. Runs `git checkout <default_branch>`.
+2. Runs `git reset --hard origin/<default_branch>`.
+
+This undoes any local merge commit left behind by a failed push, ensuring the workspace
+is ready for the next task. Best-effort: callers should wrap in try/except if they
+cannot tolerate failures.
 
 ---
 
@@ -402,72 +527,50 @@ These are identified weaknesses in the current git sync workflow that cause
 failures or data staleness when multiple agents work concurrently. Each gap is
 labeled G1–G7 for cross-referencing from other documents and code comments.
 
-### G1. No Pre-Merge Pull in `_merge_and_push`
+### G1. No Pre-Merge Pull in `_merge_and_push` — **RESOLVED**
 
-`_merge_and_push()` executes `checkout main → merge branch → push main`, but
-never pulls remote changes before the merge. If another agent pushed to `main`
-since the workspace's last pull, the push fails with a non-fast-forward error.
-The failure is notified but not recovered from.
+~~`_merge_and_push()` executes `checkout main → merge branch → push main`, but
+never pulls remote changes before the merge.~~
 
-**Impact:** The merged commit exists locally but not on the remote. The user
-must manually push or the next task from this agent starts from a diverged
-`main`.
+**Resolution:** `merge_branch()` now fetches from origin and hard-resets the local
+default branch to `origin/<default_branch>` before merging. The orchestrator's
+`_merge_and_push` uses `sync_and_merge()` which encapsulates the full
+fetch → checkout → reset → merge → push flow with automatic retry on push failures.
 
-**Affected code:** `Orchestrator._merge_and_push` → `git.merge_branch` →
-`git.push_branch`.
+### G2. Push Failures Leave Workspace in a Dirty State — **RESOLVED**
 
-**Violates:** P3 (Fresh Starting Point) at completion time — staleness is only
-addressed at task *start*, not task *end*.
+~~After a failed push in `_merge_and_push`, the local `main` contains the merge
+commit but `origin/main` does not.~~
 
-### G2. Push Failures Leave Workspace in a Dirty State
+**Resolution:** `recover_workspace()` resets the local default branch to
+`origin/<default_branch>` after any failed merge-and-push, ensuring the workspace
+is clean for the next task. The orchestrator's `_merge_and_push` calls
+`recover_workspace` automatically after `sync_and_merge` returns a failure.
 
-After a failed push in `_merge_and_push`, the local `main` contains the merge
-commit but `origin/main` does not. There is no rollback (`git reset`) of the
-local merge. Subsequent tasks from the same agent start from this diverged
-state, compounding the problem.
+### G3. No Merge Conflict Recovery Strategy — **RESOLVED**
 
-**Impact:** The agent's local `main` permanently drifts from `origin/main`
-until manual intervention. Every future task branch created from this `main`
-starts from stale + extra code.
-
-**Affected code:** `Orchestrator._merge_and_push` — the `except` block after
-`push_branch` notifies but does not reset local `main`.
-
-**Violates:** P3 (Fresh Starting Point), P8 (Retry Resilience) — the workspace
-is not left in a retryable state.
-
-### G3. No Merge Conflict Recovery Strategy
-
-When `merge_branch()` detects conflicts, it aborts the merge and notifies the
+~~When `merge_branch()` detects conflicts, it aborts the merge and notifies the
 user, but there is no automated attempt to rebase the task branch onto the
-latest `main` and retry. The task's work is stranded on its branch.
+latest `main` and retry.~~
 
-**Impact:** Any task whose branch has diverged from `main` requires manual
-resolution. In a high-throughput system with many concurrent agents, merge
-conflicts become increasingly likely as `main` moves forward.
+**Resolution:** `sync_and_merge()` now attempts rebase-before-merge when a direct
+merge fails with conflicts. The task branch is rebased onto `origin/<default_branch>`
+via `rebase_onto()`, and the merge is retried. If the rebase itself conflicts
+(true content conflict), the original `merge_conflict` error is returned. This
+resolves conflicts caused by branch staleness while still reporting true conflicts
+to the user.
 
-**Affected code:** `git.merge_branch` (returns `False` on conflict),
-`Orchestrator._merge_and_push` (notifies, returns without recovery).
+### G4. Retried Tasks Don't Rebase onto Latest Main — **RESOLVED**
 
-**Violates:** P5 (Graceful Degradation) — the system degrades to "notify and
-stop" rather than attempting automated recovery.
-
-### G4. Retried Tasks Don't Rebase onto Latest Main
-
-When a task retries (branch already exists from a previous attempt),
+~~When a task retries (branch already exists from a previous attempt),
 `prepare_for_task()` falls back to `git checkout <branch_name>` without
-rebasing it onto the latest `origin/main`. The agent resumes work on code
-that may be significantly behind the current remote state.
+rebasing it onto the latest `origin/main`.~~
 
-**Impact:** The retried agent works on stale code, increasing the chance of
-merge conflicts at completion time and potentially duplicating work that
-another agent already landed.
-
-**Affected code:** `git.prepare_for_task` — the `except GitError` fallback
-for existing branches does a bare `checkout` without rebase.
-
-**Violates:** P3 (Fresh Starting Point) — the guarantee only holds for the
-first attempt, not retries.
+**Resolution:** `prepare_for_task()` now uses hard-reset on the normal path
+and calls `_rebase_onto_default()` on existing branches when a task is retried.
+Both the normal clone path and the worktree path rebase existing branches onto
+`origin/<default_branch>`, ensuring agents start from recent code even on retry.
+If the rebase conflicts, the branch is left as-is (agent can still work with it).
 
 ### G5. No `--force-with-lease` for PR Branch Pushes — **RESOLVED**
 
@@ -480,23 +583,24 @@ idempotent for retries. The orchestrator's `_create_pr_for_task` passes
 agent-owned and safe to force-push. Plain push (the default) is still used for
 the `sync_and_merge` flow where only the default branch is pushed.
 
-### G6. Subtask Chains Accumulate Drift
+### G6. Subtask Chains Accumulate Drift — **RESOLVED**
 
-Plan subtasks share a branch and commit sequentially. Over a long chain (e.g.
-5–10 subtasks), the branch drifts progressively further from `main` as other
-agents land work. The final merge at the end of the chain faces the cumulative
-divergence of all intermediate steps.
+~~Plan subtasks share a branch and commit sequentially. Over a long chain,
+the branch drifts progressively further from `main`.~~
 
-**Impact:** Long subtask chains have a high probability of merge conflicts at
-completion time, and the conflicts are harder to resolve because many files
-have changed on both sides.
+**Resolution:** Two complementary mechanisms reduce drift:
 
-**Affected code:** `Orchestrator._prepare_workspace` (subtask path uses
-`switch_to_branch` without periodic rebase), `Orchestrator._complete_workspace`
-(only merges at the end of the chain).
+1. `mid_chain_sync()` is called by the orchestrator's `_complete_workspace` after each
+   non-final subtask when `auto_task.rebase_between_subtasks` is enabled. It pushes
+   intermediate work to the remote and rebases the chain branch onto
+   `origin/<default_branch>`, keeping the branch close to main.
 
-**Violates:** P3 (Fresh Starting Point) — only the first subtask starts fresh;
-subsequent subtasks inherit accumulated drift.
+2. `switch_to_branch(..., rebase=True)` is called by `_prepare_workspace` when setting
+   up the workspace for the next subtask (also gated by `rebase_between_subtasks`),
+   ensuring the branch is rebased before the agent starts work.
+
+Both operations are non-fatal: if rebase conflicts, the branch is left as-is and
+the subtask chain continues normally (just with the accumulated drift).
 
 ### G7. LINK Repos with Shared Filesystem — No File-Level Locking
 
@@ -519,12 +623,12 @@ exception where isolation is not enforced.
 
 ### Gap Summary Table
 
-| Gap | Severity | Root Cause | Principle Violated |
-|-----|----------|------------|--------------------|
-| G1 | High | Missing `pull` before merge+push | P3 |
-| G2 | High | No rollback after failed push | P3, P8 |
-| G3 | Medium | No automated rebase-and-retry on conflict | P5 |
-| G4 | Medium | Retry uses existing branch without rebase | P3 |
-| G5 | ~~Low~~ | ~~Plain push instead of `--force-with-lease`~~ | **RESOLVED** |
-| G6 | Medium | No periodic rebase during subtask chains | P3 |
-| G7 | High | LINK repos share filesystem without locking | P1 |
+| Gap | Severity | Root Cause | Status |
+|-----|----------|------------|--------|
+| G1 | ~~High~~ | ~~Missing `pull` before merge+push~~ | **RESOLVED** — `merge_branch` and `sync_and_merge` fetch+reset before merge |
+| G2 | ~~High~~ | ~~No rollback after failed push~~ | **RESOLVED** — `recover_workspace` resets after failures |
+| G3 | ~~Medium~~ | ~~No automated rebase-and-retry on conflict~~ | **RESOLVED** — `sync_and_merge` attempts rebase-before-merge |
+| G4 | ~~Medium~~ | ~~Retry uses existing branch without rebase~~ | **RESOLVED** — `prepare_for_task` rebases on retry |
+| G5 | ~~Low~~ | ~~Plain push instead of `--force-with-lease`~~ | **RESOLVED** — `push_branch` accepts `force_with_lease` flag |
+| G6 | ~~Medium~~ | ~~No periodic rebase during subtask chains~~ | **RESOLVED** — `mid_chain_sync` + `switch_to_branch(rebase=True)` |
+| G7 | High | LINK repos share filesystem without locking | Open — no file-level isolation for concurrent LINK repo agents |

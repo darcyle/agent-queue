@@ -1292,3 +1292,333 @@ class TestPrepareWorkspaceRebase:
         )
 
         await orch.shutdown()
+
+
+class TestMergeAndPushSyncWorkflow:
+    """Tests for the orchestrator's _merge_and_push using sync_and_merge,
+    including workspace recovery after failures."""
+
+    @pytest.fixture
+    async def setup(self, tmp_path):
+        workspace = tmp_path / "workspaces" / "p-1" / "agent-1" / "myrepo"
+        workspace.mkdir(parents=True)
+
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(tmp_path / "workspaces"),
+        )
+        orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        await orch.initialize()
+
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_repo(RepoConfig(
+            id="repo-1", project_id="p-1",
+            source_type=RepoSourceType.CLONE,
+            url="https://github.com/org/myrepo.git",
+            default_branch="develop",
+        ))
+        repo = await orch.db.get_repo("repo-1")
+        await orch.db.create_agent(Agent(
+            id="a-1", name="agent-1", agent_type="claude",
+        ))
+        await orch.db.set_agent_workspace(
+            "a-1", "p-1", str(workspace), repo_id="repo-1",
+        )
+
+        task = Task(
+            id="t-1", project_id="p-1", title="Test Task",
+            description="Testing merge and push",
+            status=TaskStatus.IN_PROGRESS,
+            branch_name="t-1/test-task",
+            repo_id="repo-1",
+        )
+        await orch.db.create_task(task)
+
+        yield {
+            "orch": orch,
+            "task": task,
+            "repo": repo,
+            "workspace": str(workspace),
+        }
+
+        await _drain_running_tasks(orch)
+        await orch.shutdown()
+
+    async def test_merge_and_push_calls_sync_and_merge(self, setup):
+        """_merge_and_push should delegate to git.sync_and_merge with the
+        correct branch_name and default_branch."""
+        orch = setup["orch"]
+        task = setup["task"]
+        repo = setup["repo"]
+        workspace = setup["workspace"]
+
+        mock_git = MagicMock()
+        mock_git.sync_and_merge.return_value = (True, "")
+        orch.git = mock_git
+
+        await orch._merge_and_push(task, repo, workspace)
+
+        mock_git.sync_and_merge.assert_called_once_with(
+            workspace, "t-1/test-task", "develop",
+        )
+
+    async def test_merge_and_push_deletes_branch_on_success(self, setup):
+        """After successful sync_and_merge, the task branch should be cleaned up."""
+        orch = setup["orch"]
+        task = setup["task"]
+        repo = setup["repo"]
+        workspace = setup["workspace"]
+
+        mock_git = MagicMock()
+        mock_git.sync_and_merge.return_value = (True, "")
+        orch.git = mock_git
+
+        await orch._merge_and_push(task, repo, workspace)
+
+        mock_git.delete_branch.assert_called_once_with(
+            workspace, "t-1/test-task", delete_remote=True,
+        )
+
+    async def test_merge_and_push_recovers_on_merge_conflict(self, setup):
+        """On merge_conflict, _merge_and_push should notify and call
+        recover_workspace to reset the workspace."""
+        orch = setup["orch"]
+        task = setup["task"]
+        repo = setup["repo"]
+        workspace = setup["workspace"]
+
+        notifications = []
+        async def capture_notify(msg, project_id=None, embed=None):
+            notifications.append(msg)
+        orch.set_notify_callback(capture_notify)
+
+        mock_git = MagicMock()
+        mock_git.sync_and_merge.return_value = (False, "merge_conflict")
+        orch.git = mock_git
+
+        await orch._merge_and_push(task, repo, workspace)
+
+        # recover_workspace should have been called
+        mock_git.recover_workspace.assert_called_once_with(workspace, "develop")
+        # Should NOT try to delete branch on failure
+        mock_git.delete_branch.assert_not_called()
+        # Should have sent a notification
+        assert len(notifications) >= 1
+
+    async def test_merge_and_push_recovers_on_push_failure(self, setup):
+        """On push failure, _merge_and_push should notify and call
+        recover_workspace."""
+        orch = setup["orch"]
+        task = setup["task"]
+        repo = setup["repo"]
+        workspace = setup["workspace"]
+
+        notifications = []
+        async def capture_notify(msg, project_id=None, embed=None):
+            notifications.append(msg)
+        orch.set_notify_callback(capture_notify)
+
+        mock_git = MagicMock()
+        mock_git.sync_and_merge.return_value = (False, "push_failed: error")
+        orch.git = mock_git
+
+        await orch._merge_and_push(task, repo, workspace)
+
+        mock_git.recover_workspace.assert_called_once_with(workspace, "develop")
+        mock_git.delete_branch.assert_not_called()
+        assert len(notifications) >= 1
+
+    async def test_merge_and_push_tolerates_recover_failure(self, setup):
+        """If recover_workspace raises, _merge_and_push should not crash."""
+        orch = setup["orch"]
+        task = setup["task"]
+        repo = setup["repo"]
+        workspace = setup["workspace"]
+
+        mock_git = MagicMock()
+        mock_git.sync_and_merge.return_value = (False, "merge_conflict")
+        mock_git.recover_workspace.side_effect = Exception("git broken")
+        orch.git = mock_git
+
+        # Should not raise
+        await orch._merge_and_push(task, repo, workspace)
+
+
+class TestCompleteWorkspaceMidChainSync:
+    """Tests for _complete_workspace calling mid_chain_sync for non-final subtasks."""
+
+    @pytest.fixture
+    async def setup(self, tmp_path):
+        workspace = tmp_path / "workspaces" / "p-1" / "agent-1" / "myrepo"
+        workspace.mkdir(parents=True)
+
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            auto_task=AutoTaskConfig(rebase_between_subtasks=True),
+        )
+        orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        await orch.initialize()
+
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_repo(RepoConfig(
+            id="repo-1", project_id="p-1",
+            source_type=RepoSourceType.CLONE,
+            url="https://github.com/org/myrepo.git",
+            default_branch="main",
+        ))
+        await orch.db.create_agent(Agent(
+            id="a-1", name="agent-1", agent_type="claude",
+        ))
+        await orch.db.set_agent_workspace(
+            "a-1", "p-1", str(workspace), repo_id="repo-1",
+        )
+
+        # Parent task
+        parent = Task(
+            id="t-parent", project_id="p-1", title="Parent Plan",
+            description="Create plan", status=TaskStatus.COMPLETED,
+            branch_name="task/t-parent/parent-plan",
+            repo_id="repo-1",
+        )
+        await orch.db.create_task(parent)
+
+        # Two subtasks: first is completing, second is still pending
+        sub1 = Task(
+            id="t-sub-1", project_id="p-1", title="Step 1",
+            description="First subtask", status=TaskStatus.IN_PROGRESS,
+            parent_task_id="t-parent", is_plan_subtask=True,
+            branch_name="task/t-parent/parent-plan",
+            repo_id="repo-1",
+        )
+        sub2 = Task(
+            id="t-sub-2", project_id="p-1", title="Step 2",
+            description="Second subtask", status=TaskStatus.DEFINED,
+            parent_task_id="t-parent", is_plan_subtask=True,
+            repo_id="repo-1",
+        )
+        await orch.db.create_task(sub1)
+        await orch.db.create_task(sub2)
+
+        agent = await orch.db.get_agent("a-1")
+
+        yield {
+            "orch": orch,
+            "sub1": sub1,
+            "sub2": sub2,
+            "agent": agent,
+            "workspace": str(workspace),
+        }
+
+        await _drain_running_tasks(orch)
+        await orch.shutdown()
+
+    async def test_non_final_subtask_calls_mid_chain_sync(self, setup):
+        """When a non-final subtask completes and rebase_between_subtasks is enabled,
+        _complete_workspace should call mid_chain_sync."""
+        orch = setup["orch"]
+        sub1 = setup["sub1"]
+        agent = setup["agent"]
+        workspace = setup["workspace"]
+
+        mock_git = MagicMock()
+        mock_git.validate_checkout.return_value = True
+        mock_git.commit_all.return_value = True
+        mock_git.mid_chain_sync.return_value = True
+        orch.git = mock_git
+
+        result = await orch._complete_workspace(sub1, agent)
+
+        assert result is None  # No PR for non-final subtask
+        mock_git.mid_chain_sync.assert_called_once_with(
+            workspace, "task/t-parent/parent-plan", "main",
+        )
+
+    async def test_non_final_subtask_skips_mid_chain_sync_when_disabled(self, setup):
+        """When rebase_between_subtasks is disabled, mid_chain_sync should not be called."""
+        orch = setup["orch"]
+        sub1 = setup["sub1"]
+        agent = setup["agent"]
+
+        orch.config.auto_task.rebase_between_subtasks = False
+
+        mock_git = MagicMock()
+        mock_git.validate_checkout.return_value = True
+        mock_git.commit_all.return_value = True
+        orch.git = mock_git
+
+        result = await orch._complete_workspace(sub1, agent)
+
+        assert result is None
+        mock_git.mid_chain_sync.assert_not_called()
+
+    async def test_mid_chain_sync_failure_is_non_fatal(self, setup):
+        """If mid_chain_sync raises, _complete_workspace should not crash."""
+        orch = setup["orch"]
+        sub1 = setup["sub1"]
+        agent = setup["agent"]
+
+        mock_git = MagicMock()
+        mock_git.validate_checkout.return_value = True
+        mock_git.commit_all.return_value = True
+        mock_git.mid_chain_sync.side_effect = Exception("rebase exploded")
+        orch.git = mock_git
+
+        # Should not raise
+        result = await orch._complete_workspace(sub1, agent)
+        assert result is None
+
+    async def test_final_subtask_does_not_call_mid_chain_sync(self, setup):
+        """When the final subtask completes, it should merge/PR, not mid_chain_sync."""
+        orch = setup["orch"]
+        sub2 = setup["sub2"]
+        agent = setup["agent"]
+        workspace = setup["workspace"]
+
+        # Mark sub1 as completed so sub2 is the last
+        await orch.db.update_task("t-sub-1", status=TaskStatus.COMPLETED.value)
+        await orch.db.update_task("t-sub-2", status=TaskStatus.IN_PROGRESS.value,
+                                  branch_name="task/t-parent/parent-plan")
+        sub2_updated = await orch.db.get_task("t-sub-2")
+
+        mock_git = MagicMock()
+        mock_git.validate_checkout.return_value = True
+        mock_git.commit_all.return_value = True
+        mock_git.sync_and_merge.return_value = (True, "")
+        orch.git = mock_git
+
+        result = await orch._complete_workspace(sub2_updated, agent)
+
+        # Should NOT call mid_chain_sync
+        mock_git.mid_chain_sync.assert_not_called()
+        # Should call sync_and_merge (merge+push for last subtask)
+        mock_git.sync_and_merge.assert_called_once()
+
+    async def test_final_subtask_with_approval_creates_pr(self, setup):
+        """When the final subtask completes and parent requires approval,
+        a PR should be created instead of merging directly."""
+        orch = setup["orch"]
+        sub2 = setup["sub2"]
+        agent = setup["agent"]
+
+        # Mark parent as requiring approval
+        await orch.db.update_task("t-parent", requires_approval=True)
+        # Mark sub1 as completed so sub2 is the last
+        await orch.db.update_task("t-sub-1", status=TaskStatus.COMPLETED.value)
+        await orch.db.update_task("t-sub-2", status=TaskStatus.IN_PROGRESS.value,
+                                  branch_name="task/t-parent/parent-plan")
+        sub2_updated = await orch.db.get_task("t-sub-2")
+
+        mock_git = MagicMock()
+        mock_git.validate_checkout.return_value = True
+        mock_git.commit_all.return_value = True
+        mock_git.create_pr.return_value = "https://github.com/org/repo/pull/42"
+        orch.git = mock_git
+
+        result = await orch._complete_workspace(sub2_updated, agent)
+
+        assert result == "https://github.com/org/repo/pull/42"
+        mock_git.push_branch.assert_called_once()
+        mock_git.create_pr.assert_called_once()
+        mock_git.mid_chain_sync.assert_not_called()
+        mock_git.sync_and_merge.assert_not_called()
