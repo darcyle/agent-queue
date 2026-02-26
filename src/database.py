@@ -261,6 +261,15 @@ class Database:
                 await self._db.execute(migration)
             except Exception:
                 pass  # Column already exists
+        # Create indexes for dependency lookups (idempotent).
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_task_deps_depends_on "
+            "ON task_dependencies(depends_on_task_id)"
+        )
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_task_deps_task_id "
+            "ON task_dependencies(task_id)"
+        )
         # Migrate existing agent checkout_path/repo_id into agent_workspaces
         await self._migrate_agent_workspaces()
         await self._db.commit()
@@ -867,6 +876,63 @@ class Database:
         )
         rows = await cursor.fetchall()
         return {r["task_id"] for r in rows}
+
+    async def get_dependency_map_for_tasks(
+        self, task_ids: list[str],
+    ) -> dict[str, dict]:
+        """Batch-fetch dependency data for multiple tasks in two queries.
+
+        Returns a mapping of ``task_id`` → ``{"depends_on": [...], "blocks": [...]}``.
+        Each ``depends_on`` entry is ``{"id": ..., "status": ...}``.
+        Each ``blocks`` entry is a plain task ID string.
+
+        This replaces the previous N+1 pattern of calling ``get_dependencies()``
+        and ``get_dependents()`` per task, collapsing all lookups into two
+        efficient queries regardless of the number of tasks.
+        """
+        if not task_ids:
+            return {}
+
+        # Initialize result for all requested task IDs
+        result: dict[str, dict] = {
+            tid: {"depends_on": [], "blocks": []} for tid in task_ids
+        }
+
+        # Fetch all upstream dependencies (with status) in one query using a
+        # JOIN so we don't need a follow-up get_task() per dependency.
+        placeholders = ",".join("?" for _ in task_ids)
+        cursor = await self._db.execute(
+            "SELECT d.task_id, d.depends_on_task_id, t.status "
+            "FROM task_dependencies d "
+            "JOIN tasks t ON t.id = d.depends_on_task_id "
+            f"WHERE d.task_id IN ({placeholders})",
+            task_ids,
+        )
+        for row in await cursor.fetchall():
+            tid = row["task_id"]
+            if tid in result:
+                result[tid]["depends_on"].append({
+                    "id": row["depends_on_task_id"],
+                    "status": row["status"],
+                })
+
+        # Fetch all downstream dependents (reverse lookup) in one query.
+        cursor = await self._db.execute(
+            "SELECT d.depends_on_task_id, d.task_id "
+            "FROM task_dependencies d "
+            f"WHERE d.depends_on_task_id IN ({placeholders})",
+            task_ids,
+        )
+        for row in await cursor.fetchall():
+            blocked_by = row["depends_on_task_id"]
+            if blocked_by in result:
+                result[blocked_by]["blocks"].append(row["task_id"])
+
+        # Sort blocks lists for stable output
+        for entry in result.values():
+            entry["blocks"] = sorted(entry["blocks"])
+
+        return result
 
     async def remove_dependency(self, task_id: str, depends_on: str) -> None:
         """Remove a single dependency edge."""

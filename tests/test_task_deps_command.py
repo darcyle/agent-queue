@@ -1,4 +1,5 @@
-"""Unit tests for the _cmd_task_deps command handler method."""
+"""Unit tests for task dependency features: _cmd_task_deps handler, batch
+dependency queries, and list_tasks with show_dependencies."""
 
 import pytest
 from unittest.mock import MagicMock
@@ -151,3 +152,117 @@ async def test_task_deps_status_reflected(handler, db):
 
     result = await handler.execute("task_deps", {"task_id": "main"})
     assert result["depends_on"][0]["status"] == "COMPLETED"
+
+
+# ---------------------------------------------------------------------------
+# Batch dependency query tests (get_dependency_map_for_tasks)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_batch_dep_map_empty_list(db):
+    """Batch query with no task IDs returns empty dict."""
+    result = await db.get_dependency_map_for_tasks([])
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_batch_dep_map_no_deps(db):
+    """Tasks with no dependencies should have empty lists."""
+    await db.create_task(_task("solo-1", title="Solo 1"))
+    await db.create_task(_task("solo-2", title="Solo 2"))
+
+    result = await db.get_dependency_map_for_tasks(["solo-1", "solo-2"])
+    assert result["solo-1"]["depends_on"] == []
+    assert result["solo-1"]["blocks"] == []
+    assert result["solo-2"]["depends_on"] == []
+    assert result["solo-2"]["blocks"] == []
+
+
+@pytest.mark.asyncio
+async def test_batch_dep_map_upstream_and_downstream(db):
+    """Batch query correctly returns upstream and downstream deps."""
+    await db.create_task(_task("a", title="Task A"))
+    await db.create_task(_task("b", title="Task B"))
+    await db.create_task(_task("c", title="Task C"))
+
+    await db.add_dependency("b", "a")  # b depends on a
+    await db.add_dependency("c", "b")  # c depends on b
+
+    result = await db.get_dependency_map_for_tasks(["a", "b", "c"])
+
+    # a: no upstream, blocks b
+    assert result["a"]["depends_on"] == []
+    assert result["a"]["blocks"] == ["b"]
+
+    # b: depends on a, blocks c
+    assert len(result["b"]["depends_on"]) == 1
+    assert result["b"]["depends_on"][0]["id"] == "a"
+    assert result["b"]["blocks"] == ["c"]
+
+    # c: depends on b, blocks nothing
+    assert len(result["c"]["depends_on"]) == 1
+    assert result["c"]["depends_on"][0]["id"] == "b"
+    assert result["c"]["blocks"] == []
+
+
+@pytest.mark.asyncio
+async def test_batch_dep_map_includes_status(db):
+    """Batch query includes task status for upstream dependencies."""
+    await db.create_task(_task("done", title="Done Task"))
+    await db.update_task("done", status=TaskStatus.COMPLETED)
+    await db.create_task(_task("pending", title="Pending Task"))
+    await db.add_dependency("pending", "done")
+
+    result = await db.get_dependency_map_for_tasks(["pending"])
+    assert result["pending"]["depends_on"][0]["status"] == "COMPLETED"
+
+
+# ---------------------------------------------------------------------------
+# list_tasks with show_dependencies (end-to-end via command handler)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_show_dependencies(handler, db):
+    """list_tasks with show_dependencies=True should include dep data."""
+    await db.create_task(_task("parent", title="Parent"))
+    await db.create_task(_task("child", title="Child"))
+    await db.add_dependency("child", "parent")
+
+    result = await handler.execute("list_tasks", {
+        "project_id": PROJECT_ID,
+        "show_dependencies": True,
+    })
+    assert "error" not in result
+    tasks_by_id = {t["id"]: t for t in result["tasks"]}
+
+    # parent blocks child
+    assert "child" in tasks_by_id["parent"]["blocks"]
+    # child depends on parent
+    assert len(tasks_by_id["child"]["depends_on"]) == 1
+    assert tasks_by_id["child"]["depends_on"][0]["id"] == "parent"
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_no_dependencies_flag(handler, db):
+    """list_tasks without show_dependencies should not include dep data."""
+    await db.create_task(_task("t1", title="Task 1"))
+
+    result = await handler.execute("list_tasks", {
+        "project_id": PROJECT_ID,
+    })
+    assert "error" not in result
+    task = result["tasks"][0]
+    assert "depends_on" not in task
+    assert "blocks" not in task
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_no_project_context(handler, db):
+    """list_tasks without project_id returns all tasks."""
+    await db.create_task(_task("t1", title="Task 1"))
+
+    result = await handler.execute("list_tasks", {})
+    assert "error" not in result
+    assert result["total"] >= 1

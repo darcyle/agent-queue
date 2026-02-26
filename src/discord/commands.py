@@ -1687,6 +1687,7 @@ def setup_commands(bot: commands.Bot) -> None:
         show_completed: bool = False,
         view: app_commands.Choice[str] | None = None,
     ):
+        await interaction.response.defer()
         view_mode = view.value if view else "list"
         project_id = await _resolve_project_from_context(interaction, None)
         args: dict = {"include_completed": show_completed}
@@ -1709,7 +1710,7 @@ def setup_commands(bot: commands.Bot) -> None:
                 check_result = await handler.execute("list_tasks", check_args)
                 total_count = check_result.get("total", 0)
                 if total_count > 0:
-                    await interaction.response.send_message(
+                    await interaction.followup.send(
                         embed=success_embed(
                             "All Tasks Completed",
                             description=(
@@ -1719,7 +1720,7 @@ def setup_commands(bot: commands.Bot) -> None:
                         ),
                     )
                     return
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=info_embed("No Tasks", description="No tasks found for this project."),
             )
             return
@@ -1749,7 +1750,7 @@ def setup_commands(bot: commands.Bot) -> None:
                     title,
                     description=f"{formatted}\n\n**Total:** {total} task(s)",
                 )
-                await interaction.response.send_message(embed=embed)
+                await interaction.followup.send(embed=embed)
             else:
                 # Split the display text into chunks, respecting line
                 # boundaries so we don't break mid-task.
@@ -1759,7 +1760,7 @@ def setup_commands(bot: commands.Bot) -> None:
                     title,
                     description=chunks[0],
                 )
-                await interaction.response.send_message(embed=first_embed)
+                await interaction.followup.send(embed=first_embed)
                 # Remaining chunks sent as followup messages
                 for i, chunk in enumerate(chunks[1:], start=2):
                     followup_embed = info_embed(
@@ -1786,7 +1787,7 @@ def setup_commands(bot: commands.Bot) -> None:
             all_tasks = tasks
         view_widget = TaskReportView(tasks_by_status, total, all_tasks=all_tasks)
         content = view_widget.build_content()
-        await interaction.response.send_message(content, view=view_widget)
+        await interaction.followup.send(content, view=view_widget)
 
     @bot.tree.command(
         name="active-tasks",
@@ -1799,6 +1800,7 @@ def setup_commands(bot: commands.Bot) -> None:
         interaction: discord.Interaction,
         show_completed: bool = False,
     ):
+        await interaction.response.defer()
         result = await handler.execute(
             "list_active_tasks_all_projects",
             {"include_completed": show_completed},
@@ -1819,7 +1821,7 @@ def setup_commands(bot: commands.Bot) -> None:
                     f"\n\n_{hidden} completed/failed task(s) hidden — "
                     f"use `/active-tasks show_completed:True` to view._"
                 )
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=info_embed("No Tasks", description=desc),
             )
             return
@@ -1864,7 +1866,7 @@ def setup_commands(bot: commands.Bot) -> None:
             description=description,
             fields=fields,
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @bot.tree.command(name="task", description="Show full details of a task")
     @app_commands.describe(task_id="Task ID")

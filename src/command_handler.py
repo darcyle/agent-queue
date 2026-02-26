@@ -869,23 +869,15 @@ class CommandHandler:
             Mapping of ``task_id`` → ``{"depends_on": [...], "blocks": [...]}``.
         """
         result = dict(base_map) if base_map else {}
-        for tid in _collect_tree_task_ids(tree_data):
-            if tid in result:
-                continue
-            deps = await self.db.get_dependencies(tid)
-            dep_details: list[dict] = []
-            for dep_id in deps:
-                dep_task = await self.db.get_task(dep_id)
-                if dep_task:
-                    dep_details.append({
-                        "id": dep_task.id,
-                        "status": dep_task.status.value,
-                    })
-            dependents = await self.db.get_dependents(tid)
-            result[tid] = {
-                "depends_on": dep_details,
-                "blocks": sorted(dependents) if dependents else [],
-            }
+        # Find tree task IDs not already in the base map
+        missing_ids = [
+            tid for tid in _collect_tree_task_ids(tree_data)
+            if tid not in result
+        ]
+        if missing_ids:
+            # Batch-fetch all missing dependency data in two queries
+            batch_result = await self.db.get_dependency_map_for_tasks(missing_ids)
+            result.update(batch_result)
         return result
 
     async def _cmd_list_tasks(self, args: dict) -> dict:
@@ -921,8 +913,16 @@ class CommandHandler:
 
         # Build the base task list (shared across all display modes).
         show_dependencies: bool = args.get("show_dependencies", False)
+        capped_tasks = tasks[:200]
+
+        # Batch-fetch dependency data in two queries instead of N+1
+        dep_map: dict[str, dict] = {}
+        if show_dependencies:
+            task_ids = [t.id for t in capped_tasks]
+            dep_map = await self.db.get_dependency_map_for_tasks(task_ids)
+
         task_list = []
-        for t in tasks[:200]:
+        for t in capped_tasks:
             entry: dict = {
                 "id": t.id,
                 "project_id": t.project_id,
@@ -937,24 +937,9 @@ class CommandHandler:
                 "requires_approval": t.requires_approval,
             }
             if show_dependencies:
-                # Fetch upstream dependencies (what this task depends on)
-                deps = await self.db.get_dependencies(t.id)
-                if deps:
-                    dep_details = []
-                    for dep_id in deps:
-                        dep_task = await self.db.get_task(dep_id)
-                        if dep_task:
-                            dep_details.append({
-                                "id": dep_task.id,
-                                "status": dep_task.status.value,
-                            })
-                    entry["depends_on"] = dep_details
-                else:
-                    entry["depends_on"] = []
-
-                # Fetch downstream dependents (what this task blocks)
-                dependents = await self.db.get_dependents(t.id)
-                entry["blocks"] = sorted(dependents) if dependents else []
+                task_dep = dep_map.get(t.id, {"depends_on": [], "blocks": []})
+                entry["depends_on"] = task_dep["depends_on"]
+                entry["blocks"] = task_dep["blocks"]
             task_list.append(entry)
 
         display_mode = args.get("display_mode", "flat")
