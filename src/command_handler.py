@@ -204,6 +204,117 @@ def _format_task_tree(
     return "\n".join(kept)
 
 
+# ---------------------------------------------------------------------------
+# Dependency-aware text formatter
+# ---------------------------------------------------------------------------
+
+# Character budget for dependency display — mirrors _TREE_MAX_CHARS.
+_DEP_MAX_CHARS = 1800
+
+
+def _format_task_dep_line(entry: dict) -> str:
+    """Format a single task entry with dependency annotations.
+
+    Parameters
+    ----------
+    entry:
+        A task dict produced by ``_cmd_list_tasks`` when
+        ``show_dependencies=True``.  Expected keys: ``id``, ``title``,
+        ``status``, and optionally ``depends_on`` (list of dicts with
+        ``id`` and ``status``) and ``blocks`` (list of task IDs).
+
+    Returns
+    -------
+    str
+        One or more lines like::
+
+            🔵 #12: Set up database [READY]
+               ↳ depends on: #10 (COMPLETED ✅), #11 (IN_PROGRESS 🟡)
+
+        If the task has no dependencies or dependents the sub-lines are
+        omitted so that "clean" tasks stay compact.
+    """
+    status = entry.get("status", "DEFINED")
+    emoji = STATUS_EMOJIS.get(status, "⚪")
+    lines: list[str] = [f"{emoji} #{entry['id']}: {entry['title']} [{status}]"]
+
+    # --- depends_on (upstream) -----------------------------------------------
+    depends_on: list[dict] = entry.get("depends_on", [])
+    if depends_on:
+        dep_parts: list[str] = []
+        for dep in depends_on:
+            dep_status = dep.get("status", "DEFINED")
+            dep_emoji = STATUS_EMOJIS.get(dep_status, "⚪")
+            dep_parts.append(f"#{dep['id']} ({dep_status} {dep_emoji})")
+        lines.append(f"   ↳ depends on: {', '.join(dep_parts)}")
+
+    # --- blocks (downstream) -------------------------------------------------
+    blocks: list[str] = entry.get("blocks", [])
+    if blocks:
+        block_ids = ", ".join(f"#{bid}" for bid in blocks)
+        lines.append(f"   ↳ blocks: {block_ids}")
+
+    return "\n".join(lines)
+
+
+def format_dependency_list(task_list: list[dict]) -> str:
+    """Format a full task list with dependency annotations.
+
+    Iterates over *task_list* (as produced by ``_cmd_list_tasks`` with
+    ``show_dependencies=True``) and returns a multi-line string where
+    each task is annotated with its upstream ``depends_on`` and
+    downstream ``blocks`` relationships.  Tasks with no dependency data
+    are rendered as single lines without sub-annotations.
+
+    The output is truncated to ``_DEP_MAX_CHARS`` to stay within
+    Discord embed / message limits.
+
+    Parameters
+    ----------
+    task_list:
+        List of task entry dicts, each containing at minimum ``id``,
+        ``title``, and ``status``.  When dependency data is present,
+        ``depends_on`` and ``blocks`` keys are also expected.
+
+    Returns
+    -------
+    str
+        Formatted multi-line string ready for embed descriptions or
+        plain-text messages.
+    """
+    if not task_list:
+        return ""
+
+    formatted_tasks: list[str] = []
+    for entry in task_list:
+        formatted_tasks.append(_format_task_dep_line(entry))
+
+    result = "\n".join(formatted_tasks)
+
+    # Truncation guard — drop tasks from the end and add a summary.
+    if len(result) <= _DEP_MAX_CHARS:
+        return result
+
+    kept: list[str] = []
+    used = 0
+    # Reserve space for the "… (N more tasks)" indicator (~30 chars).
+    budget = _DEP_MAX_CHARS - 30
+    shown = 0
+    for block in formatted_tasks:
+        cost = len(block) + 1  # +1 for the joining newline
+        if used + cost > budget:
+            break
+        kept.append(block)
+        used += cost
+        shown += 1
+
+    remaining = len(formatted_tasks) - shown
+    if remaining > 0:
+        kept.append(f"… ({remaining} more task{'s' if remaining != 1 else ''})")
+
+    return "\n".join(kept)
+
+
 class CommandHandler:
     """Unified command execution layer for AgentQueue (Command Pattern).
 
@@ -743,7 +854,10 @@ class CommandHandler:
         display_mode = args.get("display_mode", "flat")
 
         if display_mode == "flat":
-            return {"tasks": task_list, "total": len(tasks)}
+            result: dict = {"tasks": task_list, "total": len(tasks)}
+            if show_dependencies:
+                result["dependency_display"] = format_dependency_list(task_list)
+            return result
 
         # --- Tree and compact display modes ------------------------------------
         # Collect root task IDs by tracing parentage of all filtered tasks.
@@ -778,7 +892,7 @@ class CommandHandler:
                 rendered = _format_task_tree(root_task, children)
                 trees.append(rendered)
 
-        return {
+        result = {
             "tasks": task_list,
             "total": len(tasks),
             "display_mode": display_mode,
@@ -786,6 +900,9 @@ class CommandHandler:
             "hidden_completed": hidden_count,
             "filtered": not include_completed and "status" not in args,
         }
+        if show_dependencies:
+            result["dependency_display"] = format_dependency_list(task_list)
+        return result
 
     async def _cmd_list_active_tasks_all_projects(self, args: dict) -> dict:
         """List active (non-terminal) tasks across ALL projects, grouped by project.
