@@ -216,6 +216,75 @@ class GitManager:
             except GitError:
                 pass  # rebase may not be in progress
 
+    def mid_chain_rebase(
+        self, checkout_path: str, branch_name: str,
+        default_branch: str = "main",
+        *, push: bool = False,
+    ) -> bool:
+        """Rebase task branch onto latest origin/<default_branch> mid-chain.
+
+        Designed for long subtask chains: after an intermediate subtask
+        commits its work, this method rebases the shared branch onto the
+        latest remote default branch to reduce drift before the next
+        subtask begins.  This catches conflicts early and keeps the
+        branch close to main, preventing large conflict surfaces at
+        final merge time.
+
+        Steps:
+        1. Fetch from origin to get the latest remote state.
+        2. Rebase the task branch onto ``origin/<default_branch>``.
+        3. Optionally push the rebased branch with ``--force-with-lease``
+           so intermediate progress is backed up on the remote.
+
+        If the rebase fails (conflicts), it is aborted and the branch
+        is left unchanged — the next subtask can still work on it, and
+        conflicts will be resolved at final merge time instead.
+
+        Args:
+            checkout_path: Path to the local git checkout.
+            branch_name: The shared task branch to rebase.
+            default_branch: The target branch to rebase onto (e.g. "main").
+            push: If True, push the rebased branch with ``--force-with-lease``
+                after a successful rebase.  Safe because task branches are
+                owned by a single agent.
+
+        Returns:
+            True if the rebase (and optional push) succeeded, False if
+            the rebase had conflicts and was aborted.
+        """
+        try:
+            self._run(["fetch", "origin"], cwd=checkout_path)
+        except GitError:
+            return False  # can't rebase without latest remote state
+
+        # Ensure we're on the task branch
+        try:
+            self._run(["checkout", branch_name], cwd=checkout_path)
+        except GitError:
+            return False
+
+        try:
+            self._run(["rebase", f"origin/{default_branch}"], cwd=checkout_path)
+        except GitError:
+            # Rebase conflict — abort and leave branch as-is
+            try:
+                self._run(["rebase", "--abort"], cwd=checkout_path)
+            except GitError:
+                pass  # rebase may not be in progress
+            return False
+
+        # Optionally push rebased branch to remote for backup
+        if push:
+            try:
+                self.push_branch(
+                    checkout_path, branch_name, force_with_lease=True,
+                )
+            except GitError:
+                # Push failed but rebase succeeded — still beneficial
+                pass
+
+        return True
+
     def push_branch(
         self, checkout_path: str, branch_name: str,
         *, force_with_lease: bool = False,
