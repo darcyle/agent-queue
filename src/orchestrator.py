@@ -1046,25 +1046,60 @@ class Orchestrator:
                 return False
         return True
 
-    async def _merge_and_push(self, task: Task, repo: RepoConfig, workspace: str) -> None:
-        """Merge the task branch into default and push (clone repos only)."""
-        merged = self.git.merge_branch(workspace, task.branch_name, repo.default_branch)
-        if not merged:
-            await self._notify_channel(
-                f"**Merge Conflict:** Task `{task.id}` branch `{task.branch_name}` "
-                f"has conflicts with `{repo.default_branch}`. Manual resolution needed.",
-                project_id=task.project_id,
-            )
-            return
+    async def _merge_and_push(
+        self, task: Task, repo: RepoConfig, workspace: str,
+        *, _max_retries: int = 3,
+    ) -> None:
+        """Merge the task branch into default and push (clone repos only).
 
-        if repo.source_type == RepoSourceType.CLONE:
-            try:
-                self.git.push_branch(workspace, repo.default_branch)
-            except Exception as e:
+        ``merge_branch`` now fetches and hard-resets the default branch to
+        ``origin/<default_branch>`` before merging, so each attempt works
+        against the latest remote state.
+
+        For CLONE repos, if the push is rejected (e.g. another agent pushed
+        between our fetch and push), we retry the full merge-then-push cycle
+        up to *_max_retries* times.  On each retry, ``merge_branch`` will
+        re-fetch and re-reset, incorporating whatever was pushed in the
+        meantime.
+
+        LINK repos have no remote to push to, so no retry is needed — one
+        merge attempt suffices.
+        """
+        for attempt in range(_max_retries):
+            # Switch the task branch back before re-merging so merge_branch
+            # can check out the default branch cleanly.
+            if attempt > 0:
+                try:
+                    self.git.checkout_branch(workspace, task.branch_name)
+                except Exception:
+                    pass  # best-effort; merge_branch will checkout default anyway
+
+            merged = self.git.merge_branch(workspace, task.branch_name, repo.default_branch)
+            if not merged:
                 await self._notify_channel(
-                    f"**Push Failed:** Could not push `{repo.default_branch}` for task `{task.id}`: {e}",
+                    f"**Merge Conflict:** Task `{task.id}` branch `{task.branch_name}` "
+                    f"has conflicts with `{repo.default_branch}`. Manual resolution needed.",
                     project_id=task.project_id,
                 )
+                return
+
+            if repo.source_type != RepoSourceType.CLONE:
+                break  # LINK repos don't push — we're done
+
+            try:
+                self.git.push_branch(workspace, repo.default_branch)
+                break  # push succeeded
+            except Exception as e:
+                if attempt < _max_retries - 1:
+                    # Push rejected — likely another agent pushed first.
+                    # Retry: merge_branch will re-fetch and re-reset.
+                    continue
+                await self._notify_channel(
+                    f"**Push Failed:** Could not push `{repo.default_branch}` "
+                    f"for task `{task.id}` after {_max_retries} attempts: {e}",
+                    project_id=task.project_id,
+                )
+                return
 
         # Clean up the task branch after successful merge
         try:

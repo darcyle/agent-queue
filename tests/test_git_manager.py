@@ -367,3 +367,103 @@ class TestSwitchToBranchRebase:
 
         mgr.switch_to_branch(clone, "brand-new-branch")
         assert _current_branch(clone) == "brand-new-branch"
+
+
+class TestMergeBranchPullsBeforeMerge:
+    """Tests for the fetch+reset behavior in merge_branch().
+
+    Verifies that merge_branch() fetches and hard-resets the default branch
+    to origin/<default_branch> before merging, so concurrent agents always
+    merge against the latest remote state.
+    """
+
+    def test_merge_fetches_latest_before_merging(self, git_repo, tmp_path):
+        """merge_branch should incorporate remote changes pushed by another agent."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Create a task branch with some work
+        mgr.create_branch(clone, "task/merge-test")
+        _git_commit(clone, "task-file.txt", "task work", "task commit")
+        _git(["checkout", "main"], cwd=clone)
+
+        # Advance origin/main via a second clone (simulating another agent)
+        clone2 = str(tmp_path / "clone2")
+        subprocess.run(["git", "clone", git_repo["remote"], clone2],
+                       check=True, capture_output=True)
+        other_sha = _git_commit(clone2, "other-agent.txt", "other work", "other agent commit")
+        _git(["push", "origin", "main"], cwd=clone2)
+
+        # Local clone's main is behind origin — merge_branch should fetch first
+        result = mgr.merge_branch(clone, "task/merge-test")
+        assert result is True
+
+        # The merge should include the other agent's commit
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "other agent commit" in log
+        assert "task commit" in log
+
+    def test_merge_discards_stale_local_main(self, git_repo, tmp_path):
+        """merge_branch should reset local main even if it has un-pushed commits."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Create a task branch with work
+        mgr.create_branch(clone, "task/stale-main")
+        _git_commit(clone, "task-file.txt", "task work", "task commit")
+
+        # Go back to main and create a local-only commit (simulating a
+        # previous failed merge-and-push that left main diverged)
+        _git(["checkout", "main"], cwd=clone)
+        _git_commit(clone, "stale-local.txt", "stale", "stale local commit")
+
+        # merge_branch should hard-reset main to origin, discarding the
+        # stale local commit, then merge the task branch
+        result = mgr.merge_branch(clone, "task/stale-main")
+        assert result is True
+
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "task commit" in log
+        assert "stale local commit" not in log
+
+    def test_merge_conflict_after_fetch(self, git_repo, tmp_path):
+        """merge_branch should still return False on conflict even with fresh fetch."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Create a task branch that modifies README.md
+        mgr.create_branch(clone, "task/conflict-merge")
+        _git_commit(clone, "README.md", "task version", "task changes README")
+        _git(["checkout", "main"], cwd=clone)
+
+        # Advance origin/main with a conflicting change
+        clone2 = str(tmp_path / "clone2")
+        subprocess.run(["git", "clone", git_repo["remote"], clone2],
+                       check=True, capture_output=True)
+        _git_commit(clone2, "README.md", "other version", "other changes README")
+        _git(["push", "origin", "main"], cwd=clone2)
+
+        # merge_branch should fetch, reset, then fail on the conflicting merge
+        result = mgr.merge_branch(clone, "task/conflict-merge")
+        assert result is False
+
+        # Should still be on main after abort
+        assert _current_branch(clone) == "main"
+
+    def test_merge_works_without_remote(self, tmp_path):
+        """merge_branch should still work for repos without a remote (LINK repos)."""
+        mgr = GitManager()
+        local_repo = str(tmp_path / "local-repo")
+        mgr.init_repo(local_repo)
+
+        # Create a branch with work
+        mgr.create_branch(local_repo, "task/local-only")
+        _git_commit(local_repo, "work.txt", "work", "local work")
+        _git(["checkout", "master"], cwd=local_repo)
+
+        # merge_branch should succeed even though fetch fails (no remote)
+        result = mgr.merge_branch(local_repo, "task/local-only", default_branch="master")
+        assert result is True
+
+        log = _git(["log", "--oneline"], cwd=local_repo)
+        assert "local work" in log

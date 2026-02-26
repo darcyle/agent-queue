@@ -223,8 +223,24 @@ class GitManager:
         self, checkout_path: str, branch_name: str,
         default_branch: str = "main",
     ) -> bool:
-        """Merge branch into default. Returns True if successful, False if conflict."""
+        """Merge branch into default. Returns True if successful, False if conflict.
+
+        Fetches from origin and hard-resets the default branch to
+        ``origin/<default_branch>`` before merging.  This ensures we always
+        merge into the latest remote state, preventing stale-main problems
+        when multiple agents push concurrently.  If the fetch fails (e.g. no
+        remote configured for LINK repos), we fall through and merge against
+        whatever local state we have.
+        """
+        try:
+            self._run(["fetch", "origin"], cwd=checkout_path)
+        except GitError:
+            pass  # no remote configured (LINK repos) — merge against local state
         self._run(["checkout", default_branch], cwd=checkout_path)
+        try:
+            self._run(["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path)
+        except GitError:
+            pass  # no remote tracking branch — use local state as-is
         try:
             self._run(["merge", branch_name], cwd=checkout_path)
             return True
