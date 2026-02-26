@@ -2178,6 +2178,30 @@ def setup_commands(bot: commands.Bot) -> None:
             ),
         )
 
+    @bot.tree.command(
+        name="archive-settings",
+        description="View auto-archive configuration and status",
+    )
+    async def archive_settings_command(interaction: discord.Interaction):
+        result = await handler.execute("archive_settings", {})
+        if "error" in result:
+            await _send_error(interaction, result['error'])
+            return
+        enabled = "✅ Enabled" if result["enabled"] else "❌ Disabled"
+        hours = result["after_hours"]
+        statuses = ", ".join(result["statuses"]) if result["statuses"] else "None"
+        archived = result["archived_count"]
+        eligible = result["eligible_count"]
+        desc = (
+            f"**Auto-Archive:** {enabled}\n"
+            f"**Archive After:** {hours} hours\n"
+            f"**Eligible Statuses:** {statuses}\n\n"
+            f"**Currently Archived:** {archived} task{'s' if archived != 1 else ''}\n"
+            f"**Eligible Now:** {eligible} task{'s' if eligible != 1 else ''} "
+            f"ready to be auto-archived"
+        )
+        await _send_info(interaction, "Archive Settings", description=desc)
+
     @bot.tree.command(name="approve-task", description="Approve a task that is awaiting approval")
     @app_commands.describe(task_id="Task ID to approve")
     async def approve_task_command(interaction: discord.Interaction, task_id: str):

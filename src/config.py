@@ -112,6 +112,23 @@ class AutoTaskConfig:
 
 
 @dataclass
+class ArchiveConfig:
+    """Configuration for automatic archiving of terminal tasks.
+
+    When enabled, the orchestrator automatically archives tasks that have
+    been in a terminal status (COMPLETED, FAILED, BLOCKED) for longer than
+    ``after_hours``.  This keeps the active task list clean without
+    requiring manual ``/archive-tasks`` commands.
+    """
+
+    enabled: bool = True
+    after_hours: float = 24.0  # Archive terminal tasks older than N hours
+    statuses: list[str] = field(
+        default_factory=lambda: ["COMPLETED", "FAILED", "BLOCKED"]
+    )
+
+
+@dataclass
 class MonitoringConfig:
     """Configuration for monitoring stuck or stalled tasks."""
     stuck_task_threshold_seconds: int = 3600  # 1 hour default
@@ -162,6 +179,7 @@ class AppConfig:
     chat_provider: ChatProviderConfig = field(default_factory=ChatProviderConfig)
     hook_engine: HookEngineConfig = field(default_factory=HookEngineConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
+    archive: ArchiveConfig = field(default_factory=ArchiveConfig)
     auto_task: AutoTaskConfig = field(default_factory=AutoTaskConfig)
     llm_logging: LLMLoggingConfig = field(default_factory=LLMLoggingConfig)
     global_token_budget_daily: int | None = None
@@ -314,6 +332,14 @@ def load_config(path: str) -> AppConfig:
             stuck_task_threshold_seconds=m.get(
                 "stuck_task_threshold_seconds", 3600
             ),
+        )
+
+    if "archive" in raw:
+        ar = raw["archive"]
+        config.archive = ArchiveConfig(
+            enabled=ar.get("enabled", True),
+            after_hours=float(ar.get("after_hours", 24.0)),
+            statuses=ar.get("statuses", ["COMPLETED", "FAILED", "BLOCKED"]),
         )
 
     if "auto_task" in raw:

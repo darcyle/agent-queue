@@ -1,15 +1,18 @@
 """Tests for the task archiving feature.
 
-Covers the database layer (archive, list, restore, delete) and the
-command handler layer (archive_tasks, archive_task, list_archived,
-restore_task).
+Covers the database layer (archive, list, restore, delete, auto-archive)
+and the command handler layer (archive_tasks, archive_task, list_archived,
+restore_task, archive_settings).  Also covers the orchestrator's automatic
+archiving logic.
 """
+
+import time
 
 import pytest
 from unittest.mock import MagicMock
 
 from src.command_handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import AppConfig, ArchiveConfig, DiscordConfig
 from src.database import Database
 from src.models import Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
@@ -333,3 +336,189 @@ class TestArchiveCommands:
         result = await handler.execute("restore_task", {"task_id": "nope"})
         assert "error" in result
         assert "not found" in result["error"]
+
+    async def test_archive_settings_command(self, handler, db):
+        result = await handler.execute("archive_settings", {})
+        assert "error" not in result
+        assert result["enabled"] is True
+        assert result["after_hours"] == 24.0
+        assert "COMPLETED" in result["statuses"]
+        assert result["archived_count"] == 0
+
+    async def test_archive_settings_with_archived_tasks(self, handler, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+        await db.archive_task("t-1")
+
+        result = await handler.execute("archive_settings", {})
+        assert result["archived_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Database: archive_old_terminal_tasks tests
+# ---------------------------------------------------------------------------
+
+class TestArchiveOldTerminalTasks:
+    async def test_archive_old_completed_tasks(self, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+
+        # Manually backdate updated_at to simulate an old task
+        old_time = time.time() - 86400 * 2  # 2 days ago
+        await db._db.execute(
+            "UPDATE tasks SET updated_at = ? WHERE id = ?", (old_time, "t-1"),
+        )
+        await db._db.commit()
+
+        archived_ids = await db.archive_old_terminal_tasks(
+            statuses=["COMPLETED"], older_than_seconds=3600,
+        )
+        assert archived_ids == ["t-1"]
+        assert await db.get_task("t-1") is None
+        assert await db.get_archived_task("t-1") is not None
+
+    async def test_recent_tasks_not_archived(self, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+
+        # Task was just created — should not be archived with a 1-hour threshold
+        archived_ids = await db.archive_old_terminal_tasks(
+            statuses=["COMPLETED"], older_than_seconds=3600,
+        )
+        assert archived_ids == []
+        assert await db.get_task("t-1") is not None
+
+    async def test_only_matching_statuses_archived(self, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "t-2", status=TaskStatus.FAILED, title="Failed")
+        await _seed_task(db, "t-3", status=TaskStatus.READY, title="Active")
+
+        # Backdate all tasks
+        old_time = time.time() - 86400
+        for tid in ("t-1", "t-2", "t-3"):
+            await db._db.execute(
+                "UPDATE tasks SET updated_at = ? WHERE id = ?", (old_time, tid),
+            )
+        await db._db.commit()
+
+        # Only archive COMPLETED (not FAILED or READY)
+        archived_ids = await db.archive_old_terminal_tasks(
+            statuses=["COMPLETED"], older_than_seconds=3600,
+        )
+        assert archived_ids == ["t-1"]
+        assert await db.get_task("t-2") is not None  # FAILED still active
+        assert await db.get_task("t-3") is not None  # READY still active
+
+    async def test_multiple_statuses_archived(self, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "t-2", status=TaskStatus.FAILED, title="Failed")
+        await _seed_task(db, "t-3", status=TaskStatus.BLOCKED, title="Blocked")
+
+        old_time = time.time() - 86400
+        for tid in ("t-1", "t-2", "t-3"):
+            await db._db.execute(
+                "UPDATE tasks SET updated_at = ? WHERE id = ?", (old_time, tid),
+            )
+        await db._db.commit()
+
+        archived_ids = await db.archive_old_terminal_tasks(
+            statuses=["COMPLETED", "FAILED", "BLOCKED"],
+            older_than_seconds=3600,
+        )
+        assert set(archived_ids) == {"t-1", "t-2", "t-3"}
+
+    async def test_empty_statuses_returns_empty(self, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+
+        archived_ids = await db.archive_old_terminal_tasks(
+            statuses=[], older_than_seconds=0,
+        )
+        assert archived_ids == []
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator auto-archive tests
+# ---------------------------------------------------------------------------
+
+class TestAutoArchive:
+    @pytest.fixture
+    async def orchestrator(self, db, tmp_path):
+        config = AppConfig(
+            discord=DiscordConfig(bot_token="test-token", guild_id="123"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            database_path=str(tmp_path / "test.db"),
+            archive=ArchiveConfig(
+                enabled=True,
+                after_hours=1.0,
+                statuses=["COMPLETED", "FAILED", "BLOCKED"],
+            ),
+        )
+        orch = Orchestrator(config)
+        orch.db = db
+        orch.git = MagicMock()
+        return orch
+
+    async def test_auto_archive_archives_old_tasks(self, orchestrator, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+
+        # Backdate task to 2 hours ago
+        old_time = time.time() - 7200
+        await db._db.execute(
+            "UPDATE tasks SET updated_at = ? WHERE id = ?", (old_time, "t-1"),
+        )
+        await db._db.commit()
+
+        # Force _last_auto_archive to 0 so it runs immediately
+        orchestrator._last_auto_archive = 0.0
+        await orchestrator._auto_archive_tasks()
+
+        assert await db.get_task("t-1") is None
+        assert await db.get_archived_task("t-1") is not None
+
+    async def test_auto_archive_skips_recent_tasks(self, orchestrator, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+
+        orchestrator._last_auto_archive = 0.0
+        await orchestrator._auto_archive_tasks()
+
+        # Task was just created — still in active table
+        assert await db.get_task("t-1") is not None
+
+    async def test_auto_archive_respects_rate_limit(self, orchestrator, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+
+        old_time = time.time() - 7200
+        await db._db.execute(
+            "UPDATE tasks SET updated_at = ? WHERE id = ?", (old_time, "t-1"),
+        )
+        await db._db.commit()
+
+        # Set _last_auto_archive to now — should skip
+        orchestrator._last_auto_archive = time.time()
+        await orchestrator._auto_archive_tasks()
+
+        # Task should still be active because rate limit prevented archiving
+        assert await db.get_task("t-1") is not None
+
+    async def test_auto_archive_disabled(self, orchestrator, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+
+        old_time = time.time() - 86400
+        await db._db.execute(
+            "UPDATE tasks SET updated_at = ? WHERE id = ?", (old_time, "t-1"),
+        )
+        await db._db.commit()
+
+        orchestrator.config.archive.enabled = False
+        orchestrator._last_auto_archive = 0.0
+        await orchestrator._auto_archive_tasks()
+
+        # Task should still be active because auto-archive is disabled
+        assert await db.get_task("t-1") is not None
