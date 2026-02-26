@@ -26,6 +26,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from src.config import AppConfig
+from src.discord.embeds import STATUS_EMOJIS
 from src.discord.notifications import classify_error
 from src.git.manager import GitError
 from src.models import (
@@ -42,6 +43,248 @@ def _count_by(items, key_fn) -> dict[str, int]:
         k = key_fn(item)
         counts[k] = counts.get(k, 0) + 1
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Tree-view text formatting
+# ---------------------------------------------------------------------------
+# Unicode box-drawing characters for task tree rendering.  These match the
+# constants in ``src/discord/embeds.py`` but are duplicated here so the
+# command handler stays self-contained for formatting purposes.
+
+_TREE_BRANCH = "├── "   # Non-last child connector
+_TREE_LAST   = "└── "   # Last child connector
+_TREE_PIPE   = "│   "   # Continuation pipe for deeper levels
+_TREE_SPACE  = "    "   # Blank continuation (last child's subtree)
+
+# Discord messages cap at 2,000 characters.  We leave headroom for any
+# surrounding text the caller might prepend/append (embed wrapper, header, etc).
+_TREE_CHAR_BUDGET = 1800
+
+
+def _status_emoji(status: TaskStatus) -> str:
+    """Return the status emoji for a *TaskStatus* value.
+
+    Falls back to ``⚪`` (white circle) for unknown statuses so the tree
+    never breaks even if new statuses are added before the emoji map is
+    updated.
+    """
+    return STATUS_EMOJIS.get(status.value, "⚪")
+
+
+def _count_subtree(children: list[dict]) -> tuple[int, int]:
+    """Recursively count ``(completed, total)`` tasks in a tree node list.
+
+    Parameters
+    ----------
+    children:
+        A list of ``{"task": Task, "children": [...]}`` dicts, matching the
+        shape returned by ``Database.get_task_tree()``.
+
+    Returns
+    -------
+    tuple[int, int]
+        ``(completed_count, total_count)`` across the entire subtree
+        (excluding the root that *owns* these children).
+    """
+    completed = 0
+    total = 0
+    for node in children:
+        task: Task = node["task"]
+        total += 1
+        if task.status == TaskStatus.COMPLETED:
+            completed += 1
+        child_completed, child_total = _count_subtree(node.get("children", []))
+        completed += child_completed
+        total += child_total
+    return completed, total
+
+
+def _render_tree_node(
+    task: Task,
+    children: list[dict],
+    *,
+    depth: int,
+    max_depth: int,
+    prefix: str,
+    is_last: bool,
+) -> list[str]:
+    """Render a single tree node and its descendants as lines of text.
+
+    This is the recursive workhorse called by :func:`_format_task_tree`.
+    It produces one line per visible task, using box-drawing characters to
+    convey hierarchy.
+
+    Parameters
+    ----------
+    task:
+        The Task object for this node.
+    children:
+        Child tree nodes (same shape as ``get_task_tree`` output).
+    depth:
+        Current nesting depth (0 = root).
+    max_depth:
+        Maximum depth before collapsing remaining children.
+    prefix:
+        The box-drawing prefix inherited from the parent's formatting
+        (e.g. ``"│   "`` or ``"    "``).
+    is_last:
+        Whether this node is the last sibling at its level.
+    """
+    lines: list[str] = []
+    emoji = _status_emoji(task.status)
+
+    # -- Format the current node's line --------------------------------------
+    if depth == 0:
+        # Root task: bold title + inline task id
+        lines.append(f"{emoji} **{task.title}** `{task.id}`")
+    else:
+        connector = _TREE_LAST if is_last else _TREE_BRANCH
+        lines.append(f"{prefix}{connector}{emoji} {task.title}")
+
+    if not children:
+        return lines
+
+    # Prefix that this node's children will inherit
+    if depth == 0:
+        child_prefix = ""
+    else:
+        child_prefix = prefix + (_TREE_SPACE if is_last else _TREE_PIPE)
+
+    # -- Depth limit: collapse the remaining subtree into a summary ----------
+    if depth >= max_depth:
+        completed, total = _count_subtree(children)
+        noun = "subtask" if total == 1 else "subtasks"
+        lines.append(
+            f"{child_prefix}{_TREE_LAST}… ({total} more {noun}, "
+            f"{completed} complete)"
+        )
+        return lines
+
+    # -- Render each child recursively ---------------------------------------
+    for i, child_node in enumerate(children):
+        is_last_child = i == len(children) - 1
+        child_lines = _render_tree_node(
+            child_node["task"],
+            child_node.get("children", []),
+            depth=depth + 1,
+            max_depth=max_depth,
+            prefix=child_prefix,
+            is_last=is_last_child,
+        )
+        lines.extend(child_lines)
+
+    return lines
+
+
+def _format_task_tree(
+    root_task: Task,
+    children: list[dict],
+    *,
+    depth: int = 0,
+    max_depth: int = 4,
+    compact: bool = False,
+) -> str:
+    """Format a task and its subtask tree as readable text with box-drawing chars.
+
+    This is the single formatter for tree-view task display.  Both Discord
+    slash commands and the chat-agent LLM tools call this to produce a
+    consistent hierarchical rendering of parent/subtask relationships.
+
+    Parameters
+    ----------
+    root_task:
+        The root :class:`Task` object.
+    children:
+        List of ``{"task": Task, "children": [...]}`` dicts as returned by
+        ``Database.get_task_tree()["children"]``.
+    depth:
+        Starting depth (normally ``0`` for a top-level call; pass a higher
+        value when embedding this tree inside a larger view).
+    max_depth:
+        Maximum nesting depth to render before collapsing deeper levels
+        into a ``… (N more subtasks)`` summary.
+    compact:
+        If ``True``, show only the root task header and a summary count
+        line — no child tree at all.  Useful for dense list views.
+
+    Returns
+    -------
+    str
+        A multi-line string suitable for Discord messages / embeds.
+        Automatically truncated to ~1,800 characters to stay within
+        Discord's 2,000-char message limit.
+
+    Notes
+    -----
+    Truncation strategy:
+        If the expanded tree exceeds ``_TREE_CHAR_BUDGET`` (~1,800 chars),
+        the formatter progressively reduces ``max_depth`` until it fits.
+        If even depth-1 is too long it falls back to compact mode.
+
+    Examples
+    --------
+    Expanded::
+
+        🟡 **Implement auth** `task-abc`
+          2/5 subtasks complete
+        ├── 🟢 Set up OAuth
+        ├── 🟢 Create login page
+        ├── 🟡 Add session management
+        ├── ⚪ Write tests
+        └── ⚪ Security review
+
+    Compact::
+
+        🟡 **Implement auth** `task-abc`
+          2/5 subtasks complete
+    """
+    # -- Compute subtree statistics once (shared by all modes) ---------------
+    if children:
+        completed, total = _count_subtree(children)
+        summary_line = f"  {completed}/{total} subtasks complete"
+    else:
+        completed, total = 0, 0
+        summary_line = None
+
+    # -- Compact mode: root + summary only -----------------------------------
+    if compact:
+        emoji = _status_emoji(root_task.status)
+        lines = [f"{emoji} **{root_task.title}** `{root_task.id}`"]
+        if summary_line:
+            lines.append(summary_line)
+        return "\n".join(lines)
+
+    # -- Expanded mode: full tree with box-drawing characters ----------------
+    def _build_expanded(effective_max_depth: int) -> str:
+        tree_lines = _render_tree_node(
+            root_task,
+            children,
+            depth=depth,
+            max_depth=effective_max_depth,
+            prefix="",
+            is_last=True,
+        )
+        # Insert summary line right after the root header
+        if summary_line:
+            tree_lines.insert(1, summary_line)
+        return "\n".join(tree_lines)
+
+    result = _build_expanded(max_depth)
+
+    # -- Truncation: progressively reduce depth, then fall back to compact ---
+    if len(result) > _TREE_CHAR_BUDGET:
+        for reduced_depth in range(max(max_depth - 1, 1), 0, -1):
+            result = _build_expanded(reduced_depth)
+            if len(result) <= _TREE_CHAR_BUDGET:
+                return result
+
+        # Even depth-1 is too long — fall back to compact mode
+        return _format_task_tree(
+            root_task, children, depth=depth, compact=True,
+        )
+
+    return result
 
 
 class CommandHandler:
