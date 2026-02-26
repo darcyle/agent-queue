@@ -502,6 +502,20 @@ If `output.tokens_used > 0`: `db.record_token_usage(project_id, agent_id, task_i
 
 ## 10. Workspace Preparation
 
+### Design Invariants
+
+The workspace sync workflow preserves these invariants across all code paths.
+See `specs/git/git.md` §10 for the full design principles reference.
+
+| Invariant | Guarantee |
+|---|---|
+| **Per-agent isolation** | Each `(agent, project)` pair gets its own filesystem directory; concurrent agents never share a working tree. |
+| **Branch-per-task** | Every task gets a unique `<task-id>/<slug>` branch. Subtasks accumulate on the parent's branch. |
+| **Fresh starting point** | `prepare_for_task` always fetches from origin before creating a task branch, so agents start from recent code. |
+| **Atomic commit** | `commit_all` stages everything then checks the staging area, avoiding race conditions. Agent work is never silently lost. |
+| **Graceful degradation** | Git errors during workspace setup are caught and logged; a valid workspace path is always returned so the agent can start work. |
+| **Retry resilience** | Existing branches are reused on task retry rather than causing errors. |
+
 `_prepare_workspace(task, agent) -> str`
 
 Always returns the absolute path to the workspace directory (never None).

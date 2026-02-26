@@ -1,10 +1,14 @@
 # Git Sync for Agent Workspaces — Current State
 
 **Source files:** `src/git/manager.py`, `src/orchestrator.py`
+**Design principles reference:** `specs/git/git.md` §10
 
 This document captures what the current git sync workflow does well, identifies
 the design decisions already in place, and serves as a baseline for future
-improvements to multi-agent workspace synchronization.
+improvements to multi-agent workspace synchronization. The strengths documented
+here are formalized as design invariants in the git spec (§10) and the
+orchestrator spec (§10, "Design Invariants" table) to ensure they are preserved
+during refactoring.
 
 ---
 

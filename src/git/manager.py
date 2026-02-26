@@ -14,6 +14,18 @@ Key workflows:
   - **Push and PR:** ``push_branch`` pushes to origin; ``create_pr`` and
     ``check_pr_merged`` delegate to the ``gh`` CLI for GitHub PR operations.
 
+Design strengths (see specs/git/git.md §10 for the full list):
+  - **Fresh starting point:** ``prepare_for_task`` always fetches remote state
+    before creating a task branch, so agents start from recent code.
+  - **Worktree-aware:** Detects worktrees and avoids default-branch checkout
+    conflicts automatically.
+  - **Retry-resilient:** Existing branches are reused on task retry, never
+    fail with "branch already exists".
+  - **Graceful degradation:** Operations that may legitimately fail (no remote,
+    no upstream) are caught and suppressed rather than propagated.
+  - **Atomic commits:** ``commit_all`` uses add-then-check-staged to avoid
+    race conditions between status checks and staging.
+
 See specs/git/git.md for the full behavioral specification.
 """
 

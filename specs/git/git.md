@@ -293,3 +293,96 @@ Combines a task ID and a title into a full branch name.
 - Format: `"<task_id>/<slugify(title)>"`
 - Example: `make_branch_name("clever-fox", "Fix login timeout")` → `"clever-fox/fix-login-timeout"`
 - The slash separator creates a namespaced branch, which most git hosts display as a grouped branch hierarchy.
+
+---
+
+## 10. Design Principles — Workspace Sync
+
+These principles govern how `GitManager` and the orchestrator's workspace methods
+interact to keep agent workspaces synchronized. They serve as invariants that must
+be preserved when modifying the git sync workflow.
+
+See also: `docs/git-sync-current-state.md` for a prose description of current
+strengths with rationale.
+
+### P1. Per-Agent Workspace Isolation
+
+Each `(agent, project)` pair receives its own filesystem-level workspace. Two agents
+working on the same project never share a working tree. This eliminates file-level
+conflicts (dirty index, mixed staged changes) and makes branch operations safe for
+concurrent execution.
+
+**Maintained by:** `_prepare_workspace` in the orchestrator, via
+`_compute_workspace_path` and the `agent_workspaces` SQLite cache.
+
+### P2. Branch-per-Task Naming
+
+Every task gets a unique branch named `<task-id>/<slugified-title>`. The task ID
+prefix makes branches trivially traceable to their originating task. Plan subtasks
+reuse the parent task's branch to accumulate commits sequentially.
+
+**Maintained by:** `make_branch_name`, `prepare_for_task`, `switch_to_branch`.
+
+### P3. Fresh Starting Point Before Each Task
+
+Before creating a task branch, `prepare_for_task` fetches the latest remote state
+(`git fetch origin`) and synchronizes the local default branch. Agents always start
+from a reasonably recent version of the codebase.
+
+**Maintained by:** `prepare_for_task` (fetch + pull/reset on default branch).
+
+### P4. Atomic Post-Completion Commit
+
+After every task, the orchestrator commits all agent work before any merge, push,
+or PR operation. The `commit_all` method uses an add-all-then-check-staged pattern
+(`git add -A` followed by `git diff --cached --quiet`) to avoid race conditions
+between status checks and staging.
+
+**Maintained by:** `commit_all`, called from `_complete_workspace`.
+
+### P5. Graceful Degradation on Git Errors
+
+Git operations that may legitimately fail (no remote configured, no upstream tracking
+branch, network errors during fetch) are caught and suppressed. The outer
+`_prepare_workspace` wraps all git operations in a catch-all that logs but still
+returns a valid workspace path. An agent can always start work even if branch setup
+fails.
+
+**Maintained by:** `try/except GitError: pass` patterns in `prepare_for_task`,
+`switch_to_branch`, and the catch-all in `_prepare_workspace`.
+
+### P6. Dual Completion Paths (PR vs Direct Merge)
+
+Tasks requiring approval push the branch and create a GitHub PR. Tasks without
+approval merge the branch into the default branch and push. Both paths include
+error handling with user-facing notifications. The orchestrator polls PR merge
+status for approval-gated tasks.
+
+**Maintained by:** `_complete_workspace`, `_merge_and_push`,
+`_create_pr_for_task`, `check_pr_merged`.
+
+### P7. Worktree-Aware Branching
+
+When a checkout is a git worktree (not the main working tree), `prepare_for_task`
+avoids checking out the default branch locally (which would conflict with the main
+working tree) and instead creates the task branch directly from
+`origin/<default_branch>`.
+
+**Maintained by:** `_is_worktree`, worktree branch in `prepare_for_task`.
+
+### P8. Retry Resilience
+
+Both `prepare_for_task` and `switch_to_branch` handle existing branches gracefully
+(e.g. after a crash or restart mid-task). Instead of failing, they switch to the
+existing branch so work can resume without manual cleanup.
+
+**Maintained by:** fallback `checkout` calls in `prepare_for_task`,
+`create_branch`, and `switch_to_branch`.
+
+### P9. Best-Effort Branch Cleanup
+
+After successful merge or PR completion, task branches are deleted locally and
+remotely. Cleanup failures are silently ignored to avoid blocking the workflow when
+a branch was already deleted (e.g. by GitHub's "delete branch after merge" setting).
+
+**Maintained by:** `delete_branch` (called from `_merge_and_push`).
