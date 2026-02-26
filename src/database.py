@@ -1071,8 +1071,31 @@ class Database:
         await self._db.commit()
 
     async def delete_agent(self, agent_id: str) -> None:
-        """Delete an agent record. Caller should remove workspaces first."""
-        await self._db.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
+        """Delete an agent and all dependent records.
+
+        Cascading order (children before parent):
+        1. token_ledger  – immutable token-usage rows
+        2. task_results  – execution-history rows
+        3. agent_workspaces – per-project workspace mappings
+        4. tasks.assigned_agent_id – NULLify (don't delete the tasks)
+        5. agents – the agent record itself
+        """
+        await self._db.execute(
+            "DELETE FROM token_ledger WHERE agent_id = ?", (agent_id,),
+        )
+        await self._db.execute(
+            "DELETE FROM task_results WHERE agent_id = ?", (agent_id,),
+        )
+        await self._db.execute(
+            "DELETE FROM agent_workspaces WHERE agent_id = ?", (agent_id,),
+        )
+        await self._db.execute(
+            "UPDATE tasks SET assigned_agent_id = NULL WHERE assigned_agent_id = ?",
+            (agent_id,),
+        )
+        await self._db.execute(
+            "DELETE FROM agents WHERE id = ?", (agent_id,),
+        )
         await self._db.commit()
 
     def _row_to_agent(self, row) -> Agent:

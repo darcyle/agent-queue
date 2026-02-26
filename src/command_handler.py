@@ -2645,7 +2645,7 @@ class CommandHandler:
         return {"agent_id": agent_id, "state": "IDLE"}
 
     async def _cmd_delete_agent(self, args: dict) -> dict:
-        """Delete an agent and its workspace mappings.
+        """Delete an agent and all its dependent records.
 
         Refuses to delete an agent that is currently BUSY with a task.
         """
@@ -2658,7 +2658,6 @@ class CommandHandler:
                 "error": f"Agent '{agent_id}' is BUSY with task "
                 f"'{agent.current_task_id}'. Stop the task first.",
             }
-        await self.db.delete_agent_workspaces(agent_id)
         await self.db.delete_agent(agent_id)
         return {"deleted": agent_id, "name": agent.name}
 
