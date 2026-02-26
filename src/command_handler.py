@@ -3319,6 +3319,75 @@ class CommandHandler:
         return {"deleted": fpath, "title": args["title"]}
 
     # -----------------------------------------------------------------------
+    # Prompt template commands -- read-only browsing of prompt templates
+    # stored in <workspace>/prompts/.  Templates use YAML frontmatter for
+    # metadata and Mustache-style {{variable}} placeholders for context
+    # injection.  Modifications should only be done through tasks, not
+    # through these commands.
+    # -----------------------------------------------------------------------
+
+    def _get_prompt_manager(self, workspace: str):
+        """Create a PromptManager for the given workspace."""
+        from src.prompt_manager import PromptManager
+        prompts_dir = os.path.join(workspace, "prompts")
+        return PromptManager(prompts_dir)
+
+    async def _cmd_list_prompts(self, args: dict) -> dict:
+        """List all prompt templates for a project, optionally filtered."""
+        project = await self.db.get_project(args["project_id"])
+        if not project:
+            return {"error": f"Project '{args['project_id']}' not found"}
+        workspace = project.workspace_path or os.path.join(
+            self.config.workspace_dir, args["project_id"]
+        )
+        pm = self._get_prompt_manager(workspace)
+        templates = pm.list_templates(
+            category=args.get("category"),
+            tag=args.get("tag"),
+        )
+        return {
+            "project_id": args["project_id"],
+            "prompts": [t.to_dict() for t in templates],
+            "categories": pm.get_categories(),
+            "total": len(templates),
+        }
+
+    async def _cmd_read_prompt(self, args: dict) -> dict:
+        """Read a specific prompt template's content and metadata."""
+        project = await self.db.get_project(args["project_id"])
+        if not project:
+            return {"error": f"Project '{args['project_id']}' not found"}
+        workspace = project.workspace_path or os.path.join(
+            self.config.workspace_dir, args["project_id"]
+        )
+        pm = self._get_prompt_manager(workspace)
+        tmpl = pm.get_template(args["name"])
+        if not tmpl:
+            return {"error": f"Prompt template '{args['name']}' not found"}
+        result = tmpl.to_dict()
+        result["content"] = tmpl.body
+        return result
+
+    async def _cmd_render_prompt(self, args: dict) -> dict:
+        """Render a prompt template with variable substitution."""
+        project = await self.db.get_project(args["project_id"])
+        if not project:
+            return {"error": f"Project '{args['project_id']}' not found"}
+        workspace = project.workspace_path or os.path.join(
+            self.config.workspace_dir, args["project_id"]
+        )
+        pm = self._get_prompt_manager(workspace)
+        variables = args.get("variables", {})
+        rendered = pm.render(args["name"], variables)
+        if rendered is None:
+            return {"error": f"Prompt template '{args['name']}' not found"}
+        return {
+            "name": args["name"],
+            "rendered": rendered,
+            "variables_used": variables,
+        }
+
+    # -----------------------------------------------------------------------
     # System / control commands -- orchestrator pause/resume, active project
     # switching, and daemon restart.  These affect the global state of the
     # system rather than any single project or task.

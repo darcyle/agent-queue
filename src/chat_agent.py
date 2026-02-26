@@ -1064,6 +1064,79 @@ TOOLS = [
         },
     },
     {
+        "name": "list_prompts",
+        "description": (
+            "List all prompt templates for a project. Returns name, description, "
+            "category, tags, and variable schemas for each template. "
+            "Optionally filter by category (system, task, hooks, custom) or tag."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "category": {
+                    "type": "string",
+                    "description": (
+                        "Filter by category: system, task, hooks, or custom (optional)"
+                    ),
+                },
+                "tag": {
+                    "type": "string",
+                    "description": "Filter by tag (optional)",
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "read_prompt",
+        "description": (
+            "Read a prompt template's full content and metadata. Returns the "
+            "template body, variable definitions, tags, and category. "
+            "Use the 'name' field from list_prompts as the name parameter."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "Template name from list_prompts (e.g. 'plan-generation'), "
+                        "or the filename (e.g. 'plan-generation.md')"
+                    ),
+                },
+            },
+            "required": ["project_id", "name"],
+        },
+    },
+    {
+        "name": "render_prompt",
+        "description": (
+            "Render a prompt template with variable substitution. Replaces "
+            "{{variable}} placeholders with provided values. Returns the "
+            "fully rendered prompt text."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "name": {
+                    "type": "string",
+                    "description": "Template name to render",
+                },
+                "variables": {
+                    "type": "object",
+                    "description": (
+                        "Key-value pairs for template variables "
+                        "(e.g. {\"task_title\": \"Fix login bug\"})"
+                    ),
+                },
+            },
+            "required": ["project_id", "name"],
+        },
+    },
+    {
         "name": "get_git_status",
         "description": (
             "Get the git status of a project's repository. Shows current branch, "
@@ -1385,6 +1458,7 @@ you do NOT need to specify project_id or repo_id when an active project is set
 - Get token usage breakdowns with `get_token_usage`
 - Delete entire projects (cascading) with `delete_project`
 - Create, read, edit, and delete project notes with `list_notes`, `write_note`, `delete_note`, and `read_file`
+- Browse prompt templates with `list_prompts`, `read_prompt`, and `render_prompt`
 - Create and manage hooks for automated self-improvement with `create_hook`, `list_hooks`, \
 `edit_hook`, `delete_hook`, `list_hook_runs`, and `fire_hook`
 - Restart the daemon with `restart_daemon`
@@ -1433,6 +1507,17 @@ read the note, propose a list of tasks with titles and descriptions, and wait \
 for the user to approve before calling `create_task` for each one.
 - When creating a brainstorming task for an agent, include the notes path in the \
 task description so the agent writes its output to `<workspace>/notes/<name>.md`.
+
+Prompt templates — browse reusable prompt templates stored in `<workspace>/prompts/`:
+- Use `list_prompts` to see all available templates, optionally filtered by category or tag
+- Use `read_prompt` to view a template's full content, variable schema, and metadata
+- Use `render_prompt` to preview a template with variable substitution
+- Templates are READ-ONLY through these tools — to modify templates, create a task \
+for an agent to edit the files in `<workspace>/prompts/`
+- Templates use YAML frontmatter for metadata and `{{variable}}` Mustache-style placeholders
+- Categories: `system` (bot persona), `task` (agent execution), `hooks` (automation), `custom`
+- When creating a task that involves writing a new prompt, tell the agent to write output \
+to `<workspace>/prompts/<name>.md` with proper YAML frontmatter
 
 Hook system — hooks enable automated self-improvement by running context-gathering steps \
 and sending prompts to an LLM that has access to all system tools:
