@@ -672,6 +672,53 @@ TOOLS = [
         },
     },
     {
+        "name": "add_dependency",
+        "description": (
+            "Add a dependency between two tasks: task_id will depend on "
+            "depends_on (i.e. task_id cannot start until depends_on is "
+            "completed). Validates that both tasks exist and performs cycle "
+            "detection to prevent circular dependency chains. Use this when "
+            "the user wants to link tasks so one must finish before another "
+            "can begin."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "The task that should wait (downstream task)",
+                },
+                "depends_on": {
+                    "type": "string",
+                    "description": "The task that must complete first (upstream task)",
+                },
+            },
+            "required": ["task_id", "depends_on"],
+        },
+    },
+    {
+        "name": "remove_dependency",
+        "description": (
+            "Remove a dependency between two tasks: task_id will no longer "
+            "depend on depends_on. Use this when the user wants to unlink "
+            "tasks or remove a blocking relationship."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "The downstream task to unlink",
+                },
+                "depends_on": {
+                    "type": "string",
+                    "description": "The upstream task to remove as a dependency",
+                },
+            },
+            "required": ["task_id", "depends_on"],
+        },
+    },
+    {
         "name": "get_chain_health",
         "description": "Check dependency chain health. Shows downstream tasks stuck because of blocked tasks. Pass task_id for a specific task, or project_id for all stuck chains in a project.",
         "input_schema": {
@@ -1310,6 +1357,8 @@ You can directly (using your tools):
 - Create, view, edit, delete, and restart tasks
 - View task hierarchies with `get_task_tree` or `list_tasks` with display_mode='tree'
 - Inspect task dependency graphs with `get_task_dependencies` (upstream depends_on + downstream blocks)
+- Add dependencies between tasks with `add_dependency` (with automatic cycle detection)
+- Remove dependencies with `remove_dependency`
 - List tasks with dependency annotations using `list_tasks` with show_dependencies=true
 - Create quick standalone tasks without specifying a project (they go into "Quick Tasks" automatically)
 - Register and list agents
@@ -1459,6 +1508,12 @@ This lets you explain: "Task X is blocked because it depends on Y which is still
 IN_PROGRESS." For a broader view, use `list_tasks` with show_dependencies=true to \
 annotate every task with its dependency relationships. For stuck dependency chains, \
 use `get_chain_health`.
+
+Dependency management — use `add_dependency` to create a dependency between two \
+tasks (the first task waits for the second to complete). The system automatically \
+detects cycles and rejects circular dependencies. Use `remove_dependency` to \
+unlink tasks. When the user says "task A depends on task B", "A needs B first", \
+or "make B block A", call add_dependency with task_id=A, depends_on=B.
 
 Cross-project overview — use `list_active_tasks_all_projects` when the user asks \
 about active work across all projects (e.g. "what's running?", "show me everything \

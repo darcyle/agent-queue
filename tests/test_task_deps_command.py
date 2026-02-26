@@ -1,5 +1,6 @@
 """Unit tests for task dependency features: _cmd_task_deps handler, batch
-dependency queries, and list_tasks with show_dependencies."""
+dependency queries, list_tasks with show_dependencies, and add/remove
+dependency management commands."""
 
 import pytest
 from unittest.mock import MagicMock
@@ -266,3 +267,204 @@ async def test_list_tasks_no_project_context(handler, db):
     result = await handler.execute("list_tasks", {})
     assert "error" not in result
     assert result["total"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# add_dependency command handler tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_dependency_success(handler, db):
+    """Should successfully create a dependency between two tasks."""
+    await db.create_task(_task("task-a", title="Task A"))
+    await db.create_task(_task("task-b", title="Task B"))
+
+    result = await handler.execute("add_dependency", {
+        "task_id": "task-b",
+        "depends_on": "task-a",
+    })
+    assert "error" not in result
+    assert result["ok"] is True
+    assert result["task_id"] == "task-b"
+    assert result["depends_on"] == "task-a"
+    assert result["task_title"] == "Task B"
+    assert result["depends_on_title"] == "Task A"
+
+    # Verify the dependency was persisted
+    deps = await db.get_dependencies("task-b")
+    assert "task-a" in deps
+
+
+@pytest.mark.asyncio
+async def test_add_dependency_missing_task_id(handler):
+    """Should error when task_id is empty."""
+    result = await handler.execute("add_dependency", {
+        "task_id": "",
+        "depends_on": "something",
+    })
+    assert "error" in result
+    assert "task_id" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_add_dependency_missing_depends_on(handler):
+    """Should error when depends_on is empty."""
+    result = await handler.execute("add_dependency", {
+        "task_id": "something",
+        "depends_on": "",
+    })
+    assert "error" in result
+    assert "depends_on" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_add_dependency_self_reference(handler, db):
+    """Should reject a task depending on itself."""
+    await db.create_task(_task("task-a", title="Task A"))
+
+    result = await handler.execute("add_dependency", {
+        "task_id": "task-a",
+        "depends_on": "task-a",
+    })
+    assert "error" in result
+    assert "itself" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_add_dependency_task_not_found(handler, db):
+    """Should error when the main task does not exist."""
+    await db.create_task(_task("task-a", title="Task A"))
+
+    result = await handler.execute("add_dependency", {
+        "task_id": "nonexistent",
+        "depends_on": "task-a",
+    })
+    assert "error" in result
+    assert "not found" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_add_dependency_depends_on_not_found(handler, db):
+    """Should error when the dependency target does not exist."""
+    await db.create_task(_task("task-a", title="Task A"))
+
+    result = await handler.execute("add_dependency", {
+        "task_id": "task-a",
+        "depends_on": "nonexistent",
+    })
+    assert "error" in result
+    assert "not found" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_add_dependency_duplicate(handler, db):
+    """Should reject duplicate dependency edges."""
+    await db.create_task(_task("task-a", title="Task A"))
+    await db.create_task(_task("task-b", title="Task B"))
+
+    await db.add_dependency("task-b", "task-a")
+
+    result = await handler.execute("add_dependency", {
+        "task_id": "task-b",
+        "depends_on": "task-a",
+    })
+    assert "error" in result
+    assert "already" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_add_dependency_cycle_detection(handler, db):
+    """Should reject dependencies that would create a cycle."""
+    await db.create_task(_task("task-a", title="Task A"))
+    await db.create_task(_task("task-b", title="Task B"))
+    await db.create_task(_task("task-c", title="Task C"))
+
+    # a -> b -> c (b depends on a, c depends on b)
+    await db.add_dependency("task-b", "task-a")
+    await db.add_dependency("task-c", "task-b")
+
+    # Trying to make a depend on c would create a cycle: a -> b -> c -> a
+    result = await handler.execute("add_dependency", {
+        "task_id": "task-a",
+        "depends_on": "task-c",
+    })
+    assert "error" in result
+    assert "cycle" in result["error"].lower() or "Cyclic" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# remove_dependency command handler tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_remove_dependency_success(handler, db):
+    """Should successfully remove a dependency edge."""
+    await db.create_task(_task("task-a", title="Task A"))
+    await db.create_task(_task("task-b", title="Task B"))
+    await db.add_dependency("task-b", "task-a")
+
+    result = await handler.execute("remove_dependency", {
+        "task_id": "task-b",
+        "depends_on": "task-a",
+    })
+    assert "error" not in result
+    assert result["ok"] is True
+    assert result["task_id"] == "task-b"
+    assert result["removed_dependency"] == "task-a"
+
+    # Verify the dependency was removed
+    deps = await db.get_dependencies("task-b")
+    assert "task-a" not in deps
+
+
+@pytest.mark.asyncio
+async def test_remove_dependency_missing_task_id(handler):
+    """Should error when task_id is empty."""
+    result = await handler.execute("remove_dependency", {
+        "task_id": "",
+        "depends_on": "something",
+    })
+    assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_remove_dependency_task_not_found(handler, db):
+    """Should error when the task does not exist."""
+    result = await handler.execute("remove_dependency", {
+        "task_id": "nonexistent",
+        "depends_on": "something",
+    })
+    assert "error" in result
+    assert "not found" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_remove_dependency_edge_not_found(handler, db):
+    """Should error when the dependency edge does not exist."""
+    await db.create_task(_task("task-a", title="Task A"))
+    await db.create_task(_task("task-b", title="Task B"))
+
+    result = await handler.execute("remove_dependency", {
+        "task_id": "task-a",
+        "depends_on": "task-b",
+    })
+    assert "error" in result
+    assert "does not depend" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_get_task_dependencies_alias(handler, db):
+    """get_task_dependencies should be an alias for task_deps."""
+    await db.create_task(_task("task-x", title="Task X"))
+    await db.create_task(_task("task-y", title="Task Y"))
+    await db.add_dependency("task-x", "task-y")
+
+    result_alias = await handler.execute("get_task_dependencies", {"task_id": "task-x"})
+    result_direct = await handler.execute("task_deps", {"task_id": "task-x"})
+
+    assert "error" not in result_alias
+    assert result_alias["task_id"] == result_direct["task_id"]
+    assert result_alias["depends_on"] == result_direct["depends_on"]
+    assert result_alias["blocks"] == result_direct["blocks"]

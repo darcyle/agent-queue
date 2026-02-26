@@ -35,6 +35,7 @@ from src.models import (
     Task, TaskStatus, TaskType, TASK_TYPE_VALUES,
 )
 from src.orchestrator import Orchestrator
+from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge
 from src.task_names import generate_task_id
 
 
@@ -1441,6 +1442,84 @@ class CommandHandler:
         Both route through the same logic.
         """
         return await self._cmd_task_deps(args)
+
+    async def _cmd_add_dependency(self, args: dict) -> dict:
+        """Add a dependency edge: *task_id* depends on *depends_on*.
+
+        Validates both tasks exist and performs cycle detection before
+        persisting the edge.  Returns the updated dependency view for the
+        task so callers can confirm the new state.
+        """
+        task_id = args.get("task_id", "")
+        depends_on = args.get("depends_on", "")
+        if not task_id:
+            return {"error": "task_id is required"}
+        if not depends_on:
+            return {"error": "depends_on is required"}
+        if task_id == depends_on:
+            return {"error": "A task cannot depend on itself"}
+
+        # Verify both tasks exist.
+        task = await self.db.get_task(task_id)
+        if not task:
+            return {"error": f"Task '{task_id}' not found"}
+        dep_task = await self.db.get_task(depends_on)
+        if not dep_task:
+            return {"error": f"Dependency task '{depends_on}' not found"}
+
+        # Check for duplicate edge.
+        existing = await self.db.get_dependencies(task_id)
+        if depends_on in existing:
+            return {"error": f"Dependency already exists: '{task_id}' already depends on '{depends_on}'"}
+
+        # Cycle detection — build the full graph and validate.
+        all_deps = await self.db.get_all_dependencies()
+        try:
+            validate_dag_with_new_edge(all_deps, task_id, depends_on)
+        except CyclicDependencyError as exc:
+            return {"error": f"Cannot add dependency: {exc}"}
+
+        await self.db.add_dependency(task_id, depends_on)
+
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "depends_on": depends_on,
+            "task_title": task.title,
+            "depends_on_title": dep_task.title,
+        }
+
+    async def _cmd_remove_dependency(self, args: dict) -> dict:
+        """Remove a dependency edge: *task_id* no longer depends on *depends_on*.
+
+        Returns a confirmation dict.  Silently succeeds if the edge does
+        not exist (idempotent).
+        """
+        task_id = args.get("task_id", "")
+        depends_on = args.get("depends_on", "")
+        if not task_id:
+            return {"error": "task_id is required"}
+        if not depends_on:
+            return {"error": "depends_on is required"}
+
+        # Verify the task exists (the dependency target need not still exist).
+        task = await self.db.get_task(task_id)
+        if not task:
+            return {"error": f"Task '{task_id}' not found"}
+
+        # Check if the dependency edge actually exists.
+        existing = await self.db.get_dependencies(task_id)
+        if depends_on not in existing:
+            return {"error": f"No dependency found: '{task_id}' does not depend on '{depends_on}'"}
+
+        await self.db.remove_dependency(task_id, depends_on)
+
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "removed_dependency": depends_on,
+            "task_title": task.title,
+        }
 
     async def _cmd_edit_task(self, args: dict) -> dict:
         task = await self.db.get_task(args["task_id"])
