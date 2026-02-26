@@ -502,6 +502,40 @@ If `output.tokens_used > 0`: `db.record_token_usage(project_id, agent_id, task_i
 
 ## 10. Workspace Preparation
 
+### Design Invariants
+
+The workspace sync workflow preserves these invariants across all code paths.
+See `specs/git/git.md` §10 for the full design principles reference.
+
+| Invariant | Guarantee |
+|---|---|
+| **Per-agent isolation** | Each `(agent, project)` pair gets its own filesystem directory; concurrent agents never share a working tree. |
+| **Branch-per-task** | Every task gets a unique `<task-id>/<slug>` branch. Subtasks accumulate on the parent's branch. |
+| **Fresh starting point** | `prepare_for_task` always fetches from origin before creating a task branch, so agents start from recent code. |
+| **Atomic commit** | `commit_all` stages everything then checks the staging area, avoiding race conditions. Agent work is never silently lost. |
+| **Graceful degradation** | Git errors during workspace setup are caught and logged; a valid workspace path is always returned so the agent can start work. |
+| **Retry resilience** | Existing branches are reused on task retry rather than causing errors. |
+
+### Resolved Gaps
+
+Most previously identified workspace sync gaps have been resolved. See
+`specs/git/git.md` §11 for the full gap catalogue.
+
+| Gap | Location in this spec | Resolution |
+|-----|----------------------|------------|
+| **G1** | §11 `_merge_and_push` | `sync_and_merge` fetches and hard-resets before merging. |
+| **G2** | §11 `_merge_and_push` | `recover_workspace` resets local default branch after failed sync_and_merge. |
+| **G3** | §11 `_merge_and_push` | `sync_and_merge` attempts rebase-before-merge on conflict. |
+| **G4** | §10 `_prepare_workspace` | `prepare_for_task` rebases existing branches on retry. |
+| **G5** | §11 `_create_pr_for_task` | `push_branch(force_with_lease=True)` for idempotent PR retries. |
+| **G6** | §10/§11 | `mid_chain_sync` + `switch_to_branch(rebase=True)` reduce subtask chain drift. |
+
+### Remaining Gap
+
+| Gap | Location in this spec | Issue |
+|-----|----------------------|-------|
+| **G7** | §10 `_prepare_workspace` | LINK repos share a single directory across agents — no file-level isolation. |
+
 `_prepare_workspace(task, agent) -> str`
 
 Always returns the absolute path to the workspace directory (never None).
@@ -536,18 +570,19 @@ Always returns the absolute path to the workspace directory (never None).
 - If `validate_checkout(workspace)` fails: call `git.create_checkout(repo.url, workspace)`
   (which `git clone`s the repo into `workspace`, creating parent directories as needed).
 - If `reuse_branch`: call `git.switch_to_branch(workspace, branch_name, default_branch=repo.default_branch, rebase=rebase_on_switch)` — fetches from
-  origin and checks out the existing branch, pulling latest if available.  When
+  origin, checks out the existing branch, pulls latest, and optionally rebases onto
+  `origin/<default_branch>` to reduce subtask chain drift (G6 fix).  When
   `rebase_on_switch` is True, also rebases onto `origin/<default_branch>`.
 - Otherwise: call `git.prepare_for_task(workspace, branch_name, repo.default_branch)` —
-  fetches from origin, hard-resets default branch to `origin/<default_branch>`, then
-  creates a new branch named `branch_name` (or switches to it and rebases if it already
-  exists from a previous attempt).
+  fetches from origin, checks out `default_branch`, hard-resets to `origin/<default_branch>`,
+  then creates a new branch named `branch_name` (or switches to it and rebases if it
+  already exists from a previous attempt — G4 fix).
 
 *LINK repos:*
 - If `workspace` does not exist as a directory: send a Discord warning notification
   via `_notify_channel` and return the path as-is.
 - If the directory is a git repo (`validate_checkout` passes): apply the same branch logic
-  as CLONE (`switch_to_branch` with `rebase=rebase_on_switch` or `prepare_for_task`).
+  as CLONE (`switch_to_branch` with `default_branch` and `rebase=rebase_on_switch` args, or `prepare_for_task`).
 - If not a git repo: use the directory as-is (no git operations).
 
 *INIT repos:*
@@ -594,8 +629,12 @@ nothing was committed, log a message (not an error).
   - Otherwise: call `_merge_and_push`.
 - If not the last subtask and repo exists and branch_name is set:
   call `_mid_chain_rebase(task, repo, workspace)` to optionally rebase the shared branch
-  onto latest main between subtask completions.  This catches conflicts early and keeps
-  the branch close to main.
+  onto latest main between subtask completions.  This internally calls
+  `git.mid_chain_sync(workspace, branch_name, repo.default_branch)` which pushes
+  intermediate work to the remote and rebases the chain branch onto
+  `origin/<default_branch>`, reducing drift for the next subtask.  This catches conflicts
+  early and keeps the branch close to main.  Log success/failure but continue regardless
+  (non-fatal).
 - Return `None`.
 
 **Root task path.**
@@ -643,18 +682,32 @@ type:
 
 **CLONE repos** — delegates to `git.sync_and_merge()`:
 
-1. Calls `sync_and_merge(workspace, branch_name, default_branch, max_retries=_max_retries-1)`.
-   The `_max_retries` parameter represents total push attempts; internally this maps to
-   `max_retries = _max_retries - 1` (retries after the initial attempt).
-2. Handles the `(success, error_msg)` return value:
-   - **Success:** Clean up the task branch locally and on the remote via `delete_branch(delete_remote=True)`.
-   - **`"merge_conflict"`:** Send a "Merge Conflict" notification suggesting manual
-     resolution.  Reset the workspace to a clean state by checking out the default branch
-     and running `git reset --hard origin/<default_branch>` to discard any un-pushed merge
-     commits.
-   - **`"push_failed: ..."`:** Send a "Push Failed" notification with attempt count and
-     divergence warning.  Same workspace recovery as merge conflict.
-3. Workspace recovery after failure is best-effort — errors are silently ignored.
+`sync_and_merge(workspace, branch_name, repo.default_branch)` encapsulates the full
+sync-merge-push flow:
+
+1. Fetch latest remote state.
+2. Checkout default branch and hard-reset to `origin/<default_branch>` (**G1 fix**).
+3. Attempt merge; on conflict, rebase task branch onto `origin/<default_branch>` and
+   retry (**G3 fix**).
+4. Push with retry (pull --rebase on push failure).
+
+The `_max_retries` parameter represents total push attempts; internally this maps to
+`max_retries = _max_retries - 1` (retries after the initial attempt).
+
+Handles the `(success, error_msg)` return value:
+- **Success:** Clean up the task branch locally and on the remote via `delete_branch(delete_remote=True)`.
+- **`"merge_conflict"`:** Send a "Merge Conflict" notification suggesting manual
+  resolution.  Reset the workspace to a clean state via `git.recover_workspace(workspace, repo.default_branch)`
+  which checks out the default branch and runs `git reset --hard origin/<default_branch>`
+  to discard any un-pushed merge commits (**G2 fix**).
+- **`"push_failed: ..."`:** Send a "Push Failed" notification with attempt count and
+  divergence warning.  Same workspace recovery as merge conflict.
+
+Workspace recovery after failure is best-effort — errors are silently ignored.
+
+> **Gaps G1--G3 are resolved.** `sync_and_merge` handles stale-main pulls (G1),
+> `recover_workspace` resets after failures (G2), and rebase-before-merge resolves
+> conflicts caused by branch staleness (G3).
 
 **LINK / INIT repos** — no remote push:
 
@@ -677,8 +730,8 @@ Pushes the task branch and creates a PR. Returns the PR URL or `None`.
 
 **CLONE repos:**
 1. Push the branch with `git.push_branch(workspace, branch_name, force_with_lease=True)`.
-   The `--force-with-lease` flag allows the push to succeed even when the branch was
-   previously pushed (e.g. task retries or subtask chains that push intermediate results).
+   Uses `--force-with-lease` so retries don't fail if the branch was previously
+   pushed (G5 fix). Task branches are agent-owned and safe to force-push.
    On push failure: notify and return `None`.
 2. Create the PR via `git.create_pr(workspace, branch, title, body, base=default_branch)`.
    - PR body: `"Automated PR for task \`{id}\`.\n\n{description[:500]}"`.

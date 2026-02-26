@@ -183,11 +183,8 @@ class TestMergeAndPushClone:
 
         await orch._merge_and_push(task, repo, "/workspace")
 
-        # Recovery: checkout default branch + hard reset to origin
-        git._run.assert_any_call(["checkout", "main"], cwd="/workspace")
-        git._run.assert_any_call(
-            ["reset", "--hard", "origin/main"], cwd="/workspace",
-        )
+        # Recovery via recover_workspace
+        git.recover_workspace.assert_called_once_with("/workspace", "main")
 
     @pytest.mark.asyncio
     async def test_push_failed_resets_workspace(self, orch, git):
@@ -198,11 +195,8 @@ class TestMergeAndPushClone:
 
         await orch._merge_and_push(task, repo, "/workspace")
 
-        # Recovery: checkout default branch + hard reset to origin
-        git._run.assert_any_call(["checkout", "main"], cwd="/workspace")
-        git._run.assert_any_call(
-            ["reset", "--hard", "origin/main"], cwd="/workspace",
-        )
+        # Recovery via recover_workspace
+        git.recover_workspace.assert_called_once_with("/workspace", "main")
 
     @pytest.mark.asyncio
     async def test_recovery_uses_repo_default_branch(self, orch, git):
@@ -213,16 +207,13 @@ class TestMergeAndPushClone:
 
         await orch._merge_and_push(task, repo, "/workspace")
 
-        git._run.assert_any_call(["checkout", "develop"], cwd="/workspace")
-        git._run.assert_any_call(
-            ["reset", "--hard", "origin/develop"], cwd="/workspace",
-        )
+        git.recover_workspace.assert_called_once_with("/workspace", "develop")
 
     @pytest.mark.asyncio
     async def test_recovery_failure_silently_ignored(self, orch, git):
         """Recovery errors should be silently swallowed (best-effort)."""
         git.sync_and_merge.return_value = (False, "push_failed: rejected")
-        git._run.side_effect = Exception("git checkout failed")
+        git.recover_workspace.side_effect = Exception("recovery failed")
         task = _make_task()
         repo = _make_repo()
 

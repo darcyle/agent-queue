@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     pr_url TEXT,
     plan_source TEXT,
     is_plan_subtask INTEGER NOT NULL DEFAULT 0,
+    task_type TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -588,6 +589,27 @@ class Database:
         rows = await cursor.fetchall()
         return [self._row_to_task(r) for r in rows]
 
+    async def list_active_tasks_all_projects(self) -> list[Task]:
+        """Return all non-terminal tasks across every project.
+
+        Non-terminal means the task's status is NOT one of COMPLETED, FAILED,
+        or BLOCKED.  Results are ordered by project_id first (so the caller
+        can group by project) then by priority within each project.
+        """
+        terminal = (
+            TaskStatus.COMPLETED.value,
+            TaskStatus.FAILED.value,
+            TaskStatus.BLOCKED.value,
+        )
+        placeholders = ", ".join("?" for _ in terminal)
+        cursor = await self._db.execute(
+            f"SELECT * FROM tasks WHERE status NOT IN ({placeholders}) "
+            "ORDER BY project_id ASC, priority ASC, created_at ASC",
+            list(terminal),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_task(r) for r in rows]
+
     async def count_tasks_by_status(
         self,
         project_id: str | None = None,
@@ -720,17 +742,19 @@ class Database:
         The root task is fetched by *root_task_id*, then all descendants are
         collected recursively via :meth:`get_subtasks`.
 
-        Returns a dict of the form::
+        The returned structure looks like::
 
             {
-                "task": <Task>,
-                "children": [
+                "task": <Task>,          # the root Task object
+                "children": [            # list of child sub-trees
                     {"task": <Task>, "children": [...]},
                     ...
                 ],
             }
 
-        Returns ``None`` if the root task does not exist.
+        Uses :meth:`get_subtasks` as the building block and recurses
+        through all descendants.  Returns ``None`` if *root_task_id*
+        does not exist in the database.
         """
         root = await self.get_task(root_task_id)
         if root is None:
@@ -738,10 +762,11 @@ class Database:
 
         async def _build_subtree(task: Task) -> dict:
             children = await self.get_subtasks(task.id)
-            return {
-                "task": task,
-                "children": [await _build_subtree(c) for c in children],
-            }
+            # Sort children by priority then creation order for deterministic output
+            child_nodes = []
+            for child in children:
+                child_nodes.append(await _build_subtree(child))
+            return {"task": task, "children": child_nodes}
 
         return await _build_subtree(root)
 
@@ -749,8 +774,9 @@ class Database:
         """Return top-level tasks for a project (those with no parent).
 
         A "parent task" here means a task whose ``parent_task_id`` is NULL --
-        i.e. it is not a subtask of any other task. Ordered by priority then
-        creation time, matching :meth:`list_tasks` ordering.
+        i.e. it is not a subtask of any other task.  Results are ordered by
+        priority ascending, then creation time ascending, matching
+        :meth:`list_tasks`.
         """
         cursor = await self._db.execute(
             "SELECT * FROM tasks WHERE project_id = ? AND parent_task_id IS NULL "

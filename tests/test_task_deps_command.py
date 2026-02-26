@@ -239,7 +239,7 @@ async def test_list_tasks_show_dependencies(handler, db):
     tasks_by_id = {t["id"]: t for t in result["tasks"]}
 
     # parent blocks child
-    assert "child" in tasks_by_id["parent"]["blocks"]
+    assert any(b["id"] == "child" for b in tasks_by_id["parent"]["blocks"])
     # child depends on parent
     assert len(tasks_by_id["child"]["depends_on"]) == 1
     assert tasks_by_id["child"]["depends_on"][0]["id"] == "parent"
