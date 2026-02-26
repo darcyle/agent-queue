@@ -109,7 +109,6 @@ Each project can have a dedicated Discord channel. Commands run in that channel 
 | `/set-channel` | Link an existing Discord channel to a project |
 | `/set-control-interface` | Link a channel by name (alias for `/set-channel`) |
 | `/create-channel` | Create a new Discord channel and link it to a project |
-| `/create-channel-for-project` | Create or reuse a channel for a project (idempotent) |
 | `/channel-map` | Show all project-to-channel mappings |
 
 #### `/set-channel`

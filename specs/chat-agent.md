@@ -47,7 +47,6 @@ Tools are grouped below by functional category. Every tool name listed is an exa
 | `set_control_interface` | Link a Discord channel to a project by channel name (string lookup) |
 | `get_project_channels` | Get the Discord channel ID configured for a project |
 | `get_project_for_channel` | Reverse lookup: given a channel ID, return which project it belongs to |
-| `create_channel_for_project` | Create (or reuse) a dedicated Discord channel and link it to a project |
 
 ### Task Management
 

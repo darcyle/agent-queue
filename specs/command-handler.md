@@ -347,42 +347,6 @@ Reverse lookup: given a Discord channel ID, returns the project linked to it.
 
 ---
 
-#### `create_channel_for_project`
-
-Creates (or reuses) a dedicated Discord channel for a project. Idempotent: if a channel with the target name already exists in the guild, it is linked rather than duplicated.
-
-**Parameters:**
-- `project_id` (required; also accepted as `project_name`)
-- `channel_name` (optional, default: project ID): Desired Discord channel name. Leading `#` is stripped.
-- `category_id` (optional): Discord category ID for channel placement. This is accepted but not acted upon by this handler — it is intended for the Discord layer.
-- `guild_channels` (optional): List of `{"id": <str/int>, "name": <str>}` dicts for idempotency lookup.
-- `_created_channel_id` (optional): If the Discord layer already created a new channel (because no existing match was found), it passes the new channel's ID here.
-
-**Behavior:**
-1. Validates the project exists.
-2. Strips `#` from `channel_name`.
-3. If `guild_channels` is provided, looks for an existing channel matching `channel_name`. If found, links it and returns `action: "linked_existing"`.
-4. If no existing channel was found but `_created_channel_id` is provided, links that ID and returns `action: "created"`.
-5. If neither guild context nor a pre-created ID is available, returns an error explaining that this command requires Discord context.
-
-**Returns on success:**
-```python
-{
-    "project_id": <str>,
-    "channel_id": <str>,
-    "status": "linked",
-    "action": "linked_existing" | "created",
-    "channel_name": <str>,
-}
-```
-
-**Errors:**
-- `project_id` not provided.
-- Project not found.
-- No guild context and no `_created_channel_id` (cannot create channel without Discord access).
-
----
-
 ### Tasks
 
 ---

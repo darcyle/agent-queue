@@ -1074,9 +1074,7 @@ def setup_commands(bot: commands.Bot) -> None:
     ) -> list[dict]:
         """Auto-create a per-project Discord channel based on config.
 
-        Uses the ``create_channel_for_project`` command handler for the actual
-        creation, which is idempotent (reuses existing channels with matching
-        names).
+        Idempotent: reuses existing channels with matching names.
 
         Returns a list of result dicts with keys:
             channel_name, display (for embed formatting).
@@ -1151,12 +1149,11 @@ def setup_commands(bot: commands.Bot) -> None:
                 })
                 return results
 
-        # Delegate to command handler for project linking (idempotent)
-        link_result = await cmd_handler.execute("create_channel_for_project", {
+        # Delegate to command handler for project linking
+        channel_id = created_channel_id or existing_id
+        link_result = await cmd_handler.execute("set_project_channel", {
             "project_id": project_id,
-            "channel_name": channel_name,
-            "guild_channels": guild_channels,
-            "_created_channel_id": created_channel_id,
+            "channel_id": channel_id,
         })
 
         if "error" in link_result:
@@ -1165,10 +1162,9 @@ def setup_commands(bot: commands.Bot) -> None:
                 "display": f"⚠️ #{channel_name} ({link_result['error']})",
             })
         else:
-            action = link_result.get("action", "linked")
             ch_id = link_result.get("channel_id", "")
             mention = f"<#{ch_id}>" if ch_id else f"#{channel_name}"
-            label = "linked" if action == "linked_existing" else "created"
+            label = "created" if created_channel_id else "linked"
             results.append({
                 "channel_name": channel_name,
                 "display": f"{mention} ({label})",
@@ -1483,108 +1479,6 @@ def setup_commands(bot: commands.Bot) -> None:
             description=f"Created {new_channel.mention} as channel for project `{project_id}`",
             followup=True,
         )
-
-    @bot.tree.command(
-        name="create-channel-for-project",
-        description="Create (or reuse) a dedicated Discord channel for a project (idempotent)",
-    )
-    @app_commands.describe(
-        project_id="Project ID",
-        channel_name="Name for the channel (defaults to project ID)",
-        category="Category to create the channel in (optional)",
-    )
-    async def create_channel_for_project_command(
-        interaction: discord.Interaction,
-        project_id: str,
-        channel_name: str | None = None,
-        category: discord.CategoryChannel | None = None,
-    ):
-        await interaction.response.defer()
-        name = channel_name or project_id
-
-        guild = interaction.guild
-        if not guild:
-            await _send_error(interaction, "Not in a guild.", followup=True)
-            return
-
-        # Build guild_channels list for idempotency lookup
-        guild_channels = [
-            {"id": ch.id, "name": ch.name}
-            for ch in guild.text_channels
-        ]
-
-        # Check if a channel with this name already exists
-        existing_channel: discord.TextChannel | None = None
-        for ch in guild.text_channels:
-            if ch.name == name:
-                existing_channel = ch
-                break
-
-        created_channel_id: str | None = None
-        if not existing_channel:
-            # No matching channel — create one
-            topic = f"Agent Queue channel for project: {project_id}"
-            ppc = bot.config.discord.per_project_channels
-            overwrites = {}
-            if ppc.private:
-                overwrites[guild.default_role] = discord.PermissionOverwrite(
-                    view_channel=False
-                )
-                overwrites[guild.me] = discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True,
-                    create_public_threads=True,
-                    send_messages_in_threads=True,
-                )
-            try:
-                existing_channel = await guild.create_text_channel(
-                    name=name,
-                    category=category,
-                    topic=topic,
-                    reason=f"AgentQueue: channel for project {project_id}",
-                    overwrites=overwrites or discord.utils.MISSING,
-                )
-                created_channel_id = str(existing_channel.id)
-            except discord.Forbidden:
-                await _send_error(interaction, "Bot lacks permission to create channels.", followup=True)
-                return
-            except discord.HTTPException as e:
-                await _send_error(interaction, f"Error creating channel: {e}", followup=True)
-                return
-
-        # Delegate to the command handler for project validation + linking
-        result = await handler.execute("create_channel_for_project", {
-            "project_id": project_id,
-            "channel_name": name,
-            "guild_channels": guild_channels,
-            "_created_channel_id": created_channel_id,
-        })
-
-        if "error" in result:
-            await _send_error(interaction, result['error'], followup=True)
-            return
-
-        # Update the bot's channel cache immediately
-        bot.update_project_channel(project_id, existing_channel)
-
-        action = result.get("action", "linked")
-        if action == "linked_existing":
-            await _send_success(
-                interaction, "Channel Linked",
-                description=(
-                    f"Channel {existing_channel.mention} already exists — "
-                    f"linked to project `{project_id}`"
-                ),
-                followup=True,
-            )
-        else:
-            await _send_success(
-                interaction, "Channel Created",
-                description=(
-                    f"Created {existing_channel.mention} as channel "
-                    f"for project `{project_id}`"
-                ),
-                followup=True,
-            )
 
     @bot.tree.command(
         name="channel-map",

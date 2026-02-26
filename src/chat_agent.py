@@ -187,26 +187,6 @@ TOOLS = [
         },
     },
     {
-        "name": "create_channel_for_project",
-        "description": (
-            "Create a dedicated Discord channel for a project, or reuse an existing "
-            "one if a channel with the same name already exists (idempotent). "
-            "After creation/lookup the channel is automatically linked to the project. "
-            "Must be invoked from Discord (requires guild context)."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "channel_name": {
-                    "type": "string",
-                    "description": "Desired channel name (defaults to project ID if omitted)",
-                },
-            },
-            "required": ["project_id"],
-        },
-    },
-    {
         "name": "list_tasks",
         "description": (
             "List tasks, optionally filtered by project or status. "
@@ -1547,7 +1527,7 @@ you do NOT need to specify project_id or repo_id when an active project is set
 - Pause, resume, or check the orchestrator (task scheduler) with `orchestrator_control`
 - Manually override a task's status with `set_task_status` (bypasses state machine)
 - Inspect the last error for a task with `get_agent_error` (shows error classification and suggested fix)
-- Configure per-project Discord channels with `set_project_channel`, `set_control_interface`, `get_project_channels`, `get_project_for_channel`, and `create_channel_for_project`
+- Configure per-project Discord channels with `set_project_channel`, `set_control_interface`, `get_project_channels`, and `get_project_for_channel`
 
 Repository management — use the `add_repo` tool to connect repos to projects:
 - **clone**: Clone a git repo by URL. Agents get their own checkout. Use for remote repos.
@@ -1616,8 +1596,6 @@ Per-project Discord channels — route notifications and chat to dedicated chann
 - By default, all projects share the global channel.
 - Use `set_project_channel` to link a Discord channel to a project.
 - Use `set_control_interface` to set a project's channel by name (string lookup).
-- Use `create_channel_for_project` to create (or reuse) a dedicated Discord channel for a \
-project — idempotent, so calling it twice with the same name links the existing channel.
 - When a project has a dedicated channel, task threads, status updates, completion notices, \
 and chat for that project are all routed there automatically.
 - Use the `/set-channel` or `/create-channel` Discord commands to manage channels interactively.

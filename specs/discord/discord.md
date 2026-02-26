@@ -368,17 +368,6 @@ Creates a new Discord text channel and links it to a project. Validates the proj
 | `channel_name` | str (optional) | Channel name (defaults to `project_id`) |
 | `category` | CategoryChannel (optional) | Discord category to place the channel in |
 
-#### `/create-channel-for-project`
-Idempotent variant of `/create-channel`. If a channel with the given name already exists, it is reused rather than creating a duplicate. Delegates to the `create_channel_for_project` command handler for project validation and linking.
-
-When a new channel is created and `per_project_channels.private` is `True`, the channel is created with permission overwrites that deny `view_channel` to `@everyone` and grant `view_channel` + `send_messages` to the bot.
-
-| Parameter | Type | Description |
-|---|---|---|
-| `project_id` | str | Project to link |
-| `channel_name` | str (optional) | Channel name (defaults to `project_id`) |
-| `category` | CategoryChannel (optional) | Discord category for new channels |
-
 #### `/channel-map`
 Shows all project-to-channel mappings in the server. Splits projects into those with dedicated channels and those using the global channel.
 
