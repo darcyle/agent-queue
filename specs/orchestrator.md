@@ -516,6 +516,21 @@ See `specs/git/git.md` §10 for the full design principles reference.
 | **Graceful degradation** | Git errors during workspace setup are caught and logged; a valid workspace path is always returned so the agent can start work. |
 | **Retry resilience** | Existing branches are reused on task retry rather than causing errors. |
 
+### Known Gaps
+
+The workspace sync workflow has several identified gaps that affect correctness
+under concurrent multi-agent operation. See `specs/git/git.md` §11 for the full
+gap catalogue (G1–G7). The most critical gaps relative to this spec are:
+
+| Gap | Location in this spec | Issue |
+|-----|----------------------|-------|
+| **G1** | §11 `_merge_and_push` | No `git pull` before merge — push fails if another agent advanced `main`. |
+| **G2** | §11 `_merge_and_push` | Failed push leaves local `main` diverged; no rollback to clean state. |
+| **G3** | §11 `_merge_and_push` | Merge conflict triggers notify-and-stop; no automated rebase-and-retry. |
+| **G4** | §10 `_prepare_workspace` | Retried tasks check out existing branch without rebasing onto latest `origin/main`. |
+| **G6** | §10 `_prepare_workspace` | Subtask chains use `switch_to_branch` without periodic rebase, accumulating drift. |
+| **G7** | §10 `_prepare_workspace` | LINK repos share a single directory across agents — no file-level isolation. |
+
 `_prepare_workspace(task, agent) -> str`
 
 Always returns the absolute path to the workspace directory (never None).
@@ -610,6 +625,11 @@ nothing was committed, log a message (not an error).
 3. If repo is CLONE: `git.push_branch(workspace, default_branch)`.  On push failure: notify.
 4. Best-effort: `git.delete_branch(workspace, branch_name, delete_remote=(repo is CLONE))`.
 
+> **Gaps G1–G3 apply here.** Step 1 merges into a potentially stale local
+> `main` (G1). Step 3 notifies but does not roll back the local merge on push
+> failure (G2). Step 2 aborts the merge on conflict without attempting a rebase
+> (G3). See `specs/git/git.md` §11 for details.
+
 ### `_create_pr_for_task(task, repo, workspace) -> str | None`
 
 For LINK repos: notify "Approval Required" with manual-review instructions and return `None`.
@@ -620,6 +640,10 @@ For CLONE repos:
    - PR body: `"Automated PR for task \`{id}\`.\n\n{description[:500]}"`.
 3. On PR creation failure: notify and return `None`.
 4. On success: return the PR URL.
+
+> **Gap G5 applies here.** Step 1 uses a plain `git push` which fails on retry
+> if the branch was previously pushed. Using `--force-with-lease` would make
+> the push idempotent. See `specs/git/git.md` §11 for details.
 
 ---
 

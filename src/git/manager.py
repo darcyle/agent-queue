@@ -26,6 +26,14 @@ Design strengths (see specs/git/git.md §10 for the full list):
   - **Atomic commits:** ``commit_all`` uses add-then-check-staged to avoid
     race conditions between status checks and staging.
 
+Known gaps (see specs/git/git.md §11 for the full catalogue):
+  - **G1:** ``merge_branch`` is called without a prior pull — the caller
+    (``_merge_and_push``) must pull ``main`` before merging.
+  - **G4:** ``prepare_for_task`` retry path does a bare checkout without
+    rebasing onto latest ``origin/main``.
+  - **G5:** ``push_branch`` uses plain push; should use ``--force-with-lease``
+    for idempotent retries of PR branches.
+
 See specs/git/git.md for the full behavioral specification.
 """
 
@@ -110,6 +118,11 @@ class GitManager:
 
         In both cases, if the branch already exists (e.g. task retried after a
         restart), we switch to it rather than failing.
+
+        .. note:: **Gap G4** — The retry fallback (``git checkout <branch>``)
+           does not rebase the existing branch onto the latest
+           ``origin/<default_branch>``. The agent resumes on potentially stale
+           code. See specs/git/git.md §11.
         """
         # Check if this is a worktree
         is_worktree = self._is_worktree(checkout_path)
@@ -124,6 +137,8 @@ class GitManager:
                 self._run(["checkout", "-b", branch_name, f"origin/{default_branch}"], cwd=checkout_path)
             except GitError:
                 # If branch creation fails, try to just switch to existing branch
+                # GAP G4: Does not rebase onto origin/<default_branch> — agent
+                # works on stale code from the previous attempt.
                 self._run(["checkout", branch_name], cwd=checkout_path)
         else:
             # Normal checkout flow: update default branch then create task branch
@@ -137,6 +152,7 @@ class GitManager:
             except GitError:
                 # Branch already exists (e.g. task retried after restart) —
                 # switch to it instead of failing.
+                # GAP G4: Does not rebase onto latest main — see specs/git/git.md §11.
                 self._run(["checkout", branch_name], cwd=checkout_path)
 
     def switch_to_branch(self, checkout_path: str, branch_name: str) -> None:
@@ -169,13 +185,24 @@ class GitManager:
             pass  # may fail if no upstream tracking
 
     def push_branch(self, checkout_path: str, branch_name: str) -> None:
+        # GAP G5: Uses plain push — should use --force-with-lease for
+        # idempotent retries of PR branches. See specs/git/git.md §11.
         self._run(["push", "origin", branch_name], cwd=checkout_path)
 
     def merge_branch(
         self, checkout_path: str, branch_name: str,
         default_branch: str = "main",
     ) -> bool:
-        """Merge branch into default. Returns True if successful, False if conflict."""
+        """Merge branch into default. Returns True if successful, False if conflict.
+
+        .. note:: **Gap G1** — This method does not pull the latest remote
+           changes before merging. The caller (``_merge_and_push``) is
+           responsible for ensuring the local default branch is up to date,
+           but currently does not do so.
+
+        .. note:: **Gap G3** — On conflict this method aborts the merge and
+           returns False. There is no automated rebase-and-retry strategy.
+        """
         self._run(["checkout", default_branch], cwd=checkout_path)
         try:
             self._run(["merge", branch_name], cwd=checkout_path)

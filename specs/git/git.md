@@ -386,3 +386,143 @@ remotely. Cleanup failures are silently ignored to avoid blocking the workflow w
 a branch was already deleted (e.g. by GitHub's "delete branch after merge" setting).
 
 **Maintained by:** `delete_branch` (called from `_merge_and_push`).
+
+---
+
+## 11. Known Gaps — Workspace Sync
+
+These are identified weaknesses in the current git sync workflow that cause
+failures or data staleness when multiple agents work concurrently. Each gap is
+labeled G1–G7 for cross-referencing from other documents and code comments.
+
+### G1. No Pre-Merge Pull in `_merge_and_push`
+
+`_merge_and_push()` executes `checkout main → merge branch → push main`, but
+never pulls remote changes before the merge. If another agent pushed to `main`
+since the workspace's last pull, the push fails with a non-fast-forward error.
+The failure is notified but not recovered from.
+
+**Impact:** The merged commit exists locally but not on the remote. The user
+must manually push or the next task from this agent starts from a diverged
+`main`.
+
+**Affected code:** `Orchestrator._merge_and_push` → `git.merge_branch` →
+`git.push_branch`.
+
+**Violates:** P3 (Fresh Starting Point) at completion time — staleness is only
+addressed at task *start*, not task *end*.
+
+### G2. Push Failures Leave Workspace in a Dirty State
+
+After a failed push in `_merge_and_push`, the local `main` contains the merge
+commit but `origin/main` does not. There is no rollback (`git reset`) of the
+local merge. Subsequent tasks from the same agent start from this diverged
+state, compounding the problem.
+
+**Impact:** The agent's local `main` permanently drifts from `origin/main`
+until manual intervention. Every future task branch created from this `main`
+starts from stale + extra code.
+
+**Affected code:** `Orchestrator._merge_and_push` — the `except` block after
+`push_branch` notifies but does not reset local `main`.
+
+**Violates:** P3 (Fresh Starting Point), P8 (Retry Resilience) — the workspace
+is not left in a retryable state.
+
+### G3. No Merge Conflict Recovery Strategy
+
+When `merge_branch()` detects conflicts, it aborts the merge and notifies the
+user, but there is no automated attempt to rebase the task branch onto the
+latest `main` and retry. The task's work is stranded on its branch.
+
+**Impact:** Any task whose branch has diverged from `main` requires manual
+resolution. In a high-throughput system with many concurrent agents, merge
+conflicts become increasingly likely as `main` moves forward.
+
+**Affected code:** `git.merge_branch` (returns `False` on conflict),
+`Orchestrator._merge_and_push` (notifies, returns without recovery).
+
+**Violates:** P5 (Graceful Degradation) — the system degrades to "notify and
+stop" rather than attempting automated recovery.
+
+### G4. Retried Tasks Don't Rebase onto Latest Main
+
+When a task retries (branch already exists from a previous attempt),
+`prepare_for_task()` falls back to `git checkout <branch_name>` without
+rebasing it onto the latest `origin/main`. The agent resumes work on code
+that may be significantly behind the current remote state.
+
+**Impact:** The retried agent works on stale code, increasing the chance of
+merge conflicts at completion time and potentially duplicating work that
+another agent already landed.
+
+**Affected code:** `git.prepare_for_task` — the `except GitError` fallback
+for existing branches does a bare `checkout` without rebase.
+
+**Violates:** P3 (Fresh Starting Point) — the guarantee only holds for the
+first attempt, not retries.
+
+### G5. No `--force-with-lease` for PR Branch Pushes
+
+`push_branch` could fail on retry if the branch was previously pushed (e.g. a
+failed PR creation after a successful push). The method uses a plain
+`git push origin <branch>` without `--force-with-lease`, so a second push of
+the same branch after the agent has amended or added commits will be rejected
+as non-fast-forward.
+
+**Impact:** PR creation fails silently on retry because the push step fails
+first. The user is notified but the branch may already contain the correct
+code on the remote.
+
+**Affected code:** `git.push_branch`, called from `Orchestrator._create_pr_for_task`.
+
+**Violates:** P8 (Retry Resilience) — push is not idempotent across retries.
+
+### G6. Subtask Chains Accumulate Drift
+
+Plan subtasks share a branch and commit sequentially. Over a long chain (e.g.
+5–10 subtasks), the branch drifts progressively further from `main` as other
+agents land work. The final merge at the end of the chain faces the cumulative
+divergence of all intermediate steps.
+
+**Impact:** Long subtask chains have a high probability of merge conflicts at
+completion time, and the conflicts are harder to resolve because many files
+have changed on both sides.
+
+**Affected code:** `Orchestrator._prepare_workspace` (subtask path uses
+`switch_to_branch` without periodic rebase), `Orchestrator._complete_workspace`
+(only merges at the end of the chain).
+
+**Violates:** P3 (Fresh Starting Point) — only the first subtask starts fresh;
+subsequent subtasks inherit accumulated drift.
+
+### G7. LINK Repos with Shared Filesystem — No File-Level Locking
+
+Multiple agents assigned to the same LINK repo share a single filesystem
+directory. Without worktrees, concurrent agents can clobber each other's
+branch state, staged changes, and working tree files. There is no file-level
+locking or worktree-per-agent strategy for LINK repos.
+
+**Impact:** Concurrent agents on a LINK repo produce corrupted git state,
+lost changes, and unpredictable behavior. Currently mitigated only by the
+low probability of multiple agents being assigned to the same LINK project
+simultaneously.
+
+**Affected code:** `Orchestrator._prepare_workspace` (LINK path uses
+`workspace = repo.source_path` without isolation),
+`Orchestrator._compute_workspace_path` (returns shared path for LINK repos).
+
+**Violates:** P1 (Per-Agent Workspace Isolation) — LINK repos are the
+exception where isolation is not enforced.
+
+### Gap Summary Table
+
+| Gap | Severity | Root Cause | Principle Violated |
+|-----|----------|------------|--------------------|
+| G1 | High | Missing `pull` before merge+push | P3 |
+| G2 | High | No rollback after failed push | P3, P8 |
+| G3 | Medium | No automated rebase-and-retry on conflict | P5 |
+| G4 | Medium | Retry uses existing branch without rebase | P3 |
+| G5 | Low | Plain push instead of `--force-with-lease` | P8 |
+| G6 | Medium | No periodic rebase during subtask chains | P3 |
+| G7 | High | LINK repos share filesystem without locking | P1 |

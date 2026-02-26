@@ -874,6 +874,14 @@ class Orchestrator:
 
         For plan subtasks, reuses the parent task's branch name so all steps
         accumulate commits on a single branch.
+
+        Known gaps (see specs/git/git.md §11):
+          - **G4:** Retried tasks check out the existing branch without
+            rebasing onto latest ``origin/main``.
+          - **G6:** Subtask chains use ``switch_to_branch`` without periodic
+            rebase, accumulating drift from ``main``.
+          - **G7:** LINK repos use a shared filesystem path for all agents —
+            no per-agent isolation.
         """
         # 1. Check agent_workspaces cache
         ws = await self.db.get_agent_workspace(agent.id, task.project_id)
@@ -939,11 +947,17 @@ class Orchestrator:
                     os.makedirs(os.path.dirname(workspace), exist_ok=True)
                     self.git.create_checkout(repo.url, workspace)
                 if reuse_branch:
+                    # GAP G6: switch_to_branch pulls latest branch commits but
+                    # does not rebase onto origin/main — drift accumulates.
                     self.git.switch_to_branch(workspace, branch_name)
                 else:
+                    # GAP G4: If branch already exists (retry), prepare_for_task
+                    # falls back to checkout without rebase onto latest main.
                     self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
 
             elif repo.source_type == RepoSourceType.LINK:
+                # GAP G7: All agents share this same workspace path — no
+                # per-agent isolation for LINK repos.
                 if not os.path.isdir(workspace):
                     await self._notify_channel(
                         f"**Warning:** Linked repo path `{workspace}` does not exist.",
@@ -1047,9 +1061,20 @@ class Orchestrator:
         return True
 
     async def _merge_and_push(self, task: Task, repo: RepoConfig, workspace: str) -> None:
-        """Merge the task branch into default and push (clone repos only)."""
+        """Merge the task branch into default and push (clone repos only).
+
+        Known gaps (see specs/git/git.md §11):
+          - **G1:** Does not pull main before merging — push fails if another
+            agent advanced main since the last fetch.
+          - **G2:** On push failure, does not reset the local merge — workspace
+            is left with a diverged main.
+          - **G3:** On merge conflict, aborts and notifies without attempting
+            automated rebase-and-retry.
+        """
+        # GAP G1: Should pull origin/<default_branch> here before merging.
         merged = self.git.merge_branch(workspace, task.branch_name, repo.default_branch)
         if not merged:
+            # GAP G3: Notifies but does not attempt rebase-and-retry.
             await self._notify_channel(
                 f"**Merge Conflict:** Task `{task.id}` branch `{task.branch_name}` "
                 f"has conflicts with `{repo.default_branch}`. Manual resolution needed.",
@@ -1061,6 +1086,8 @@ class Orchestrator:
             try:
                 self.git.push_branch(workspace, repo.default_branch)
             except Exception as e:
+                # GAP G2: Local main now has the merge commit but remote doesn't.
+                # Should reset local main to origin/main to avoid diverged state.
                 await self._notify_channel(
                     f"**Push Failed:** Could not push `{repo.default_branch}` for task `{task.id}`: {e}",
                     project_id=task.project_id,
@@ -1078,7 +1105,12 @@ class Orchestrator:
     async def _create_pr_for_task(
         self, task: Task, repo: RepoConfig, workspace: str,
     ) -> str | None:
-        """Push the task branch and create a PR. Returns the PR URL or None."""
+        """Push the task branch and create a PR. Returns the PR URL or None.
+
+        Known gaps (see specs/git/git.md §11):
+          - **G5:** Uses plain ``git push`` — fails on retry if the branch was
+            previously pushed. Should use ``--force-with-lease``.
+        """
         if repo.source_type == RepoSourceType.LINK:
             # LINK repos typically have no remote — notify user to review manually
             await self._notify_channel(
@@ -1090,6 +1122,7 @@ class Orchestrator:
             return None
 
         try:
+            # GAP G5: Plain push — fails on retry if branch was already pushed.
             self.git.push_branch(workspace, task.branch_name)
         except Exception as e:
             await self._notify_channel(
