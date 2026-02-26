@@ -1107,6 +1107,14 @@ class Orchestrator:
                 await self._notify_channel(
                     msg, project_id=task.project_id, embed=embed,
                 )
+
+            # Recover the workspace so it's clean for the next task.
+            # Reset local default branch back to origin to undo any
+            # local merge commit left behind by a failed push.
+            try:
+                self.git.recover_workspace(workspace, repo.default_branch)
+            except Exception:
+                pass  # best-effort recovery
             return
 
         # Clean up the task branch after successful merge + push

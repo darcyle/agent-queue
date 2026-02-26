@@ -30,6 +30,9 @@ Resolved gaps:
   - **G1 (resolved):** ``merge_branch`` now fetches and hard-resets
     ``origin/<default_branch>`` before merging, and ``_merge_and_push``
     resets local main on push failure to avoid diverged state.
+  - **G2 (resolved):** ``recover_workspace`` resets the local default branch
+    to ``origin/<default_branch>`` after any failed merge-and-push, ensuring
+    the workspace is clean for the next task.
   - **G4 (resolved):** ``prepare_for_task`` now uses hard-reset on the normal
     path and rebases existing branches on retry. ``switch_to_branch`` also
     rebases onto ``origin/<default_branch>`` after switching.
@@ -326,6 +329,26 @@ class GitManager:
                     return (False, f"push_failed: {e}")
 
         return (False, "push_failed_exhausted")
+
+    def recover_workspace(
+        self, checkout_path: str, default_branch: str = "main",
+    ) -> None:
+        """Reset workspace to a clean state after a failed merge-and-push.
+
+        Checks out the default branch and hard-resets it to
+        ``origin/<default_branch>`` so the workspace is ready for the
+        next task.  This undoes any local merge commit left behind by a
+        failed push.
+
+        Best-effort: callers should wrap in try/except if they cannot
+        tolerate failures here (e.g. the workspace is in a broken git
+        state that even checkout cannot recover from).
+        """
+        self._run(["checkout", default_branch], cwd=checkout_path)
+        self._run(
+            ["reset", "--hard", f"origin/{default_branch}"],
+            cwd=checkout_path,
+        )
 
     def delete_branch(
         self, checkout_path: str, branch_name: str, *, delete_remote: bool = True,

@@ -608,3 +608,313 @@ class TestSyncAndMerge:
 
         log = _git(["log", "--oneline", "develop"], cwd=clone)
         assert "add feature" in log
+
+
+class TestRecoverWorkspace:
+    """Tests for the recover_workspace() method."""
+
+    def test_recover_resets_main_to_origin(self, git_repo):
+        """After a local merge commit (simulating failed push), recover_workspace
+        should reset main to match origin/main."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        remote_sha = _git(["rev-parse", "origin/main"], cwd=clone)
+
+        # Simulate a local merge commit that never got pushed
+        _git(["checkout", "-b", "task/failed-push"], cwd=clone)
+        _commit_file(clone, "work.txt", "agent work", "agent commit")
+        _git(["checkout", "main"], cwd=clone)
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
+              "merge", "task/failed-push"], cwd=clone)
+
+        # Local main now has a merge commit ahead of origin
+        assert _head_sha(clone) != remote_sha
+
+        mgr.recover_workspace(clone)
+
+        # After recovery, main should match origin/main exactly
+        assert _head_sha(clone) == remote_sha
+        assert _current_branch(clone) == "main"
+
+    def test_recover_after_merge_conflict(self, git_repo, tmp_path):
+        """recover_workspace should work after a merge conflict was aborted."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        remote_sha = _git(["rev-parse", "origin/main"], cwd=clone)
+
+        # Create a local-only commit on main (divergence)
+        _commit_file(clone, "local.txt", "local divergence", "local only")
+        assert _head_sha(clone) != remote_sha
+
+        mgr.recover_workspace(clone)
+        assert _head_sha(clone) == remote_sha
+
+    def test_recover_picks_up_remote_advances(self, git_repo, tmp_path):
+        """recover_workspace should reset to the latest fetched origin/main,
+        including any commits pushed by other agents."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Advance origin/main via another clone
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        new_sha = _commit_file(pusher, "new.txt", "new", "advance main")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        # Fetch so origin/main is up to date in the clone
+        _git(["fetch", "origin"], cwd=clone)
+
+        mgr.recover_workspace(clone)
+        assert _head_sha(clone) == new_sha
+
+    def test_recover_with_custom_default_branch(self, tmp_path):
+        """recover_workspace should work with a non-'main' default branch."""
+        remote = tmp_path / "remote.git"
+        subprocess.run(
+            ["git", "init", "--bare", "--initial-branch=develop", str(remote)],
+            check=True, capture_output=True,
+        )
+        clone = str(tmp_path / "clone")
+        subprocess.run(["git", "clone", str(remote), clone],
+                       check=True, capture_output=True)
+        _commit_file(clone, "README.md", "init", "init")
+        _git(["push", "origin", "develop"], cwd=clone)
+        remote_sha = _head_sha(clone)
+
+        # Simulate local divergence
+        _commit_file(clone, "local.txt", "local", "local only")
+        assert _head_sha(clone) != remote_sha
+
+        mgr = GitManager()
+        mgr.recover_workspace(clone, default_branch="develop")
+        assert _head_sha(clone) == remote_sha
+        assert _current_branch(clone) == "develop"
+
+    def test_recover_is_idempotent(self, git_repo):
+        """Calling recover_workspace on an already-clean workspace should be a no-op."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        remote_sha = _git(["rev-parse", "origin/main"], cwd=clone)
+
+        # Already clean
+        mgr.recover_workspace(clone)
+        assert _head_sha(clone) == remote_sha
+
+        # Call again - should still work
+        mgr.recover_workspace(clone)
+        assert _head_sha(clone) == remote_sha
+
+
+class TestConcurrentAgentPush:
+    """Integration tests with two "agent" clones pushing concurrently.
+
+    These tests simulate the real-world scenario where multiple agents
+    complete tasks at the same time and race to merge+push to origin/main.
+    """
+
+    @pytest.fixture
+    def two_agent_setup(self, tmp_path):
+        """Create a bare remote and two independent agent clones."""
+        remote = tmp_path / "remote.git"
+        subprocess.run(
+            ["git", "init", "--bare", "--initial-branch=main", str(remote)],
+            check=True, capture_output=True,
+        )
+
+        agent_a = str(tmp_path / "agent-a")
+        subprocess.run(["git", "clone", str(remote), agent_a],
+                       check=True, capture_output=True)
+        _commit_file(agent_a, "README.md", "init", "init")
+        _git(["push", "origin", "main"], cwd=agent_a)
+
+        agent_b = str(tmp_path / "agent-b")
+        subprocess.run(["git", "clone", str(remote), agent_b],
+                       check=True, capture_output=True)
+
+        return {"remote": str(remote), "agent_a": agent_a, "agent_b": agent_b}
+
+    def test_sequential_sync_and_merge_both_succeed(self, two_agent_setup):
+        """Two agents completing tasks sequentially should both merge and push
+        successfully using sync_and_merge (which fetches before merging)."""
+        mgr = GitManager()
+        a = two_agent_setup["agent_a"]
+        b = two_agent_setup["agent_b"]
+        remote = two_agent_setup["remote"]
+
+        # Agent A: create branch, commit, sync_and_merge
+        mgr.prepare_for_task(a, "task-a/feature")
+        _commit_file(a, "feature-a.txt", "agent A work", "agent A commit")
+        success_a, err_a = mgr.sync_and_merge(a, "task-a/feature")
+        assert success_a is True
+        assert err_a == ""
+
+        # Agent B: create branch, commit, sync_and_merge
+        # Agent B's local main is behind (Agent A just pushed),
+        # but sync_and_merge fetches first.
+        mgr.prepare_for_task(b, "task-b/feature")
+        _commit_file(b, "feature-b.txt", "agent B work", "agent B commit")
+        success_b, err_b = mgr.sync_and_merge(b, "task-b/feature")
+        assert success_b is True
+        assert err_b == ""
+
+        # Both commits should be on remote main
+        remote_log = _git(["log", "--oneline", "main"], cwd=remote)
+        assert "agent A commit" in remote_log
+        assert "agent B commit" in remote_log
+
+    def test_concurrent_push_second_agent_retries(self, two_agent_setup):
+        """When two agents merge locally at the same time, the second agent's
+        push will fail. With retry, sync_and_merge should re-fetch and succeed.
+
+        We simulate this by having Agent A push first, then Agent B attempts
+        sync_and_merge (which fetches Agent A's push and incorporates it)."""
+        mgr = GitManager()
+        a = two_agent_setup["agent_a"]
+        b = two_agent_setup["agent_b"]
+        remote = two_agent_setup["remote"]
+
+        # Both agents prepare branches at the same time (before either pushes)
+        mgr.prepare_for_task(a, "task-a/concurrent")
+        _commit_file(a, "a.txt", "A work", "agent A concurrent")
+
+        mgr.prepare_for_task(b, "task-b/concurrent")
+        _commit_file(b, "b.txt", "B work", "agent B concurrent")
+
+        # Agent A merges and pushes first
+        success_a, err_a = mgr.sync_and_merge(a, "task-a/concurrent")
+        assert success_a is True
+
+        # Agent B merges and pushes -- sync_and_merge will fetch A's push,
+        # incorporate it via reset+merge, then push successfully
+        success_b, err_b = mgr.sync_and_merge(b, "task-b/concurrent")
+        assert success_b is True
+
+        # Verify both agents' work is on remote
+        remote_log = _git(["log", "--oneline", "main"], cwd=remote)
+        assert "agent A concurrent" in remote_log
+        assert "agent B concurrent" in remote_log
+
+    def test_three_agents_sequential_all_succeed(self, tmp_path):
+        """Three agents completing tasks one after another should all succeed."""
+        remote = tmp_path / "remote.git"
+        subprocess.run(
+            ["git", "init", "--bare", "--initial-branch=main", str(remote)],
+            check=True, capture_output=True,
+        )
+
+        agents = []
+        for name in ["agent-1", "agent-2", "agent-3"]:
+            path = str(tmp_path / name)
+            subprocess.run(["git", "clone", str(remote), path],
+                           check=True, capture_output=True)
+            agents.append(path)
+
+        # Initial commit from agent-1
+        _commit_file(agents[0], "README.md", "init", "init")
+        _git(["push", "origin", "main"], cwd=agents[0])
+
+        mgr = GitManager()
+
+        # Each agent does work and pushes sequentially
+        for i, agent in enumerate(agents):
+            branch = f"task-{i}/feature"
+            mgr.prepare_for_task(agent, branch)
+            _commit_file(agent, f"feature-{i}.txt", f"work-{i}", f"agent {i} commit")
+            success, err = mgr.sync_and_merge(agent, branch)
+            assert success is True, f"Agent {i} failed: {err}"
+
+        # All 3 commits plus init should be on remote
+        remote_log = _git(["log", "--oneline", "main"], cwd=str(remote))
+        for i in range(3):
+            assert f"agent {i} commit" in remote_log
+
+    def test_recover_workspace_after_merge_conflict(self, two_agent_setup):
+        """After sync_and_merge fails with merge conflict,
+        recover_workspace should reset the workspace for the next task."""
+        mgr = GitManager()
+        a = two_agent_setup["agent_a"]
+        b = two_agent_setup["agent_b"]
+
+        # Both agents prepare branches BEFORE either pushes, so both
+        # branches fork from the same base (initial README.md = "init").
+        mgr.prepare_for_task(a, "task-a/conflict")
+        _commit_file(a, "README.md", "agent A version", "agent A edits README")
+
+        mgr.prepare_for_task(b, "task-b/conflict")
+        _commit_file(b, "README.md", "agent B version", "agent B edits README")
+
+        # Agent A merges and pushes first -- succeeds
+        success_a, _ = mgr.sync_and_merge(a, "task-a/conflict")
+        assert success_a is True
+
+        # Agent B tries to merge -- sync_and_merge fetches Agent A's push,
+        # resets main to origin/main (which now has "agent A version"),
+        # then tries to merge task-b/conflict (which changed README from
+        # "init" to "agent B version"). This conflicts with Agent A's change.
+        success_b, err_b = mgr.sync_and_merge(b, "task-b/conflict")
+        assert success_b is False
+        assert err_b == "merge_conflict"
+
+        # Recover workspace so it's clean for next task
+        mgr.recover_workspace(b)
+
+        # Verify recovery: main should match origin/main
+        origin_sha = _git(["rev-parse", "origin/main"], cwd=b)
+        assert _head_sha(b) == origin_sha
+        assert _current_branch(b) == "main"
+
+        # Agent B should be able to do a new task after recovery
+        mgr.prepare_for_task(b, "task-b/after-recovery")
+        _commit_file(b, "recovery.txt", "recovered", "post-recovery commit")
+        success_c, err_c = mgr.sync_and_merge(b, "task-b/after-recovery")
+        assert success_c is True
+
+        # Verify the new task's work made it to remote
+        remote_log = _git(["log", "--oneline", "main"],
+                          cwd=two_agent_setup["remote"])
+        assert "post-recovery commit" in remote_log
+
+    def test_workspace_clean_after_failed_push_and_recovery(self, two_agent_setup, tmp_path):
+        """After a push failure + recovery, the workspace should have no
+        local-only commits diverging from origin."""
+        mgr = GitManager()
+        a = two_agent_setup["agent_a"]
+        b = two_agent_setup["agent_b"]
+
+        # Agent A creates and pushes work
+        mgr.prepare_for_task(a, "task-a/push-test")
+        _commit_file(a, "a-work.txt", "A", "agent A push work")
+        mgr.sync_and_merge(a, "task-a/push-test")
+
+        # Agent B: prepare branch with work
+        mgr.prepare_for_task(b, "task-b/push-test")
+        _commit_file(b, "b-work.txt", "B", "agent B push work")
+
+        # Manually create a divergence: merge locally but don't push,
+        # then advance remote so push would fail
+        _git(["checkout", "main"], cwd=b)
+        _git(["fetch", "origin"], cwd=b)
+        _git(["reset", "--hard", "origin/main"], cwd=b)
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
+              "merge", "task-b/push-test"], cwd=b)
+
+        # Local main now has a merge commit not on remote
+        local_sha = _head_sha(b)
+        origin_sha = _git(["rev-parse", "origin/main"], cwd=b)
+        # After the merge, local should have moved ahead
+        assert local_sha != origin_sha
+
+        # Recover
+        mgr.recover_workspace(b)
+
+        # After recovery: local main == origin/main (no divergence)
+        assert _head_sha(b) == origin_sha
+        assert _current_branch(b) == "main"
+
+        # Verify git status is clean
+        status = _git(["status", "--porcelain"], cwd=b)
+        assert status == ""
