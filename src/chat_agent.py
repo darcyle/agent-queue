@@ -258,6 +258,19 @@ TOOLS = [
         },
     },
     {
+        "name": "list_active_tasks_all_projects",
+        "description": (
+            "List active (non-terminal) tasks across ALL projects in one call. "
+            "Results are grouped by project. Use this when the user asks about "
+            "active work across the whole system, overall workload, or 'what's "
+            "running everywhere'. No parameters required."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
         "name": "create_task",
         "description": "Create a new task. If no project_id is given, it goes into the 'quick-tasks' project automatically.",
         "input_schema": {
@@ -1228,6 +1241,13 @@ that finished tasks are excluded. Examples:
 - "Here are all **7 tasks** in `my-project`:" (show_all=true)
 - "Found **2 completed tasks**:" (completed_only=true or status=COMPLETED)
 If the user asks about completed tasks, use show_all=true or completed_only=true.
+
+Cross-project overview — when the user asks about active work across the system \
+(e.g., "what's running?", "show all active tasks", "workload overview"), use \
+`list_active_tasks_all_projects` instead of calling `list_tasks` once per project. \
+Present results grouped by project:
+- "There are **5 active tasks** across **2 projects**:"
+- Then list each project with its tasks.
 
 Be concise in Discord messages. Use markdown formatting. When a user asks you to \
 do something, use the available tools to do it — don't just tell them to use slash commands.

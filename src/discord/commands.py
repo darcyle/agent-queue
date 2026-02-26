@@ -1664,6 +1664,48 @@ def setup_commands(bot: commands.Bot) -> None:
         content = view.build_content()
         await interaction.response.send_message(content, view=view)
 
+    @bot.tree.command(
+        name="active-tasks",
+        description="Show active tasks across all projects",
+    )
+    async def active_tasks_command(interaction: discord.Interaction):
+        result = await handler.execute("list_active_tasks_all_projects", {})
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        projects = result.get("projects", [])
+        total = result.get("total_active", 0)
+        if not projects:
+            await interaction.response.send_message(
+                embed=info_embed(
+                    "No Active Tasks",
+                    description="There are no active tasks across any project.",
+                ),
+            )
+            return
+
+        # Build a compact cross-project summary
+        lines: list[str] = [f"**{total} active task(s)** across **{len(projects)}** project(s)\n"]
+        for proj in projects:
+            pid = proj["project_id"]
+            pname = proj["project_name"]
+            count = proj["count"]
+            lines.append(f"### 📁 {pname} (`{pid}`) — {count} task(s)")
+            for t in proj["tasks"][:15]:
+                emoji = _STATUS_EMOJIS.get(t["status"], "⚪")
+                display = _STATUS_DISPLAY.get(t["status"], t["status"])
+                agent_suffix = f" → `{t['assigned_agent']}`" if t.get("assigned_agent") else ""
+                lines.append(f"  {emoji} **{display}** `{t['id']}` {truncate(t['title'], 60)}{agent_suffix}")
+            if count > 15:
+                lines.append(f"  … and {count - 15} more")
+            lines.append("")
+
+        content = "\n".join(lines)
+        # Respect Discord's 2000-char limit
+        if len(content) > 1950:
+            content = truncate(content, 1950)
+        await interaction.response.send_message(content)
+
     @bot.tree.command(name="task", description="Show full details of a task")
     @app_commands.describe(task_id="Task ID")
     async def task_command(interaction: discord.Interaction, task_id: str):

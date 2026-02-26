@@ -528,6 +528,27 @@ class Database:
         rows = await cursor.fetchall()
         return [self._row_to_task(r) for r in rows]
 
+    async def list_active_tasks_all_projects(self) -> list[Task]:
+        """Return all non-terminal tasks across every project.
+
+        Non-terminal means the task's status is NOT one of COMPLETED, FAILED,
+        or BLOCKED.  Results are ordered by project_id first (so the caller
+        can group by project) then by priority within each project.
+        """
+        terminal = (
+            TaskStatus.COMPLETED.value,
+            TaskStatus.FAILED.value,
+            TaskStatus.BLOCKED.value,
+        )
+        placeholders = ", ".join("?" for _ in terminal)
+        cursor = await self._db.execute(
+            f"SELECT * FROM tasks WHERE status NOT IN ({placeholders}) "
+            "ORDER BY project_id ASC, priority ASC, created_at ASC",
+            list(terminal),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_task(r) for r in rows]
+
     async def update_task(self, task_id: str, **kwargs) -> None:
         sets = []
         vals = []

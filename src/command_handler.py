@@ -538,6 +538,46 @@ class CommandHandler:
             "total": len(tasks),
         }
 
+    async def _cmd_list_active_tasks_all_projects(self, args: dict) -> dict:
+        """List non-terminal tasks across every project, grouped by project.
+
+        Returns a dict with:
+          - ``projects``: list of {project_id, project_name, tasks: [...]}
+          - ``total_active``: total count of active tasks across all projects
+        """
+        tasks = await self.db.list_active_tasks_all_projects()
+        projects_map = await self.db.list_projects()
+        project_names: dict[str, str] = {p.id: p.name for p in projects_map}
+
+        # Group by project_id (tasks are already ordered by project_id)
+        grouped: dict[str, list[dict]] = {}
+        for t in tasks:
+            grouped.setdefault(t.project_id, []).append({
+                "id": t.id,
+                "title": t.title,
+                "status": t.status.value,
+                "priority": t.priority,
+                "assigned_agent": t.assigned_agent_id,
+                "parent_task_id": t.parent_task_id,
+                "is_plan_subtask": t.is_plan_subtask,
+                "pr_url": t.pr_url,
+                "requires_approval": t.requires_approval,
+            })
+
+        result_projects = []
+        for pid, task_list in grouped.items():
+            result_projects.append({
+                "project_id": pid,
+                "project_name": project_names.get(pid, pid),
+                "tasks": task_list[:200],
+                "count": len(task_list),
+            })
+
+        return {
+            "projects": result_projects,
+            "total_active": len(tasks),
+        }
+
     async def _cmd_create_task(self, args: dict) -> dict:
         project_id = args.get("project_id")
         if not project_id:
