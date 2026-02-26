@@ -6,10 +6,12 @@ Verifies the full sync-merge-push flow:
   - Push rejection with retry: pull --rebase then push again.
   - Push retries exhausted: returns failure with message.
   - Default branch is synced to origin before merging.
+  - Rebase fallback: when merge fails, rebase is attempted before giving up.
 """
 
 import pathlib
 import subprocess
+from unittest.mock import patch
 
 import pytest
 
@@ -227,6 +229,237 @@ class TestSyncAndMerge:
         assert _current_branch(clone) == "main"
         log = _git(["log", "--oneline"], cwd=clone)
         assert "work commit" in log
+
+
+@pytest.fixture
+def two_agent_clones(tmp_path):
+    """Bare remote with two agent clones, each starting from same initial commit."""
+    remote = tmp_path / "remote.git"
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", str(remote)],
+        check=True, capture_output=True,
+    )
+    agent1 = str(tmp_path / "agent1")
+    subprocess.run(
+        ["git", "clone", str(remote), agent1],
+        check=True, capture_output=True,
+    )
+    (pathlib.Path(agent1) / "README.md").write_text("init\n")
+    _git(["add", "."], cwd=agent1)
+    _git(["-c", "user.name=Agent1", "-c", "user.email=a1@test.com",
+          "commit", "-m", "initial commit"], cwd=agent1)
+    _git(["push", "origin", "main"], cwd=agent1)
+
+    agent2 = str(tmp_path / "agent2")
+    subprocess.run(
+        ["git", "clone", str(remote), agent2],
+        check=True, capture_output=True,
+    )
+    return {"remote": str(remote), "agent1": agent1, "agent2": agent2}
+
+
+class TestSyncAndMergeRebaseOnConflict:
+    """Integration tests verifying sync_and_merge tries rebase on conflict.
+
+    These tests use real git repos with intentional conflicting changes
+    between two branches to exercise the rebase fallback path.
+    """
+
+    def test_intentional_conflict_triggers_rebase_attempt(self, two_agent_clones):
+        """Two agents modify the same file → rebase_onto is actually called.
+
+        Scenario:
+          - Agent 2 creates a task branch modifying README.md
+          - Agent 1 pushes a conflicting change to README.md on main
+          - Agent 2 calls sync_and_merge → merge fails → rebase attempted
+          - Rebase also fails (same conflict) → returns merge_conflict
+
+        Uses a spy on rebase_onto to verify the fallback was invoked.
+        """
+        mgr = GitManager()
+        agent1 = two_agent_clones["agent1"]
+        agent2 = two_agent_clones["agent2"]
+
+        # Agent 2 creates a task branch that modifies README.md
+        mgr.create_branch(agent2, "task/a2-readme")
+        _git_commit(agent2, "README.md", "agent2 version\n", "agent2 modifies README")
+        _git(["checkout", "main"], cwd=agent2)
+
+        # Agent 1 pushes a conflicting change to README.md on origin/main
+        _git_commit(agent1, "README.md", "agent1 version\n", "agent1 modifies README")
+        _git(["push", "origin", "main"], cwd=agent1)
+
+        # Spy on rebase_onto to verify it's called during sync_and_merge
+        with patch.object(mgr, "rebase_onto", wraps=mgr.rebase_onto) as spy_rebase:
+            success, err = mgr.sync_and_merge(agent2, "task/a2-readme")
+
+        assert success is False
+        assert err == "merge_conflict"
+        # Verify rebase_onto was actually called as a fallback
+        spy_rebase.assert_called_once_with(agent2, "task/a2-readme", "origin/main")
+
+    def test_workspace_clean_after_failed_rebase_fallback(self, two_agent_clones):
+        """After failed merge + failed rebase, workspace has no uncommitted changes.
+
+        The workspace must be left in a usable state so subsequent tasks
+        can proceed without manual cleanup.
+        """
+        mgr = GitManager()
+        agent1 = two_agent_clones["agent1"]
+        agent2 = two_agent_clones["agent2"]
+
+        # Create conflicting changes between agent1 (pushed to main) and agent2 (task branch)
+        mgr.create_branch(agent2, "task/a2-dirty")
+        _git_commit(agent2, "README.md", "agent2 dirty\n", "agent2 dirty change")
+        _git(["checkout", "main"], cwd=agent2)
+
+        _git_commit(agent1, "README.md", "agent1 dirty\n", "agent1 dirty change")
+        _git(["push", "origin", "main"], cwd=agent1)
+
+        success, err = mgr.sync_and_merge(agent2, "task/a2-dirty")
+        assert success is False
+
+        # Workspace should be clean: on main, no uncommitted changes, no
+        # leftover merge/rebase state
+        assert _current_branch(agent2) == "main"
+        status = _git(["status", "--porcelain"], cwd=agent2)
+        assert status == "", f"Workspace has uncommitted changes: {status}"
+
+        # Verify no rebase is in progress
+        rebase_dir = pathlib.Path(agent2) / ".git" / "rebase-merge"
+        assert not rebase_dir.exists(), "Rebase state was not cleaned up"
+        rebase_apply = pathlib.Path(agent2) / ".git" / "rebase-apply"
+        assert not rebase_apply.exists(), "Rebase-apply state was not cleaned up"
+
+    def test_no_push_after_failed_rebase_fallback(self, two_agent_clones):
+        """When both merge and rebase fail, push is never attempted.
+
+        Uses a spy on _run to verify no push commands are issued after
+        the conflict is detected.
+        """
+        mgr = GitManager()
+        agent1 = two_agent_clones["agent1"]
+        agent2 = two_agent_clones["agent2"]
+
+        # Create conflicting changes
+        mgr.create_branch(agent2, "task/a2-nopush")
+        _git_commit(agent2, "README.md", "agent2 nopush\n", "agent2 nopush")
+        _git(["checkout", "main"], cwd=agent2)
+
+        _git_commit(agent1, "README.md", "agent1 nopush\n", "agent1 nopush")
+        _git(["push", "origin", "main"], cwd=agent1)
+
+        # Spy on _run to capture all git commands issued
+        original_run = mgr._run
+        commands_issued = []
+
+        def tracking_run(args, cwd=None):
+            commands_issued.append(args)
+            return original_run(args, cwd=cwd)
+
+        with patch.object(mgr, "_run", side_effect=tracking_run):
+            success, err = mgr.sync_and_merge(agent2, "task/a2-nopush")
+
+        assert success is False
+        assert err == "merge_conflict"
+
+        # Verify push was never called
+        push_calls = [c for c in commands_issued if c[0] == "push"]
+        assert len(push_calls) == 0, f"Push should not be attempted, but got: {push_calls}"
+
+    def test_conflict_on_multiple_files(self, two_agent_clones):
+        """Conflict across multiple files still triggers rebase and fails cleanly."""
+        mgr = GitManager()
+        agent1 = two_agent_clones["agent1"]
+        agent2 = two_agent_clones["agent2"]
+
+        # Agent 2 creates task branch modifying two files
+        mgr.create_branch(agent2, "task/a2-multi")
+        _git_commit(agent2, "README.md", "agent2 readme\n", "agent2 readme")
+        _git_commit(agent2, "config.txt", "agent2 config\n", "agent2 config")
+        _git(["checkout", "main"], cwd=agent2)
+
+        # Agent 1 modifies the same files and pushes
+        _git_commit(agent1, "README.md", "agent1 readme\n", "agent1 readme")
+        _git_commit(agent1, "config.txt", "agent1 config\n", "agent1 config")
+        _git(["push", "origin", "main"], cwd=agent1)
+
+        with patch.object(mgr, "rebase_onto", wraps=mgr.rebase_onto) as spy_rebase:
+            success, err = mgr.sync_and_merge(agent2, "task/a2-multi")
+
+        assert success is False
+        assert err == "merge_conflict"
+        spy_rebase.assert_called_once()
+        # Workspace is clean
+        assert _current_branch(agent2) == "main"
+
+    def test_rebase_succeeds_for_non_conflicting_stale_branch(self, two_agent_clones, tmp_path):
+        """Non-conflicting stale branch: merge succeeds directly (rebase not needed).
+
+        When the task branch and main modify different files, git merge
+        succeeds without needing the rebase fallback.  This verifies the
+        happy path still works when main has advanced.
+        """
+        mgr = GitManager()
+        agent1 = two_agent_clones["agent1"]
+        agent2 = two_agent_clones["agent2"]
+
+        # Agent 2 creates a task branch touching only feature.txt
+        mgr.create_branch(agent2, "task/a2-clean")
+        _git_commit(agent2, "feature.txt", "feature work\n", "agent2 feature")
+        _git(["checkout", "main"], cwd=agent2)
+
+        # Agent 1 pushes a change to a different file
+        _git_commit(agent1, "other.txt", "other work\n", "agent1 other change")
+        _git(["push", "origin", "main"], cwd=agent1)
+
+        with patch.object(mgr, "rebase_onto", wraps=mgr.rebase_onto) as spy_rebase:
+            success, err = mgr.sync_and_merge(agent2, "task/a2-clean")
+
+        assert success is True
+        assert err == ""
+        # Merge succeeded directly, so rebase should NOT have been called
+        spy_rebase.assert_not_called()
+
+        # Both changes present on remote
+        verify = str(tmp_path / "verify")
+        subprocess.run(
+            ["git", "clone", two_agent_clones["remote"], verify],
+            check=True, capture_output=True,
+        )
+        log = _git(["log", "--oneline"], cwd=verify)
+        assert "agent2 feature" in log
+        assert "agent1 other change" in log
+
+    def test_conflict_leaves_task_branch_intact(self, two_agent_clones):
+        """After a failed merge+rebase, the task branch still has its commits.
+
+        The task branch should not be corrupted by the failed rebase attempt;
+        it should still contain all its original work so it can be manually
+        resolved later.
+        """
+        mgr = GitManager()
+        agent1 = two_agent_clones["agent1"]
+        agent2 = two_agent_clones["agent2"]
+
+        # Agent 2 creates a task branch with multiple commits
+        mgr.create_branch(agent2, "task/a2-preserve")
+        _git_commit(agent2, "README.md", "agent2 v1\n", "agent2 first change")
+        _git_commit(agent2, "extra.txt", "extra work\n", "agent2 extra work")
+        _git(["checkout", "main"], cwd=agent2)
+
+        # Agent 1 pushes conflicting change
+        _git_commit(agent1, "README.md", "agent1 conflict\n", "agent1 conflict")
+        _git(["push", "origin", "main"], cwd=agent1)
+
+        success, err = mgr.sync_and_merge(agent2, "task/a2-preserve")
+        assert success is False
+
+        # Switch to task branch and verify its commits are intact
+        _git(["checkout", "task/a2-preserve"], cwd=agent2)
+        log = _git(["log", "--oneline"], cwd=agent2)
+        assert "agent2 first change" in log
+        assert "agent2 extra work" in log
 
 
 class TestSyncAndMergeRetry:
