@@ -174,15 +174,20 @@ Consistent visual language, easier scanning, better error visibility.
 
 class TestParseImplementationSection:
     def test_extracts_phases_from_implementation_section(self):
-        """The key test: should extract ONLY Phase 1-5 from the design doc."""
+        """The key test: should extract phases from the design doc.
+
+        The 5 raw phases exceed _IMPL_PHASE_THRESHOLD (4) so they get
+        consolidated into 3 coarser phases.
+        """
         steps = _parse_implementation_section(DESIGN_DOCUMENT)
-        assert len(steps) == 5
-        titles = [s.title for s in steps]
-        assert "Foundation (Low Risk)" in titles
-        assert "Notification Embeds (Medium Risk)" in titles
-        assert "Slash Command Consistency (Medium Risk)" in titles
-        assert "Chat Agent Responses (Low Risk)" in titles
-        assert "Polish & Testing" in titles
+        assert len(steps) == 3
+        # Consolidated phases should reference the original phase titles
+        all_text = " ".join(s.title + " " + s.description for s in steps)
+        assert "Foundation" in all_text
+        assert "Notification Embeds" in all_text
+        assert "Slash Command Consistency" in all_text
+        assert "Chat Agent Responses" in all_text
+        assert "Polish & Testing" in all_text
 
     def test_does_not_include_non_implementation_sections(self):
         """Reference sections should NOT appear as steps."""
@@ -199,9 +204,16 @@ class TestParseImplementationSection:
         for step in steps:
             assert len(step.description) > 20, f"Step '{step.title}' has too little content"
 
+    def test_consolidated_phases_include_step_outline(self):
+        """Consolidated phases should include a 'Steps in this phase:' outline."""
+        steps = _parse_implementation_section(DESIGN_DOCUMENT)
+        # At least some of the consolidated phases should have the outline
+        has_outline = any("Steps in this phase:" in s.description for s in steps)
+        assert has_outline, "Consolidated phases should include a step outline"
+
     def test_priority_hints_sequential(self):
         steps = _parse_implementation_section(DESIGN_DOCUMENT)
-        assert [s.priority_hint for s in steps] == [0, 1, 2, 3, 4]
+        assert [s.priority_hint for s in steps] == [0, 1, 2]
 
     def test_returns_empty_for_simple_plan(self):
         """Plans without a dedicated implementation section should return empty."""
@@ -277,13 +289,16 @@ This should NOT be extracted since it's outside implementation section.
 
 class TestParsePlanDesignDocument:
     def test_design_document_uses_implementation_section(self):
-        """Full parse_plan() should use implementation section parsing for the design doc."""
+        """Full parse_plan() should use implementation section parsing for the design doc.
+
+        The 5 raw phases get consolidated into 3 coarser phases.
+        """
         plan = parse_plan(DESIGN_DOCUMENT, source_file="plan.md")
-        assert len(plan.steps) == 5
-        # Verify it extracted the actual phases, not the reference sections
-        titles = [s.title for s in plan.steps]
-        assert "Foundation (Low Risk)" in titles
-        assert "Polish & Testing" in titles
+        assert len(plan.steps) == 3
+        # Verify it extracted the actual phases (consolidated), not the reference sections
+        all_text = " ".join(s.title + " " + s.description for s in plan.steps)
+        assert "Foundation" in all_text
+        assert "Polish & Testing" in all_text
 
     def test_simple_plan_still_works(self):
         """Normal plans without implementation sections should parse as before."""
@@ -478,7 +493,11 @@ class TestKeenBeaconIntegration:
     """Integration test simulating the keen-beacon failure scenario."""
 
     def test_plan_in_notes_is_discovered_and_correctly_parsed(self, tmp_path):
-        """Simulate the keen-beacon scenario: plan in notes/ with design doc structure."""
+        """Simulate the keen-beacon scenario: plan in notes/ with design doc structure.
+
+        The 5 raw implementation phases get consolidated into 3 coarser
+        phases (threshold=4, target=3).
+        """
         # Setup: plan file in notes/ (not standard location)
         notes_dir = tmp_path / "notes"
         notes_dir.mkdir()
@@ -490,18 +509,18 @@ class TestKeenBeaconIntegration:
         assert found is not None, "Plan in notes/ should be discovered"
         assert found == str(plan_path)
 
-        # Step 2: Parsing should extract only the implementation phases
+        # Step 2: Parsing should extract and consolidate implementation phases
         content = plan_path.read_text()
         plan = parse_plan(content, source_file=str(plan_path))
-        assert len(plan.steps) == 5
+        assert len(plan.steps) == 3
 
-        # Step 3: Verify the correct phases were extracted
-        titles = [s.title for s in plan.steps]
-        assert "Foundation (Low Risk)" in titles
-        assert "Notification Embeds (Medium Risk)" in titles
-        assert "Slash Command Consistency (Medium Risk)" in titles
-        assert "Chat Agent Responses (Low Risk)" in titles
-        assert "Polish & Testing" in titles
+        # Step 3: Verify the consolidated phases contain all original phase content
+        all_text = " ".join(s.title + " " + s.description for s in plan.steps)
+        assert "Foundation" in all_text
+        assert "Notification Embeds" in all_text
+        assert "Slash Command Consistency" in all_text
+        assert "Chat Agent Responses" in all_text
+        assert "Polish & Testing" in all_text
 
         # Step 4: Verify NO reference sections were extracted
         for step in plan.steps:
@@ -511,6 +530,10 @@ class TestKeenBeaconIntegration:
             assert "what embeds support" not in title_lower
             assert "current state" not in title_lower
             assert "design principles" not in title_lower
+
+        # Step 5: Verify consolidated phases include step outlines
+        has_outline = any("Steps in this phase:" in s.description for s in plan.steps)
+        assert has_outline, "Consolidated phases should include a step outline"
 
 
 # ── NON_ACTIONABLE_HEADINGS completeness ──────────────────────────────── #
@@ -570,10 +593,10 @@ class TestMaxStepsEnforcement:
             content += f"### Phase {i}: Do thing {i}\n\n"
             content += f"Detailed description for phase {i} with enough content.\n\n"
 
-        plan = parse_plan(content, max_steps=5)
-        # 11 steps exceeds the phase threshold, so they get consolidated
-        # into ~5 phases, then capped at max_steps=5
-        assert len(plan.steps) <= 5
+        plan = parse_plan(content, max_steps=3)
+        # 11 steps exceeds the phase threshold (4), so they get consolidated
+        # into 3 phases (target_phases=3), then capped at max_steps=3
+        assert len(plan.steps) <= 3
         # Should have been consolidated (fewer than 11)
         assert len(plan.steps) < 11
 
@@ -594,10 +617,10 @@ class TestMaxStepsEnforcement:
             f"{i}. Implement feature {i}\n   Details for feature {i}."
             for i in range(1, 15)
         )
-        plan = parse_plan(items, max_steps=7)
-        # 14 items exceeds the phase threshold, so they get consolidated
-        # into ~5 phases, then capped at max_steps=7
-        assert len(plan.steps) <= 7
+        plan = parse_plan(items, max_steps=5)
+        # 14 items exceeds the phase threshold (4), so they get consolidated
+        # into 3 phases (target_phases=3), then capped at max_steps=5
+        assert len(plan.steps) <= 5
         # Should have been consolidated (fewer than 14)
         assert len(plan.steps) < 14
 

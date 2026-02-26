@@ -49,7 +49,7 @@ class PromptConfig:
     """
 
     max_plan_depth: int = 2
-    max_steps_per_plan: int = 8
+    max_steps_per_plan: int = 5
     project_context: str = ""
 
 
@@ -68,25 +68,28 @@ to ensure the plan can be automatically parsed into subtasks.
 
 IMPORTANT: Each phase becomes a separate subtask executed by an agent.
 Phases should be COARSE — each one should represent a substantial chunk
-of work containing multiple concrete steps. Do NOT create a separate
+of work containing MANY concrete steps. Do NOT create a separate
 phase for every small action (e.g. "create file X", "add import Y").
-Instead, group related work into 3-5 broad phases.
+Instead, group related work into 2-4 broad phases. Fewer, larger
+phases are ALWAYS preferred.
 
 ### DO:
 - Use action-verb headings: "## Implement X", "## Create Y", "## Add Z"
 - Use numbered phases: "## Phase 1: Database Layer and Migrations"
-- Group related work: a phase like "Build API Endpoints" should include
-  creating routes, adding validation, writing handlers, AND writing tests
-  for those endpoints — all in one phase
-- Include concrete sub-steps WITHIN each phase (as bullet points or
-  numbered lists inside the phase body)
+- Group related work AGGRESSIVELY: a phase like "Build API Endpoints"
+  should include creating routes, adding validation, writing handlers,
+  AND writing tests for those endpoints — all in one phase
+- Include a numbered outline of ALL concrete steps within each phase
+  (so the agent can see the full scope of work at a glance)
+- Include detailed descriptions for each step after the outline
 - Include estimated effort for each phase
 - Put implementation phases under a "## Implementation Plan" container heading
-- Keep the total number of phases between 3 and {max_steps} (aim for 3-5)
+- Keep the total number of phases between 2 and {max_steps} (aim for 2-4)
 - Each phase should be independently executable and represent several
   hours of focused work
 
 ### DON'T:
+- Don't create more than 4 phases unless the work is truly enormous
 - Don't create a separate phase for each individual file change or function
 - Don't include overview/summary sections as separate headings
 - Don't include design discussion, architecture review, or rationale sections
@@ -106,10 +109,17 @@ Instead, group related work into 3-5 broad phases.
 
 [High-level description of this phase]
 
-Concrete steps:
+Steps in this phase:
 1. [Step within this phase]
 2. [Another step within this phase]
 3. [Yet another step]
+4. [More steps as needed]
+
+[Detailed description for step 1]
+
+[Detailed description for step 2]
+
+...
 
 Files to modify/create:
 - `path/to/file1.py`
@@ -121,20 +131,13 @@ Files to modify/create:
 
 [Description covering multiple related changes]
 
-Concrete steps:
+Steps in this phase:
 1. [Step]
 2. [Step]
 3. [Step]
+4. [Step]
 
-**Estimated effort:** ~N hours
-
-### Phase 3: [Action Verb] [Broad Area of Work]
-
-[Description]
-
-Concrete steps:
-1. [Step]
-2. [Step]
+[Detailed descriptions for each step]
 
 **Estimated effort:** ~N hours
 ```
@@ -175,7 +178,7 @@ You may either:
 
 Guidelines:
 - Strongly prefer direct execution over sub-planning
-- If sub-planning, limit to 3-4 coarse phases that each group several
+- If sub-planning, limit to 2-3 coarse phases that each group many
   related steps together
 - Do NOT create fine-grained phases for individual changes
 - Do NOT produce design documents or architecture reviews
@@ -267,11 +270,13 @@ def build_plan_generation_prompt(
     parts.append(
         "## Your Task\n\n"
         "Analyze the codebase and produce a focused implementation plan "
-        f"with 3-{min(5, config.max_steps_per_plan)} actionable phases. "
+        f"with 2-{min(4, config.max_steps_per_plan)} actionable phases. "
         "Each phase should be independently executable and represent a "
-        "substantial chunk of work containing multiple concrete steps. "
+        "substantial chunk of work containing MANY concrete steps. "
         "Do NOT create a separate phase for each small change — group "
-        "related work together.\n"
+        "related work together aggressively.\n"
+        "Each phase MUST include a numbered outline of all steps within it "
+        "so the executing agent can see the full scope of work at a glance.\n"
         "Write the plan as a markdown document with the structure shown above.\n"
     )
 
@@ -573,10 +578,11 @@ def build_retry_prompt(
 
     parts.append(
         "## Your Task (Retry)\n\n"
-        "Produce a focused implementation plan with 3-5 coarse phases. "
-        "Each phase should group several related steps into one substantial "
+        "Produce a focused implementation plan with 2-4 coarse phases. "
+        "Each phase should group MANY related steps into one substantial "
         "chunk of work. Every phase heading MUST start with an action verb "
         "(Implement, Create, Add, Update, Fix, etc.). "
+        "Each phase MUST include a numbered outline of all steps within it. "
         "Do NOT create a separate phase for each small change. "
         "Do NOT include overview, architecture, design, or reference sections.\n"
     )

@@ -252,7 +252,7 @@ def read_plan_file(path: str) -> str:
 
 
 def parse_plan(
-    content: str, source_file: str = "", max_steps: int = 8,
+    content: str, source_file: str = "", max_steps: int = 5,
 ) -> ParsedPlan:
     """Parse plan markdown content into structured steps.
 
@@ -426,19 +426,20 @@ def _parse_implementation_section(content: str) -> list[PlanStep]:
 
 # Maximum number of steps from an implementation section before we
 # attempt automatic consolidation into larger phases.
-_IMPL_PHASE_THRESHOLD = 6
+_IMPL_PHASE_THRESHOLD = 4
 
 
 def _consolidate_steps_into_phases(
     steps: list[PlanStep],
-    target_phases: int = 5,
+    target_phases: int = 3,
 ) -> list[PlanStep]:
     """Merge a long list of fine-grained steps into fewer phases.
 
     Uses a simple chunking strategy: divides the ordered step list into
     ``target_phases`` roughly-equal groups.  Each group becomes a single
     phase whose title is derived from the first step and whose description
-    aggregates the titles and descriptions of all contained steps.
+    includes a high-level outline of steps followed by the detailed
+    descriptions of all contained steps.
     """
     if len(steps) <= target_phases:
         return steps
@@ -451,11 +452,20 @@ def _consolidate_steps_into_phases(
         if not chunk:
             continue
 
-        # Build a combined description listing each sub-step
-        sub_parts: list[str] = []
+        # Build a high-level outline of steps in this phase
+        outline_parts: list[str] = []
+        outline_parts.append("**Steps in this phase:**")
+        for i, sub in enumerate(chunk, 1):
+            outline_parts.append(f"{i}. {sub.title}")
+        outline = "\n".join(outline_parts)
+
+        # Build detailed descriptions for each sub-step
+        detail_parts: list[str] = []
         for sub in chunk:
-            sub_parts.append(f"### {sub.title}\n\n{sub.description}")
-        combined_desc = "\n\n".join(sub_parts)
+            detail_parts.append(f"### {sub.title}\n\n{sub.description}")
+        details = "\n\n".join(detail_parts)
+
+        combined_desc = f"{outline}\n\n---\n\n{details}"
 
         # Title: use the first step's title, augmented if there are multiple
         if len(chunk) == 1:
@@ -708,6 +718,11 @@ def build_task_description(
     the overall plan so that the executing agent has all the information
     it needs without access to external context.
 
+    When the step description contains multiple sub-steps (e.g. from
+    consolidation or a well-structured phase), a high-level outline
+    is extracted and presented prominently so the agent can see all
+    the work in the phase at a glance.
+
     Args:
         step: The parsed plan step.
         parent_task: The parent task object (must have .title and .description).
@@ -729,9 +744,44 @@ def build_task_description(
             f"**{parent_task.title}**\n"
         )
 
+    # Extract a high-level outline of steps if the description contains
+    # sub-step structure (### headings or numbered items).
+    outline = _extract_steps_outline(step.description)
+    if outline:
+        parts.append(f"## High-Level Steps\n{outline}\n")
+
     parts.append(f"## Task Details\n{step.description}")
 
     return "\n".join(parts)
+
+
+def _extract_steps_outline(description: str) -> str:
+    """Extract a bullet-point outline from a step description.
+
+    Looks for ### sub-headings or a leading numbered list and produces
+    a compact outline.  Returns an empty string if no sub-structure is
+    found.
+    """
+    # If the description already contains a "Steps in this phase:" outline
+    # (from consolidation), don't duplicate it
+    if "**Steps in this phase:**" in description:
+        return ""
+
+    # Try ### sub-headings first
+    sub_heading_pattern = re.compile(r"^###\s+(.+)$", re.MULTILINE)
+    sub_headings = sub_heading_pattern.findall(description)
+    if len(sub_headings) >= 2:
+        lines = [f"- {_clean_step_title(h.strip())}" for h in sub_headings]
+        return "\n".join(lines)
+
+    # Try numbered items (top-level only)
+    numbered_pattern = re.compile(r"^\d+[.)]\s+(.+)$", re.MULTILINE)
+    items = numbered_pattern.findall(description)
+    if len(items) >= 2:
+        lines = [f"- {_clean_step_title(item.strip())}" for item in items[:10]]
+        return "\n".join(lines)
+
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -854,7 +904,7 @@ def validate_plan_quality(content: str) -> PlanQualityReport:
 def parse_and_generate_steps(
     content: str,
     *,
-    max_steps: int = 8,
+    max_steps: int = 5,
     enforce_quality: bool = False,
     min_quality_score: float = 0.3,
 ) -> tuple[list[dict], PlanQualityReport]:
