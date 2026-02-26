@@ -1308,6 +1308,15 @@ class CommandHandler:
             "blocks": blocks,
         }
 
+    async def _cmd_get_task_dependencies(self, args: dict) -> dict:
+        """Alias for ``_cmd_task_deps`` — used by the ChatAgent tool.
+
+        The ``/task-deps`` slash command uses ``task_deps`` while the
+        ChatAgent exposes the same data as ``get_task_dependencies``.
+        Both route through the same logic.
+        """
+        return await self._cmd_task_deps(args)
+
     async def _cmd_edit_task(self, args: dict) -> dict:
         task = await self.db.get_task(args["task_id"])
         if not task:

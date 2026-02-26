@@ -218,7 +218,10 @@ TOOLS = [
             "An explicit status filter overrides all convenience flags. "
             "Supports display_mode='tree' for a hierarchical view with "
             "box-drawing characters showing parent/subtask relationships, or "
-            "'compact' for a condensed view with progress bars. Default is 'flat'."
+            "'compact' for a condensed view with progress bars. Default is 'flat'. "
+            "Use show_dependencies=true to annotate each task with its upstream "
+            "depends_on and downstream blocks relationships — useful for "
+            "understanding blocking chains."
         ),
         "input_schema": {
             "type": "object",
@@ -269,6 +272,19 @@ TOOLS = [
                         "progress bar summarizing subtask completion. When "
                         "display_mode is 'tree' or 'compact', the response "
                         "includes a 'display' field with pre-formatted text."
+                    ),
+                },
+                "show_dependencies": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, each task in the result includes "
+                        "'depends_on' (list of upstream tasks with id and "
+                        "status) and 'blocks' (list of downstream task IDs). "
+                        "Also adds a 'dependency_display' field with "
+                        "pre-formatted text showing dependency relationships. "
+                        "Use this when the user asks about task dependencies, "
+                        "blocking chains, or why a task is waiting. "
+                        "Default false."
                     ),
                 },
             },
@@ -626,6 +642,28 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "Task ID to skip"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "get_task_dependencies",
+        "description": (
+            "Get the full dependency graph for a specific task: what it depends "
+            "on (upstream) and what it blocks (downstream). Each entry includes "
+            "the task's id, title, and current status. Use this when the user "
+            "asks why a task is blocked, what depends on a task, or wants to "
+            "understand the dependency chain for a specific task. "
+            "Example: 'Task X is blocked because it depends on Y which is "
+            "still IN_PROGRESS.'"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Task ID to inspect dependencies for",
+                },
             },
             "required": ["task_id"],
         },
@@ -1268,6 +1306,8 @@ You can directly (using your tools):
 - Create and manage projects (groups of related tasks)
 - Create, view, edit, delete, and restart tasks
 - View task hierarchies with `get_task_tree` or `list_tasks` with display_mode='tree'
+- Inspect task dependency graphs with `get_task_dependencies` (upstream depends_on + downstream blocks)
+- List tasks with dependency annotations using `list_tasks` with show_dependencies=true
 - Create quick standalone tasks without specifying a project (they go into "Quick Tasks" automatically)
 - Register and list agents
 - Register repositories with `add_repo` and list them with `list_repos`
@@ -1407,6 +1447,15 @@ Task tree inspection — use `get_task_tree` when the user wants to see the subt
 hierarchy for a specific parent task (e.g. "show me the subtasks of task-123", \
 "what's the tree for that plan?"). The response includes a pre-formatted 'display' \
 field — present it directly in a code block.
+
+Task dependencies — use `get_task_dependencies` when the user asks why a task is \
+blocked, what depends on a task, or wants to understand a task's dependency chain. \
+The response includes 'depends_on' (upstream tasks this task needs) and 'blocks' \
+(downstream tasks waiting on this one), each with id, title, and current status. \
+This lets you explain: "Task X is blocked because it depends on Y which is still \
+IN_PROGRESS." For a broader view, use `list_tasks` with show_dependencies=true to \
+annotate every task with its dependency relationships. For stuck dependency chains, \
+use `get_chain_health`.
 
 Cross-project overview — use `list_active_tasks_all_projects` when the user asks \
 about active work across all projects (e.g. "what's running?", "show me everything \
