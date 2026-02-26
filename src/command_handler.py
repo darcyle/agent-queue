@@ -829,6 +829,46 @@ class CommandHandler:
             "hidden_completed": hidden_completed,
         }
 
+    async def _cmd_get_task_tree(self, args: dict) -> dict:
+        """Return the subtask hierarchy for a specific parent task.
+
+        Renders the tree using ``_format_task_tree()`` and returns both the
+        pre-formatted display string and structured metadata (counts, progress).
+        """
+        task_id = args.get("task_id", "")
+        if not task_id:
+            return {"error": "task_id is required"}
+
+        tree_data = await self.db.get_task_tree(task_id)
+        if tree_data is None:
+            return {"error": f"Task '{task_id}' not found"}
+
+        root_task = tree_data["task"]
+        children = tree_data.get("children", [])
+
+        max_depth = args.get("max_depth", 4)
+        compact = args.get("compact", False)
+
+        # Render the tree text.
+        rendered = _format_task_tree(
+            root_task,
+            children,
+            max_depth=max_depth,
+            compact=compact,
+        )
+
+        completed, total = _count_tree_stats(tree_data)
+
+        return {
+            "task_id": task_id,
+            "title": root_task.title,
+            "status": root_task.status.value,
+            "display": rendered,
+            "subtask_count": total,
+            "completed_count": completed,
+            "has_children": len(children) > 0,
+        }
+
     async def _cmd_create_task(self, args: dict) -> dict:
         project_id = args.get("project_id")
         if not project_id:
