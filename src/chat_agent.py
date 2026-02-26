@@ -215,14 +215,17 @@ TOOLS = [
             "the default filter, say 'N active tasks' (not just 'N tasks'). "
             "Use show_all=true or include_completed=true to include finished "
             "tasks. Use completed_only=true to see only finished tasks. "
-            "An explicit status filter overrides all convenience flags."
+            "An explicit status filter overrides all convenience flags. "
+            "Supports three display modes: 'flat' (default list), 'tree' "
+            "(hierarchical view with subtasks), and 'compact' (root tasks "
+            "with progress bars). Tree and compact modes require project_id."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": "Filter by project ID (optional)",
+                    "description": "Filter by project ID (optional, but required for tree/compact modes)",
                 },
                 "status": {
                     "type": "string",
@@ -230,6 +233,19 @@ TOOLS = [
                         "Filter by exact status: DEFINED, READY, IN_PROGRESS, "
                         "COMPLETED, etc. When provided, show_all, "
                         "include_completed, and completed_only are ignored."
+                    ),
+                },
+                "display_mode": {
+                    "type": "string",
+                    "enum": ["flat", "tree", "compact"],
+                    "description": (
+                        "How to display results. 'flat' (default) returns a "
+                        "plain list of task dicts. 'tree' groups tasks by "
+                        "parent and renders full subtask hierarchies with "
+                        "box-drawing characters. 'compact' shows only root "
+                        "tasks with subtask counts and progress bars. "
+                        "Tree and compact modes require project_id; without "
+                        "it, the mode silently falls back to flat."
                     ),
                 },
                 "show_all": {
@@ -268,6 +284,43 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {},
+        },
+    },
+    {
+        "name": "get_task_tree",
+        "description": (
+            "Get the full subtask hierarchy for a specific parent task. "
+            "Returns the task and all its descendants in a tree structure "
+            "with pre-formatted text using box-drawing characters. Use this "
+            "when the user asks about a specific task's subtasks, plan "
+            "breakdown, or wants to see the hierarchy under one task. "
+            "For a project-wide tree view, use list_tasks with "
+            "display_mode='tree' instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "The root/parent task ID to get the tree for",
+                },
+                "compact": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, show only the root task with a subtask "
+                        "count and progress bar instead of the full expanded "
+                        "tree. Default false (full tree)."
+                    ),
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "description": (
+                        "Maximum nesting depth to display (default 4). "
+                        "Deeper subtasks are collapsed into a summary."
+                    ),
+                },
+            },
+            "required": ["task_id"],
         },
     },
     {
@@ -1241,6 +1294,23 @@ that finished tasks are excluded. Examples:
 - "Here are all **7 tasks** in `my-project`:" (show_all=true)
 - "Found **2 completed tasks**:" (completed_only=true or status=COMPLETED)
 If the user asks about completed tasks, use show_all=true or completed_only=true.
+
+Task tree views — `list_tasks` supports three display modes via the `display_mode` parameter:
+- **flat** (default): Plain list of task dicts, one per row. Best for simple listings.
+- **tree**: Hierarchical view that groups tasks under their parent with box-drawing \
+characters (├── └──). Each root task shows its full subtask tree. The response \
+includes pre-formatted text in the `formatted` field. Use when the user asks to \
+"show the tree", "show hierarchy", or wants to see subtask structure.
+- **compact**: Shows only root tasks with subtask counts and progress bars. Ideal \
+for dense overviews. Use when the user asks for a "summary" or "overview" of tasks.
+Tree and compact modes require `project_id`; without it they fall back to flat. \
+When presenting tree/compact results, use the `formatted` field directly — it is \
+pre-rendered with proper indentation and status emojis.
+
+Subtask hierarchy — use `get_task_tree` to inspect the full hierarchy under a \
+single parent task. This is more targeted than `list_tasks display_mode=tree` \
+(which shows all root tasks). Use it when the user asks about a specific task's \
+subtasks or plan breakdown.
 
 Cross-project overview — when the user asks about active work across the system \
 (e.g., "what's running?", "show all active tasks", "workload overview"), use \

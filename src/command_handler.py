@@ -952,6 +952,51 @@ class CommandHandler:
             "total_active": len(tasks),
         }
 
+    async def _cmd_get_task_tree(self, args: dict) -> dict:
+        """Return the full subtask hierarchy for a single parent task.
+
+        Fetches the task tree from the database and renders it using
+        :func:`_format_task_tree`.  Returns both structured data and
+        pre-formatted text so callers (Discord embeds, chat agent) can
+        choose how to present it.
+
+        Parameters (via *args*):
+            task_id (str): Required.  The root task whose tree to fetch.
+            compact (bool): If ``True``, render in compact mode (root +
+                summary only).  Default ``False``.
+            max_depth (int): Maximum nesting depth before collapsing.
+                Default 4.
+        """
+        task_id: str = args["task_id"]
+        compact: bool = args.get("compact", False)
+        max_depth: int = args.get("max_depth", 4)
+
+        tree_data = await self.db.get_task_tree(task_id)
+        if tree_data is None:
+            return {"error": f"Task '{task_id}' not found"}
+
+        root_task: Task = tree_data["task"]
+        children: list[dict] = tree_data.get("children", [])
+
+        completed, subtask_total = _count_subtree(children)
+
+        formatted = _format_task_tree(
+            root_task, children, compact=compact, max_depth=max_depth,
+        )
+
+        result: dict = {
+            "root": self._task_to_dict(root_task),
+            "formatted": formatted,
+            "subtask_completed": completed,
+            "subtask_total": subtask_total,
+        }
+
+        # In compact mode, include a text progress bar for inline display.
+        if compact and subtask_total > 0:
+            result["progress_bar"] = progress_bar(completed, subtask_total)
+
+        return result
+
     async def _cmd_create_task(self, args: dict) -> dict:
         project_id = args.get("project_id")
         if not project_id:
