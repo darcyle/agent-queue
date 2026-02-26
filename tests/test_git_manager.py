@@ -1,6 +1,32 @@
+import pathlib
 import subprocess
 import pytest
 from src.git.manager import GitManager
+
+
+def _git(args: list[str], cwd: str) -> str:
+    """Run a git command in the given directory, returning stdout."""
+    result = subprocess.run(
+        ["git"] + args, cwd=cwd, capture_output=True, text=True, check=True,
+    )
+    return result.stdout.strip()
+
+
+def _git_commit(cwd: str, filename: str, content: str, message: str) -> str:
+    """Create/update a file, commit it, and return the commit SHA."""
+    pathlib.Path(cwd, filename).write_text(content)
+    _git(["add", filename], cwd=cwd)
+    _git(["-c", "user.name=Test", "-c", "user.email=t@t.com",
+          "commit", "-m", message], cwd=cwd)
+    return _git(["rev-parse", "HEAD"], cwd=cwd)
+
+
+def _current_branch(cwd: str) -> str:
+    return _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd)
+
+
+def _head_sha(cwd: str) -> str:
+    return _git(["rev-parse", "HEAD"], cwd=cwd)
 
 
 @pytest.fixture
@@ -97,3 +123,247 @@ class TestGitManager:
             cwd=worktree_path, capture_output=True, text=True,
         )
         assert result.stdout.strip() == "task-2/another-feature"
+
+
+class TestPrepareForTaskHardReset:
+    """Tests for the hard-reset path in prepare_for_task().
+
+    Verifies that local main is always reset to match origin/main,
+    even when a previous merge-and-push left local main diverged.
+    """
+
+    def test_hard_reset_recovers_from_diverged_main(self, git_repo, tmp_path):
+        """If local main has un-pushed merge commits, hard reset brings it back in sync."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Simulate a diverged local main: create a local-only commit on main
+        # that was never pushed (as if _merge_and_push merged but push failed).
+        _git_commit(clone, "local-only.txt", "diverged", "local merge commit")
+        local_main_sha = _head_sha(clone)
+
+        # The remote main should NOT have this commit
+        origin_main_sha = _git(["rev-parse", "origin/main"], cwd=clone)
+        assert local_main_sha != origin_main_sha
+
+        # prepare_for_task should hard-reset main to origin/main
+        mgr.prepare_for_task(clone, "task/after-diverge")
+
+        # After creating the task branch, switch back to main to verify it was reset
+        _git(["checkout", "main"], cwd=clone)
+        assert _head_sha(clone) == origin_main_sha
+
+    def test_task_branch_starts_from_origin_main(self, git_repo, tmp_path):
+        """New task branches should always start from origin/main, not stale local main."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Push a new commit to remote via a second clone so the first clone's
+        # local main is behind origin/main.
+        clone2 = str(tmp_path / "clone2")
+        subprocess.run(["git", "clone", git_repo["remote"], clone2],
+                       check=True, capture_output=True)
+        _git_commit(clone2, "new-file.txt", "from clone2", "advance main")
+        _git(["push", "origin", "main"], cwd=clone2)
+
+        # Now prepare_for_task in the original clone — it should fetch the new
+        # commit and start the task branch from the latest origin/main.
+        mgr.prepare_for_task(clone, "task/should-be-latest")
+
+        # The task branch should include the commit from clone2
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "advance main" in log
+
+
+class TestPrepareForTaskRebaseOnRetry:
+    """Tests for the rebase-on-retry behavior in prepare_for_task().
+
+    When a task is retried and the branch already exists, prepare_for_task()
+    should switch to it and rebase onto origin/<default_branch>.
+    """
+
+    def test_existing_branch_gets_rebased(self, git_repo, tmp_path):
+        """Retried task rebases existing branch onto latest origin/main."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        branch = "task/retry-me"
+
+        # First run: create the task branch normally
+        mgr.prepare_for_task(clone, branch)
+        _git_commit(clone, "work.txt", "agent work", "agent commit")
+
+        # Advance origin/main via a second clone
+        clone2 = str(tmp_path / "clone2")
+        subprocess.run(["git", "clone", git_repo["remote"], clone2],
+                       check=True, capture_output=True)
+        _git_commit(clone2, "upstream.txt", "upstream", "upstream commit")
+        _git(["push", "origin", "main"], cwd=clone2)
+
+        # Second run (retry): prepare_for_task finds existing branch, rebases it
+        mgr.prepare_for_task(clone, branch)
+
+        assert _current_branch(clone) == branch
+        # The branch should now contain both the agent's work and the upstream commit
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "agent commit" in log
+        assert "upstream commit" in log
+
+    def test_rebase_conflict_aborts_gracefully(self, git_repo, tmp_path):
+        """If rebase has conflicts, it aborts and leaves the branch as-is."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        branch = "task/conflict-retry"
+
+        # First run: create task branch and modify README.md
+        mgr.prepare_for_task(clone, branch)
+        _git_commit(clone, "README.md", "agent version", "agent changes README")
+
+        # Advance origin/main with a conflicting change to README.md
+        clone2 = str(tmp_path / "clone2")
+        subprocess.run(["git", "clone", git_repo["remote"], clone2],
+                       check=True, capture_output=True)
+        _git_commit(clone2, "README.md", "upstream version", "upstream changes README")
+        _git(["push", "origin", "main"], cwd=clone2)
+
+        # Record state before retry
+        pre_retry_sha = _head_sha(clone)
+
+        # Second run (retry): rebase will conflict, should abort gracefully
+        # and NOT raise an exception.
+        _git(["checkout", "main"], cwd=clone)  # switch away first
+        mgr.prepare_for_task(clone, branch)
+
+        # Should still be on the task branch
+        assert _current_branch(clone) == branch
+        # Branch should still have the agent's commit (rebase was aborted)
+        assert _head_sha(clone) == pre_retry_sha
+
+    def test_worktree_existing_branch_gets_rebased(self, git_repo, tmp_path):
+        """Retried task in worktree context also rebases existing branch."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        branch = "task/wt-retry"
+
+        # Create a worktree
+        worktree_path = str(tmp_path / "worktree-retry")
+        mgr.create_worktree(clone, worktree_path, "wt-setup-branch")
+
+        # First run: create the task branch in the worktree
+        mgr.prepare_for_task(worktree_path, branch)
+        _git_commit(worktree_path, "work.txt", "agent work", "agent commit")
+
+        # Advance origin/main via a second clone
+        clone2 = str(tmp_path / "clone2")
+        subprocess.run(["git", "clone", git_repo["remote"], clone2],
+                       check=True, capture_output=True)
+        _git_commit(clone2, "upstream.txt", "upstream", "upstream commit")
+        _git(["push", "origin", "main"], cwd=clone2)
+
+        # Second run (retry): prepare_for_task finds existing branch, rebases it
+        mgr.prepare_for_task(worktree_path, branch)
+
+        assert _current_branch(worktree_path) == branch
+        log = _git(["log", "--oneline"], cwd=worktree_path)
+        assert "agent commit" in log
+        assert "upstream commit" in log
+
+
+class TestPullLatestMain:
+    """Tests for the pull_latest_main() convenience method."""
+
+    def test_pull_latest_main_syncs_with_remote(self, git_repo, tmp_path):
+        """pull_latest_main() should hard-reset local main to origin/main."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Advance origin/main via a second clone
+        clone2 = str(tmp_path / "clone2")
+        subprocess.run(["git", "clone", git_repo["remote"], clone2],
+                       check=True, capture_output=True)
+        new_sha = _git_commit(clone2, "new.txt", "new", "advance main")
+        _git(["push", "origin", "main"], cwd=clone2)
+
+        # Local clone is behind — pull_latest_main should sync it
+        mgr.pull_latest_main(clone)
+
+        assert _current_branch(clone) == "main"
+        assert _head_sha(clone) == new_sha
+
+    def test_pull_latest_main_discards_local_divergence(self, git_repo):
+        """pull_latest_main() discards local-only commits on main."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        origin_sha = _git(["rev-parse", "origin/main"], cwd=clone)
+
+        # Create a local-only commit (simulating a failed push after merge)
+        _git_commit(clone, "local-only.txt", "diverged", "local merge")
+        assert _head_sha(clone) != origin_sha
+
+        # pull_latest_main should discard the local commit
+        mgr.pull_latest_main(clone)
+        assert _head_sha(clone) == origin_sha
+
+
+class TestSwitchToBranchRebase:
+    """Tests for rebase-onto-main behavior in switch_to_branch()."""
+
+    def test_switch_to_branch_rebases_onto_main(self, git_repo, tmp_path):
+        """switch_to_branch() should rebase onto origin/main after switching."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        branch = "subtask/chain-branch"
+
+        # Create a branch with some work
+        mgr.create_branch(clone, branch)
+        _git_commit(clone, "subtask.txt", "subtask work", "subtask commit")
+        _git(["checkout", "main"], cwd=clone)
+
+        # Advance origin/main via a second clone
+        clone2 = str(tmp_path / "clone2")
+        subprocess.run(["git", "clone", git_repo["remote"], clone2],
+                       check=True, capture_output=True)
+        _git_commit(clone2, "upstream.txt", "upstream", "upstream commit")
+        _git(["push", "origin", "main"], cwd=clone2)
+
+        # switch_to_branch should switch and rebase onto latest origin/main
+        mgr.switch_to_branch(clone, branch)
+
+        assert _current_branch(clone) == branch
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "subtask commit" in log
+        assert "upstream commit" in log
+
+    def test_switch_to_branch_rebase_conflict_aborts(self, git_repo, tmp_path):
+        """If rebase conflicts during switch_to_branch, it aborts gracefully."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        branch = "subtask/conflict-branch"
+
+        # Create a branch that modifies README.md
+        mgr.create_branch(clone, branch)
+        _git_commit(clone, "README.md", "branch version", "branch changes README")
+        branch_sha = _head_sha(clone)
+        _git(["checkout", "main"], cwd=clone)
+
+        # Advance origin/main with conflicting change
+        clone2 = str(tmp_path / "clone2")
+        subprocess.run(["git", "clone", git_repo["remote"], clone2],
+                       check=True, capture_output=True)
+        _git_commit(clone2, "README.md", "upstream version", "upstream changes README")
+        _git(["push", "origin", "main"], cwd=clone2)
+
+        # switch_to_branch should not raise even if rebase conflicts
+        mgr.switch_to_branch(clone, branch)
+
+        assert _current_branch(clone) == branch
+        # Branch should retain its original commit since rebase was aborted
+        assert _head_sha(clone) == branch_sha
+
+    def test_switch_to_branch_creates_new_if_missing(self, git_repo):
+        """switch_to_branch() creates a new branch if it doesn't exist anywhere."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        mgr.switch_to_branch(clone, "brand-new-branch")
+        assert _current_branch(clone) == "brand-new-branch"

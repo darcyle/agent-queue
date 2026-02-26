@@ -83,6 +83,24 @@ class GitManager:
         except GitError:
             return []
 
+    def pull_latest_main(
+        self, checkout_path: str, default_branch: str = "main",
+    ) -> None:
+        """Fetch from origin and hard-reset the default branch to match remote.
+
+        This is the canonical way to sync a workspace's default branch with
+        ``origin``.  A hard reset (rather than pull) ensures we always match
+        the remote even if a previous ``_merge_and_push`` left local main
+        diverged from origin (e.g. un-pushed merge commits).
+
+        The caller must have the *default_branch* checked out before calling
+        this method, or use it only for the fetch+reset side-effect on a
+        detached HEAD scenario.
+        """
+        self._run(["fetch", "origin"], cwd=checkout_path)
+        self._run(["checkout", default_branch], cwd=checkout_path)
+        self._run(["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path)
+
     def prepare_for_task(
         self, checkout_path: str, branch_name: str,
         default_branch: str = "main",
@@ -90,14 +108,17 @@ class GitManager:
         """Fetch latest and create a task branch off the default branch.
 
         Two code paths depending on whether the checkout is a worktree:
-        - **Normal repo:** checkout default branch, pull, then create the task
-          branch.  This is the common case for cloned repos.
+        - **Normal repo:** checkout default branch, hard-reset to
+          ``origin/<default_branch>``, then create the task branch.  The hard
+          reset (instead of pull) ensures we always match the remote even if a
+          previous ``_merge_and_push`` left local main diverged.
         - **Worktree:** Can't checkout the default branch (it's already checked
           out in the main working tree), so we create the task branch directly
           from ``origin/<default_branch>`` in a single step.
 
         In both cases, if the branch already exists (e.g. task retried after a
-        restart), we switch to it rather than failing.
+        restart), we switch to it and rebase onto ``origin/<default_branch>``
+        so the agent works on the latest code rather than a stale snapshot.
         """
         # Check if this is a worktree
         is_worktree = self._is_worktree(checkout_path)
@@ -111,28 +132,54 @@ class GitManager:
             try:
                 self._run(["checkout", "-b", branch_name, f"origin/{default_branch}"], cwd=checkout_path)
             except GitError:
-                # If branch creation fails, try to just switch to existing branch
+                # Branch already exists (retry) — switch to it and rebase
+                # onto latest origin so the agent isn't working on stale code.
                 self._run(["checkout", branch_name], cwd=checkout_path)
+                try:
+                    self._run(["rebase", f"origin/{default_branch}"], cwd=checkout_path)
+                except GitError:
+                    # Rebase conflict — abort and let the agent work with
+                    # whatever is on the branch as-is.
+                    try:
+                        self._run(["rebase", "--abort"], cwd=checkout_path)
+                    except GitError:
+                        pass  # rebase may not be in progress
         else:
-            # Normal checkout flow: update default branch then create task branch
+            # Normal checkout flow: hard-reset default branch to match remote,
+            # then create the task branch.
             self._run(["checkout", default_branch], cwd=checkout_path)
-            try:
-                self._run(["pull", "origin", default_branch], cwd=checkout_path)
-            except GitError:
-                pass  # may fail if no upstream tracking
+            # Hard reset instead of pull — always matches remote even if local
+            # main diverged (e.g. un-pushed merge commits from a prior task).
+            self._run(["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path)
             try:
                 self._run(["checkout", "-b", branch_name], cwd=checkout_path)
             except GitError:
                 # Branch already exists (e.g. task retried after restart) —
-                # switch to it instead of failing.
+                # switch to it and rebase onto latest origin/<default_branch>.
                 self._run(["checkout", branch_name], cwd=checkout_path)
+                try:
+                    self._run(["rebase", f"origin/{default_branch}"], cwd=checkout_path)
+                except GitError:
+                    # Rebase conflict — abort and let the agent work with
+                    # whatever is on the branch as-is.
+                    try:
+                        self._run(["rebase", "--abort"], cwd=checkout_path)
+                    except GitError:
+                        pass  # rebase may not be in progress
 
-    def switch_to_branch(self, checkout_path: str, branch_name: str) -> None:
-        """Switch to an existing branch, pulling latest if available on remote.
+    def switch_to_branch(
+        self, checkout_path: str, branch_name: str,
+        default_branch: str = "main",
+    ) -> None:
+        """Switch to an existing branch, pulling latest and rebasing onto main.
 
         Used for subtask branch reuse: when a plan generates multiple subtasks
         that should share a branch, this lets the second task pick up where the
         first left off rather than creating a new branch.
+
+        After switching, we rebase onto ``origin/<default_branch>`` so that
+        subtask chains stay closer to main and don't accumulate drift that
+        would only surface as conflicts at merge time.
 
         If the branch doesn't exist locally or on the remote (e.g. LINK repos
         with no remote), creates it as a new local branch.
@@ -155,6 +202,19 @@ class GitManager:
             self._run(["pull", "origin", branch_name], cwd=checkout_path)
         except GitError:
             pass  # may fail if no upstream tracking
+
+        # Rebase onto latest origin/<default_branch> so subtask chains stay
+        # close to main and conflicts are discovered early rather than at
+        # final merge time.
+        try:
+            self._run(["rebase", f"origin/{default_branch}"], cwd=checkout_path)
+        except GitError:
+            # Rebase conflict — abort and keep the branch as-is.
+            # The agent can still work; conflicts will be handled at merge time.
+            try:
+                self._run(["rebase", "--abort"], cwd=checkout_path)
+            except GitError:
+                pass  # rebase may not be in progress
 
     def push_branch(self, checkout_path: str, branch_name: str) -> None:
         self._run(["push", "origin", branch_name], cwd=checkout_path)
