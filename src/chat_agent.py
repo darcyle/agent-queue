@@ -333,18 +333,20 @@ TOOLS = [
     },
     {
         "name": "create_agent",
-        "description": "Register a new agent that can work on tasks.",
+        "description": "Register a new agent that can work on tasks. If no name is provided, a creative unique name is auto-generated.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Agent display name"},
+                "name": {
+                    "type": "string",
+                    "description": "Agent display name. Leave empty to auto-generate a creative name.",
+                },
                 "agent_type": {
                     "type": "string",
                     "description": "Agent type (claude, codex, cursor, aider)",
                     "default": "claude",
                 },
             },
-            "required": ["name"],
         },
     },
     {

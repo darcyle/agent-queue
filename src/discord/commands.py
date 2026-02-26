@@ -1668,7 +1668,7 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(name="create-agent", description="Register a new agent")
     @app_commands.describe(
-        name="Agent display name",
+        name="Agent display name (leave empty for auto-generated creative name)",
         agent_type="Agent type (claude, codex, cursor, aider)",
         repo_id="Repository ID to assign as workspace (optional)",
     )
@@ -1680,11 +1680,13 @@ def setup_commands(bot: commands.Bot) -> None:
     ])
     async def create_agent_command(
         interaction: discord.Interaction,
-        name: str,
+        name: str | None = None,
         agent_type: app_commands.Choice[str] | None = None,
         repo_id: str | None = None,
     ):
-        args: dict = {"name": name}
+        args: dict = {}
+        if name:
+            args["name"] = name
         if agent_type:
             args["agent_type"] = agent_type.value
         if repo_id:
@@ -1693,8 +1695,8 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await interaction.response.send_message(f"Error: {result['error']}", ephemeral=True)
             return
-        embed = discord.Embed(title="✅ Agent Registered", color=0x2ecc71)
-        embed.add_field(name="Name", value=name, inline=True)
+        embed = discord.Embed(title="\u2705 Agent Registered", color=0x2ecc71)
+        embed.add_field(name="Name", value=result["name"], inline=True)
         embed.add_field(name="ID", value=f"`{result['created']}`", inline=True)
         embed.add_field(name="Type", value=args.get("agent_type", "claude"), inline=True)
         if repo_id:

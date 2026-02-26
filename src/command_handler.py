@@ -974,10 +974,16 @@ class CommandHandler:
         }
 
     async def _cmd_create_agent(self, args: dict) -> dict:
-        agent_id = args["name"].lower().replace(" ", "-")
+        from .agent_names import generate_unique_agent_name
+
+        name = args.get("name")
+        if not name:
+            name = await generate_unique_agent_name(self.db)
+
+        agent_id = name.lower().replace(" ", "-")
         agent = Agent(
             id=agent_id,
-            name=args["name"],
+            name=name,
             agent_type=args.get("agent_type", "claude"),
         )
         await self.db.create_agent(agent)
