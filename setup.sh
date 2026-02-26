@@ -77,4 +77,4 @@ pip install -e ".[dev]" --quiet
 
 # --- Run setup wizard ---
 echo ""
-python setup_wizard.py
+.venv/bin/python src/setup_wizard.py

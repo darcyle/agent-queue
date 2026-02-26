@@ -57,6 +57,7 @@ All components communicate through an async EventBus. SQLite uses WAL journal mo
 
 | File | Purpose |
 |------|---------|
+| `src/setup_wizard.py` | Interactive setup CLI — Discord, API keys, first-run configuration |
 | `src/plan_parser.py` | Parses `.claude/plan.md` or `plan.md` into structured steps for task generation |
 | `src/hooks.py` | Generic hook engine — trigger, gather context, optionally call LLM with tools |
 | `src/task_names.py` | Generates human-readable task IDs (`adjective-noun` format, ~900 combinations) |

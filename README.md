@@ -300,12 +300,12 @@ Works with whatever Claude backend you have:
 
 ### Install & Setup
 
-Clone the repo and run the setup wizard — it installs dependencies and walks you through Discord configuration, API keys, and getting your first agent running:
+Clone the repo and run the setup script — it installs dependencies and walks you through Discord configuration, API keys, and getting your first agent running:
 
 ```bash
 git clone https://github.com/ElectricJack/agent-queue.git
 cd agent-queue
-python setup_wizard.py
+./setup.sh
 ```
 
 ### Manual Configuration
@@ -414,7 +414,7 @@ agent-queue/
   │   ├── discord/             — bot, commands, notifications, NL tools
   │   ├── git/                 — checkout & branch management
   │   └── tokens/              — budget & rate limit tracking
-  ├── setup_wizard.py          — interactive setup
+  │   ├── setup_wizard.py      — interactive setup
   └── tests/                   — state machine + integration tests
 ```
 

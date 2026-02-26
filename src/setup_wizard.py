@@ -302,7 +302,38 @@ def step_discord(existing: dict) -> dict:
             info("  - Ensure Message Content Intent is enabled under Privileged Gateway Intents")
             info(f"  - Confirm guild ID {guild_id} matches your server")
             print()
-            if not prompt_yes_no("Retry Discord connection?", default=True):
+            choice = prompt("(R)etry / (C)onfigure new bot+server / (S)kip", "R")
+            choice = choice.strip().lower()
+            if choice in ("c", "configure"):
+                step_header(2, "Discord Bot (Reconfigure)")
+                print(f"""  To create or reconfigure a Discord bot:
+  1. Go to {BOLD}https://discord.com/developers/applications{RESET}
+  2. Click {BOLD}New Application{RESET} (or select existing), go to {BOLD}Bot{RESET} tab
+  3. Click {BOLD}Reset Token{RESET} to get your bot token
+  4. Under {BOLD}Privileged Gateway Intents{RESET}, enable {BOLD}Message Content Intent{RESET}
+  5. Go to {BOLD}OAuth2 > URL Generator{RESET}:
+     - Scopes: {BOLD}bot{RESET}, {BOLD}applications.commands{RESET}
+     - Bot Permissions: {BOLD}Send Messages{RESET}, {BOLD}Read Message History{RESET}, {BOLD}Use Slash Commands{RESET}
+  6. Copy the generated URL, open it in your browser, and add the bot to your server
+""")
+                new_token = prompt_secret("Bot token")
+                if new_token:
+                    bot_token = new_token
+                    _save_env_value("DISCORD_BOT_TOKEN", bot_token)
+                print(f"""
+  To find your Guild (server) ID:
+  1. Open Discord Settings > {BOLD}Advanced{RESET} > enable {BOLD}Developer Mode{RESET}
+  2. Right-click your server name and click {BOLD}Copy Server ID{RESET}
+""")
+                new_guild = prompt("Guild ID", guild_id)
+                if new_guild:
+                    guild_id = new_guild
+                    _save_env_value("DISCORD_GUILD_ID", guild_id)
+                info("Re-testing with new credentials...")
+                continue
+            elif choice in ("r", "retry"):
+                continue
+            else:
                 break
 
     # Authorized users
@@ -444,7 +475,19 @@ def _test_discord(
     Returns (success, missing_channel_names).
     """
     try:
-        import discord
+        # Import discord.py library, not our local src/discord/ package.
+        # When running as `python src/setup_wizard.py`, src/ is on sys.path
+        # and would shadow the real discord.py library.
+        import importlib
+        import sys
+
+        _src = str(Path(__file__).resolve().parent)
+        _patched = _src in sys.path
+        if _patched:
+            sys.path.remove(_src)
+        discord = importlib.import_module("discord")
+        if _patched:
+            sys.path.insert(0, _src)
 
         result: dict = {"ok": False, "connected": False, "missing_channels": []}
 

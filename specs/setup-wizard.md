@@ -6,13 +6,13 @@ The setup wizard is an interactive CLI tool that guides a first-time user throug
 
 ## Source Files
 
-- `setup_wizard.py`
+- `src/setup_wizard.py`
 
 ---
 
 ## 2. Entry Point
 
-The wizard runs as a standalone script via `python setup_wizard.py` or as a console entry point. The `main()` function orchestrates eight sequential steps:
+The wizard runs via `./setup.sh` (which handles venv and dependencies) or directly via `python src/setup_wizard.py`. The `main()` function orchestrates eight sequential steps:
 
 1. Load existing configuration (pre-fill defaults)
 2. Step 1: Workspace & Database directories

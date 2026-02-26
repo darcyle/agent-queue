@@ -20,7 +20,7 @@ cd agent-queue
 The interactive setup wizard will walk you through configuration:
 
 ```bash
-python setup_wizard.py
+./setup.sh
 ```
 
 This creates a configuration file at `~/.agent-queue/config.yaml` with your Discord bot token, guild ID, and project settings.
