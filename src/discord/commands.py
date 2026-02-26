@@ -580,6 +580,7 @@ def setup_commands(bot: commands.Bot) -> None:
         lines += [
             "## System Status",
             f"**Tasks:** {tasks['total']} total — "
+            f"{by_status.get('DEFINED', 0)} pending, "
             f"{by_status.get('IN_PROGRESS', 0)} active, "
             f"{by_status.get('READY', 0)} ready, "
             f"{by_status.get('COMPLETED', 0)} completed, "
