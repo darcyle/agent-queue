@@ -125,6 +125,18 @@ TYPE_TAGS: dict[str, str] = {
     "approval_required": "🔒",  # Requires human approval
 }
 
+# Maps TaskType enum values to display emojis for visual task categorization.
+TASK_TYPE_EMOJIS: dict[str, str] = {
+    "feature":  "✨",
+    "bugfix":   "🐛",
+    "refactor": "♻️",
+    "test":     "🧪",
+    "docs":     "📝",
+    "chore":    "🔧",
+    "research": "🔍",
+    "plan":     "📋",
+}
+
 
 # ---------------------------------------------------------------------------
 # Progress bar rendering

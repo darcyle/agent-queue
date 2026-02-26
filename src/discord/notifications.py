@@ -24,7 +24,8 @@ import discord
 
 from src.discord.embeds import (
     success_embed, error_embed, warning_embed, info_embed, critical_embed,
-    status_embed, truncate, LIMIT_FIELD_VALUE,
+    status_embed, make_embed, truncate, EmbedStyle, TASK_TYPE_EMOJIS,
+    LIMIT_FIELD_VALUE, LIMIT_DESCRIPTION,
 )
 from src.models import Task, Agent, AgentOutput, TaskStatus
 
@@ -234,6 +235,40 @@ def format_budget_warning(project_name: str, usage: int, limit: int) -> str:
         f"**Budget Warning:** Project **{project_name}** at {pct:.0f}% "
         f"({usage:,} / {limit:,} tokens)"
     )
+
+
+def format_plan_generated(
+    parent_task: Task,
+    generated_tasks: list[Task],
+    *,
+    workspace_path: str | None = None,
+    chained: bool = True,
+) -> str:
+    """Format a plain-text notification for auto-generated plan subtasks.
+
+    Returns a human-readable markdown string listing all tasks created
+    from a plan file, suitable for logging and fallback display.
+    """
+    count = len(generated_tasks)
+    lines = [
+        f"📋 **Plan Generated — {count} Task{'s' if count != 1 else ''} Created**",
+        f"Parent: `{parent_task.id}` — {parent_task.title}",
+        f"Project: `{parent_task.project_id}`",
+    ]
+    if workspace_path:
+        lines.append(f"Workspace: `{workspace_path}`")
+    if chained and count > 1:
+        chain_str = " → ".join(f"`{t.id}`" for t in generated_tasks)
+        lines.append(f"Chain: {chain_str}")
+    lines.append("")
+    for idx, t in enumerate(generated_tasks, 1):
+        type_emoji = ""
+        if t.task_type:
+            type_emoji = TASK_TYPE_EMOJIS.get(t.task_type.value, "") + " "
+        lines.append(
+            f"**{idx}.** {type_emoji}`{t.id}` — {t.title} (priority: {t.priority})"
+        )
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +500,144 @@ def format_budget_warning_embed(
         fields=fields,
         color_override=color,
     )
+
+
+def format_plan_generated_embed(
+    parent_task: Task,
+    generated_tasks: list[Task],
+    *,
+    workspace_path: str | None = None,
+    chained: bool = True,
+) -> discord.Embed:
+    """Rich embed for auto-generated plan subtasks.
+
+    Builds a visually structured embed that displays all relevant metadata
+    for each auto-generated task: title, priority, project, workspace,
+    task type, and dependency chain — making it easy to scan at a glance.
+
+    Parameters
+    ----------
+    parent_task:
+        The task whose completion produced the plan file.
+    generated_tasks:
+        The list of newly created subtasks from the plan.
+    workspace_path:
+        The workspace directory used by the parent task (shown when available).
+    chained:
+        Whether tasks are chained in a sequential dependency order.
+    """
+    count = len(generated_tasks)
+    plural = "s" if count != 1 else ""
+
+    # --- Description block ---------------------------------------------------
+    desc_lines: list[str] = [
+        f"Task `{parent_task.id}` completed with an implementation plan.",
+        f"**{count}** subtask{plural} {'have' if count != 1 else 'has'} been "
+        f"created{' and chained for sequential execution' if chained and count > 1 else ''}.",
+    ]
+
+    # Show dependency chain as a compact arrow diagram
+    if chained and count > 1:
+        chain_ids = " → ".join(f"`{t.id}`" for t in generated_tasks)
+        desc_lines.append(f"\n**Execution order:** {chain_ids}")
+
+    description = "\n".join(desc_lines)
+
+    # --- Header fields -------------------------------------------------------
+    fields: list[tuple[str, str, bool]] = [
+        ("Parent Task", f"`{parent_task.id}`\n{truncate(parent_task.title, 80)}", True),
+        ("Project", f"`{parent_task.project_id}`", True),
+    ]
+
+    if workspace_path:
+        # Show only the last 2 path components to keep it readable
+        short_path = workspace_path
+        parts = workspace_path.replace("\\", "/").rstrip("/").split("/")
+        if len(parts) > 2:
+            short_path = "…/" + "/".join(parts[-2:])
+        fields.append(("Workspace", f"`{short_path}`", True))
+
+    # --- Separator -----------------------------------------------------------
+    fields.append(("─── Subtasks ───", "\u200b", False))  # zero-width space value
+
+    # --- Per-task fields -----------------------------------------------------
+    for idx, t in enumerate(generated_tasks, 1):
+        # Build the field name with step number and optional type emoji
+        type_emoji = ""
+        if t.task_type:
+            type_emoji = TASK_TYPE_EMOJIS.get(t.task_type.value, "")
+            if type_emoji:
+                type_emoji += " "
+
+        field_name = f"{type_emoji}Step {idx}/{count}: {truncate(t.title, 80)}"
+
+        # Build the field value with key metadata
+        detail_parts: list[str] = [f"**ID:** `{t.id}`"]
+
+        detail_parts.append(f"**Priority:** {t.priority}")
+
+        if t.task_type:
+            detail_parts.append(
+                f"**Type:** {TASK_TYPE_EMOJIS.get(t.task_type.value, '')} "
+                f"`{t.task_type.value}`"
+            )
+
+        if t.requires_approval:
+            detail_parts.append("🔒 **Requires approval**")
+
+        # Show dependency info for chained tasks (except the first)
+        if chained and idx > 1:
+            prev = generated_tasks[idx - 2]
+            detail_parts.append(f"⏳ Depends on `{prev.id}`")
+
+        # Show a snippet of the description if available
+        if t.description:
+            # Extract first meaningful line (skip headers/blanks)
+            snippet = _extract_description_snippet(t.description, max_len=120)
+            if snippet:
+                detail_parts.append(f"*{snippet}*")
+
+        field_value = "\n".join(detail_parts)
+        fields.append((field_name, truncate(field_value, 1024), False))
+
+    # --- Build the embed with plan-generation color (teal/cyan) --------------
+    # Use a distinctive teal color (0x1ABC9C) to stand out from standard
+    # status notifications (success=green, error=red, etc.)
+    _PLAN_GENERATED_COLOR = 0x1ABC9C
+
+    embed = make_embed(
+        EmbedStyle.INFO,
+        f"Plan Generated — {count} New Task{plural}",
+        description=truncate(description, LIMIT_DESCRIPTION),
+        fields=fields,
+        color_override=_PLAN_GENERATED_COLOR,
+    )
+
+    return embed
+
+
+def _extract_description_snippet(description: str, *, max_len: int = 120) -> str:
+    """Extract a short, meaningful snippet from a task description.
+
+    Skips markdown headers, blank lines, and common boilerplate prefixes
+    to find the first substantive line of content.
+    """
+    for line in description.split("\n"):
+        stripped = line.strip()
+        # Skip blank lines, headers, horizontal rules, and boilerplate
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            continue
+        if stripped.startswith("---") or stripped.startswith("==="):
+            continue
+        if stripped.startswith("Parent task:") or stripped.startswith("Plan context:"):
+            continue
+        # Found a substantive line
+        if len(stripped) > max_len:
+            return stripped[: max_len - 1] + "…"
+        return stripped
+    return ""
 
 
 # ---------------------------------------------------------------------------

@@ -1870,16 +1870,24 @@ class Orchestrator:
                     # this same cycle rather than waiting for the next one.
                     await self._check_defined_tasks()
 
-                    task_list = ", ".join(
-                        f"`{t.id}` ({t.title})" for t in generated
+                    from src.discord.notifications import (
+                        format_plan_generated,
+                        format_plan_generated_embed,
                     )
-                    plan_msg = (
-                        f"📋 **Auto-generated {len(generated)} task(s)** "
-                        f"from plan in `{task.id}`:\n{task_list}"
+                    is_chained = self.config.auto_task.chain_dependencies
+                    plan_msg = format_plan_generated(
+                        task, generated,
+                        workspace_path=workspace,
+                        chained=is_chained,
+                    )
+                    plan_embed = format_plan_generated_embed(
+                        task, generated,
+                        workspace_path=workspace,
+                        chained=is_chained,
                     )
                     if thread_send:
                         await thread_send(plan_msg)
-                    await _notify_brief(plan_msg)
+                    await _notify_brief(plan_msg, embed=plan_embed)
             except Exception as e:
                 print(f"Auto-task generation error for task {task.id}: {e}")
                 import traceback
