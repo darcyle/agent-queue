@@ -703,8 +703,10 @@ class CommandHandler:
             # else: include_completed=True — return everything unfiltered.
 
         # Build the base task list (shared across all display modes).
-        task_list = [
-            {
+        show_dependencies: bool = args.get("show_dependencies", False)
+        task_list = []
+        for t in tasks[:200]:
+            entry: dict = {
                 "id": t.id,
                 "project_id": t.project_id,
                 "title": t.title,
@@ -717,8 +719,26 @@ class CommandHandler:
                 "pr_url": t.pr_url,
                 "requires_approval": t.requires_approval,
             }
-            for t in tasks[:200]
-        ]
+            if show_dependencies:
+                # Fetch upstream dependencies (what this task depends on)
+                deps = await self.db.get_dependencies(t.id)
+                if deps:
+                    dep_details = []
+                    for dep_id in deps:
+                        dep_task = await self.db.get_task(dep_id)
+                        if dep_task:
+                            dep_details.append({
+                                "id": dep_task.id,
+                                "status": dep_task.status.value,
+                            })
+                    entry["depends_on"] = dep_details
+                else:
+                    entry["depends_on"] = []
+
+                # Fetch downstream dependents (what this task blocks)
+                dependents = await self.db.get_dependents(t.id)
+                entry["blocks"] = sorted(dependents) if dependents else []
+            task_list.append(entry)
 
         display_mode = args.get("display_mode", "flat")
 
