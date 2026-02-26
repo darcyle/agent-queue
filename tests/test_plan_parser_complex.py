@@ -563,14 +563,19 @@ class TestMaxStepsEnforcement:
     """Ensure parse_plan() respects the max_steps parameter."""
 
     def test_max_steps_caps_implementation_section_steps(self):
-        """Even implementation section steps should be capped by max_steps."""
+        """Implementation section with many steps should be consolidated
+        into fewer phases and then capped by max_steps."""
         content = "# Plan\n\n## Implementation Plan\n\n"
         for i in range(1, 12):
             content += f"### Phase {i}: Do thing {i}\n\n"
             content += f"Detailed description for phase {i} with enough content.\n\n"
 
         plan = parse_plan(content, max_steps=5)
-        assert len(plan.steps) == 5
+        # 11 steps exceeds the phase threshold, so they get consolidated
+        # into ~5 phases, then capped at max_steps=5
+        assert len(plan.steps) <= 5
+        # Should have been consolidated (fewer than 11)
+        assert len(plan.steps) < 11
 
     def test_max_steps_caps_heading_sections(self):
         """Heading-based parsing should also respect max_steps."""
@@ -583,13 +588,18 @@ class TestMaxStepsEnforcement:
         assert len(plan.steps) == 3
 
     def test_max_steps_caps_numbered_list(self):
-        """Numbered list parsing should also respect max_steps."""
+        """Numbered list with many items should be consolidated into
+        fewer phases and then capped by max_steps."""
         items = "\n".join(
             f"{i}. Implement feature {i}\n   Details for feature {i}."
             for i in range(1, 15)
         )
         plan = parse_plan(items, max_steps=7)
-        assert len(plan.steps) == 7
+        # 14 items exceeds the phase threshold, so they get consolidated
+        # into ~5 phases, then capped at max_steps=7
+        assert len(plan.steps) <= 7
+        # Should have been consolidated (fewer than 14)
+        assert len(plan.steps) < 14
 
 
 # ── Regression tests: quality scoring filters garbage parses ────────────── #

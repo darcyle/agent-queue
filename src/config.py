@@ -103,7 +103,7 @@ class AutoTaskConfig:
     base_priority: int = 100            # Base priority for generated tasks
     chain_dependencies: bool = True     # Tasks depend on previous step
     max_plan_depth: int = 1             # Max nesting of plan-generated tasks
-    max_steps_per_plan: int = 20        # Cap steps from a single plan
+    max_steps_per_plan: int = 8         # Cap phases from a single plan
     use_llm_parser: bool = False        # Use LLM (Claude) for plan parsing
     llm_parser_model: str = ""          # Model override for plan parsing
 
@@ -326,7 +326,7 @@ def load_config(path: str) -> AppConfig:
             base_priority=at.get("base_priority", 100),
             chain_dependencies=at.get("chain_dependencies", True),
             max_plan_depth=at.get("max_plan_depth", 1),
-            max_steps_per_plan=at.get("max_steps_per_plan", 20),
+            max_steps_per_plan=at.get("max_steps_per_plan", 8),
             use_llm_parser=at.get("use_llm_parser", False),
             llm_parser_model=at.get("llm_parser_model", ""),
         )

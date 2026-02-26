@@ -12,20 +12,32 @@ from src.chat_providers.base import ChatProvider
 from src.plan_parser import ParsedPlan, PlanStep, parse_plan
 
 _SYSTEM_PROMPT = """\
-You are a plan parser. Given a markdown implementation plan, extract ONLY the
-actionable implementation steps — concrete coding tasks that an agent should execute.
+You are a plan parser. Given a markdown implementation plan, extract the
+HIGH-LEVEL IMPLEMENTATION PHASES — coarse groups of related work that each
+represent a substantial, independently-executable chunk of the project.
+
+IMPORTANT — granularity rules:
+- Extract 3-5 phases (never more than 8).
+- Each phase should bundle several related steps or sub-tasks together.
+- Do NOT extract individual fine-grained steps (e.g. "add import", "create file",
+  "write test for X") as separate phases. Group them under a broader phase.
+- A good phase title describes a cohesive area of work
+  (e.g. "Implement database layer and migrations",
+  "Build REST API endpoints with validation",
+  "Add frontend components and integrate with API").
 
 Skip non-actionable sections: overviews, summaries, background, conclusions,
 dependency graphs, file inventories, etc.
 
-Each step title should be an imperative action (e.g. "Add user auth endpoint").
-Each step description should contain all implementation details needed.
+Each phase title should be an imperative action phrase.
+Each phase description should contain ALL implementation details and sub-steps
+needed to complete the phase — the executing agent will rely on this description.
 
-Return the steps using the extract_plan_steps tool."""
+Return the phases using the extract_plan_steps tool."""
 
 _TOOL = {
     "name": "extract_plan_steps",
-    "description": "Extract actionable implementation steps from a plan.",
+    "description": "Extract high-level implementation phases from a plan. Each phase should group several related steps into one substantial chunk of work. Return 3-5 phases (max 8).",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -36,16 +48,17 @@ _TOOL = {
                     "properties": {
                         "title": {
                             "type": "string",
-                            "description": "Short imperative title for the step.",
+                            "description": "Short imperative title for the phase (a cohesive area of work).",
                         },
                         "description": {
                             "type": "string",
-                            "description": "Full implementation details for the step.",
+                            "description": "Full implementation details including all sub-steps needed for this phase.",
                         },
                     },
                     "required": ["title", "description"],
                 },
-                "description": "Ordered list of actionable implementation steps.",
+                "maxItems": 8,
+                "description": "Ordered list of high-level implementation phases (3-5 recommended, max 8).",
             },
         },
         "required": ["steps"],
@@ -57,7 +70,7 @@ async def parse_plan_with_llm(
     raw_content: str,
     provider: ChatProvider,
     source_file: str = "",
-    max_steps: int = 20,
+    max_steps: int = 8,
 ) -> ParsedPlan:
     """Parse a plan using an LLM provider with tool_use for structured output.
 

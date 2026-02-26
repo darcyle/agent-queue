@@ -49,7 +49,7 @@ class PromptConfig:
     """
 
     max_plan_depth: int = 2
-    max_steps_per_plan: int = 20
+    max_steps_per_plan: int = 8
     project_context: str = ""
 
 
@@ -64,18 +64,30 @@ PLAN_STRUCTURE_GUIDE = """\
 ## Plan Structure Requirements
 
 When producing an implementation plan, follow these formatting rules
-to ensure the plan can be automatically parsed into subtasks:
+to ensure the plan can be automatically parsed into subtasks.
+
+IMPORTANT: Each phase becomes a separate subtask executed by an agent.
+Phases should be COARSE — each one should represent a substantial chunk
+of work containing multiple concrete steps. Do NOT create a separate
+phase for every small action (e.g. "create file X", "add import Y").
+Instead, group related work into 3-5 broad phases.
 
 ### DO:
 - Use action-verb headings: "## Implement X", "## Create Y", "## Add Z"
-- Use numbered phases: "## Phase 1: Database Migration"
-- Use step numbering: "## Step 1: Set Up Schema"
-- Include estimated effort for each phase (e.g., "**Estimated effort:** ~2 hours")
+- Use numbered phases: "## Phase 1: Database Layer and Migrations"
+- Group related work: a phase like "Build API Endpoints" should include
+  creating routes, adding validation, writing handlers, AND writing tests
+  for those endpoints — all in one phase
+- Include concrete sub-steps WITHIN each phase (as bullet points or
+  numbered lists inside the phase body)
+- Include estimated effort for each phase
 - Put implementation phases under a "## Implementation Plan" container heading
-- Keep the total number of phases between 3 and {max_steps} (aim for 3-8)
-- Each phase should be independently executable
+- Keep the total number of phases between 3 and {max_steps} (aim for 3-5)
+- Each phase should be independently executable and represent several
+  hours of focused work
 
 ### DON'T:
+- Don't create a separate phase for each individual file change or function
 - Don't include overview/summary sections as separate headings
 - Don't include design discussion, architecture review, or rationale sections
 - Don't include reference material (file change summaries, API specs, examples)
@@ -90,22 +102,39 @@ to ensure the plan can be automatically parsed into subtasks:
 
 ## Implementation Plan
 
-### Phase 1: [Action Verb] [Target]
+### Phase 1: [Action Verb] [Broad Area of Work]
 
-[Description of what to implement]
-[Files to modify/create]
+[High-level description of this phase]
+
+Concrete steps:
+1. [Step within this phase]
+2. [Another step within this phase]
+3. [Yet another step]
+
+Files to modify/create:
+- `path/to/file1.py`
+- `path/to/file2.py`
 
 **Estimated effort:** ~N hours
 
-### Phase 2: [Action Verb] [Target]
+### Phase 2: [Action Verb] [Broad Area of Work]
 
-[Description]
+[Description covering multiple related changes]
+
+Concrete steps:
+1. [Step]
+2. [Step]
+3. [Step]
 
 **Estimated effort:** ~N hours
 
-### Phase 3: [Action Verb] [Target]
+### Phase 3: [Action Verb] [Broad Area of Work]
 
 [Description]
+
+Concrete steps:
+1. [Step]
+2. [Step]
 
 **Estimated effort:** ~N hours
 ```
@@ -138,15 +167,17 @@ This task was generated from a parent plan (depth {current_depth}/{max_depth}).
 You may either:
 
 1. **Execute directly** — Implement the changes described below.
-   This is preferred for well-scoped tasks.
+   This is strongly preferred for well-scoped tasks.
 
-2. **Create a focused sub-plan** — If the task is genuinely complex
-   enough to warrant splitting, you may produce a focused implementation
-   plan. If you do, follow the plan structure requirements carefully.
+2. **Create a focused sub-plan** — Only if the task is genuinely too
+   large for a single agent session. If you do, follow the plan
+   structure requirements carefully.
 
 Guidelines:
-- Prefer direct execution over sub-planning
-- If sub-planning, limit to 3-5 focused implementation phases
+- Strongly prefer direct execution over sub-planning
+- If sub-planning, limit to 3-4 coarse phases that each group several
+  related steps together
+- Do NOT create fine-grained phases for individual changes
 - Do NOT produce design documents or architecture reviews
 - Do NOT include background, overview, or rationale sections
 - Every heading in your plan must start with an action verb
@@ -236,8 +267,11 @@ def build_plan_generation_prompt(
     parts.append(
         "## Your Task\n\n"
         "Analyze the codebase and produce a focused implementation plan "
-        f"with 3-{min(8, config.max_steps_per_plan)} actionable phases. "
-        "Each phase should be independently executable. "
+        f"with 3-{min(5, config.max_steps_per_plan)} actionable phases. "
+        "Each phase should be independently executable and represent a "
+        "substantial chunk of work containing multiple concrete steps. "
+        "Do NOT create a separate phase for each small change — group "
+        "related work together.\n"
         "Write the plan as a markdown document with the structure shown above.\n"
     )
 
@@ -539,9 +573,11 @@ def build_retry_prompt(
 
     parts.append(
         "## Your Task (Retry)\n\n"
-        "Produce a focused implementation plan with 3-8 phases. "
-        "Every phase heading MUST start with an action verb "
+        "Produce a focused implementation plan with 3-5 coarse phases. "
+        "Each phase should group several related steps into one substantial "
+        "chunk of work. Every phase heading MUST start with an action verb "
         "(Implement, Create, Add, Update, Fix, etc.). "
+        "Do NOT create a separate phase for each small change. "
         "Do NOT include overview, architecture, design, or reference sections.\n"
     )
 

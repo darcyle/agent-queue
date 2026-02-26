@@ -252,7 +252,7 @@ def read_plan_file(path: str) -> str:
 
 
 def parse_plan(
-    content: str, source_file: str = "", max_steps: int = 20,
+    content: str, source_file: str = "", max_steps: int = 8,
 ) -> ParsedPlan:
     """Parse plan markdown content into structured steps.
 
@@ -330,20 +330,24 @@ def parse_plan(
 
 
 def _parse_implementation_section(content: str) -> list[PlanStep]:
-    """Extract steps from a dedicated implementation section of a design document.
+    """Extract phase-level steps from a dedicated implementation section.
 
     Many complex plans are structured as design documents with a dedicated
-    "Implementation Plan" section containing the actual phases/steps. This
-    parser identifies such a section by looking for a ``##`` heading whose
-    title matches known implementation keywords, then extracts ONLY the
-    ``###`` sub-headings within that section as steps.
+    ``## Implementation Plan`` (or similar) section.  This parser locates
+    that section and extracts its ``###`` sub-headings as steps.
+
+    When the implementation section contains more than
+    ``_IMPL_PHASE_THRESHOLD`` sub-headings **and** those sub-headings can
+    be grouped under higher-level phase labels (detected via numbered
+    prefixes like "Phase 1.1", "Phase 1.2", or sequential numbering), the
+    parser automatically consolidates them into fewer, coarser phases.
 
     This prevents informational/reference sections (capabilities, color
     palettes, risk assessments, etc.) from being extracted as tasks.
 
     Returns an empty list if no implementation section is found.
     """
-    heading_pattern = re.compile(r"^(#{2,3})\s+(.+)$", re.MULTILINE)
+    heading_pattern = re.compile(r"^(#{2,4})\s+(.+)$", re.MULTILINE)
     matches = list(heading_pattern.finditer(content))
 
     if not matches:
@@ -370,26 +374,173 @@ def _parse_implementation_section(content: str) -> list[PlanStep]:
     if impl_start is None:
         return []
 
-    # Extract ### sub-headings within the implementation section
-    steps: list[PlanStep] = []
+    # Collect ### sub-headings within the implementation section
+    sub_headings: list[tuple[int, re.Match]] = []  # (index_in_matches, match)
     for i in range(impl_start + 1, impl_end):
         match = matches[i]
         level = len(match.group(1))
-        if level != 3:
-            continue
+        if level == 3:
+            sub_headings.append((i, match))
 
+    if not sub_headings:
+        return []
+
+    # Build raw steps from ### headings (each step includes everything
+    # up to the next ### heading or end of the implementation section).
+    raw_steps: list[PlanStep] = []
+    for idx, (i, match) in enumerate(sub_headings):
         title = _clean_step_title(match.group(2).strip())
         if not title:
             continue
-
-        # Skip non-actionable sub-headings even within the implementation section
         if title.lower() in NON_ACTIONABLE_HEADINGS:
             continue
 
-        # Extract body between this heading and the next (or end of section)
         start = match.end()
-        if i + 1 < len(matches):
-            end = matches[i + 1].start()
+        if idx + 1 < len(sub_headings):
+            end = sub_headings[idx + 1][1].start()
+        else:
+            # End at the next ## heading or end of content
+            if impl_end < len(matches):
+                end = matches[impl_end].start()
+            else:
+                end = len(content)
+        body = content[start:end].strip()
+
+        if len(body) < 20:
+            continue
+
+        raw_steps.append(PlanStep(
+            title=title,
+            description=body,
+            priority_hint=len(raw_steps),
+            raw_title=match.group(2).strip(),
+        ))
+
+    # If we got a reasonable number of steps, return them directly.
+    if len(raw_steps) <= _IMPL_PHASE_THRESHOLD:
+        return raw_steps
+
+    # Too many fine-grained steps — consolidate into coarser phases.
+    return _consolidate_steps_into_phases(raw_steps)
+
+
+# Maximum number of steps from an implementation section before we
+# attempt automatic consolidation into larger phases.
+_IMPL_PHASE_THRESHOLD = 6
+
+
+def _consolidate_steps_into_phases(
+    steps: list[PlanStep],
+    target_phases: int = 5,
+) -> list[PlanStep]:
+    """Merge a long list of fine-grained steps into fewer phases.
+
+    Uses a simple chunking strategy: divides the ordered step list into
+    ``target_phases`` roughly-equal groups.  Each group becomes a single
+    phase whose title is derived from the first step and whose description
+    aggregates the titles and descriptions of all contained steps.
+    """
+    if len(steps) <= target_phases:
+        return steps
+
+    chunk_size = max(1, (len(steps) + target_phases - 1) // target_phases)
+    phases: list[PlanStep] = []
+
+    for chunk_start in range(0, len(steps), chunk_size):
+        chunk = steps[chunk_start : chunk_start + chunk_size]
+        if not chunk:
+            continue
+
+        # Build a combined description listing each sub-step
+        sub_parts: list[str] = []
+        for sub in chunk:
+            sub_parts.append(f"### {sub.title}\n\n{sub.description}")
+        combined_desc = "\n\n".join(sub_parts)
+
+        # Title: use the first step's title, augmented if there are multiple
+        if len(chunk) == 1:
+            phase_title = chunk[0].title
+        else:
+            phase_title = (
+                f"{chunk[0].title} (and {len(chunk) - 1} related "
+                f"{'step' if len(chunk) - 1 == 1 else 'steps'})"
+            )
+
+        phases.append(PlanStep(
+            title=phase_title,
+            description=combined_desc,
+            priority_hint=len(phases),
+            raw_title=chunk[0].raw_title,
+        ))
+
+    return phases
+
+
+def _parse_heading_sections(content: str) -> list[PlanStep]:
+    """Parse sections delimited by ## or ### headings.
+
+    Prefers phase-level (``##``) headings when the document contains
+    a mix of ``##`` and ``###`` headings.  In that case each ``##``
+    becomes a single step whose description includes all ``###``
+    sub-content, producing fewer but more substantial subtasks.
+
+    Falls back to ``###``-level splitting only when there are no
+    actionable ``##`` headings (i.e. the entire plan is written at
+    the ``###`` level).
+    """
+    heading_pattern = re.compile(r"^(#{2,3})\s+(.+)$", re.MULTILINE)
+    matches = list(heading_pattern.finditer(content))
+
+    if not matches:
+        return []
+
+    # Determine whether we have actionable ## headings — if so, use
+    # them as the primary split level and fold ### content in.
+    h2_matches = [m for m in matches if len(m.group(1)) == 2]
+    actionable_h2 = [
+        m for m in h2_matches
+        if _clean_step_title(m.group(2).strip()).lower() not in NON_ACTIONABLE_HEADINGS
+        and _clean_step_title(m.group(2).strip())
+    ]
+
+    if actionable_h2:
+        return _parse_at_heading_level(content, matches, level=2)
+
+    # No actionable ## headings — fall back to ### level
+    return _parse_at_heading_level(content, matches, level=3)
+
+
+def _parse_at_heading_level(
+    content: str,
+    matches: list[re.Match],
+    level: int,
+) -> list[PlanStep]:
+    """Extract steps from headings at the given ``level`` (2 or 3).
+
+    Content under sub-headings (deeper than ``level``) is included in
+    the parent step's description rather than spawning separate steps.
+    """
+    # Collect only the headings at the target level
+    level_matches = [m for m in matches if len(m.group(1)) == level]
+
+    if not level_matches:
+        return []
+
+    steps: list[PlanStep] = []
+    for i, match in enumerate(level_matches):
+        title = match.group(2).strip()
+        title = _clean_step_title(title)
+
+        if not title:
+            continue
+
+        if title.lower() in NON_ACTIONABLE_HEADINGS:
+            continue
+
+        # Body extends to the next same-level heading (or end of file)
+        start = match.end()
+        if i + 1 < len(level_matches):
+            end = level_matches[i + 1].start()
         else:
             end = len(content)
         body = content[start:end].strip()
@@ -407,50 +558,13 @@ def _parse_implementation_section(content: str) -> list[PlanStep]:
     return steps
 
 
-def _parse_heading_sections(content: str) -> list[PlanStep]:
-    """Parse sections delimited by ## or ### headings."""
-    # Match ## or ### headings (not # which is the document title)
-    heading_pattern = re.compile(r"^(#{2,3})\s+(.+)$", re.MULTILINE)
-    matches = list(heading_pattern.finditer(content))
-
-    if not matches:
-        return []
-
-    steps: list[PlanStep] = []
-    for i, match in enumerate(matches):
-        title = match.group(2).strip()
-
-        # Clean up common prefixes like "Step 1:", "1.", "Phase 1:" etc.
-        title = _clean_step_title(title)
-
-        if not title:
-            continue
-
-        # Skip non-actionable headings (overviews, summaries, etc.)
-        if title.lower() in NON_ACTIONABLE_HEADINGS:
-            continue
-
-        # Extract body between this heading and the next (or end of file)
-        start = match.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
-        body = content[start:end].strip()
-
-        # Skip steps with too little content to be actionable
-        if len(body) < 20:
-            continue
-
-        steps.append(PlanStep(
-            title=title,
-            description=body,
-            priority_hint=len(steps),
-            raw_title=match.group(2).strip(),
-        ))
-
-    return steps
-
-
 def _parse_numbered_list(content: str) -> list[PlanStep]:
-    """Parse top-level numbered items as individual steps."""
+    """Parse top-level numbered items, consolidating into phases when needed.
+
+    If the plan contains more than ``_IMPL_PHASE_THRESHOLD`` numbered
+    items, they are automatically consolidated into fewer phases using the
+    same chunking strategy as ``_consolidate_steps_into_phases``.
+    """
     # Match lines starting with a number followed by a dot or parenthesis
     item_pattern = re.compile(r"^(\d+)[.)]\s+(.+)$", re.MULTILINE)
     matches = list(item_pattern.finditer(content))
@@ -484,6 +598,10 @@ def _parse_numbered_list(content: str) -> list[PlanStep]:
             description=description,
             priority_hint=i,
         ))
+
+    # Consolidate into phases if there are too many individual items
+    if len(steps) > _IMPL_PHASE_THRESHOLD:
+        steps = _consolidate_steps_into_phases(steps)
 
     return steps
 
@@ -736,7 +854,7 @@ def validate_plan_quality(content: str) -> PlanQualityReport:
 def parse_and_generate_steps(
     content: str,
     *,
-    max_steps: int = 20,
+    max_steps: int = 8,
     enforce_quality: bool = False,
     min_quality_score: float = 0.3,
 ) -> tuple[list[dict], PlanQualityReport]:
