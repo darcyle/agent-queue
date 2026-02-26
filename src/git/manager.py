@@ -219,6 +219,39 @@ class GitManager:
     def push_branch(self, checkout_path: str, branch_name: str) -> None:
         self._run(["push", "origin", branch_name], cwd=checkout_path)
 
+    def rebase_onto(
+        self, checkout_path: str, branch_name: str,
+        onto: str = "main",
+    ) -> bool:
+        """Rebase *branch_name* onto *onto*.  Returns True if successful.
+
+        Checks out the task branch, rebases it onto the target, then returns
+        to the original branch.  If the rebase fails (conflicts), it is
+        aborted and False is returned.  The caller is responsible for
+        ensuring ``onto`` is up-to-date (e.g. via fetch + hard-reset).
+        """
+        original_branch = self.get_current_branch(checkout_path)
+        self._run(["checkout", branch_name], cwd=checkout_path)
+        try:
+            self._run(["rebase", onto], cwd=checkout_path)
+        except GitError:
+            # Rebase conflict — abort and restore original branch
+            try:
+                self._run(["rebase", "--abort"], cwd=checkout_path)
+            except GitError:
+                pass  # rebase may not be in progress
+            try:
+                self._run(["checkout", original_branch], cwd=checkout_path)
+            except GitError:
+                pass
+            return False
+        # Rebase succeeded — return to original branch
+        try:
+            self._run(["checkout", original_branch], cwd=checkout_path)
+        except GitError:
+            pass
+        return True
+
     def merge_branch(
         self, checkout_path: str, branch_name: str,
         default_branch: str = "main",
@@ -262,6 +295,12 @@ class GitManager:
            ``origin/<default_branch>`` — this discards any stale local
            state (e.g. un-pushed merge commits from a prior attempt).
         3. Merge the task branch into the default branch.
+        3b. **Rebase fallback:** If the direct merge fails with conflicts,
+           rebase the task branch onto ``origin/<default_branch>`` and
+           retry the merge.  This resolves conflicts that arise from the
+           task branch being based on a stale snapshot of main — the
+           rebase replays commits on top of the latest code, and if it
+           succeeds the subsequent merge is a clean fast-forward.
         4. Push the default branch to origin, retrying up to
            *max_retries* times if the push is rejected (e.g. another
            agent pushed between our fetch and push).
@@ -271,7 +310,7 @@ class GitManager:
             is the empty string.  On failure, it is one of:
 
             - ``"merge_conflict"`` — the task branch conflicts with
-              the default branch.
+              the default branch (even after rebase attempt).
             - ``"push_failed: <details>"`` — all push attempts failed.
         """
         # 1. Fetch latest remote state
@@ -286,7 +325,24 @@ class GitManager:
             self._run(["merge", branch_name], cwd=checkout_path)
         except GitError:
             self._run(["merge", "--abort"], cwd=checkout_path)
-            return (False, "merge_conflict")
+
+            # 3b. Rebase fallback: rebase the task branch onto the latest
+            # default branch and retry the merge.  If the task branch was
+            # simply based on a stale main, the rebase resolves the drift
+            # and the retry merge becomes a fast-forward.
+            rebased = self.rebase_onto(
+                checkout_path, branch_name, f"origin/{default_branch}",
+            )
+            if not rebased:
+                return (False, "merge_conflict")
+
+            # Retry merge after successful rebase
+            self._run(["checkout", default_branch], cwd=checkout_path)
+            try:
+                self._run(["merge", branch_name], cwd=checkout_path)
+            except GitError:
+                self._run(["merge", "--abort"], cwd=checkout_path)
+                return (False, "merge_conflict")
 
         # 4. Push with retry
         for attempt in range(max_retries + 1):

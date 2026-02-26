@@ -1117,6 +1117,17 @@ class Orchestrator:
                 workspace, task.branch_name, repo.default_branch,
             )
             if not merged:
+                # Rebase fallback: rebase the task branch onto the default
+                # branch and retry the merge.  This resolves conflicts caused
+                # by the task branch being based on a stale snapshot.
+                rebased = self.git.rebase_onto(
+                    workspace, task.branch_name, repo.default_branch,
+                )
+                if rebased:
+                    merged = self.git.merge_branch(
+                        workspace, task.branch_name, repo.default_branch,
+                    )
+            if not merged:
                 await self._notify_channel(
                     f"**Merge Conflict:** Task `{task.id}` branch "
                     f"`{task.branch_name}` has conflicts with "

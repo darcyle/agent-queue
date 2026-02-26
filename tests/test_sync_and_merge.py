@@ -277,7 +277,7 @@ class TestSyncAndMergeRetry:
         assert err.startswith("push_failed:")
 
     def test_merge_conflict_no_push_attempted(self):
-        """On merge conflict, push is never attempted."""
+        """On merge conflict, push is never attempted (even after rebase retry)."""
         mgr = GitManager()
         calls = []
 
@@ -293,9 +293,9 @@ class TestSyncAndMergeRetry:
 
         assert success is False
         assert err == "merge_conflict"
-        # Verify merge --abort was called
+        # Verify merge --abort was called (twice: initial + retry after rebase)
         abort_calls = [c for c in calls if c == ["merge", "--abort"]]
-        assert len(abort_calls) == 1
+        assert len(abort_calls) == 2
         # Verify push was never called
         push_calls = [c for c in calls if c[0] == "push"]
         assert len(push_calls) == 0
