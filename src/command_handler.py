@@ -1255,6 +1255,59 @@ class CommandHandler:
 
         return info
 
+    async def _cmd_task_deps(self, args: dict) -> dict:
+        """Return upstream dependencies and downstream dependents for a task.
+
+        Used by the ``/task-deps`` slash command to render a focused
+        dependency view with visual status for each related task.
+
+        Returns
+        -------
+        dict
+            ``task_id``, ``title``, ``status``, ``depends_on`` list, and
+            ``blocks`` list.  Each entry in those lists carries ``id``,
+            ``title``, and ``status``.
+        """
+        task_id = args.get("task_id", "")
+        if not task_id:
+            return {"error": "task_id is required"}
+
+        task = await self.db.get_task(task_id)
+        if not task:
+            return {"error": f"Task '{task_id}' not found"}
+
+        # Upstream: what this task depends on
+        dep_ids = await self.db.get_dependencies(task.id)
+        depends_on: list[dict] = []
+        for dep_id in sorted(dep_ids):
+            dep_task = await self.db.get_task(dep_id)
+            if dep_task:
+                depends_on.append({
+                    "id": dep_task.id,
+                    "title": dep_task.title,
+                    "status": dep_task.status.value,
+                })
+
+        # Downstream: what this task blocks
+        dependent_ids = await self.db.get_dependents(task.id)
+        blocks: list[dict] = []
+        for dep_id in sorted(dependent_ids):
+            dep_task = await self.db.get_task(dep_id)
+            if dep_task:
+                blocks.append({
+                    "id": dep_task.id,
+                    "title": dep_task.title,
+                    "status": dep_task.status.value,
+                })
+
+        return {
+            "task_id": task.id,
+            "title": task.title,
+            "status": task.status.value,
+            "depends_on": depends_on,
+            "blocks": blocks,
+        }
+
     async def _cmd_edit_task(self, args: dict) -> dict:
         task = await self.db.get_task(args["task_id"])
         if not task:

@@ -2165,6 +2165,57 @@ def setup_commands(bot: commands.Bot) -> None:
             )
 
     @bot.tree.command(
+        name="task-deps",
+        description="Show dependency graph for a task (what it needs and blocks)",
+    )
+    @app_commands.describe(task_id="Task ID to inspect")
+    async def task_deps_command(interaction: discord.Interaction, task_id: str):
+        result = await handler.execute("task_deps", {"task_id": task_id})
+        if "error" in result:
+            await _send_error(interaction, result['error'])
+            return
+
+        status = result["status"]
+        title = result["title"]
+        task_emoji = STATUS_EMOJIS.get(status, "⚪")
+
+        depends_on: list[dict] = result.get("depends_on", [])
+        blocks: list[dict] = result.get("blocks", [])
+
+        # Build embed fields
+        fields: list[tuple[str, str, bool]] = [
+            ("Task", f"{task_emoji} `{task_id}` — {title}", False),
+            ("Status", f"{task_emoji} {status}", True),
+        ]
+
+        # Upstream: what this task needs
+        if depends_on:
+            dep_lines = []
+            for dep in depends_on:
+                emoji = STATUS_EMOJIS.get(dep["status"], "⚪")
+                dep_lines.append(f"{emoji} `{dep['id']}` — {dep['title']} ({dep['status']})")
+            fields.append(("Depends On", truncate("\n".join(dep_lines), LIMIT_FIELD_VALUE), False))
+        else:
+            fields.append(("Depends On", "_No upstream dependencies_", False))
+
+        # Downstream: what this task blocks
+        if blocks:
+            blk_lines = []
+            for blk in blocks:
+                emoji = STATUS_EMOJIS.get(blk["status"], "⚪")
+                blk_lines.append(f"{emoji} `{blk['id']}` — {blk['title']} ({blk['status']})")
+            fields.append(("Blocks", truncate("\n".join(blk_lines), LIMIT_FIELD_VALUE), False))
+        else:
+            fields.append(("Blocks", "_No downstream dependents_", False))
+
+        embed = status_embed(
+            status,
+            f"Dependencies: {task_id}",
+            fields=fields,
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @bot.tree.command(
         name="agent-error",
         description="Show the last error recorded for a task",
     )
