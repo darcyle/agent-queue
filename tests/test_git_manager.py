@@ -358,3 +358,78 @@ class TestSwitchToBranchRebase:
         assert _current_branch(clone) == "feature/conflict"
         # Branch should still have the feature commit (rebase aborted)
         assert _head_sha(clone) == feature_sha
+
+
+class TestMergeBranchPullBeforeMerge:
+    """Tests for merge_branch pulling latest main before merging (G1 fix)."""
+
+    def test_merge_succeeds_when_remote_main_advanced(self, git_repo, tmp_path):
+        """merge_branch should fetch + reset to origin/main before merging,
+        so the merge incorporates the latest remote changes even if the
+        local default branch was behind."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Create a task branch with a commit
+        mgr.prepare_for_task(clone, "task-merge/feature")
+        _commit_file(clone, "feature.txt", "feature work", "add feature")
+
+        # Advance origin/main via a second clone (simulates another agent)
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        new_main_sha = _commit_file(pusher, "other.txt", "other work", "other agent")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        # Local main is now behind origin/main. merge_branch should
+        # pull the latest before merging.
+        result = mgr.merge_branch(clone, "task-merge/feature")
+        assert result is True
+        assert _current_branch(clone) == "main"
+
+        # main should now contain both the remote advance and the feature
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "other agent" in log
+        assert "add feature" in log
+
+    def test_merge_conflict_after_pull(self, git_repo, tmp_path):
+        """When the freshly-pulled main conflicts with the task branch,
+        merge_branch should abort and return False."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Create a task branch that modifies README.md
+        mgr.prepare_for_task(clone, "task-conflict/merge")
+        _commit_file(clone, "README.md", "branch version", "branch edits README")
+
+        # Advance origin/main with a conflicting change to same file
+        pusher = str(tmp_path / "pusher")
+        subprocess.run(["git", "clone", git_repo["remote"], pusher],
+                       check=True, capture_output=True)
+        _commit_file(pusher, "README.md", "remote version", "remote edits README")
+        _git(["push", "origin", "main"], cwd=pusher)
+
+        # merge_branch should pull, hit conflict, abort, and return False
+        result = mgr.merge_branch(clone, "task-conflict/merge")
+        assert result is False
+        assert _current_branch(clone) == "main"
+
+        # main should match remote (the hard-reset state, not the merge)
+        content = pathlib.Path(clone, "README.md").read_text()
+        assert content == "remote version"
+
+    def test_merge_without_remote_advance_still_works(self, git_repo):
+        """Normal case: merge when local main is already up to date
+        should still succeed (fetch + reset is a no-op)."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        mgr.prepare_for_task(clone, "task-normal/merge")
+        _commit_file(clone, "normal.txt", "normal work", "normal commit")
+
+        result = mgr.merge_branch(clone, "task-normal/merge")
+        assert result is True
+        assert _current_branch(clone) == "main"
+
+        log = _git(["log", "--oneline"], cwd=clone)
+        assert "normal commit" in log

@@ -27,13 +27,14 @@ Design strengths (see specs/git/git.md §10 for the full list):
     race conditions between status checks and staging.
 
 Resolved gaps:
+  - **G1 (resolved):** ``merge_branch`` now fetches and hard-resets
+    ``origin/<default_branch>`` before merging, and ``_merge_and_push``
+    resets local main on push failure to avoid diverged state.
   - **G4 (resolved):** ``prepare_for_task`` now uses hard-reset on the normal
     path and rebases existing branches on retry. ``switch_to_branch`` also
     rebases onto ``origin/<default_branch>`` after switching.
 
 Remaining gaps (see specs/git/git.md §11 for the full catalogue):
-  - **G1:** ``merge_branch`` is called without a prior pull — the caller
-    (``_merge_and_push``) must pull ``main`` before merging.
   - **G5:** ``push_branch`` uses plain push; should use ``--force-with-lease``
     for idempotent retries of PR branches.
 
@@ -255,15 +256,21 @@ class GitManager:
     ) -> bool:
         """Merge branch into default. Returns True if successful, False if conflict.
 
-        .. note:: **Gap G1** — This method does not pull the latest remote
-           changes before merging. The caller (``_merge_and_push``) is
-           responsible for ensuring the local default branch is up to date,
-           but currently does not do so.
+        Checks out the default branch, fetches from origin, and hard-resets
+        to ``origin/<default_branch>`` before merging.  This ensures the
+        local default branch matches the remote even when other agents have
+        pushed since the last fetch (resolves **Gap G1**).
 
         .. note:: **Gap G3** — On conflict this method aborts the merge and
            returns False. There is no automated rebase-and-retry strategy.
         """
         self._run(["checkout", default_branch], cwd=checkout_path)
+        # Pull latest remote state before merging so we don't merge into
+        # a stale local copy of the default branch (fixes G1).
+        self._run(["fetch", "origin"], cwd=checkout_path)
+        self._run(
+            ["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path,
+        )
         try:
             self._run(["merge", branch_name], cwd=checkout_path)
             return True

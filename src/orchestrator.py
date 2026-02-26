@@ -1063,18 +1063,18 @@ class Orchestrator:
     async def _merge_and_push(self, task: Task, repo: RepoConfig, workspace: str) -> None:
         """Merge the task branch into default and push (clone repos only).
 
-        Known gaps (see specs/git/git.md §11):
-          - **G1:** Does not pull main before merging — push fails if another
-            agent advanced main since the last fetch.
-          - **G2:** On push failure, does not reset the local merge — workspace
-            is left with a diverged main.
+        ``merge_branch`` now pulls the latest remote state before merging
+        (resolves **G1**).  On push failure, local main is reset to
+        ``origin/<default_branch>`` to avoid a diverged workspace (resolves
+        **G2**).
+
+        Remaining gap:
           - **G3:** On merge conflict, aborts and notifies without attempting
             automated rebase-and-retry.
         """
-        # GAP G1: Should pull origin/<default_branch> here before merging.
         merged = self.git.merge_branch(workspace, task.branch_name, repo.default_branch)
         if not merged:
-            # GAP G3: Notifies but does not attempt rebase-and-retry.
+            # G3: Notifies but does not attempt rebase-and-retry.
             await self._notify_channel(
                 f"**Merge Conflict:** Task `{task.id}` branch `{task.branch_name}` "
                 f"has conflicts with `{repo.default_branch}`. Manual resolution needed.",
@@ -1086,8 +1086,13 @@ class Orchestrator:
             try:
                 self.git.push_branch(workspace, repo.default_branch)
             except Exception as e:
-                # GAP G2: Local main now has the merge commit but remote doesn't.
-                # Should reset local main to origin/main to avoid diverged state.
+                # Push failed — reset local main to match remote so the
+                # workspace is not left with an un-pushed merge commit that
+                # would cause future operations to diverge (fixes G2).
+                try:
+                    self.git.pull_latest_main(workspace, repo.default_branch)
+                except Exception:
+                    pass  # best-effort reset; workspace may need manual fix
                 await self._notify_channel(
                     f"**Push Failed:** Could not push `{repo.default_branch}` for task `{task.id}`: {e}",
                     project_id=task.project_id,
