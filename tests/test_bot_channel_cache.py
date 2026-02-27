@@ -109,6 +109,9 @@ class TestClearProjectChannels:
                 self._notes_threads = {}
                 self._channel_summaries = {}
                 self._channel_locks = {}
+                self._channel_buffers = {}
+                self._buffer_last_access = {}
+                self._summarization_tasks = {}
                 self._notes_threads_path = "/dev/null"
 
             def _save_notes_threads(self):

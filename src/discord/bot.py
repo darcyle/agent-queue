@@ -22,9 +22,12 @@ See specs/discord/discord.md for the full specification.
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import os
+import time
 import traceback
+from dataclasses import dataclass
 
 import discord
 from discord import app_commands
@@ -38,6 +41,17 @@ from src.orchestrator import Orchestrator
 MAX_HISTORY_MESSAGES = 50  # Max messages to fetch from Discord
 COMPACT_THRESHOLD = 20     # Compact older messages beyond this count
 RECENT_KEEP = 14           # Keep this many recent messages as-is after compaction
+BUFFER_IDLE_TIMEOUT = 3600  # Drop idle channel buffers after 1 hour
+
+
+@dataclass(slots=True)
+class CachedMessage:
+    """Lightweight representation of a Discord message for local buffering."""
+    id: int              # Discord snowflake (0 for synthetic summary messages)
+    author_name: str     # display_name or "AgentQueue"
+    is_bot: bool
+    content: str
+    created_at: float    # UTC timestamp
 
 
 class AgentQueueBot(commands.Bot):
@@ -68,6 +82,10 @@ class AgentQueueBot(commands.Bot):
         self._processed_messages: set[int] = set()
         self._channel_summaries: dict[int, tuple[int, str]] = {}  # channel_id -> (up_to_message_id, summary)
         self._channel_locks: dict[int, asyncio.Lock] = {}  # prevent concurrent LLM calls per channel
+        # Local message buffer — caches messages as they arrive via on_message
+        self._channel_buffers: dict[int, collections.deque[CachedMessage]] = {}
+        self._buffer_last_access: dict[int, float] = {}  # channel_id -> last access timestamp
+        self._summarization_tasks: dict[int, asyncio.Task] = {}  # channel_id -> background task
         self._restart_requested = False
         self._boot_time: float | None = None
         self._notes_threads: dict[int, str] = {}  # thread_id -> project_id
@@ -268,6 +286,11 @@ class AgentQueueBot(commands.Bot):
         for cid in stale_channel_ids:
             self._channel_summaries.pop(cid, None)
             self._channel_locks.pop(cid, None)
+            self._channel_buffers.pop(cid, None)
+            self._buffer_last_access.pop(cid, None)
+            task = self._summarization_tasks.pop(cid, None)
+            if task and not task.done():
+                task.cancel()
 
     def get_project_for_channel(self, channel_id: int) -> str | None:
         """Return the project_id associated with a Discord channel, or ``None``.
@@ -400,6 +423,9 @@ class AgentQueueBot(commands.Bot):
 
         # Reattach persistent NotesView buttons on existing messages
         await self._reattach_notes_views()
+
+        # Start periodic buffer cleanup (evicts idle channel buffers)
+        asyncio.create_task(self._periodic_buffer_cleanup())
 
     @staticmethod
     async def _send_long_message(
@@ -617,6 +643,88 @@ class AgentQueueBot(commands.Bot):
 
         return send_to_thread, notify_main_channel
 
+    # ------------------------------------------------------------------
+    # Local message buffer
+    # ------------------------------------------------------------------
+
+    def _should_buffer(self, channel_id: int, message: discord.Message) -> bool:
+        """Return True if this message should be cached in the local buffer.
+
+        Buffers messages from: the global bot channel, per-project channels,
+        notes threads, and channels where the bot is mentioned.
+        """
+        if self._channel and channel_id == self._channel.id:
+            return True
+        if channel_id in self._channel_to_project:
+            return True
+        if channel_id in self._notes_threads:
+            return True
+        if self.user and self.user in message.mentions:
+            return True
+        return False
+
+    def _append_to_buffer(self, channel_id: int, msg: CachedMessage) -> None:
+        """Append a message to the channel's buffer deque.
+
+        Creates the deque on first access.  Triggers background
+        summarization when the buffer exceeds ``COMPACT_THRESHOLD``.
+        """
+        buf = self._channel_buffers.get(channel_id)
+        if buf is None:
+            buf = collections.deque(maxlen=MAX_HISTORY_MESSAGES)
+            self._channel_buffers[channel_id] = buf
+        buf.append(msg)
+        self._buffer_last_access[channel_id] = time.monotonic()
+        # Fire background summarization when buffer is getting full
+        if len(buf) > COMPACT_THRESHOLD:
+            self._maybe_trigger_summarization(channel_id)
+
+    def _maybe_trigger_summarization(self, channel_id: int) -> None:
+        """Start a background summarization task if none is already running."""
+        existing = self._summarization_tasks.get(channel_id)
+        if existing and not existing.done():
+            return  # already running
+
+        task = asyncio.create_task(self._background_summarize(channel_id))
+
+        def _cleanup(t: asyncio.Task, cid: int = channel_id) -> None:
+            self._summarization_tasks.pop(cid, None)
+            if t.exception():
+                print(f"Background summarization error (channel {cid}): {t.exception()}")
+
+        task.add_done_callback(_cleanup)
+        self._summarization_tasks[channel_id] = task
+
+    async def _background_summarize(self, channel_id: int) -> None:
+        """Snapshot the buffer, summarize older messages, cache the result."""
+        buf = self._channel_buffers.get(channel_id)
+        if not buf or len(buf) <= COMPACT_THRESHOLD:
+            return
+        if not self.agent.is_ready:
+            return
+
+        # Snapshot — list() on a deque is safe (GIL-atomic read)
+        snapshot = list(buf)
+        older = snapshot[:-RECENT_KEEP]
+        if not older:
+            return
+
+        last_id = older[-1].id
+        # Skip if we already have a summary covering these messages
+        cached = self._channel_summaries.get(channel_id)
+        if cached and cached[0] >= last_id:
+            return
+
+        lines = []
+        for m in older:
+            lines.append(f"{m.author_name}: {m.content}")
+        transcript = "\n".join(lines)
+
+        summary = await self.agent.summarize(transcript)
+        if summary:
+            # GIL-atomic dict assignment
+            self._channel_summaries[channel_id] = (last_id, summary)
+
     async def on_message(self, message: discord.Message) -> None:
         """Route incoming Discord messages to the ChatAgent for LLM processing.
 
@@ -634,6 +742,19 @@ class AgentQueueBot(commands.Bot):
         prevent duplicate or interleaved responses when messages arrive faster
         than the LLM can respond.
         """
+        # Buffer the message locally before any early-return guards.
+        # Bot's own messages arrive back via the gateway, so this captures
+        # both user AND bot messages for the local history cache.
+        channel_id = message.channel.id
+        if self._should_buffer(channel_id, message):
+            self._append_to_buffer(channel_id, CachedMessage(
+                id=message.id,
+                author_name="AgentQueue" if message.author == self.user else message.author.display_name,
+                is_bot=message.author == self.user,
+                content=message.content,
+                created_at=message.created_at.timestamp(),
+            ))
+
         # Ignore own messages
         if message.author == self.user:
             return
@@ -769,7 +890,8 @@ class AgentQueueBot(commands.Bot):
     async def _build_message_history(
         self, channel: discord.TextChannel, before: discord.Message
     ) -> list[dict]:
-        """Fetch recent channel messages and build LLM message history.
+        """Build LLM message history from the local buffer (warm path) or
+        Discord API (cold path after restart).
 
         Uses a two-tier compaction strategy to balance context quality against
         token cost:
@@ -779,39 +901,49 @@ class AgentQueueBot(commands.Bot):
           has full fidelity on the immediate conversation.
         - Consecutive same-role messages are merged (Anthropic API requirement).
 
-        This means the LLM always sees "what happened earlier" (summary) plus
-        "what just happened" (recent verbatim), keeping context windows small
-        even in long-running channels.
+        **Warm path** (zero API calls): reads from ``_channel_buffers``.
+        **Cold path** (after restart): buffer empty, falls back to Discord
+        ``channel.history()`` fetch and seeds the buffer for subsequent calls.
         """
-        raw: list[discord.Message] = []
-        async for msg in channel.history(
-            limit=MAX_HISTORY_MESSAGES, before=before
-        ):
-            raw.append(msg)
-        raw.reverse()  # oldest first
+        channel_id = channel.id
 
-        if not raw:
+        # Cold path — buffer is empty (first call after restart)
+        buf = self._channel_buffers.get(channel_id)
+        if not buf:
+            await self._fetch_and_seed_buffer(channel, before)
+            buf = self._channel_buffers.get(channel_id)
+
+        if not buf:
+            return []
+
+        # Warm path — read from local buffer
+        # Snapshot and filter to messages before the trigger message
+        before_ts = before.created_at.timestamp()
+        snapshot = [m for m in buf if m.created_at < before_ts]
+        # Keep only the most recent MAX_HISTORY_MESSAGES
+        snapshot = snapshot[-MAX_HISTORY_MESSAGES:]
+
+        if not snapshot:
             return []
 
         # Split into older (to compact) and recent (to keep verbatim)
-        if len(raw) > COMPACT_THRESHOLD:
-            older = raw[:-RECENT_KEEP]
-            recent = raw[-RECENT_KEEP:]
+        if len(snapshot) > COMPACT_THRESHOLD:
+            older = snapshot[:-RECENT_KEEP]
+            recent = snapshot[-RECENT_KEEP:]
         else:
             older = []
-            recent = raw
+            recent = snapshot
 
         messages: list[dict] = []
 
         # Compact older messages into a summary
         if older:
-            summary = await self._get_or_create_summary(channel.id, older)
+            summary = await self._get_or_create_summary_from_cache(channel_id, older)
             if summary:
                 messages.append({
                     "role": "user",
                     "content": f"[CONVERSATION SUMMARY — earlier messages]\n{summary}",
                 })
-                # Need an assistant ack so message list alternates properly
                 messages.append({
                     "role": "assistant",
                     "content": "Understood, I have the conversation context.",
@@ -819,13 +951,12 @@ class AgentQueueBot(commands.Bot):
 
         # Add recent messages verbatim
         for msg in recent:
-            if msg.author == self.user:
-                # Bot's own messages become assistant turns
+            if msg.is_bot:
                 messages.append({"role": "assistant", "content": msg.content})
             else:
                 messages.append({
                     "role": "user",
-                    "content": f"[from {msg.author.display_name}]: {msg.content}",
+                    "content": f"[from {msg.author_name}]: {msg.content}",
                 })
 
         # Merge consecutive same-role messages (Anthropic API requirement)
@@ -838,10 +969,36 @@ class AgentQueueBot(commands.Bot):
 
         return merged
 
-    async def _get_or_create_summary(
-        self, channel_id: int, older_messages: list[discord.Message]
+    async def _fetch_and_seed_buffer(
+        self, channel: discord.TextChannel, before: discord.Message
+    ) -> None:
+        """Cold-start fallback: fetch from Discord API and populate the buffer."""
+        raw: list[discord.Message] = []
+        async for msg in channel.history(
+            limit=MAX_HISTORY_MESSAGES, before=before
+        ):
+            raw.append(msg)
+        raw.reverse()  # oldest first
+
+        if not raw:
+            return
+
+        buf = collections.deque(maxlen=MAX_HISTORY_MESSAGES)
+        for msg in raw:
+            buf.append(CachedMessage(
+                id=msg.id,
+                author_name="AgentQueue" if msg.author == self.user else msg.author.display_name,
+                is_bot=msg.author == self.user,
+                content=msg.content,
+                created_at=msg.created_at.timestamp(),
+            ))
+        self._channel_buffers[channel.id] = buf
+        self._buffer_last_access[channel.id] = time.monotonic()
+
+    async def _get_or_create_summary_from_cache(
+        self, channel_id: int, older_messages: list[CachedMessage]
     ) -> str | None:
-        """Return a compact summary of older messages, caching per channel."""
+        """Return a compact summary of older cached messages, with caching."""
         if not older_messages:
             return None
         if not self.agent.is_ready:
@@ -857,11 +1014,42 @@ class AgentQueueBot(commands.Bot):
         # Build a transcript to summarize
         lines = []
         for msg in older_messages:
-            author = "AgentQueue" if msg.author == self.user else msg.author.display_name
-            lines.append(f"{author}: {msg.content}")
+            lines.append(f"{msg.author_name}: {msg.content}")
         transcript = "\n".join(lines)
 
         summary = await self.agent.summarize(transcript)
         if summary:
             self._channel_summaries[channel_id] = (last_id, summary)
         return summary
+
+    # ------------------------------------------------------------------
+    # Periodic buffer cleanup
+    # ------------------------------------------------------------------
+
+    async def _periodic_buffer_cleanup(self) -> None:
+        """Background loop that evicts idle channel buffers every 10 minutes."""
+        while True:
+            try:
+                await asyncio.sleep(600)  # 10 minutes
+                self._cleanup_stale_buffers()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"Buffer cleanup error: {e}")
+
+    def _cleanup_stale_buffers(self) -> None:
+        """Drop buffers for channels idle longer than ``BUFFER_IDLE_TIMEOUT``."""
+        now = time.monotonic()
+        stale = [
+            cid for cid, last in self._buffer_last_access.items()
+            if now - last > BUFFER_IDLE_TIMEOUT
+        ]
+        for cid in stale:
+            self._channel_buffers.pop(cid, None)
+            self._buffer_last_access.pop(cid, None)
+            self._channel_summaries.pop(cid, None)
+            task = self._summarization_tasks.pop(cid, None)
+            if task and not task.done():
+                task.cancel()
+        if stale:
+            print(f"Cleaned up {len(stale)} idle channel buffer(s)")
