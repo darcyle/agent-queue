@@ -28,7 +28,7 @@ import pytest
 
 from src.config import AutoTaskConfig
 from src.git.manager import GitError, GitManager
-from src.models import AgentWorkspace, RepoConfig, RepoSourceType, Task, TaskStatus
+from src.models import RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
 
 
 # ---------------------------------------------------------------------------
@@ -637,9 +637,9 @@ class TestPrepareWorkspaceRebaseWiring:
 
     def _setup_db(self, orch, parent_task, repo):
         """Wire up async DB stubs so _prepare_workspace can resolve workspace/repo."""
-        ws = AgentWorkspace(
-            agent_id="agent-1", project_id="proj-1",
-            workspace_path="/workspace", repo_id=repo.id,
+        ws = Workspace(
+            id="ws-1", project_id="proj-1",
+            workspace_path="/workspace", source_type=repo.source_type,
         )
         orch.db.get_agent_workspace = AsyncMock(return_value=ws)
         orch.db.get_repo = AsyncMock(return_value=repo)
@@ -715,9 +715,9 @@ class TestPrepareWorkspaceRebaseWiring:
             parent_task_id=None,
         )
         repo = _make_repo(source_type=RepoSourceType.CLONE)
-        ws = AgentWorkspace(
-            agent_id="agent-1", project_id="proj-1",
-            workspace_path="/workspace", repo_id=repo.id,
+        ws = Workspace(
+            id="ws-1", project_id="proj-1",
+            workspace_path="/workspace", source_type=repo.source_type,
         )
         orch.db.get_agent_workspace = AsyncMock(return_value=ws)
         orch.db.get_repo = AsyncMock(return_value=repo)
@@ -745,9 +745,9 @@ class TestPrepareWorkspaceRebaseWiring:
             is_plan_subtask=True,
         )
         repo = _make_repo(source_type=RepoSourceType.LINK)
-        ws = AgentWorkspace(
-            agent_id="agent-1", project_id="proj-1",
-            workspace_path="/workspace", repo_id=repo.id,
+        ws = Workspace(
+            id="ws-1", project_id="proj-1",
+            workspace_path="/workspace", source_type=repo.source_type,
         )
         orch.db.get_agent_workspace = AsyncMock(return_value=ws)
         orch.db.get_repo = AsyncMock(return_value=repo)

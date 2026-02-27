@@ -474,7 +474,7 @@ class TestMergeBranch:
         assert "not a git repo" in result["error"]
 
     async def test_uses_repo_default_branch(self, handler, db, mock_git, tmp_path):
-        """Merge should use the repo's configured default branch, not hardcoded 'main'."""
+        """Merge should use the project's configured default branch, not hardcoded 'main'."""
         import os
 
         project_id = "proj-develop"
@@ -485,13 +485,7 @@ class TestMergeBranch:
             id=project_id,
             name="Develop Project",
             workspace_path=checkout_path,
-        ))
-        await db.create_repo(RepoConfig(
-            id="repo-develop",
-            project_id=project_id,
-            source_type=RepoSourceType.LINK,
-            source_path=checkout_path,
-            default_branch="develop",
+            repo_default_branch="develop",
         ))
 
         mock_git.merge_branch.return_value = True
@@ -832,7 +826,7 @@ class TestActiveProjectFallback:
 
         assert "error" not in result
         assert result["committed"] is True
-        assert result["repo_id"] == repo_id
+        assert result["repo_id"] == project_id
         mock_git.commit_all.assert_called_once_with(
             checkout_path, "feat: inferred commit",
         )
@@ -847,7 +841,7 @@ class TestActiveProjectFallback:
 
         assert "error" not in result
         assert result["pushed"] == "feature/auto"
-        assert result["repo_id"] == repo_id
+        assert result["repo_id"] == project_id
 
     async def test_git_create_branch_infers_active_project(self, handler, mock_git, project_with_repo):
         """git_create_branch (old-style) should work without repo_id when active project is set."""
@@ -860,7 +854,7 @@ class TestActiveProjectFallback:
 
         assert "error" not in result
         assert result["created_branch"] == "feature/auto-branch"
-        assert result["repo_id"] == repo_id
+        assert result["repo_id"] == project_id
 
     async def test_git_changed_files_infers_active_project(self, handler, mock_git, project_with_repo):
         """git_changed_files (old-style) should work without repo_id when active project is set."""
@@ -871,7 +865,7 @@ class TestActiveProjectFallback:
         result = await handler.execute("git_changed_files", {})
 
         assert "error" not in result
-        assert result["repo_id"] == repo_id
+        assert result["repo_id"] == project_id
         assert result["count"] == 2
 
     async def test_no_fallback_without_active_project(self, handler):
@@ -920,7 +914,7 @@ class TestActiveProjectFallback:
 
         assert "error" not in result
         assert result["merged"] is True
-        assert result["repo_id"] == repo_id
+        assert result["repo_id"] == project_id
 
     async def test_git_create_pr_infers_active_project(self, handler, mock_git, project_with_repo):
         """git_create_pr should work without repo_id when active project is set."""
@@ -934,7 +928,7 @@ class TestActiveProjectFallback:
         })
 
         assert "error" not in result
-        assert result["repo_id"] == repo_id
+        assert result["repo_id"] == project_id
         assert "pr_url" in result
 
     async def test_explicit_project_id_overrides_active(self, handler, db, mock_git, project_with_repo, tmp_path):

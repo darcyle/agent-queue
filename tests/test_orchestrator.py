@@ -8,7 +8,7 @@ from src.orchestrator import Orchestrator
 from src.database import Database
 from src.models import (
     Project, Task, Agent, TaskStatus, AgentState, AgentResult,
-    TaskContext, AgentOutput, RepoConfig, RepoSourceType,
+    TaskContext, AgentOutput, RepoConfig, RepoSourceType, Workspace,
 )
 from src.adapters.base import AgentAdapter, MessageCallback
 from src.config import AppConfig, AutoTaskConfig
@@ -354,7 +354,7 @@ Third step: write comprehensive tests for all components.
         assert "something interesting" in archived.read_text()
 
     async def test_subtasks_inherit_repo_id(self, orch_with_workspace):
-        """When inherit_repo is True, subtasks should have the parent's repo_id."""
+        """Subtasks no longer inherit repo_id (workspace model replaces repos)."""
         orch, workspace = orch_with_workspace
 
         # Place the plan file directly in the workspace root (simulating
@@ -364,23 +364,18 @@ Third step: write comprehensive tests for all components.
         (claude_dir / "plan.md").write_text("## Build it\n\nBuild the project artifacts and run the compilation step.\n")
 
         await orch.db.create_project(Project(id="p-1", name="alpha"))
-        await orch.db.create_repo(RepoConfig(
-            id="repo-1", project_id="p-1",
-            source_type=RepoSourceType.LINK, source_path=str(workspace),
-        ))
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
                                          agent_type="claude"))
         await orch.db.create_task(Task(
             id="t-1", project_id="p-1", title="Plan",
             description="Plan it", status=TaskStatus.READY,
-            repo_id="repo-1",
         ))
 
         await _run_cycle_and_wait(orch)
 
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 1
-        assert subtasks[0].repo_id == "repo-1"
+        assert subtasks[0].repo_id is None
 
     async def test_subtask_descriptions_are_self_contained(self, orch_with_workspace):
         """Generated task descriptions should include context from parent and plan."""
@@ -1035,11 +1030,11 @@ class TestPrepareWorkspaceRebase:
 
     @pytest.fixture
     async def setup(self, tmp_path):
-        """Create orchestrator, project, repo, agent, parent task, and subtask.
+        """Create orchestrator, project, workspace, agent, parent task, and subtask.
 
         Returns a dict with all objects needed for _prepare_workspace tests.
         """
-        workspace = tmp_path / "workspaces" / "p-1" / "agent-1" / "myrepo"
+        workspace = tmp_path / "workspaces" / "p-1" / "checkout-1"
         workspace.mkdir(parents=True)
 
         config = AppConfig(
@@ -1050,27 +1045,20 @@ class TestPrepareWorkspaceRebase:
         orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await orch.initialize()
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
-        await orch.db.create_repo(RepoConfig(
-            id="repo-1", project_id="p-1",
-            source_type=RepoSourceType.CLONE,
-            url="https://github.com/org/myrepo.git",
-            default_branch="develop",
+        await orch.db.create_project(Project(
+            id="p-1", name="alpha",
+            repo_url="https://github.com/org/myrepo.git",
+            repo_default_branch="develop",
         ))
         await orch.db.create_agent(Agent(
             id="a-1", name="agent-1", agent_type="claude",
         ))
-        # Pre-populate agent workspace so _prepare_workspace doesn't try to compute it
-        await orch.db.set_agent_workspace(
-            "a-1", "p-1", str(workspace), repo_id="repo-1",
-        )
 
         # Parent task with an existing branch
         parent = Task(
             id="t-parent", project_id="p-1", title="Parent Plan",
             description="Create plan", status=TaskStatus.COMPLETED,
             branch_name="task/t-parent/parent-plan",
-            repo_id="repo-1",
         )
         await orch.db.create_task(parent)
 
@@ -1081,9 +1069,15 @@ class TestPrepareWorkspaceRebase:
             status=TaskStatus.READY,
             parent_task_id="t-parent",
             is_plan_subtask=True,
-            repo_id="repo-1",
         )
         await orch.db.create_task(subtask)
+
+        # Create workspace (unlocked — acquire_workspace will lock it)
+        await orch.db.create_workspace(Workspace(
+            id="ws-1", project_id="p-1",
+            workspace_path=str(workspace),
+            source_type=RepoSourceType.CLONE,
+        ))
 
         agent = await orch.db.get_agent("a-1")
 
@@ -1157,9 +1151,12 @@ class TestPrepareWorkspaceRebase:
         regular_task = Task(
             id="t-regular", project_id="p-1", title="Regular Task",
             description="A normal task", status=TaskStatus.READY,
-            repo_id="repo-1",
         )
         await orch.db.create_task(regular_task)
+
+        # Release the lock acquired by the subtask test's _prepare_workspace call
+        # (if any), so _prepare_workspace can acquire it for this task
+        await orch.db.release_workspaces_for_agent("a-1")
 
         mock_git = MagicMock()
         mock_git.validate_checkout.return_value = True
@@ -1175,7 +1172,7 @@ class TestPrepareWorkspaceRebase:
         assert call_args[0][2] == "develop"  # third positional arg is default_branch
 
     async def test_link_repo_subtask_passes_default_branch(self, tmp_path):
-        """For LINK repos, switch_to_branch should also receive default_branch."""
+        """For LINK workspaces, switch_to_branch should also receive default_branch."""
         workspace = tmp_path / "linked-repo"
         workspace.mkdir()
         # Initialize a git repo so validate_checkout succeeds
@@ -1189,25 +1186,18 @@ class TestPrepareWorkspaceRebase:
         orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await orch.initialize()
 
-        await orch.db.create_project(Project(id="p-1", name="beta"))
-        await orch.db.create_repo(RepoConfig(
-            id="repo-link", project_id="p-1",
-            source_type=RepoSourceType.LINK,
-            source_path=str(workspace),
-            default_branch="trunk",
+        await orch.db.create_project(Project(
+            id="p-1", name="beta",
+            repo_default_branch="trunk",
         ))
         await orch.db.create_agent(Agent(
             id="a-1", name="agent-1", agent_type="claude",
         ))
-        await orch.db.set_agent_workspace(
-            "a-1", "p-1", str(workspace), repo_id="repo-link",
-        )
 
         parent = Task(
             id="t-parent", project_id="p-1", title="Parent",
             description="Parent", status=TaskStatus.COMPLETED,
             branch_name="task/t-parent/parent",
-            repo_id="repo-link",
         )
         await orch.db.create_task(parent)
 
@@ -1215,9 +1205,15 @@ class TestPrepareWorkspaceRebase:
             id="t-sub-1", project_id="p-1", title="Sub 1",
             description="Subtask", status=TaskStatus.READY,
             parent_task_id="t-parent", is_plan_subtask=True,
-            repo_id="repo-link",
         )
         await orch.db.create_task(subtask)
+
+        # Create workspace (unlocked — acquire_workspace will lock it)
+        await orch.db.create_workspace(Workspace(
+            id="ws-link", project_id="p-1",
+            workspace_path=str(workspace),
+            source_type=RepoSourceType.LINK,
+        ))
 
         agent = await orch.db.get_agent("a-1")
 
@@ -1236,8 +1232,8 @@ class TestPrepareWorkspaceRebase:
         await orch.shutdown()
 
     async def test_init_repo_subtask_passes_default_branch(self, tmp_path):
-        """For INIT repos, switch_to_branch should also receive default_branch."""
-        workspace = tmp_path / "workspaces" / "p-1" / "agent-1" / "initrepo"
+        """For CLONE workspaces with custom default_branch, switch_to_branch should receive it."""
+        workspace = tmp_path / "workspaces" / "p-1" / "checkout-1"
         workspace.mkdir(parents=True)
 
         config = AppConfig(
@@ -1248,24 +1244,18 @@ class TestPrepareWorkspaceRebase:
         orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await orch.initialize()
 
-        await orch.db.create_project(Project(id="p-1", name="gamma"))
-        await orch.db.create_repo(RepoConfig(
-            id="repo-init", project_id="p-1",
-            source_type=RepoSourceType.INIT,
-            default_branch="master",
+        await orch.db.create_project(Project(
+            id="p-1", name="gamma",
+            repo_default_branch="master",
         ))
         await orch.db.create_agent(Agent(
             id="a-1", name="agent-1", agent_type="claude",
         ))
-        await orch.db.set_agent_workspace(
-            "a-1", "p-1", str(workspace), repo_id="repo-init",
-        )
 
         parent = Task(
             id="t-parent", project_id="p-1", title="Parent",
             description="Parent", status=TaskStatus.COMPLETED,
             branch_name="task/t-parent/parent",
-            repo_id="repo-init",
         )
         await orch.db.create_task(parent)
 
@@ -1273,9 +1263,15 @@ class TestPrepareWorkspaceRebase:
             id="t-sub-1", project_id="p-1", title="Sub 1",
             description="Subtask", status=TaskStatus.READY,
             parent_task_id="t-parent", is_plan_subtask=True,
-            repo_id="repo-init",
         )
         await orch.db.create_task(subtask)
+
+        # Create workspace (unlocked — acquire_workspace will lock it)
+        await orch.db.create_workspace(Workspace(
+            id="ws-init", project_id="p-1",
+            workspace_path=str(workspace),
+            source_type=RepoSourceType.CLONE,
+        ))
 
         agent = await orch.db.get_agent("a-1")
 
@@ -1300,7 +1296,7 @@ class TestMergeAndPushSyncWorkflow:
 
     @pytest.fixture
     async def setup(self, tmp_path):
-        workspace = tmp_path / "workspaces" / "p-1" / "agent-1" / "myrepo"
+        workspace = tmp_path / "workspaces" / "p-1" / "checkout-1"
         workspace.mkdir(parents=True)
 
         config = AppConfig(
@@ -1310,27 +1306,26 @@ class TestMergeAndPushSyncWorkflow:
         orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await orch.initialize()
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
-        await orch.db.create_repo(RepoConfig(
-            id="repo-1", project_id="p-1",
+        await orch.db.create_project(Project(
+            id="p-1", name="alpha",
+            repo_url="https://github.com/org/myrepo.git",
+            repo_default_branch="develop",
+        ))
+        repo = RepoConfig(
+            id="p-1", project_id="p-1",
             source_type=RepoSourceType.CLONE,
             url="https://github.com/org/myrepo.git",
             default_branch="develop",
-        ))
-        repo = await orch.db.get_repo("repo-1")
+        )
         await orch.db.create_agent(Agent(
             id="a-1", name="agent-1", agent_type="claude",
         ))
-        await orch.db.set_agent_workspace(
-            "a-1", "p-1", str(workspace), repo_id="repo-1",
-        )
 
         task = Task(
             id="t-1", project_id="p-1", title="Test Task",
             description="Testing merge and push",
             status=TaskStatus.IN_PROGRESS,
             branch_name="t-1/test-task",
-            repo_id="repo-1",
         )
         await orch.db.create_task(task)
 
@@ -1450,7 +1445,7 @@ class TestCompleteWorkspaceMidChainSync:
 
     @pytest.fixture
     async def setup(self, tmp_path):
-        workspace = tmp_path / "workspaces" / "p-1" / "agent-1" / "myrepo"
+        workspace = tmp_path / "workspaces" / "p-1" / "checkout-1"
         workspace.mkdir(parents=True)
 
         config = AppConfig(
@@ -1461,26 +1456,20 @@ class TestCompleteWorkspaceMidChainSync:
         orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await orch.initialize()
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
-        await orch.db.create_repo(RepoConfig(
-            id="repo-1", project_id="p-1",
-            source_type=RepoSourceType.CLONE,
-            url="https://github.com/org/myrepo.git",
-            default_branch="main",
+        await orch.db.create_project(Project(
+            id="p-1", name="alpha",
+            repo_url="https://github.com/org/myrepo.git",
+            repo_default_branch="main",
         ))
         await orch.db.create_agent(Agent(
             id="a-1", name="agent-1", agent_type="claude",
         ))
-        await orch.db.set_agent_workspace(
-            "a-1", "p-1", str(workspace), repo_id="repo-1",
-        )
 
         # Parent task
         parent = Task(
             id="t-parent", project_id="p-1", title="Parent Plan",
             description="Create plan", status=TaskStatus.COMPLETED,
             branch_name="task/t-parent/parent-plan",
-            repo_id="repo-1",
         )
         await orch.db.create_task(parent)
 
@@ -1490,16 +1479,22 @@ class TestCompleteWorkspaceMidChainSync:
             description="First subtask", status=TaskStatus.IN_PROGRESS,
             parent_task_id="t-parent", is_plan_subtask=True,
             branch_name="task/t-parent/parent-plan",
-            repo_id="repo-1",
         )
         sub2 = Task(
             id="t-sub-2", project_id="p-1", title="Step 2",
             description="Second subtask", status=TaskStatus.DEFINED,
             parent_task_id="t-parent", is_plan_subtask=True,
-            repo_id="repo-1",
         )
         await orch.db.create_task(sub1)
         await orch.db.create_task(sub2)
+
+        # Create workspace and lock it for sub1 (simulating in-progress task)
+        await orch.db.create_workspace(Workspace(
+            id="ws-1", project_id="p-1",
+            workspace_path=str(workspace),
+            source_type=RepoSourceType.CLONE,
+        ))
+        await orch.db.acquire_workspace("p-1", "a-1", "t-sub-1")
 
         agent = await orch.db.get_agent("a-1")
 
@@ -1580,6 +1575,9 @@ class TestCompleteWorkspaceMidChainSync:
         await orch.db.update_task("t-sub-1", status=TaskStatus.COMPLETED.value)
         await orch.db.update_task("t-sub-2", status=TaskStatus.IN_PROGRESS.value,
                                   branch_name="task/t-parent/parent-plan")
+        # Re-lock workspace for sub2
+        await orch.db.release_workspace("ws-1")
+        await orch.db.acquire_workspace("p-1", "a-1", "t-sub-2")
         sub2_updated = await orch.db.get_task("t-sub-2")
 
         mock_git = MagicMock()
@@ -1608,6 +1606,9 @@ class TestCompleteWorkspaceMidChainSync:
         await orch.db.update_task("t-sub-1", status=TaskStatus.COMPLETED.value)
         await orch.db.update_task("t-sub-2", status=TaskStatus.IN_PROGRESS.value,
                                   branch_name="task/t-parent/parent-plan")
+        # Re-lock workspace for sub2
+        await orch.db.release_workspace("ws-1")
+        await orch.db.acquire_workspace("p-1", "a-1", "t-sub-2")
         sub2_updated = await orch.db.get_task("t-sub-2")
 
         mock_git = MagicMock()

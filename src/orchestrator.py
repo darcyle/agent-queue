@@ -43,8 +43,8 @@ from src.discord.notifications import (
 from src.event_bus import EventBus
 from src.git.manager import GitManager
 from src.models import (
-    AgentOutput, AgentResult, AgentState, AgentWorkspace, RepoConfig,
-    RepoSourceType, Task, TaskStatus, TaskContext,
+    AgentOutput, AgentResult, AgentState,
+    RepoSourceType, Task, TaskStatus, TaskContext, Workspace,
 )
 from src.hooks import HookEngine
 from src.plan_parser import (
@@ -253,7 +253,8 @@ class Orchestrator:
             except Exception as e:
                 print(f"Error stopping adapter for agent {agent_id}: {e}")
 
-        # Reset task and agent state
+        # Release workspace lock and reset task/agent state
+        await self.db.release_workspaces_for_task(task_id)
         await self.db.transition_task(task_id, TaskStatus.BLOCKED,
                                       context="stop_task",
                                       assigned_agent_id=None)
@@ -435,9 +436,16 @@ class Orchestrator:
         # Reset BUSY agents to IDLE
         agents = await self.db.list_agents()
         for a in agents:
-            if a.state in (AgentState.BUSY, AgentState.STARTING):
+            if a.state == AgentState.BUSY:
                 print(f"Recovery: resetting agent '{a.name}' from {a.state.value} to IDLE")
                 await self.db.update_agent(a.id, state=AgentState.IDLE, current_task_id=None)
+
+        # Release all workspace locks (no agents are running after restart)
+        all_workspaces = await self.db.list_workspaces()
+        for ws in all_workspaces:
+            if ws.locked_by_agent_id:
+                print(f"Recovery: releasing workspace lock '{ws.id}' (was locked by {ws.locked_by_agent_id})")
+                await self.db.release_workspace(ws.id)
 
         # Reset IN_PROGRESS tasks back to READY so they get re-scheduled
         tasks = await self.db.list_tasks(status=TaskStatus.IN_PROGRESS)
@@ -563,6 +571,7 @@ class Orchestrator:
                     await self._adapters[action.agent_id].stop()
                 except Exception:
                     pass
+            await self.db.release_workspaces_for_task(action.task_id)
             await self.db.transition_task(
                 action.task_id, TaskStatus.BLOCKED,
                 context="timeout",
@@ -585,6 +594,7 @@ class Orchestrator:
             import traceback
             traceback.print_exc()
             try:
+                await self.db.release_workspaces_for_task(action.task_id)
                 await self.db.transition_task(
                     action.task_id, TaskStatus.READY,
                     context="execution_error",
@@ -862,7 +872,7 @@ class Orchestrator:
         # Count active agents per project
         active_counts: dict[str, int] = {}
         for a in agents:
-            if a.state in (AgentState.BUSY, AgentState.STARTING) and a.current_task_id:
+            if a.state == AgentState.BUSY and a.current_task_id:
                 task = await self.db.get_task(a.current_task_id)
                 if task:
                     active_counts[task.project_id] = (
@@ -884,104 +894,37 @@ class Orchestrator:
 
         return Scheduler.schedule(state)
 
-    def _get_task_repo_id(self, task: Task) -> str | None:
-        """Return the repo_id for a task — task.repo_id if set, else None."""
-        return task.repo_id
-
-    def _compute_workspace_path(
-        self, agent, project_id: str, repo: RepoConfig,
-    ) -> str:
-        """Derive workspace path from repo source type.
-
-        - LINK: workspace = repo.source_path (shared by all agents)
-        - CLONE: workspace = {workspace_dir}/{project_id}/{agent.name}/{repo_name}
-        - INIT: same as CLONE
-        """
-        if repo.source_type == RepoSourceType.LINK:
-            return repo.source_path
-
-        # Derive repo name from url or source_path
-        if repo.url:
-            repo_name = repo.url.rstrip("/").split("/")[-1].replace(".git", "")
-        elif repo.source_path:
-            repo_name = os.path.basename(repo.source_path.rstrip("/"))
-        else:
-            repo_name = repo.id
-
-        return os.path.join(
-            self.config.workspace_dir, project_id, agent.name, repo_name,
-        )
-
     async def _prepare_workspace(self, task: Task, agent) -> str:
-        """Prepare a git workspace for the task. Always returns a path.
+        """Acquire a workspace lock and prepare it for the task.
 
-        Resolution chain:
-        1. agent_workspaces lookup for (agent_id, task.project_id) → cached path
-        2. If not found, auto-populate from project's repo config
-        3. No repo at all: project.workspace_path or config.workspace_dir
-
-        Handles three repo source types:
-        * **CLONE** — cloned into per-agent directory, branch created
-        * **LINK** — use existing directory directly
-        * **INIT** — create new git repo in per-agent directory
+        1. Acquire an unlocked workspace for the project via
+           ``db.acquire_workspace()``.
+        2. If no workspace is available, fall back to
+           ``project.workspace_path`` or ``config.workspace_dir``.
+        3. Perform git operations based on ``workspace.source_type``
+           (clone/link) using ``project.repo_url`` / ``project.repo_default_branch``.
+        4. Return the workspace path.
 
         For plan subtasks, reuses the parent task's branch name so all steps
         accumulate commits on a single branch.
-
-        Known gaps (see specs/git/git.md §11):
-          - **G4:** Retried tasks check out the existing branch without
-            rebasing onto latest ``origin/main``.
-          - **G6 (resolved):** ``mid_chain_sync`` now pushes intermediate
-            subtask work and rebases the chain branch between subtask
-            completions when ``auto_task.rebase_between_subtasks`` is enabled.
-          - **G7:** LINK repos use a shared filesystem path for all agents —
-            no per-agent isolation.
         """
-        # 1. Check agent_workspaces cache
-        ws = await self.db.get_agent_workspace(agent.id, task.project_id)
-        repo = None
+        project = await self.db.get_project(task.project_id)
+        ws = await self.db.acquire_workspace(task.project_id, agent.id, task.id)
 
         if not ws:
-            # 2. Auto-populate from repo config
-            repo_id = self._get_task_repo_id(task)
-            if not repo_id:
-                # Try project's first repo
-                repos = await self.db.list_repos(project_id=task.project_id)
-                if repos:
-                    repo_id = repos[0].id
-
-            if repo_id:
-                repo = await self.db.get_repo(repo_id)
-
-            if repo:
-                workspace_path = self._compute_workspace_path(
-                    agent, task.project_id, repo,
-                )
-                await self.db.set_agent_workspace(
-                    agent.id, task.project_id, workspace_path, repo_id=repo.id,
-                )
-                ws = AgentWorkspace(
-                    agent_id=agent.id, project_id=task.project_id,
-                    workspace_path=workspace_path, repo_id=repo.id,
-                )
-            else:
-                # 3. No repo — use project.workspace_path or config.workspace_dir
-                project = await self.db.get_project(task.project_id)
-                fallback = (project.workspace_path if project and project.workspace_path
-                            else self.config.workspace_dir)
-                await self.db.set_agent_workspace(
-                    agent.id, task.project_id, fallback,
-                )
-                return fallback
+            # No workspace available — fall back to project workspace or config dir
+            fallback = (project.workspace_path if project and project.workspace_path
+                        else self.config.workspace_dir)
+            await self._notify_channel(
+                f"**Warning:** No workspace available for project `{task.project_id}`. "
+                f"Using fallback: `{fallback}`",
+                project_id=task.project_id,
+            )
+            return fallback
 
         workspace = ws.workspace_path
-
-        # Load repo if not already loaded (for git operations)
-        if not repo and ws.repo_id:
-            repo = await self.db.get_repo(ws.repo_id)
-
-        if not repo:
-            return workspace  # No repo config — just use directory as-is
+        repo_url = project.repo_url if project else ""
+        default_branch = project.repo_default_branch if project else "main"
 
         # Subtasks reuse the parent's branch to accumulate commits
         if task.is_plan_subtask and task.parent_task_id:
@@ -994,63 +937,41 @@ class Orchestrator:
         reuse_branch = task.is_plan_subtask and task.parent_task_id
         rebase_on_switch = self.config.auto_task.rebase_between_subtasks
 
-        # Git operations may fail (e.g. no remote for LINK repos) but should
-        # never prevent returning the correct workspace path.
+        # Git operations may fail but should never prevent returning the workspace path.
         try:
-            if repo.source_type == RepoSourceType.CLONE:
+            if ws.source_type == RepoSourceType.CLONE:
                 if not self.git.validate_checkout(workspace):
                     os.makedirs(os.path.dirname(workspace), exist_ok=True)
-                    self.git.create_checkout(repo.url, workspace)
+                    if repo_url:
+                        self.git.create_checkout(repo_url, workspace)
                 if reuse_branch:
-                    # G6 resolved: switch_to_branch optionally rebases onto
-                    # origin/<default_branch> when rebase_between_subtasks is
-                    # enabled, and mid_chain_sync pushes + rebases between
-                    # subtasks.
                     self.git.switch_to_branch(
                         workspace, branch_name,
-                        default_branch=repo.default_branch,
+                        default_branch=default_branch,
                         rebase=rebase_on_switch,
                     )
                 else:
-                    # GAP G4: If branch already exists (retry), prepare_for_task
-                    # falls back to checkout without rebase onto latest main.
-                    self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
+                    self.git.prepare_for_task(workspace, branch_name, default_branch)
 
-            elif repo.source_type == RepoSourceType.LINK:
-                # GAP G7: All agents share this same workspace path — no
-                # per-agent isolation for LINK repos.
+            elif ws.source_type == RepoSourceType.LINK:
                 if not os.path.isdir(workspace):
                     await self._notify_channel(
-                        f"**Warning:** Linked repo path `{workspace}` does not exist.",
+                        f"**Warning:** Linked workspace path `{workspace}` does not exist.",
                         project_id=task.project_id,
                     )
                 elif self.git.validate_checkout(workspace):
                     if reuse_branch:
                         self.git.switch_to_branch(
                             workspace, branch_name,
-                            default_branch=repo.default_branch,
+                            default_branch=default_branch,
                             rebase=rebase_on_switch,
                         )
                     else:
-                        self.git.prepare_for_task(workspace, branch_name, repo.default_branch)
-
-            elif repo.source_type == RepoSourceType.INIT:
-                if not self.git.validate_checkout(workspace):
-                    self.git.init_repo(workspace)
-                if reuse_branch:
-                    self.git.switch_to_branch(
-                        workspace, branch_name,
-                        default_branch=repo.default_branch,
-                        rebase=rebase_on_switch,
-                    )
-                else:
-                    self.git.create_branch(workspace, branch_name)
+                        self.git.prepare_for_task(workspace, branch_name, default_branch)
 
             # Update task branch in DB
             await self.db.update_task(task.id, branch_name=branch_name)
         except Exception as e:
-            # Git branch setup failed — still use the correct workspace.
-            # The agent can work in the directory without branch management.
             await self._notify_channel(
                 f"**Git Warning:** Task `{task.id}` — branch setup failed: {e}\n"
                 f"Agent will work in `{workspace}` without branch management.",
@@ -1062,27 +983,23 @@ class Orchestrator:
     async def _complete_workspace(self, task: Task, agent) -> str | None:
         """Post-completion git workflow: commit changes, then merge or open a PR.
 
-        The workflow depends on the task and repo configuration:
-
-        1. **Always**: commit any uncommitted work on the task branch.
-        2. **Plan subtasks**: just commit — don't merge or push until the
-           final subtask in the chain completes, at which point the
-           accumulated branch is either merged or turned into a PR.
-        3. **Tasks requiring approval**: push the branch and create a PR
-           for human review.  The task moves to AWAITING_APPROVAL.
-        4. **Tasks without approval**: merge the branch into the default
-           branch and push (for CLONE repos) or just merge locally (LINK).
+        Finds the workspace locked by this task, performs git operations using
+        the project's repo config, and releases the workspace lock.
 
         Returns a PR URL if one was created, otherwise None.
         """
-        # Look up workspace from agent_workspaces
-        ws = await self.db.get_agent_workspace(agent.id, task.project_id)
+        # Find workspace locked by this task
+        ws = await self.db.get_workspace_for_task(task.id)
         workspace = ws.workspace_path if ws else None
         if not workspace or not self.git.validate_checkout(workspace):
             return None
 
         if not task.branch_name:
             return None
+
+        project = await self.db.get_project(task.project_id)
+        default_branch = project.repo_default_branch if project else "main"
+        has_repo = bool(project and project.repo_url)
 
         # Commit any uncommitted work on the task branch
         committed = self.git.commit_all(
@@ -1091,9 +1008,16 @@ class Orchestrator:
         if not committed:
             print(f"Task {task.id}: no changes to commit on branch {task.branch_name}")
 
-        # Resolve repo config
-        repo_id = ws.repo_id if ws else task.repo_id
-        repo = await self.db.get_repo(repo_id) if repo_id else None
+        # Build a lightweight repo-like object for _merge_and_push / _create_pr_for_task
+        # that still expects RepoConfig. Use a minimal compat wrapper.
+        from src.models import RepoConfig
+        repo = RepoConfig(
+            id=f"project-{task.project_id}",
+            project_id=task.project_id,
+            source_type=ws.source_type,
+            url=project.repo_url if project else "",
+            default_branch=default_branch,
+        ) if has_repo or ws else None
 
         # For plan subtasks: just commit, don't merge/push unless this is
         # the final subtask in the chain.
@@ -1106,18 +1030,15 @@ class Orchestrator:
                 else:
                     await self._merge_and_push(task, repo, workspace)
             elif not is_last and repo and self.config.auto_task.rebase_between_subtasks:
-                # Mid-chain sync: push intermediate work to remote and
-                # rebase onto latest main to reduce drift.  Non-fatal —
-                # the next subtask can still work even if sync fails.
                 try:
                     synced = self.git.mid_chain_sync(
-                        workspace, task.branch_name, repo.default_branch,
+                        workspace, task.branch_name, default_branch,
                     )
                     if synced:
                         print(
                             f"Task {task.id}: mid-chain sync OK — "
                             f"branch {task.branch_name} rebased onto "
-                            f"origin/{repo.default_branch}"
+                            f"origin/{default_branch}"
                         )
                     else:
                         print(
@@ -1137,8 +1058,6 @@ class Orchestrator:
             await self._merge_and_push(task, repo, workspace)
             return None
 
-        # No repo config — changes are committed on the branch but
-        # no merge/push/PR is attempted (e.g. local-only workspace)
         return None
 
     async def _is_last_subtask(self, task: Task) -> bool:
@@ -1483,7 +1402,6 @@ class Orchestrator:
                 priority=config.base_priority + step.priority_hint,
                 status=TaskStatus.DEFINED,
                 parent_task_id=task.id,
-                repo_id=task.repo_id if config.inherit_repo else None,
                 requires_approval=step_requires_approval,
                 plan_source=archived_path,
                 is_plan_subtask=True,
@@ -1604,16 +1522,20 @@ class Orchestrator:
         """Check whether a PR-backed AWAITING_APPROVAL task has been merged."""
         # Need a checkout path to run gh commands
         checkout_path = None
-        if task.assigned_agent_id:
-            ws = await self.db.get_agent_workspace(
-                task.assigned_agent_id, task.project_id,
-            )
-            if ws:
-                checkout_path = ws.workspace_path
-        if not checkout_path and task.repo_id:
-            repo = await self.db.get_repo(task.repo_id)
-            if repo and repo.source_path:
-                checkout_path = repo.source_path
+        # Try workspace locked by this task first
+        ws = await self.db.get_workspace_for_task(task.id)
+        if ws:
+            checkout_path = ws.workspace_path
+        # Fall back to any workspace for this project
+        if not checkout_path:
+            workspaces = await self.db.list_workspaces(project_id=task.project_id)
+            if workspaces:
+                checkout_path = workspaces[0].workspace_path
+        # Fall back to project workspace_path
+        if not checkout_path:
+            project = await self.db.get_project(task.project_id)
+            if project and project.workspace_path:
+                checkout_path = project.workspace_path
 
         if not checkout_path:
             return
@@ -2223,6 +2145,9 @@ class Orchestrator:
                 )
             brief = f"❓ Agent question on: {task.title} (`{task.id}`)"
             await _notify_brief(brief, embed=embed)
+
+        # Release workspace lock for this task
+        await self.db.release_workspaces_for_task(action.task_id)
 
         # Free agent — respect PAUSED state if set while the agent was BUSY
         post_agent = await self.db.get_agent(action.agent_id)

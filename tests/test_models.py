@@ -34,7 +34,7 @@ class TestTaskEvent:
 
 class TestAgentState:
     def test_all_states_exist(self):
-        expected = {"IDLE", "STARTING", "BUSY", "PAUSED", "ERROR"}
+        expected = {"IDLE", "BUSY", "PAUSED", "ERROR"}
         assert {s.value for s in AgentState} == expected
 
 

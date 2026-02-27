@@ -110,7 +110,6 @@ class AgentState(Enum):
     """
 
     IDLE = "IDLE"
-    STARTING = "STARTING"
     BUSY = "BUSY"
     PAUSED = "PAUSED"
     ERROR = "ERROR"
@@ -192,6 +191,10 @@ class Project:
     to their credit_weight. Each project may have its own Discord channel,
     workspace directory, and token budget. max_concurrent_agents caps how
     many agents can work on this project simultaneously.
+
+    Repo configuration (repo_url, repo_default_branch) is embedded directly
+    on the project — one repo per project.  Multiple workspaces per project
+    are managed via the Workspace model.
     """
     id: str
     name: str
@@ -202,6 +205,8 @@ class Project:
     budget_limit: int | None = None
     workspace_path: str | None = None
     discord_channel_id: str | None = None          # Per-project Discord channel
+    repo_url: str = ""
+    repo_default_branch: str = "main"
 
 
 @dataclass
@@ -243,7 +248,7 @@ class Agent:
 
     The orchestrator tracks agent state, heartbeats, and token usage. When an
     agent is IDLE, the scheduler may assign it a task. Per-project workspace
-    paths are stored in the agent_workspaces table (see AgentWorkspace).
+    paths are managed via project-scoped Workspaces with dynamic locking.
     """
 
     id: str
@@ -258,18 +263,22 @@ class Agent:
 
 
 @dataclass
-class AgentWorkspace:
-    """Maps an (agent_id, project_id) pair to a workspace directory.
+class Workspace:
+    """A project-scoped workspace directory where agents execute tasks.
 
-    Replaces the old Agent.checkout_path (single value) and Agent.repo_id
-    fields. Each agent can have a different workspace for each project it
-    works on.
+    Each project can have multiple workspaces (e.g. separate clones or linked
+    directories).  Agents dynamically acquire a workspace lock when assigned a
+    task and release it on completion — no manual agent-to-workspace mapping.
     """
 
-    agent_id: str
+    id: str
     project_id: str
     workspace_path: str
-    repo_id: str | None = None  # which repo config governs git ops
+    source_type: RepoSourceType  # clone or link (per-workspace)
+    name: str | None = None
+    locked_by_agent_id: str | None = None
+    locked_by_task_id: str | None = None
+    locked_at: float | None = None
 
 
 @dataclass

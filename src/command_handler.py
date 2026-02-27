@@ -31,8 +31,8 @@ from src.discord.embeds import STATUS_EMOJIS, progress_bar
 from src.discord.notifications import classify_error
 from src.git.manager import GitError
 from src.models import (
-    Agent, AgentState, Hook, Project, ProjectStatus, RepoConfig, RepoSourceType,
-    Task, TaskStatus, TaskType, VerificationType, TASK_TYPE_VALUES,
+    Agent, AgentState, Hook, Project, ProjectStatus, RepoSourceType,
+    Task, TaskStatus, TaskType, VerificationType, TASK_TYPE_VALUES, Workspace,
 )
 from src.orchestrator import Orchestrator
 from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge
@@ -782,6 +782,8 @@ class CommandHandler:
             credit_weight=args.get("credit_weight", 1.0),
             max_concurrent_agents=args.get("max_concurrent_agents", 2),
             workspace_path=workspace,
+            repo_url=args.get("repo_url", ""),
+            repo_default_branch=args.get("default_branch", "main"),
         )
         await self.db.create_project(project)
 
@@ -2430,25 +2432,26 @@ class CommandHandler:
         if not task.branch_name:
             return {"error": "Task has no branch name"}
 
-        # Resolve checkout path from agent_workspaces
+        # Resolve checkout path from workspaces (locked by this task)
         checkout_path = None
-        if task.assigned_agent_id:
-            ws = await self.db.get_agent_workspace(
-                task.assigned_agent_id, task.project_id,
-            )
-            if ws:
+        workspaces = await self.db.list_workspaces(project_id=task.project_id)
+        for ws in workspaces:
+            if ws.locked_by_task_id == task.id:
                 checkout_path = ws.workspace_path
-
-        # Fallback: repo source_path
-        repo = None
-        if task.repo_id:
+                break
+        # Fallback: first workspace for the project
+        if not checkout_path and workspaces:
+            checkout_path = workspaces[0].workspace_path
+        # Legacy fallback: repo source_path
+        if not checkout_path and task.repo_id:
             repo = await self.db.get_repo(task.repo_id)
-        if not checkout_path and repo and repo.source_path:
-            checkout_path = repo.source_path
+            if repo and repo.source_path:
+                checkout_path = repo.source_path
         if not checkout_path:
             return {"error": "Could not determine checkout path for diff"}
 
-        default_branch = repo.default_branch if repo else "main"
+        project = await self.db.get_project(task.project_id)
+        default_branch = project.repo_default_branch if project else "main"
         diff = self.orchestrator.git.get_diff(checkout_path, default_branch)
         if not diff:
             return {"diff": "(no changes)", "branch": task.branch_name}
@@ -2517,92 +2520,20 @@ class CommandHandler:
             name = await generate_unique_agent_name(self.db)
 
         agent_id = name.lower().replace(" ", "-")
-        project_id = args.get("project_id")
-        workspace_path = args.get("workspace_path")
 
-        # Start in STARTING state to prevent the scheduler from assigning
-        # tasks before workspace configuration is complete.  The agent
-        # transitions to IDLE when set_agent_workspace or activate_agent
-        # is called — or immediately below when workspace_path is provided.
+        # Agents start directly as IDLE — workspace acquisition is dynamic
         agent = Agent(
             id=agent_id,
             name=name,
             agent_type=args.get("agent_type", "claude"),
-            state=AgentState.STARTING,
+            state=AgentState.IDLE,
         )
         await self.db.create_agent(agent)
 
-        result = {"created": agent_id, "name": agent.name, "state": "STARTING"}
-
-        # If workspace provided, set it atomically and activate the agent
-        if project_id and workspace_path:
-            project = await self.db.get_project(project_id)
-            if not project:
-                return {"error": f"Project '{project_id}' not found"}
-            repo_id = args.get("repo_id")
-            if repo_id:
-                repo = await self.db.get_repo(repo_id)
-                if not repo:
-                    return {"error": f"Repo '{repo_id}' not found"}
-            await self.db.set_agent_workspace(
-                agent_id, project_id, workspace_path, repo_id=repo_id,
-            )
-            await self.db.update_agent(agent_id, state=AgentState.IDLE)
-            result["state"] = "IDLE"
-            result["workspace_path"] = workspace_path
-            result["project_id"] = project_id
-        return result
-
-    async def _cmd_set_agent_workspace(self, args: dict) -> dict:
-        """Set the workspace path for an agent in a specific project.
-
-        Also activates the agent (STARTING -> IDLE) so it can receive tasks.
-        This prevents the race condition where the scheduler assigns a task
-        before the workspace is configured.
-        """
-        agent_id = args["agent_id"]
-        project_id = args["project_id"]
-        workspace_path = args["workspace_path"]
-        repo_id = args.get("repo_id")
-
-        agent = await self.db.get_agent(agent_id)
-        if not agent:
-            return {"error": f"Agent '{agent_id}' not found"}
-        project = await self.db.get_project(project_id)
-        if not project:
-            return {"error": f"Project '{project_id}' not found"}
-        if repo_id:
-            repo = await self.db.get_repo(repo_id)
-            if not repo:
-                return {"error": f"Repo '{repo_id}' not found"}
-
-        await self.db.set_agent_workspace(
-            agent_id, project_id, workspace_path, repo_id=repo_id,
-        )
-
-        # Activate agent if it was waiting for workspace configuration
-        activated = False
-        if agent.state == AgentState.STARTING:
-            await self.db.update_agent(agent_id, state=AgentState.IDLE)
-            activated = True
-
-        result = {
-            "agent_id": agent_id,
-            "project_id": project_id,
-            "workspace_path": workspace_path,
-        }
-        if activated:
-            result["activated"] = True
-        if repo_id:
-            result["repo_id"] = repo_id
-        return result
+        return {"created": agent_id, "name": agent.name, "state": "IDLE"}
 
     async def _cmd_edit_agent(self, args: dict) -> dict:
-        """Edit an agent's properties (name, agent_type).
-
-        Optionally update workspace for a specific project by providing
-        project_id and workspace_path (delegates to set_agent_workspace).
-        """
+        """Edit an agent's properties (name, agent_type)."""
         agent_id = args["agent_id"]
         agent = await self.db.get_agent(agent_id)
         if not agent:
@@ -2614,52 +2545,114 @@ class CommandHandler:
         if "agent_type" in args:
             updates["agent_type"] = args["agent_type"]
 
-        fields_changed: list[str] = []
+        if not updates:
+            return {"error": "No fields to update. Provide name or agent_type."}
 
-        if updates:
-            await self.db.update_agent(agent_id, **updates)
-            fields_changed.extend(updates.keys())
+        await self.db.update_agent(agent_id, **updates)
 
-        # Handle workspace update (delegates to set_agent_workspace logic)
-        workspace_result = None
-        if "workspace_path" in args and "project_id" in args:
-            workspace_result = await self._cmd_set_agent_workspace({
-                "agent_id": agent_id,
-                "project_id": args["project_id"],
-                "workspace_path": args["workspace_path"],
-                "repo_id": args.get("repo_id"),
-            })
-            if "error" in workspace_result:
-                return workspace_result
-            fields_changed.append("workspace_path")
-
-        if not fields_changed:
-            return {
-                "error": (
-                    "No fields to update. Provide name, agent_type, "
-                    "or workspace_path with project_id."
-                )
-            }
-
-        result = {
+        return {
             "updated": agent_id,
-            "fields": fields_changed,
+            "fields": list(updates.keys()),
             "name": args.get("name", agent.name),
         }
-        if workspace_result and workspace_result.get("activated"):
-            result["activated"] = True
-        return result
 
-    async def _cmd_activate_agent(self, args: dict) -> dict:
-        """Transition an agent from STARTING to IDLE so it can receive tasks."""
-        agent_id = args["agent_id"]
-        agent = await self.db.get_agent(agent_id)
-        if not agent:
-            return {"error": f"Agent '{agent_id}' not found"}
-        if agent.state != AgentState.STARTING:
-            return {"error": f"Agent '{agent_id}' is {agent.state.value}, not STARTING"}
-        await self.db.update_agent(agent_id, state=AgentState.IDLE)
-        return {"agent_id": agent_id, "state": "IDLE"}
+    async def _cmd_add_workspace(self, args: dict) -> dict:
+        """Create a workspace for a project."""
+        import uuid
+        project_id = args["project_id"]
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"error": f"Project '{project_id}' not found"}
+
+        source = args.get("source", "clone")
+        source_type = RepoSourceType(source)
+        path = args.get("path")
+        name = args.get("name")
+
+        if source_type == RepoSourceType.LINK:
+            if not path:
+                return {"error": "Link workspaces require a 'path' parameter"}
+            if not os.path.isdir(path):
+                return {"error": f"Path '{path}' does not exist or is not a directory"}
+        elif source_type == RepoSourceType.CLONE:
+            if not path:
+                # Auto-generate path under workspace_dir/{project_id}/
+                ws_name = name or f"checkout-{uuid.uuid4().hex[:6]}"
+                path = os.path.join(
+                    self.config.workspace_dir, project_id, ws_name,
+                )
+            if project.repo_url:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                try:
+                    self.orchestrator.git.create_checkout(project.repo_url, path)
+                except Exception as e:
+                    return {"error": f"Clone failed: {e}"}
+
+        ws_id = f"ws-{uuid.uuid4().hex[:8]}"
+        workspace = Workspace(
+            id=ws_id,
+            project_id=project_id,
+            workspace_path=path,
+            source_type=source_type,
+            name=name,
+        )
+        await self.db.create_workspace(workspace)
+        return {
+            "created": ws_id,
+            "project_id": project_id,
+            "workspace_path": path,
+            "source_type": source,
+        }
+
+    async def _cmd_list_workspaces(self, args: dict) -> dict:
+        """List workspaces with lock status."""
+        project_id = args.get("project_id")
+        if not project_id and self._active_project_id:
+            project_id = self._active_project_id
+        workspaces = await self.db.list_workspaces(project_id=project_id)
+        return {
+            "workspaces": [
+                {
+                    "id": ws.id,
+                    "project_id": ws.project_id,
+                    "workspace_path": ws.workspace_path,
+                    "source_type": ws.source_type.value,
+                    "name": ws.name,
+                    "locked_by_agent_id": ws.locked_by_agent_id,
+                    "locked_by_task_id": ws.locked_by_task_id,
+                }
+                for ws in workspaces
+            ]
+        }
+
+    async def _cmd_remove_workspace(self, args: dict) -> dict:
+        """Delete a workspace."""
+        workspace_id = args["workspace_id"]
+        ws = await self.db.get_workspace(workspace_id)
+        if not ws:
+            return {"error": f"Workspace '{workspace_id}' not found"}
+        if ws.locked_by_agent_id:
+            return {
+                "error": f"Workspace '{workspace_id}' is locked by agent "
+                         f"'{ws.locked_by_agent_id}'. Release it first."
+            }
+        await self.db.delete_workspace(workspace_id)
+        return {"deleted": workspace_id}
+
+    async def _cmd_release_workspace(self, args: dict) -> dict:
+        """Admin force-release a stuck workspace lock."""
+        workspace_id = args["workspace_id"]
+        ws = await self.db.get_workspace(workspace_id)
+        if not ws:
+            return {"error": f"Workspace '{workspace_id}' not found"}
+        if not ws.locked_by_agent_id:
+            return {"workspace_id": workspace_id, "status": "already_unlocked"}
+        await self.db.release_workspace(workspace_id)
+        return {
+            "workspace_id": workspace_id,
+            "released_from_agent": ws.locked_by_agent_id,
+            "released_from_task": ws.locked_by_task_id,
+        }
 
     async def _cmd_pause_agent(self, args: dict) -> dict:
         """Pause an agent so it stops receiving new tasks.
@@ -2710,92 +2703,6 @@ class CommandHandler:
             }
         await self.db.delete_agent(agent_id)
         return {"deleted": agent_id, "name": agent.name}
-
-    # -----------------------------------------------------------------------
-    # Repo commands -- register repositories for projects.
-    # Three source types: "clone" (git URL -- agents get isolated checkouts),
-    # "link" (existing directory on disk -- agents work in-place), and "init"
-    # (create a new empty git repo in the project workspace).
-    # -----------------------------------------------------------------------
-
-    async def _cmd_add_repo(self, args: dict) -> dict:
-        project_id = args["project_id"]
-        project = await self.db.get_project(project_id)
-        if not project:
-            return {"error": f"Project '{project_id}' not found"}
-
-        source = args["source"]
-        source_type = RepoSourceType(source)
-        url = args.get("url", "")
-        path = args.get("path", "")
-        default_branch = args.get("default_branch", "main")
-
-        if source_type == RepoSourceType.CLONE and not url:
-            return {"error": "Clone repos require a 'url' parameter"}
-        if source_type == RepoSourceType.LINK and not path:
-            return {"error": "Link repos require a 'path' parameter"}
-        if source_type == RepoSourceType.LINK and not os.path.isdir(path):
-            return {"error": f"Path '{path}' does not exist or is not a directory"}
-
-        repo_name = args.get("name")
-        if not repo_name:
-            if url:
-                repo_name = url.rstrip("/").split("/")[-1].replace(".git", "")
-            elif path:
-                repo_name = os.path.basename(path.rstrip("/"))
-            else:
-                repo_name = f"{project_id}-repo"
-
-        repo_id = repo_name.lower().replace(" ", "-")
-
-        repo = RepoConfig(
-            id=repo_id,
-            project_id=project_id,
-            source_type=source_type,
-            url=url,
-            source_path=path,
-            default_branch=default_branch,
-        )
-        await self.db.create_repo(repo)
-        return {
-            "created": repo_id,
-            "name": repo_name,
-            "source_type": source,
-        }
-
-    async def _cmd_list_repos(self, args: dict) -> dict:
-        project_id = args.get("project_id")
-        repos = await self.db.list_repos(project_id=project_id)
-        return {
-            "repos": [
-                {
-                    "id": r.id,
-                    "project_id": r.project_id,
-                    "source_type": r.source_type.value,
-                    "url": r.url,
-                    "source_path": r.source_path,
-                    "default_branch": r.default_branch,
-                    "checkout_base_path": r.checkout_base_path,
-                }
-                for r in repos
-            ]
-        }
-
-    async def _cmd_edit_repo(self, args: dict) -> dict:
-        """Edit a repository's configuration (default_branch, url)."""
-        repo_id = args["repo_id"]
-        repo = await self.db.get_repo(repo_id)
-        if not repo:
-            return {"error": f"Repo '{repo_id}' not found"}
-        updates = {}
-        if "default_branch" in args:
-            updates["default_branch"] = args["default_branch"]
-        if "url" in args:
-            updates["url"] = args["url"]
-        if not updates:
-            return {"error": "No fields to update. Provide default_branch or url."}
-        await self.db.update_repo(repo_id, **updates)
-        return {"updated": repo_id, "fields": list(updates.keys())}
 
     # -----------------------------------------------------------------------
     # Events and token usage -- observability into system activity and
@@ -2874,66 +2781,92 @@ class CommandHandler:
             return {"error": f"Project '{project_id}' not found"}
 
         git = self.orchestrator.git
-        repos = await self.db.list_repos(project_id=project_id)
         repo_statuses = []
 
-        if repos:
-            for repo in repos:
-                if repo.source_type == RepoSourceType.LINK and repo.source_path:
-                    repo_path = repo.source_path
-                elif repo.source_type == RepoSourceType.CLONE and repo.checkout_base_path:
-                    repo_path = repo.checkout_base_path
-                else:
-                    continue
-
-                if not os.path.isdir(repo_path):
+        # Check workspaces first (new model)
+        workspaces = await self.db.list_workspaces(project_id=project_id)
+        if workspaces:
+            for ws in workspaces:
+                ws_path = ws.workspace_path
+                if not os.path.isdir(ws_path):
                     repo_statuses.append({
-                        "repo_id": repo.id,
-                        "error": f"Path not found: {repo_path}",
+                        "repo_id": ws.id,
+                        "error": f"Path not found: {ws_path}",
                     })
                     continue
-
-                if not git.validate_checkout(repo_path):
+                if not git.validate_checkout(ws_path):
                     repo_statuses.append({
-                        "repo_id": repo.id,
-                        "error": f"Not a valid git repository: {repo_path}",
+                        "repo_id": ws.id,
+                        "error": f"Not a valid git repository: {ws_path}",
                     })
                     continue
-
-                branch = git.get_current_branch(repo_path)
-                status_output = git.get_status(repo_path)
-                recent_commits = git.get_recent_commits(repo_path, count=5)
-
+                branch = git.get_current_branch(ws_path)
+                status_output = git.get_status(ws_path)
+                recent_commits = git.get_recent_commits(ws_path, count=5)
+                lock_info = ""
+                if ws.locked_by_agent_id:
+                    lock_info = f" (locked by {ws.locked_by_agent_id})"
                 repo_statuses.append({
-                    "repo_id": repo.id,
-                    "path": repo_path,
+                    "repo_id": ws.id,
+                    "path": ws_path,
+                    "branch": branch,
+                    "status": status_output or "(clean)",
+                    "recent_commits": recent_commits,
+                    "lock": lock_info,
+                })
+        else:
+            # Legacy: check repos table
+            repos = await self.db.list_repos(project_id=project_id)
+            if repos:
+                for repo in repos:
+                    if repo.source_type == RepoSourceType.LINK and repo.source_path:
+                        repo_path = repo.source_path
+                    elif repo.source_type == RepoSourceType.CLONE and repo.checkout_base_path:
+                        repo_path = repo.checkout_base_path
+                    else:
+                        continue
+                    if not os.path.isdir(repo_path):
+                        repo_statuses.append({
+                            "repo_id": repo.id,
+                            "error": f"Path not found: {repo_path}",
+                        })
+                        continue
+                    if not git.validate_checkout(repo_path):
+                        repo_statuses.append({
+                            "repo_id": repo.id,
+                            "error": f"Not a valid git repository: {repo_path}",
+                        })
+                        continue
+                    branch = git.get_current_branch(repo_path)
+                    status_output = git.get_status(repo_path)
+                    recent_commits = git.get_recent_commits(repo_path, count=5)
+                    repo_statuses.append({
+                        "repo_id": repo.id,
+                        "path": repo_path,
+                        "branch": branch,
+                        "status": status_output or "(clean)",
+                        "recent_commits": recent_commits,
+                    })
+            else:
+                workspace = project.workspace_path
+                if not workspace or not os.path.isdir(workspace):
+                    return {
+                        "error": f"Project '{project_id}' has no workspaces and no valid workspace path"
+                    }
+                if not git.validate_checkout(workspace):
+                    return {
+                        "error": f"Project workspace '{workspace}' is not a git repository"
+                    }
+                branch = git.get_current_branch(workspace)
+                status_output = git.get_status(workspace)
+                recent_commits = git.get_recent_commits(workspace, count=5)
+                repo_statuses.append({
+                    "repo_id": "(workspace)",
+                    "path": workspace,
                     "branch": branch,
                     "status": status_output or "(clean)",
                     "recent_commits": recent_commits,
                 })
-        else:
-            workspace = project.workspace_path
-            if not workspace or not os.path.isdir(workspace):
-                return {
-                    "error": f"Project '{project_id}' has no repos and no valid workspace path"
-                }
-
-            if not git.validate_checkout(workspace):
-                return {
-                    "error": f"Project workspace '{workspace}' is not a git repository"
-                }
-
-            branch = git.get_current_branch(workspace)
-            status_output = git.get_status(workspace)
-            recent_commits = git.get_recent_commits(workspace, count=5)
-
-            repo_statuses.append({
-                "repo_id": "(workspace)",
-                "path": workspace,
-                "branch": branch,
-                "status": status_output or "(clean)",
-                "recent_commits": recent_commits,
-            })
 
         return {
             "project_id": project_id,
@@ -2943,19 +2876,19 @@ class CommandHandler:
 
     async def _resolve_repo_path(
         self, args: dict,
-    ) -> tuple[str | None, RepoConfig | None, dict | None]:
-        """Resolve the git checkout path for a project/repo pair.
+    ) -> tuple[str | None, Project | None, dict | None]:
+        """Resolve the git checkout path for a project.
 
-        Returns ``(checkout_path, repo_config, error_dict)``.
+        Returns ``(checkout_path, project, error_dict)``.
         On success *error_dict* is ``None``.  On failure *checkout_path* is
         ``None``.
 
-        When only *repo_id* is supplied (without *project_id*) the repo is
-        looked up directly — this keeps older repo-id-only commands working.
+        Resolution order:
+        1. Project's first workspace (from the workspaces table)
+        2. Legacy: project's first repo (for backward compat)
+        3. project.workspace_path fallback
 
-        When neither *project_id* nor *repo_id* is supplied, falls back to
-        the active project (``_active_project_id``) so that commands issued
-        in a project channel work without explicitly specifying identifiers.
+        When no *project_id* is supplied, falls back to the active project.
         """
         project_id = args.get("project_id")
         repo_id = args.get("repo_id")
@@ -2964,12 +2897,10 @@ class CommandHandler:
         if not project_id and not repo_id:
             if self._active_project_id:
                 project_id = self._active_project_id
-                args["project_id"] = project_id  # inject for downstream use
+                args["project_id"] = project_id
             else:
                 return None, None, {"error": "project_id is required (no active project set)"}
         elif not project_id and repo_id:
-            # When only repo_id is given, try to inherit project context from
-            # the active project so downstream code can reference args["project_id"].
             if self._active_project_id:
                 project_id = self._active_project_id
                 args["project_id"] = project_id
@@ -2982,44 +2913,52 @@ class CommandHandler:
 
         git = self.orchestrator.git
 
-        if repo_id:
-            repo = await self.db.get_repo(repo_id)
-            if not repo:
-                return None, None, {"error": f"Repo '{repo_id}' not found"}
-        elif project_id:
-            repos = await self.db.list_repos(project_id=project_id)
-            repo = repos[0] if repos else None
-        else:
-            repo = None
+        # Try new workspaces table first
+        checkout_path = None
+        if project_id:
+            workspaces = await self.db.list_workspaces(project_id=project_id)
+            if workspaces:
+                checkout_path = workspaces[0].workspace_path
 
-        if repo:
-            if repo.source_type == RepoSourceType.LINK and repo.source_path:
-                checkout_path = repo.source_path
-            elif repo.source_type in (RepoSourceType.CLONE, RepoSourceType.INIT) and repo.checkout_base_path:
-                checkout_path = repo.checkout_base_path
-            else:
-                return None, repo, {"error": f"Repo '{repo.id}' has no usable path"}
-        else:
+        # Legacy fallback: try repos table
+        if not checkout_path and repo_id:
+            repo = await self.db.get_repo(repo_id)
+            if repo:
+                if repo.source_type == RepoSourceType.LINK and repo.source_path:
+                    checkout_path = repo.source_path
+                elif repo.source_type in (RepoSourceType.CLONE, RepoSourceType.INIT) and repo.checkout_base_path:
+                    checkout_path = repo.checkout_base_path
+        elif not checkout_path and project_id:
+            repos = await self.db.list_repos(project_id=project_id)
+            if repos:
+                repo = repos[0]
+                if repo.source_type == RepoSourceType.LINK and repo.source_path:
+                    checkout_path = repo.source_path
+                elif repo.source_type in (RepoSourceType.CLONE, RepoSourceType.INIT) and repo.checkout_base_path:
+                    checkout_path = repo.checkout_base_path
+
+        # Final fallback: project.workspace_path
+        if not checkout_path:
             if not project:
-                return None, None, {"error": "No repo found and no project context"}
+                return None, None, {"error": "No workspace found and no project context"}
             checkout_path = project.workspace_path
             if not checkout_path or not os.path.isdir(checkout_path):
-                return None, None, {"error": f"Project '{project_id}' has no repos and no valid workspace"}
+                return None, None, {"error": f"Project '{project_id}' has no workspaces and no valid workspace_path"}
 
         if not os.path.isdir(checkout_path):
-            return None, repo, {"error": f"Path not found: {checkout_path}"}
+            return None, project, {"error": f"Path not found: {checkout_path}"}
         if not git.validate_checkout(checkout_path):
-            return None, repo, {"error": f"Not a valid git repository: {checkout_path}"}
+            return None, project, {"error": f"Not a valid git repository: {checkout_path}"}
 
-        return checkout_path, repo, None
+        return checkout_path, project, None
 
     async def _cmd_git_commit(self, args: dict) -> dict:
         """Stage all changes and create a commit in a repository."""
         message = args["message"]
-        checkout_path, repo, err = await self._resolve_repo_path(args)
+        checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
-        repo_id = args.get("repo_id") or (repo.id if repo else "(workspace)")
+        repo_id = args.get("repo_id") or (project.id if project else "(workspace)")
         try:
             committed = self.orchestrator.git.commit_all(checkout_path, message)
         except GitError as e:
@@ -3030,10 +2969,10 @@ class CommandHandler:
 
     async def _cmd_git_push(self, args: dict) -> dict:
         """Push a branch to the remote origin."""
-        checkout_path, repo, err = await self._resolve_repo_path(args)
+        checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
-        repo_id = args.get("repo_id") or (repo.id if repo else "(workspace)")
+        repo_id = args.get("repo_id") or (project.id if project else "(workspace)")
         git = self.orchestrator.git
         branch = args.get("branch") or git.get_current_branch(checkout_path)
         if not branch:
@@ -3047,10 +2986,10 @@ class CommandHandler:
     async def _cmd_git_create_branch(self, args: dict) -> dict:
         """Create and switch to a new git branch."""
         branch_name = args["branch_name"]
-        checkout_path, repo, err = await self._resolve_repo_path(args)
+        checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
-        repo_id = args.get("repo_id") or (repo.id if repo else "(workspace)")
+        repo_id = args.get("repo_id") or (project.id if project else "(workspace)")
         try:
             self.orchestrator.git.create_branch(checkout_path, branch_name)
         except GitError as e:
@@ -3060,11 +2999,11 @@ class CommandHandler:
     async def _cmd_git_merge(self, args: dict) -> dict:
         """Merge a branch into the default branch."""
         branch_name = args["branch_name"]
-        checkout_path, repo, err = await self._resolve_repo_path(args)
+        checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
-        repo_id = args.get("repo_id") or (repo.id if repo else "(workspace)")
-        default_branch = args.get("default_branch") or (repo.default_branch if repo else "main") or "main"
+        repo_id = args.get("repo_id") or (project.id if project else "(workspace)")
+        default_branch = args.get("default_branch") or (project.repo_default_branch if project else "main") or "main"
         try:
             success = self.orchestrator.git.merge_branch(checkout_path, branch_name, default_branch)
         except GitError as e:
@@ -3087,15 +3026,15 @@ class CommandHandler:
         """Create a GitHub pull request using the gh CLI."""
         title = args["title"]
         body = args.get("body", "")
-        checkout_path, repo, err = await self._resolve_repo_path(args)
+        checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
-        repo_id = args.get("repo_id") or (repo.id if repo else "(workspace)")
+        repo_id = args.get("repo_id") or (project.id if project else "(workspace)")
         git = self.orchestrator.git
         branch = args.get("branch") or git.get_current_branch(checkout_path)
         if not branch:
             return {"error": "Could not determine current branch"}
-        base = args.get("base") or (repo.default_branch if repo else "main") or "main"
+        base = args.get("base") or (project.repo_default_branch if project else "main") or "main"
         try:
             pr_url = git.create_pr(checkout_path, branch, title, body, base)
         except GitError as e:
@@ -3104,11 +3043,11 @@ class CommandHandler:
 
     async def _cmd_git_changed_files(self, args: dict) -> dict:
         """List files changed compared to a base branch."""
-        checkout_path, repo, err = await self._resolve_repo_path(args)
+        checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
-        repo_id = args.get("repo_id") or (repo.id if repo else "(workspace)")
-        base_branch = args.get("base_branch") or (repo.default_branch if repo else "main") or "main"
+        repo_id = args.get("repo_id") or (project.id if project else "(workspace)")
+        base_branch = args.get("base_branch") or (project.repo_default_branch if project else "main") or "main"
         files = self.orchestrator.git.get_changed_files(checkout_path, base_branch)
         return {
             "repo_id": repo_id,
@@ -3119,7 +3058,7 @@ class CommandHandler:
 
     async def _cmd_git_log(self, args: dict) -> dict:
         """Show recent commit log for a repository."""
-        checkout_path, repo, err = await self._resolve_repo_path(args)
+        checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
 
@@ -3131,7 +3070,7 @@ class CommandHandler:
 
         return {
             "project_id": args["project_id"],
-            "repo_id": repo.id if repo else "(workspace)",
+            "repo_id": project.id if project else "(workspace)",
             "branch": branch,
             "log": log_output or "(no commits)",
         }
@@ -3145,7 +3084,7 @@ class CommandHandler:
         otherwise all local branches are listed.
         """
 
-        checkout_path, repo, err = await self._resolve_repo_path(args)
+        checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
 
@@ -3174,7 +3113,7 @@ class CommandHandler:
     async def _cmd_git_checkout(self, args: dict) -> dict:
         """Switch to an existing branch."""
 
-        checkout_path, repo, err = await self._resolve_repo_path(args)
+        checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
 
@@ -3197,7 +3136,7 @@ class CommandHandler:
 
     async def _cmd_git_diff(self, args: dict) -> dict:
         """Show diff of the working tree or against a base branch."""
-        checkout_path, repo, err = await self._resolve_repo_path(args)
+        checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
 
@@ -3215,7 +3154,7 @@ class CommandHandler:
 
         return {
             "project_id": args["project_id"],
-            "repo_id": repo.id if repo else "(workspace)",
+            "repo_id": project.id if project else "(workspace)",
             "base_branch": base or "(working tree)",
             "diff": diff or "(no changes)",
         }
@@ -3226,7 +3165,7 @@ class CommandHandler:
         if not branch_name:
             return {"error": "branch_name is required"}
 
-        checkout_path, repo, err = await self._resolve_repo_path(args)
+        checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
 
@@ -3238,7 +3177,7 @@ class CommandHandler:
 
         return {
             "project_id": args["project_id"],
-            "repo_id": repo.id if repo else "(workspace)",
+            "repo_id": project.id if project else "(workspace)",
             "branch": branch_name,
             "status": "created",
         }
@@ -3261,7 +3200,7 @@ class CommandHandler:
         if not branch_name:
             return {"error": "branch_name is required"}
 
-        checkout_path, repo, err = await self._resolve_repo_path(args)
+        checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
 
@@ -3273,7 +3212,7 @@ class CommandHandler:
 
         result = {
             "project_id": args["project_id"],
-            "repo_id": repo.id if repo else "(workspace)",
+            "repo_id": project.id if project else "(workspace)",
             "branch": branch_name,
             "status": "checked_out",
         }
@@ -3288,7 +3227,7 @@ class CommandHandler:
         if not message:
             return {"error": "message is required"}
 
-        checkout_path, repo, err = await self._resolve_repo_path(args)
+        checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
 
@@ -3301,14 +3240,14 @@ class CommandHandler:
         if not committed:
             return {
                 "project_id": args["project_id"],
-                "repo_id": repo.id if repo else "(workspace)",
+                "repo_id": project.id if project else "(workspace)",
                 "status": "nothing_to_commit",
                 "message": "No changes to commit",
             }
 
         result = {
             "project_id": args["project_id"],
-            "repo_id": repo.id if repo else "(workspace)",
+            "repo_id": project.id if project else "(workspace)",
             "commit_message": message,
             "status": "committed",
         }
@@ -3319,7 +3258,7 @@ class CommandHandler:
 
     async def _cmd_push_branch(self, args: dict) -> dict:
         """Push the current (or specified) branch to origin."""
-        checkout_path, repo, err = await self._resolve_repo_path(args)
+        checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
 
@@ -3337,7 +3276,7 @@ class CommandHandler:
 
         return {
             "project_id": args["project_id"],
-            "repo_id": repo.id if repo else "(workspace)",
+            "repo_id": project.id if project else "(workspace)",
             "branch": branch_name,
             "status": "pushed",
         }
@@ -3348,12 +3287,12 @@ class CommandHandler:
         if not branch_name:
             return {"error": "branch_name is required"}
 
-        checkout_path, repo, err = await self._resolve_repo_path(args)
+        checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
 
         git = self.orchestrator.git
-        default_branch = repo.default_branch if repo else "main"
+        default_branch = project.repo_default_branch if project else "main"
 
         try:
             success = git.merge_branch(checkout_path, branch_name, default_branch)
@@ -3365,7 +3304,7 @@ class CommandHandler:
         if not success:
             result = {
                 "project_id": args["project_id"],
-                "repo_id": repo.id if repo else "(workspace)",
+                "repo_id": project.id if project else "(workspace)",
                 "branch": branch_name,
                 "target": default_branch,
                 "status": "conflict",
@@ -3377,7 +3316,7 @@ class CommandHandler:
 
         result = {
             "project_id": args["project_id"],
-            "repo_id": repo.id if repo else "(workspace)",
+            "repo_id": project.id if project else "(workspace)",
             "branch": branch_name,
             "target": default_branch,
             "status": "merged",

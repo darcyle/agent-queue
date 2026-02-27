@@ -26,7 +26,7 @@ import pytest
 from src.config import AutoTaskConfig
 from src.git.manager import GitError, GitManager
 from src.models import (
-    AgentWorkspace, RepoConfig, RepoSourceType, Task, TaskStatus,
+    RepoConfig, RepoSourceType, Task, TaskStatus,
 )
 
 

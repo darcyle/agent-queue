@@ -1,8 +1,8 @@
 """Integration tests for CommandHandler._resolve_repo_path.
 
-Tests the resolution logic that maps (project_id, repo_id) to a filesystem
-checkout path.  Covers linked repos, cloned repos, init repos, workspace
-fallback, and various error conditions.
+Tests the resolution logic that maps (project_id, optional workspace/repo) to
+a filesystem checkout path.  Covers workspaces, legacy linked/cloned repos,
+workspace_path fallback, and various error conditions.
 """
 
 import os
@@ -13,7 +13,7 @@ from src.command_handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.git.manager import GitManager
-from src.models import Project, RepoConfig, RepoSourceType
+from src.models import Project, RepoConfig, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
 from unittest.mock import MagicMock
 
@@ -70,12 +70,64 @@ def _make_dir(path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Happy-path resolution
+# Happy-path: workspace resolution (primary path)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceResolution:
+    """Project with workspaces → resolves from workspace path."""
+
+    async def test_resolve_workspace_by_project_id(self, handler, db, tmp_path, mock_git):
+        checkout = _make_dir(str(tmp_path / "ws-checkout"))
+
+        await db.create_project(Project(id="p-ws", name="Workspace Project"))
+        await db.create_workspace(Workspace(
+            id="ws-1", project_id="p-ws",
+            workspace_path=checkout,
+            source_type=RepoSourceType.LINK,
+        ))
+
+        path, project, err = await handler._resolve_repo_path({"project_id": "p-ws"})
+
+        assert err is None
+        assert path == checkout
+        assert project is not None
+        assert project.id == "p-ws"
+        mock_git.validate_checkout.assert_called_once_with(checkout)
+
+    async def test_workspace_takes_priority_over_legacy_repo(
+        self, handler, db, tmp_path, mock_git,
+    ):
+        """When both workspaces and legacy repos exist, workspace wins."""
+        ws_path = _make_dir(str(tmp_path / "workspace"))
+        repo_path = _make_dir(str(tmp_path / "legacy-repo"))
+
+        await db.create_project(Project(id="p-both", name="Both"))
+        await db.create_workspace(Workspace(
+            id="ws-1", project_id="p-both",
+            workspace_path=ws_path,
+            source_type=RepoSourceType.LINK,
+        ))
+        await db.create_repo(RepoConfig(
+            id="r-legacy", project_id="p-both",
+            source_type=RepoSourceType.LINK,
+            source_path=repo_path,
+        ))
+
+        path, project, err = await handler._resolve_repo_path({"project_id": "p-both"})
+
+        assert err is None
+        assert path == ws_path  # workspace wins
+        assert project.id == "p-both"
+
+
+# ---------------------------------------------------------------------------
+# Happy-path: legacy repo resolution (backward compat)
 # ---------------------------------------------------------------------------
 
 
 class TestLinkedRepo:
-    """Project with a LINK repo → returns checkout_base_path."""
+    """Project with a LINK repo (legacy) → returns checkout path via fallback."""
 
     async def test_resolve_linked_repo_by_project_id(self, handler, db, tmp_path, mock_git):
         checkout = _make_dir(str(tmp_path / "linked-checkout"))
@@ -88,17 +140,16 @@ class TestLinkedRepo:
             source_path=checkout,
         ))
 
-        path, repo, err = await handler._resolve_repo_path({"project_id": "p-link"})
+        path, project, err = await handler._resolve_repo_path({"project_id": "p-link"})
 
         assert err is None
         assert path == checkout
-        assert repo is not None
-        assert repo.id == "r-link"
-        assert repo.source_type == RepoSourceType.LINK
+        assert project is not None
+        assert project.id == "p-link"
         mock_git.validate_checkout.assert_called_once_with(checkout)
 
     async def test_resolve_linked_repo_by_repo_id(self, handler, db, tmp_path, mock_git):
-        """repo_id alone (without project_id) should still resolve."""
+        """repo_id alone (without project_id) should still resolve via legacy fallback."""
         checkout = _make_dir(str(tmp_path / "linked-only"))
 
         await db.create_project(Project(id="p-link2", name="Link2"))
@@ -109,14 +160,15 @@ class TestLinkedRepo:
             source_path=checkout,
         ))
 
-        path, repo, err = await handler._resolve_repo_path({"repo_id": "r-link2"})
+        path, project, err = await handler._resolve_repo_path({"repo_id": "r-link2"})
 
         assert err is None
         assert path == checkout
-        assert repo.id == "r-link2"
+        # No project_id given and no active project → project is None
+        assert project is None
 
     async def test_resolve_linked_repo_with_both_ids(self, handler, db, tmp_path):
-        """When both project_id and repo_id are given, repo_id takes precedence."""
+        """When both project_id and repo_id are given, resolution still works."""
         checkout = _make_dir(str(tmp_path / "linked-both"))
 
         await db.create_project(Project(id="p-both", name="Both IDs"))
@@ -127,18 +179,18 @@ class TestLinkedRepo:
             source_path=checkout,
         ))
 
-        path, repo, err = await handler._resolve_repo_path({
+        path, project, err = await handler._resolve_repo_path({
             "project_id": "p-both",
             "repo_id": "r-both",
         })
 
         assert err is None
         assert path == checkout
-        assert repo.id == "r-both"
+        assert project.id == "p-both"
 
 
 class TestClonedRepo:
-    """Project with a CLONE repo → returns checkout_base_path."""
+    """Project with a CLONE repo (legacy) → returns checkout_base_path."""
 
     async def test_resolve_cloned_repo(self, handler, db, tmp_path, mock_git):
         checkout = _make_dir(str(tmp_path / "clone-checkout"))
@@ -152,13 +204,12 @@ class TestClonedRepo:
             checkout_base_path=checkout,
         ))
 
-        path, repo, err = await handler._resolve_repo_path({"project_id": "p-clone"})
+        path, project, err = await handler._resolve_repo_path({"project_id": "p-clone"})
 
         assert err is None
         assert path == checkout
-        assert repo is not None
-        assert repo.id == "r-clone"
-        assert repo.source_type == RepoSourceType.CLONE
+        assert project is not None
+        assert project.id == "p-clone"
         mock_git.validate_checkout.assert_called_once_with(checkout)
 
     async def test_resolve_cloned_repo_by_repo_id(self, handler, db, tmp_path):
@@ -173,15 +224,16 @@ class TestClonedRepo:
             checkout_base_path=checkout,
         ))
 
-        path, repo, err = await handler._resolve_repo_path({"repo_id": "r-clone2"})
+        path, project, err = await handler._resolve_repo_path({"repo_id": "r-clone2"})
 
         assert err is None
         assert path == checkout
-        assert repo.source_type == RepoSourceType.CLONE
+        # repo_id-only → project is None
+        assert project is None
 
 
 class TestInitRepo:
-    """Project with an INIT repo → returns checkout_base_path."""
+    """Project with an INIT repo (legacy) → returns checkout_base_path."""
 
     async def test_resolve_init_repo(self, handler, db, tmp_path, mock_git):
         checkout = _make_dir(str(tmp_path / "init-checkout"))
@@ -194,17 +246,21 @@ class TestInitRepo:
             checkout_base_path=checkout,
         ))
 
-        path, repo, err = await handler._resolve_repo_path({"project_id": "p-init"})
+        path, project, err = await handler._resolve_repo_path({"project_id": "p-init"})
 
         assert err is None
         assert path == checkout
-        assert repo.id == "r-init"
-        assert repo.source_type == RepoSourceType.INIT
+        assert project.id == "p-init"
         mock_git.validate_checkout.assert_called_once_with(checkout)
 
 
+# ---------------------------------------------------------------------------
+# Workspace-path fallback
+# ---------------------------------------------------------------------------
+
+
 class TestWorkspaceFallback:
-    """Project with no repos → falls back to workspace_path."""
+    """Project with no repos/workspaces → falls back to workspace_path."""
 
     async def test_falls_back_to_workspace_path(self, handler, db, tmp_path, mock_git):
         workspace = _make_dir(str(tmp_path / "workspace-fallback"))
@@ -215,11 +271,12 @@ class TestWorkspaceFallback:
             workspace_path=workspace,
         ))
 
-        path, repo, err = await handler._resolve_repo_path({"project_id": "p-norepo"})
+        path, project, err = await handler._resolve_repo_path({"project_id": "p-norepo"})
 
         assert err is None
         assert path == workspace
-        assert repo is None  # No repo was resolved
+        assert project is not None
+        assert project.id == "p-norepo"
         mock_git.validate_checkout.assert_called_once_with(workspace)
 
     async def test_workspace_path_missing_on_disk(self, handler, db, tmp_path):
@@ -232,11 +289,11 @@ class TestWorkspaceFallback:
             workspace_path=nonexistent,
         ))
 
-        path, repo, err = await handler._resolve_repo_path({"project_id": "p-nodir"})
+        path, project, err = await handler._resolve_repo_path({"project_id": "p-nodir"})
 
         assert path is None
         assert err is not None
-        assert "no repos" in err["error"].lower() or "no valid workspace" in err["error"].lower()
+        assert "no workspaces" in err["error"].lower() or "no valid workspace" in err["error"].lower()
 
     async def test_workspace_path_not_set(self, handler, db):
         """Project has no workspace_path and no repos → error."""
@@ -246,11 +303,11 @@ class TestWorkspaceFallback:
             workspace_path=None,
         ))
 
-        path, repo, err = await handler._resolve_repo_path({"project_id": "p-empty"})
+        path, project, err = await handler._resolve_repo_path({"project_id": "p-empty"})
 
         assert path is None
         assert err is not None
-        assert "no repos" in err["error"].lower() or "no valid workspace" in err["error"].lower()
+        assert "no workspaces" in err["error"].lower() or "no valid workspace" in err["error"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -262,19 +319,19 @@ class TestInvalidProject:
     """Invalid / non-existent project_id → returns error."""
 
     async def test_nonexistent_project(self, handler):
-        path, repo, err = await handler._resolve_repo_path({
+        path, project, err = await handler._resolve_repo_path({
             "project_id": "nonexistent-project",
         })
 
         assert path is None
-        assert repo is None
+        assert project is None
         assert err is not None
         assert "not found" in err["error"].lower()
         assert "nonexistent-project" in err["error"]
 
     async def test_empty_project_id_treated_as_missing(self, handler):
         """Empty string project_id with no repo_id → error."""
-        path, repo, err = await handler._resolve_repo_path({
+        path, project, err = await handler._resolve_repo_path({
             "project_id": "",
         })
 
@@ -284,50 +341,49 @@ class TestInvalidProject:
 
 
 class TestInvalidRepoId:
-    """Invalid / non-existent repo_id → returns error."""
+    """Invalid / non-existent repo_id → falls through to error."""
 
     async def test_nonexistent_repo_id(self, handler, db):
-        """repo_id that doesn't exist in DB → error."""
+        """repo_id that doesn't exist in DB → falls through to workspace fallback error."""
         await db.create_project(Project(id="p-exists", name="Exists"))
 
-        path, repo, err = await handler._resolve_repo_path({
+        path, project, err = await handler._resolve_repo_path({
             "project_id": "p-exists",
             "repo_id": "nonexistent-repo",
         })
 
         assert path is None
-        assert repo is None
         assert err is not None
-        assert "not found" in err["error"].lower()
-        assert "nonexistent-repo" in err["error"]
+        # With no workspaces and invalid repo_id, falls through to workspace_path error
+        assert "no workspaces" in err["error"].lower() or "no valid workspace" in err["error"].lower()
 
     async def test_repo_id_only_nonexistent(self, handler):
         """repo_id alone and it doesn't exist → error."""
-        path, repo, err = await handler._resolve_repo_path({
+        path, project, err = await handler._resolve_repo_path({
             "repo_id": "ghost-repo",
         })
 
         assert path is None
-        assert repo is None
+        assert project is None
         assert err is not None
-        assert "not found" in err["error"].lower()
-        assert "ghost-repo" in err["error"]
+        # Without project_id, falls through to "no project context" error
+        assert "no" in err["error"].lower()
 
 
 class TestMissingArgs:
     """Neither project_id nor repo_id supplied."""
 
     async def test_no_ids_at_all(self, handler):
-        path, repo, err = await handler._resolve_repo_path({})
+        path, project, err = await handler._resolve_repo_path({})
 
         assert path is None
-        assert repo is None
+        assert project is None
         assert err is not None
         assert "project_id" in err["error"].lower() or "required" in err["error"].lower()
 
     async def test_empty_dict(self, handler):
         """Explicit empty dict."""
-        path, repo, err = await handler._resolve_repo_path({})
+        path, project, err = await handler._resolve_repo_path({})
 
         assert path is None
         assert err is not None
@@ -353,7 +409,7 @@ class TestPathValidation:
             source_path=nonexistent,
         ))
 
-        path, repo, err = await handler._resolve_repo_path({"project_id": "p-vanish"})
+        path, project, err = await handler._resolve_repo_path({"project_id": "p-vanish"})
 
         assert path is None
         assert err is not None
@@ -372,14 +428,14 @@ class TestPathValidation:
             source_path=checkout,
         ))
 
-        path, repo, err = await handler._resolve_repo_path({"project_id": "p-nogit"})
+        path, project, err = await handler._resolve_repo_path({"project_id": "p-nogit"})
 
         assert path is None
         assert err is not None
         assert "not a valid git repository" in err["error"].lower()
 
     async def test_clone_repo_missing_checkout_base_path(self, handler, db, tmp_path):
-        """CLONE repo with empty checkout_base_path → error."""
+        """CLONE repo with empty checkout_base_path → falls through to error."""
         await db.create_project(Project(id="p-nobase", name="No Base"))
         await db.create_repo(RepoConfig(
             id="r-nobase",
@@ -389,16 +445,14 @@ class TestPathValidation:
             checkout_base_path="",  # not set
         ))
 
-        path, repo, err = await handler._resolve_repo_path({"project_id": "p-nobase"})
+        path, project, err = await handler._resolve_repo_path({"project_id": "p-nobase"})
 
         assert path is None
-        assert repo is not None
-        assert repo.id == "r-nobase"
         assert err is not None
-        assert "no usable path" in err["error"].lower()
+        assert "no workspaces" in err["error"].lower() or "no usable path" in err["error"].lower()
 
     async def test_link_repo_missing_source_path(self, handler, db, tmp_path):
-        """LINK repo with empty source_path → error."""
+        """LINK repo with empty source_path → falls through to error."""
         await db.create_project(Project(id="p-nosrc", name="No Src"))
         await db.create_repo(RepoConfig(
             id="r-nosrc",
@@ -407,17 +461,15 @@ class TestPathValidation:
             source_path="",  # not set
         ))
 
-        path, repo, err = await handler._resolve_repo_path({"project_id": "p-nosrc"})
+        path, project, err = await handler._resolve_repo_path({"project_id": "p-nosrc"})
 
         assert path is None
-        assert repo is not None
-        assert repo.id == "r-nosrc"
         assert err is not None
-        assert "no usable path" in err["error"].lower()
+        assert "no workspaces" in err["error"].lower() or "no usable path" in err["error"].lower()
 
 
 # ---------------------------------------------------------------------------
-# Multiple repos per project
+# Multiple repos per project (legacy)
 # ---------------------------------------------------------------------------
 
 
@@ -443,10 +495,10 @@ class TestMultipleRepos:
             source_path=checkout2,
         ))
 
-        path, repo, err = await handler._resolve_repo_path({"project_id": "p-multi"})
+        path, project, err = await handler._resolve_repo_path({"project_id": "p-multi"})
 
         assert err is None
-        assert repo is not None
+        assert project is not None
         # Should have used the first repo returned by list_repos
         assert path in (checkout1, checkout2)
 
@@ -469,11 +521,11 @@ class TestMultipleRepos:
             source_path=checkout2,
         ))
 
-        path, repo, err = await handler._resolve_repo_path({
+        path, project, err = await handler._resolve_repo_path({
             "project_id": "p-pick",
             "repo_id": "r-pick-2",
         })
 
         assert err is None
         assert path == checkout2
-        assert repo.id == "r-pick-2"
+        assert project.id == "p-pick"

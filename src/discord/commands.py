@@ -1184,6 +1184,8 @@ def setup_commands(bot: commands.Bot) -> None:
         name="Project name",
         credit_weight="Scheduling weight (default 1.0)",
         max_concurrent_agents="Max agents working simultaneously (default 2)",
+        repo_url="Git repository URL (optional)",
+        default_branch="Default branch name (default: main)",
         auto_create_channels="Auto-create Discord channels for this project (overrides config)",
     )
     async def create_project_command(
@@ -1191,6 +1193,8 @@ def setup_commands(bot: commands.Bot) -> None:
         name: str,
         credit_weight: float = 1.0,
         max_concurrent_agents: int = 2,
+        repo_url: str | None = None,
+        default_branch: str = "main",
         auto_create_channels: bool | None = None,
     ):
         # Build args for the command handler.  An explicit
@@ -1200,6 +1204,10 @@ def setup_commands(bot: commands.Bot) -> None:
             "credit_weight": credit_weight,
             "max_concurrent_agents": max_concurrent_agents,
         }
+        if repo_url:
+            create_args["repo_url"] = repo_url
+        if default_branch != "main":
+            create_args["default_branch"] = default_branch
         if auto_create_channels is not None:
             create_args["auto_create_channels"] = auto_create_channels
 
@@ -2397,9 +2405,6 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         name="Agent display name (leave empty for auto-generated creative name)",
         agent_type="Agent type (claude, codex, cursor, aider)",
-        repo_id="Repository ID to assign as workspace (optional)",
-        project_id="Project to set workspace for (activates agent immediately)",
-        workspace_path="Workspace directory path (requires project_id)",
     )
     @app_commands.choices(agent_type=[
         app_commands.Choice(name="claude", value="claude"),
@@ -2411,21 +2416,12 @@ def setup_commands(bot: commands.Bot) -> None:
         interaction: discord.Interaction,
         name: str | None = None,
         agent_type: app_commands.Choice[str] | None = None,
-        repo_id: str | None = None,
-        project_id: str | None = None,
-        workspace_path: str | None = None,
     ):
         args: dict = {}
         if name:
             args["name"] = name
         if agent_type:
             args["agent_type"] = agent_type.value
-        if repo_id:
-            args["repo_id"] = repo_id
-        if project_id:
-            args["project_id"] = project_id
-        if workspace_path:
-            args["workspace_path"] = workspace_path
         result = await handler.execute("create_agent", args)
         if "error" in result:
             await _send_error(interaction, result['error'])
@@ -2434,32 +2430,9 @@ def setup_commands(bot: commands.Bot) -> None:
             ("Name", result.get("name", name), True),
             ("ID", f"`{result['created']}`", True),
             ("Type", args.get("agent_type", "claude"), True),
-            ("State", result.get("state", "STARTING"), True),
+            ("State", result.get("state", "IDLE"), True),
         ]
-        if repo_id:
-            agent_fields.append(("Repo", f"`{repo_id}`", True))
-        if result.get("workspace_path"):
-            agent_fields.append(("Workspace", f"`{result['workspace_path']}`", False))
         embed = success_embed("Agent Registered", fields=agent_fields)
-        await interaction.response.send_message(embed=embed)
-
-    @bot.tree.command(
-        name="activate-agent",
-        description="Activate a STARTING agent so it can receive tasks",
-    )
-    @app_commands.describe(agent_id="Agent ID to activate")
-    async def activate_agent_command(
-        interaction: discord.Interaction,
-        agent_id: str,
-    ):
-        result = await handler.execute("activate_agent", {"agent_id": agent_id})
-        if "error" in result:
-            await _send_error(interaction, result['error'])
-            return
-        embed = success_embed(
-            "Agent Activated",
-            description=f"Agent `{agent_id}` is now IDLE and ready to receive tasks.",
-        )
         await interaction.response.send_message(embed=embed)
 
     @bot.tree.command(
@@ -2553,83 +2526,55 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.response.send_message(embed=embed)
 
     # ===================================================================
-    # REPO COMMANDS
+    # WORKSPACE COMMANDS
     # ===================================================================
 
-    @bot.tree.command(name="repos", description="List registered repositories")
-    async def repos_command(interaction: discord.Interaction):
+    @bot.tree.command(name="workspaces", description="List project workspaces")
+    async def workspaces_command(interaction: discord.Interaction):
         project_id = await _resolve_project_from_context(interaction, None)
         args = {}
         if project_id:
             args["project_id"] = project_id
-        result = await handler.execute("list_repos", args)
-        repos = result.get("repos", [])
-        if not repos:
-            await _send_info(interaction, "No Repositories", description="No repositories registered.")
+        result = await handler.execute("list_workspaces", args)
+        workspaces = result.get("workspaces", [])
+        if not workspaces:
+            await _send_info(
+                interaction, "No Workspaces",
+                description="No workspaces registered. Use `/add-workspace` to add one.",
+            )
             return
-        lines = ["## Repositories"]
-        for r in repos:
-            source_info = ""
-            if r["source_type"] == "link" and r.get("source_path"):
-                source_info = f" → `{r['source_path']}`"
-            elif r["source_type"] == "clone" and r.get("url"):
-                source_info = f" → {r['url']}"
+        lines = ["## Workspaces"]
+        for ws in workspaces:
+            lock_info = ""
+            if ws.get("locked_by_agent_id"):
+                lock_info = f" 🔒 agent=`{ws['locked_by_agent_id']}`"
+                if ws.get("locked_by_task_id"):
+                    lock_info += f" task=`{ws['locked_by_task_id']}`"
+            name_str = f" **{ws['name']}**" if ws.get("name") else ""
             lines.append(
-                f"• **{r['id']}** ({r['source_type']}){source_info} — "
-                f"project: `{r['project_id']}`, branch: `{r['default_branch']}`"
+                f"• `{ws['id']}`{name_str} ({ws['source_type']}) — "
+                f"`{ws['workspace_path']}` project=`{ws['project_id']}`{lock_info}"
             )
         msg = "\n".join(lines)
         if len(msg) > 2000:
             msg = msg[:1997] + "..."
         await interaction.response.send_message(msg)
 
-    @bot.tree.command(name="edit-repo", description="Edit a repository's configuration")
+    @bot.tree.command(name="add-workspace", description="Add a workspace directory for a project")
     @app_commands.describe(
-        repo_id="Repository ID",
-        default_branch="New default branch (optional)",
-        url="New git URL (optional)",
-    )
-    async def edit_repo_command(
-        interaction: discord.Interaction,
-        repo_id: str,
-        default_branch: str | None = None,
-        url: str | None = None,
-    ):
-        args: dict = {"repo_id": repo_id}
-        if default_branch is not None:
-            args["default_branch"] = default_branch
-        if url is not None:
-            args["url"] = url
-        result = await handler.execute("edit_repo", args)
-        if "error" in result:
-            await _send_error(interaction, result['error'])
-            return
-        fields = ", ".join(result.get("fields", []))
-        await _send_success(
-            interaction, "Repo Updated",
-            description=f"Repo `{repo_id}` updated: {fields}",
-        )
-
-    @bot.tree.command(name="add-repo", description="Register a repository for a project")
-    @app_commands.describe(
-        source="How to set up the repo",
-        url="Git URL (for clone)",
-        path="Existing directory path (for link)",
-        name="Repo name (optional)",
-        default_branch="Default branch (default: main)",
+        source="How to set up the workspace",
+        path="Directory path (required for link, auto-generated for clone)",
+        name="Workspace name (optional)",
     )
     @app_commands.choices(source=[
         app_commands.Choice(name="clone", value="clone"),
         app_commands.Choice(name="link",  value="link"),
-        app_commands.Choice(name="init",  value="init"),
     ])
-    async def add_repo_command(
+    async def add_workspace_command(
         interaction: discord.Interaction,
         source: app_commands.Choice[str],
-        url: str | None = None,
         path: str | None = None,
         name: str | None = None,
-        default_branch: str = "main",
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
@@ -2638,27 +2583,43 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {
             "project_id": project_id,
             "source": source.value,
-            "default_branch": default_branch,
         }
-        if url:
-            args["url"] = url
         if path:
             args["path"] = path
         if name:
             args["name"] = name
-        result = await handler.execute("add_repo", args)
+        result = await handler.execute("add_workspace", args)
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
         embed = success_embed(
-            "Repo Registered",
+            "Workspace Added",
             fields=[
                 ("ID", f"`{result['created']}`", True),
                 ("Source", source.value, True),
                 ("Project", f"`{project_id}`", True),
+                ("Path", f"`{result.get('workspace_path', '')}`", False),
             ],
         )
         await interaction.response.send_message(embed=embed)
+
+    @bot.tree.command(
+        name="release-workspace",
+        description="Force-release a stuck workspace lock",
+    )
+    @app_commands.describe(workspace_id="Workspace ID to release")
+    async def release_workspace_command(
+        interaction: discord.Interaction,
+        workspace_id: str,
+    ):
+        result = await handler.execute("release_workspace", {"workspace_id": workspace_id})
+        if "error" in result:
+            await _send_error(interaction, result['error'])
+            return
+        await _send_success(
+            interaction, "Workspace Released",
+            description=f"Workspace `{workspace_id}` lock has been released.",
+        )
 
     # ===================================================================
     # GIT COMMANDS

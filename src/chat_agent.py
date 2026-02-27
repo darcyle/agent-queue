@@ -70,6 +70,15 @@ TOOLS = [
                     "description": "Max agents working on this project simultaneously",
                     "default": 2,
                 },
+                "repo_url": {
+                    "type": "string",
+                    "description": "Git repository URL for this project (optional)",
+                },
+                "default_branch": {
+                    "type": "string",
+                    "description": "Default branch name (default: main)",
+                    "default": "main",
+                },
                 "auto_create_channels": {
                     "type": "boolean",
                     "description": (
@@ -340,44 +349,39 @@ TOOLS = [
         },
     },
     {
-        "name": "add_repo",
-        "description": "Register a repository for a project. Source types: 'clone' (git URL), 'link' (existing directory on disk), 'init' (new empty repo).",
+        "name": "add_workspace",
+        "description": (
+            "Add a workspace directory for a project. Source types: 'clone' (auto-clones "
+            "from the project's repo_url), 'link' (link an existing directory on disk). "
+            "Workspaces are project-scoped and dynamically acquired by agents when assigned tasks."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": "Project ID to add the repo to",
+                    "description": "Project ID to add the workspace to",
                 },
                 "source": {
                     "type": "string",
-                    "enum": ["clone", "link", "init"],
-                    "description": "How to set up the repo: clone (from URL), link (existing dir), init (new empty repo)",
-                },
-                "url": {
-                    "type": "string",
-                    "description": "Git URL (required for clone)",
+                    "enum": ["clone", "link"],
+                    "description": "How to set up the workspace: clone (from project repo_url), link (existing dir)",
                 },
                 "path": {
                     "type": "string",
-                    "description": "Existing directory path (required for link)",
+                    "description": "Directory path (required for link, auto-generated for clone)",
                 },
                 "name": {
                     "type": "string",
-                    "description": "Repo name (optional — derived from URL or path)",
-                },
-                "default_branch": {
-                    "type": "string",
-                    "description": "Default branch name (default: main)",
-                    "default": "main",
+                    "description": "Workspace name (optional)",
                 },
             },
             "required": ["project_id", "source"],
         },
     },
     {
-        "name": "list_repos",
-        "description": "List registered repositories, optionally filtered by project.",
+        "name": "list_workspaces",
+        "description": "List workspaces, optionally filtered by project. Shows lock status (which agent/task holds each workspace).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -389,16 +393,14 @@ TOOLS = [
         },
     },
     {
-        "name": "edit_repo",
-        "description": "Edit a repository's configuration: default_branch or url.",
+        "name": "release_workspace",
+        "description": "Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "repo_id": {"type": "string", "description": "Repository ID"},
-                "default_branch": {"type": "string", "description": "New default branch (optional)"},
-                "url": {"type": "string", "description": "New git URL (optional)"},
+                "workspace_id": {"type": "string", "description": "Workspace ID to release"},
             },
-            "required": ["repo_id"],
+            "required": ["workspace_id"],
         },
     },
     {
@@ -410,10 +412,9 @@ TOOLS = [
         "name": "create_agent",
         "description": (
             "Register a new agent. If no name is provided, a creative unique "
-            "name is auto-generated. Agents start in STARTING state and won't "
-            "receive tasks until activated. Pass project_id and workspace_path "
-            "to set the workspace and activate in one step, or call "
-            "set_agent_workspace or activate_agent separately."
+            "name is auto-generated. Agents start in IDLE state and immediately "
+            "begin receiving tasks. Agents dynamically acquire workspace locks "
+            "from available project workspaces when assigned tasks."
         ),
         "input_schema": {
             "type": "object",
@@ -427,26 +428,14 @@ TOOLS = [
                     "description": "Agent type (claude, codex, cursor, aider)",
                     "default": "claude",
                 },
-                "project_id": {
-                    "type": "string",
-                    "description": (
-                        "Project to set workspace for (activates agent immediately)"
-                    ),
-                },
-                "workspace_path": {
-                    "type": "string",
-                    "description": "Absolute path to workspace directory for the project",
-                },
             },
         },
     },
     {
         "name": "edit_agent",
         "description": (
-            "Edit an agent's properties: name, agent_type, or workspace. "
-            "Use this to rename agents, change their type, or set/update workspace paths. "
-            "To set a workspace, provide project_id and workspace_path together. "
-            "Also activates the agent if it is in STARTING state when setting workspace."
+            "Edit an agent's properties: name or agent_type. "
+            "Use this to rename agents or change their type."
         ),
         "input_schema": {
             "type": "object",
@@ -457,30 +446,6 @@ TOOLS = [
                     "type": "string",
                     "description": "New agent type: claude, codex, cursor, aider (optional)",
                 },
-                "project_id": {"type": "string", "description": "Project ID (required when setting workspace_path)"},
-                "workspace_path": {
-                    "type": "string",
-                    "description": "Absolute path to the workspace directory (requires project_id)",
-                },
-                "repo_id": {
-                    "type": "string",
-                    "description": "Repo ID that governs git operations for this workspace (optional)",
-                },
-            },
-            "required": ["agent_id"],
-        },
-    },
-    {
-        "name": "activate_agent",
-        "description": (
-            "Activate an agent (transition from STARTING to IDLE) so it can "
-            "receive tasks. Use this after creating an agent if you didn't "
-            "provide workspace_path during creation."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "agent_id": {"type": "string", "description": "Agent ID to activate"},
             },
             "required": ["agent_id"],
         },
@@ -1233,8 +1198,8 @@ TOOLS = [
         "name": "get_git_status",
         "description": (
             "Get the git status of a project's repository. Shows current branch, "
-            "working tree status, and recent commits. Reports status for all repos "
-            "registered to the project, or falls back to the project workspace. "
+            "working tree status, and recent commits. Reports status for all workspaces "
+            "registered to the project, or falls back to the project workspace path. "
             "Operates on the active project's repository."
         ),
         "input_schema": {
@@ -1514,7 +1479,7 @@ You can directly (using your tools):
 - List tasks with dependency annotations using `list_tasks` with show_dependencies=true
 - Create quick standalone tasks without specifying a project (they go into "Quick Tasks" automatically)
 - Register and list agents
-- Register repositories with `add_repo` and list them with `list_repos`
+- Manage project workspaces with `add_workspace`, `list_workspaces`, and `release_workspace`
 - Monitor agent status, task progress, and recent events
 - Pause/resume projects
 - Retrieve task results (summary, files changed, errors, tokens) with `get_task_result`
@@ -1529,7 +1494,7 @@ You can directly (using your tools):
 - Merge branches with `merge_branch`
 - View commit history with `git_log`, see diffs with `git_diff`
 - All git commands automatically infer the repository from the active project — \
-you do NOT need to specify project_id or repo_id when an active project is set
+you do NOT need to specify project_id when an active project is set
 - Read files from workspaces with `read_file`
 - Run shell commands in workspaces with `run_command`
 - Search file contents or filenames with `search_files`
@@ -1543,28 +1508,24 @@ you do NOT need to specify project_id or repo_id when an active project is set
 - Pause, resume, or check the orchestrator (task scheduler) with `orchestrator_control`
 - Override a task's status with `edit_task` (set the `status` field to bypass the state machine)
 - Inspect the last error for a task with `get_agent_error` (shows error classification and suggested fix)
-- Configure per-project Discord channels with `set_project_channel`, `set_control_interface`, `get_project_channels`, and `get_project_for_channel`
+- Configure per-project Discord channels with `edit_project` (discord_channel_id), `get_project_channels`, and `get_project_for_channel`
 
-Repository management — use the `add_repo` tool to connect repos to projects:
-- **clone**: Clone a git repo by URL. Agents get their own checkout. Use for remote repos.
+Workspace management — use `add_workspace` to add workspace directories to projects:
+- **clone**: Auto-clones from the project's `repo_url`. Path is auto-generated under the workspace root.
 - **link**: Link an existing directory on disk. Agents work directly in that directory, \
 preserving the existing environment (.env, venv, node_modules, etc.). Use when \
 the user says to "link", "connect", "use", or "point to" an existing directory/repo.
-- **init**: Create a new empty git repo. Use when starting from scratch.
-- Use `edit_repo` to change a repo's default_branch or url after creation.
+- Each project can have multiple workspaces for parallel agent execution.
+- Agents dynamically acquire a workspace lock when assigned a task and release it on completion.
+- Use `list_workspaces` to see workspace status and lock information.
+- Use `release_workspace` to force-release a stuck lock (e.g., dead agent, stale task).
+- Set the project's `repo_url` and `default_branch` when creating the project with `create_project`.
 
-Agent workspaces — each agent has a per-project workspace directory:
-- **New agents start in STARTING state** and won't receive tasks until activated.
-- **Best practice:** Pass `project_id` and `workspace_path` when calling `create_agent` to \
-set the workspace and activate in one step.
-- Alternatively, call `edit_agent` with `project_id` + `workspace_path` (also activates the agent) \
-or `activate_agent` after creation.
-- Use `edit_agent` to rename agents, change agent type, or update workspaces.
-- When a task runs, the system checks agent_workspaces for the (agent, project) pair first.
-- If no workspace is set, the system auto-populates from the project's repo config.
-- For parallel work, set each agent to its own checkout directory for the same project.
-- Example: `create_agent name="Agent-2" project_id="my-project" workspace_path="/dev/checkout-2"`
-- Workspaces are cached per (agent, project) pair and reused across tasks.
+Agent management — agents are simple and stateless:
+- **Agents start in IDLE state** and immediately begin receiving tasks.
+- No manual workspace assignment needed — workspaces are acquired dynamically per task.
+- Use `edit_agent` to rename agents or change agent type.
+- For parallel work on a project, add multiple workspaces to the project and register multiple agents.
 
 Agent lifecycle — manage agent state:
 - `pause_agent` — stop assigning new tasks (current task finishes first).
@@ -1613,8 +1574,6 @@ tasks for failures.
 Per-project Discord channels — route notifications and chat to dedicated channels:
 - By default, all projects share the global channel.
 - Use `edit_project` with `discord_channel_id` to link a Discord channel to a project.
-- Use `set_project_channel` to link a Discord channel to a project.
-- Use `set_control_interface` to set a project's channel by name (string lookup).
 - When a project has a dedicated channel, task threads, status updates, completion notices, \
 and chat for that project are all routed there automatically.
 - Use the `/edit-project` or `/create-channel` Discord commands to manage channels interactively.

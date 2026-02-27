@@ -29,8 +29,9 @@ import uuid
 import aiosqlite
 
 from src.models import (
-    Agent, AgentState, AgentWorkspace, Hook, HookRun, Project, ProjectStatus,
+    Agent, AgentState, Hook, HookRun, Project, ProjectStatus,
     RepoConfig, RepoSourceType, Task, TaskStatus, TaskType, VerificationType,
+    Workspace,
 )
 from src.state_machine import is_valid_status_transition
 
@@ -184,6 +185,19 @@ CREATE TABLE IF NOT EXISTS agent_workspaces (
     PRIMARY KEY (agent_id, project_id)
 );
 
+CREATE TABLE IF NOT EXISTS workspaces (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    workspace_path TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'clone',
+    name TEXT,
+    locked_by_agent_id TEXT REFERENCES agents(id),
+    locked_by_task_id TEXT REFERENCES tasks(id),
+    locked_at REAL,
+    created_at REAL NOT NULL,
+    UNIQUE(project_id, workspace_path)
+);
+
 CREATE TABLE IF NOT EXISTS hooks (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -282,6 +296,8 @@ class Database:
             "ALTER TABLE tasks ADD COLUMN plan_source TEXT",
             "ALTER TABLE tasks ADD COLUMN is_plan_subtask INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE tasks ADD COLUMN task_type TEXT",
+            "ALTER TABLE projects ADD COLUMN repo_url TEXT DEFAULT ''",
+            "ALTER TABLE projects ADD COLUMN repo_default_branch TEXT DEFAULT 'main'",
         ]:
             try:
                 await self._db.execute(migration)
@@ -298,6 +314,9 @@ class Database:
         )
         # Migrate existing agent checkout_path/repo_id into agent_workspaces
         await self._migrate_agent_workspaces()
+        # Migrate repos -> projects and agent_workspaces -> workspaces
+        await self._migrate_repos_to_projects()
+        await self._migrate_agent_workspaces_to_workspaces()
         await self._db.commit()
 
     async def close(self) -> None:
@@ -387,6 +406,67 @@ class Database:
         except Exception as e:
             logger.debug("Agent workspace migration (benign if columns removed): %s", e)
 
+    async def _migrate_repos_to_projects(self) -> None:
+        """Copy first repo's url/default_branch into project columns (idempotent)."""
+        try:
+            cursor = await self._db.execute(
+                "SELECT p.id, r.url, r.default_branch "
+                "FROM projects p "
+                "JOIN repos r ON r.project_id = p.id "
+                "WHERE (p.repo_url IS NULL OR p.repo_url = '') "
+                "GROUP BY p.id"
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                await self._db.execute(
+                    "UPDATE projects SET repo_url = ?, repo_default_branch = ? "
+                    "WHERE id = ? AND (repo_url IS NULL OR repo_url = '')",
+                    (row["url"], row["default_branch"], row["id"]),
+                )
+                logger.info(
+                    "Migration: project '%s' repo_url='%s', default_branch='%s'",
+                    row["id"], row["url"], row["default_branch"],
+                )
+        except Exception as e:
+            logger.debug("Repos-to-projects migration (benign): %s", e)
+
+    async def _migrate_agent_workspaces_to_workspaces(self) -> None:
+        """Deduplicate (project_id, workspace_path) from agent_workspaces into workspaces."""
+        try:
+            cursor = await self._db.execute(
+                "SELECT DISTINCT aw.project_id, aw.workspace_path, aw.repo_id "
+                "FROM agent_workspaces aw"
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                project_id = row["project_id"]
+                workspace_path = row["workspace_path"]
+                # Determine source_type from repo if available
+                source_type = "clone"
+                if row["repo_id"]:
+                    repo_cursor = await self._db.execute(
+                        "SELECT source_type FROM repos WHERE id = ?",
+                        (row["repo_id"],),
+                    )
+                    repo_row = await repo_cursor.fetchone()
+                    if repo_row:
+                        source_type = repo_row["source_type"]
+
+                ws_id = f"ws-{project_id}-{uuid.uuid4().hex[:8]}"
+                await self._db.execute(
+                    "INSERT OR IGNORE INTO workspaces "
+                    "(id, project_id, workspace_path, source_type, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (ws_id, project_id, workspace_path, source_type, time.time()),
+                )
+            if rows:
+                logger.info(
+                    "Migration: migrated %d agent_workspace entries to workspaces table",
+                    len(rows),
+                )
+        except Exception as e:
+            logger.debug("Agent-workspaces-to-workspaces migration (benign): %s", e)
+
     # --- Projects ---
     # CRUD for the projects table. Each project has a credit_weight that
     # determines its fair share in scheduling, concurrency limits, optional
@@ -396,12 +476,13 @@ class Database:
         await self._db.execute(
             "INSERT INTO projects (id, name, credit_weight, max_concurrent_agents, "
             "status, total_tokens_used, budget_limit, workspace_path, "
-            "discord_channel_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "discord_channel_id, repo_url, repo_default_branch, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (project.id, project.name, project.credit_weight,
              project.max_concurrent_agents, project.status.value,
              project.total_tokens_used, project.budget_limit,
              project.workspace_path, project.discord_channel_id,
+             project.repo_url, project.repo_default_branch,
              time.time()),
         )
         await self._db.commit()
@@ -458,6 +539,12 @@ class Database:
             budget_limit=row["budget_limit"],
             workspace_path=row["workspace_path"] if "workspace_path" in keys else None,
             discord_channel_id=channel_id,
+            repo_url=row["repo_url"] if "repo_url" in keys and row["repo_url"] else "",
+            repo_default_branch=(
+                row["repo_default_branch"]
+                if "repo_default_branch" in keys and row["repo_default_branch"]
+                else "main"
+            ),
         )
 
     # --- Repos ---
@@ -1019,7 +1106,7 @@ class Database:
 
     # --- Agents ---
     # Agent records represent running (or available) Claude Code processes.
-    # The orchestrator tracks their state (IDLE, STARTING, BUSY, etc.),
+    # The orchestrator tracks their state (IDLE, BUSY, PAUSED, ERROR),
     # heartbeat timestamps for liveness detection, and cumulative token usage.
 
     async def create_agent(self, agent: Agent) -> None:
@@ -1076,9 +1163,10 @@ class Database:
         Cascading order (children before parent):
         1. token_ledger  – immutable token-usage rows
         2. task_results  – execution-history rows
-        3. agent_workspaces – per-project workspace mappings
-        4. tasks.assigned_agent_id – NULLify (don't delete the tasks)
-        5. agents – the agent record itself
+        3. agent_workspaces – per-project workspace mappings (legacy)
+        4. workspaces – release locks (don't delete — workspaces belong to projects)
+        5. tasks.assigned_agent_id – NULLify (don't delete the tasks)
+        6. agents – the agent record itself
         """
         await self._db.execute(
             "DELETE FROM token_ledger WHERE agent_id = ?", (agent_id,),
@@ -1088,6 +1176,13 @@ class Database:
         )
         await self._db.execute(
             "DELETE FROM agent_workspaces WHERE agent_id = ?", (agent_id,),
+        )
+        # Release workspace locks — workspaces belong to the project, not the agent
+        await self._db.execute(
+            "UPDATE workspaces SET locked_by_agent_id = NULL, "
+            "locked_by_task_id = NULL, locked_at = NULL "
+            "WHERE locked_by_agent_id = ?",
+            (agent_id,),
         )
         await self._db.execute(
             "UPDATE tasks SET assigned_agent_id = NULL WHERE assigned_agent_id = ?",
@@ -1111,85 +1206,136 @@ class Database:
             session_tokens_used=row["session_tokens_used"],
         )
 
-    # --- Agent Workspaces ---
-    # Per-project workspace paths for agents. Replaces the old agent.checkout_path
-    # (single value) and agent.repo_id fields.
+    # --- Workspaces ---
+    # Project-scoped workspace directories with dynamic locking.  Agents
+    # acquire a workspace lock when assigned a task and release it on
+    # completion.  No manual agent-to-workspace mapping needed.
 
-    async def set_agent_workspace(
-        self, agent_id: str, project_id: str, workspace_path: str,
-        repo_id: str | None = None,
-    ) -> None:
-        """Set or update the workspace path for an agent in a specific project."""
+    async def create_workspace(self, workspace: Workspace) -> None:
         await self._db.execute(
-            "INSERT INTO agent_workspaces (agent_id, project_id, workspace_path, "
-            "repo_id, created_at) VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(agent_id, project_id) DO UPDATE SET "
-            "workspace_path = excluded.workspace_path, "
-            "repo_id = excluded.repo_id",
-            (agent_id, project_id, workspace_path, repo_id, time.time()),
+            "INSERT INTO workspaces (id, project_id, workspace_path, source_type, "
+            "name, locked_by_agent_id, locked_by_task_id, locked_at, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (workspace.id, workspace.project_id, workspace.workspace_path,
+             workspace.source_type.value, workspace.name,
+             workspace.locked_by_agent_id, workspace.locked_by_task_id,
+             workspace.locked_at, time.time()),
         )
         await self._db.commit()
 
-    async def get_agent_workspace(
-        self, agent_id: str, project_id: str,
-    ) -> AgentWorkspace | None:
-        """Get the workspace for an agent in a specific project."""
+    async def get_workspace(self, workspace_id: str) -> Workspace | None:
         cursor = await self._db.execute(
-            "SELECT * FROM agent_workspaces WHERE agent_id = ? AND project_id = ?",
-            (agent_id, project_id),
+            "SELECT * FROM workspaces WHERE id = ?", (workspace_id,)
         )
         row = await cursor.fetchone()
         if not row:
             return None
-        return AgentWorkspace(
-            agent_id=row["agent_id"],
-            project_id=row["project_id"],
-            workspace_path=row["workspace_path"],
-            repo_id=row["repo_id"],
-        )
+        return self._row_to_workspace(row)
 
-    async def list_agent_workspaces(
-        self, agent_id: str | None = None, project_id: str | None = None,
-    ) -> list[AgentWorkspace]:
-        """List agent workspaces, optionally filtered by agent or project."""
-        conditions = []
-        vals = []
-        if agent_id:
-            conditions.append("agent_id = ?")
-            vals.append(agent_id)
+    async def list_workspaces(
+        self, project_id: str | None = None,
+    ) -> list[Workspace]:
         if project_id:
-            conditions.append("project_id = ?")
-            vals.append(project_id)
-        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        cursor = await self._db.execute(
-            f"SELECT * FROM agent_workspaces {where}", vals
-        )
-        rows = await cursor.fetchall()
-        return [
-            AgentWorkspace(
-                agent_id=r["agent_id"],
-                project_id=r["project_id"],
-                workspace_path=r["workspace_path"],
-                repo_id=r["repo_id"],
-            )
-            for r in rows
-        ]
-
-    async def delete_agent_workspaces(
-        self, agent_id: str, project_id: str | None = None,
-    ) -> None:
-        """Delete workspace(s) for an agent, optionally scoped to a project."""
-        if project_id:
-            await self._db.execute(
-                "DELETE FROM agent_workspaces WHERE agent_id = ? AND project_id = ?",
-                (agent_id, project_id),
+            cursor = await self._db.execute(
+                "SELECT * FROM workspaces WHERE project_id = ?", (project_id,)
             )
         else:
-            await self._db.execute(
-                "DELETE FROM agent_workspaces WHERE agent_id = ?",
-                (agent_id,),
-            )
+            cursor = await self._db.execute("SELECT * FROM workspaces")
+        rows = await cursor.fetchall()
+        return [self._row_to_workspace(r) for r in rows]
+
+    async def delete_workspace(self, workspace_id: str) -> None:
+        await self._db.execute(
+            "DELETE FROM workspaces WHERE id = ?", (workspace_id,)
+        )
         await self._db.commit()
+
+    async def acquire_workspace(
+        self, project_id: str, agent_id: str, task_id: str,
+    ) -> Workspace | None:
+        """Atomically find an unlocked workspace for a project and lock it.
+
+        Returns the locked workspace, or None if all workspaces are locked.
+        """
+        cursor = await self._db.execute(
+            "SELECT * FROM workspaces "
+            "WHERE project_id = ? AND locked_by_agent_id IS NULL "
+            "LIMIT 1",
+            (project_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+
+        now = time.time()
+        await self._db.execute(
+            "UPDATE workspaces SET locked_by_agent_id = ?, "
+            "locked_by_task_id = ?, locked_at = ? "
+            "WHERE id = ? AND locked_by_agent_id IS NULL",
+            (agent_id, task_id, now, row["id"]),
+        )
+        await self._db.commit()
+
+        ws = self._row_to_workspace(row)
+        ws.locked_by_agent_id = agent_id
+        ws.locked_by_task_id = task_id
+        ws.locked_at = now
+        return ws
+
+    async def release_workspace(self, workspace_id: str) -> None:
+        """Clear lock columns on a workspace."""
+        await self._db.execute(
+            "UPDATE workspaces SET locked_by_agent_id = NULL, "
+            "locked_by_task_id = NULL, locked_at = NULL "
+            "WHERE id = ?",
+            (workspace_id,),
+        )
+        await self._db.commit()
+
+    async def release_workspaces_for_agent(self, agent_id: str) -> int:
+        """Release all workspace locks held by an agent. Returns count released."""
+        cursor = await self._db.execute(
+            "UPDATE workspaces SET locked_by_agent_id = NULL, "
+            "locked_by_task_id = NULL, locked_at = NULL "
+            "WHERE locked_by_agent_id = ?",
+            (agent_id,),
+        )
+        await self._db.commit()
+        return cursor.rowcount
+
+    async def release_workspaces_for_task(self, task_id: str) -> int:
+        """Release all workspace locks held by a task. Returns count released."""
+        cursor = await self._db.execute(
+            "UPDATE workspaces SET locked_by_agent_id = NULL, "
+            "locked_by_task_id = NULL, locked_at = NULL "
+            "WHERE locked_by_task_id = ?",
+            (task_id,),
+        )
+        await self._db.commit()
+        return cursor.rowcount
+
+    async def get_workspace_for_task(self, task_id: str) -> Workspace | None:
+        """Find the workspace currently locked by a task."""
+        cursor = await self._db.execute(
+            "SELECT * FROM workspaces WHERE locked_by_task_id = ?",
+            (task_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_workspace(row)
+
+    def _row_to_workspace(self, row) -> Workspace:
+        return Workspace(
+            id=row["id"],
+            project_id=row["project_id"],
+            workspace_path=row["workspace_path"],
+            source_type=RepoSourceType(row["source_type"]),
+            name=row["name"],
+            locked_by_agent_id=row["locked_by_agent_id"],
+            locked_by_task_id=row["locked_by_task_id"],
+            locked_at=row["locked_at"],
+        )
 
     # --- Token Ledger ---
     # Append-only log of token consumption. Each entry records which project,
@@ -1303,6 +1449,7 @@ class Database:
         await self._db.execute("DELETE FROM token_ledger WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM tasks WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM agent_workspaces WHERE project_id = ?", (project_id,))
+        await self._db.execute("DELETE FROM workspaces WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM repos WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM events WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM projects WHERE id = ?", (project_id,))
@@ -1501,7 +1648,7 @@ class Database:
         In a single commit it:
         1. Transitions the task from READY to ASSIGNED and sets its
            ``assigned_agent_id``.
-        2. Transitions the agent from IDLE to STARTING and sets its
+        2. Transitions the agent from IDLE to BUSY and sets its
            ``current_task_id``.
         3. Logs a ``task_assigned`` event for the audit trail.
 
@@ -1527,7 +1674,7 @@ class Database:
         )
         await self._db.execute(
             "UPDATE agents SET state = ?, current_task_id = ? WHERE id = ?",
-            (AgentState.STARTING.value, task_id, agent_id),
+            (AgentState.BUSY.value, task_id, agent_id),
         )
         await self._db.execute(
             "INSERT INTO events (event_type, project_id, task_id, agent_id, "
