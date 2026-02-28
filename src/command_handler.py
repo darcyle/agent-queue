@@ -759,13 +759,14 @@ class CommandHandler:
         projects = await self.db.list_projects()
         result = []
         for p in projects:
+            ws_path = await self.db.get_project_workspace_path(p.id)
             info = {
                 "id": p.id,
                 "name": p.name,
                 "status": p.status.value,
                 "credit_weight": p.credit_weight,
                 "max_concurrent_agents": p.max_concurrent_agents,
-                "workspace": p.workspace_path,
+                "workspace": ws_path,
             }
             if p.discord_channel_id:
                 info["discord_channel_id"] = p.discord_channel_id
@@ -774,14 +775,11 @@ class CommandHandler:
 
     async def _cmd_create_project(self, args: dict) -> dict:
         project_id = args["name"].lower().replace(" ", "-")
-        workspace = os.path.join(self.config.workspace_dir, project_id)
-        os.makedirs(workspace, exist_ok=True)
         project = Project(
             id=project_id,
             name=args["name"],
             credit_weight=args.get("credit_weight", 1.0),
             max_concurrent_agents=args.get("max_concurrent_agents", 2),
-            workspace_path=workspace,
             repo_url=args.get("repo_url", ""),
             repo_default_branch=args.get("default_branch", "main"),
         )
@@ -800,7 +798,6 @@ class CommandHandler:
         return {
             "created": project_id,
             "name": project.name,
-            "workspace": workspace,
             "auto_create_channels": should_auto_create,
         }
 
@@ -1626,14 +1623,11 @@ class CommandHandler:
             project_id = "quick-tasks"
             existing = await self.db.get_project(project_id)
             if not existing:
-                workspace = os.path.join(self.config.workspace_dir, project_id)
-                os.makedirs(workspace, exist_ok=True)
                 await self.db.create_project(Project(
                     id=project_id,
                     name="Quick Tasks",
                     credit_weight=0.5,
                     max_concurrent_agents=1,
-                    workspace_path=workspace,
                 ))
         task_id = await generate_task_id(self.db)
         repo_id = args.get("repo_id")
@@ -2355,9 +2349,9 @@ class CommandHandler:
         if not project:
             return None
 
-        workspace = project.workspace_path or os.path.join(
-            self.config.workspace_dir, task.project_id
-        )
+        workspace = await self.db.get_project_workspace_path(task.project_id)
+        if not workspace:
+            return None
         archive_dir = os.path.join(workspace, "archived_tasks")
         os.makedirs(archive_dir, exist_ok=True)
 
@@ -2848,25 +2842,10 @@ class CommandHandler:
                         "recent_commits": recent_commits,
                     })
             else:
-                workspace = project.workspace_path
-                if not workspace or not os.path.isdir(workspace):
-                    return {
-                        "error": f"Project '{project_id}' has no workspaces and no valid workspace path"
-                    }
-                if not git.validate_checkout(workspace):
-                    return {
-                        "error": f"Project workspace '{workspace}' is not a git repository"
-                    }
-                branch = git.get_current_branch(workspace)
-                status_output = git.get_status(workspace)
-                recent_commits = git.get_recent_commits(workspace, count=5)
-                repo_statuses.append({
-                    "repo_id": "(workspace)",
-                    "path": workspace,
-                    "branch": branch,
-                    "status": status_output or "(clean)",
-                    "recent_commits": recent_commits,
-                })
+                return {
+                    "error": f"Project '{project_id}' has no workspaces. "
+                    f"Use /add-workspace to create one."
+                }
 
         return {
             "project_id": project_id,
@@ -2886,7 +2865,6 @@ class CommandHandler:
         Resolution order:
         1. Project's first workspace (from the workspaces table)
         2. Legacy: project's first repo (for backward compat)
-        3. project.workspace_path fallback
 
         When no *project_id* is supplied, falls back to the active project.
         """
@@ -2937,13 +2915,13 @@ class CommandHandler:
                 elif repo.source_type in (RepoSourceType.CLONE, RepoSourceType.INIT) and repo.checkout_base_path:
                     checkout_path = repo.checkout_base_path
 
-        # Final fallback: project.workspace_path
         if not checkout_path:
             if not project:
                 return None, None, {"error": "No workspace found and no project context"}
-            checkout_path = project.workspace_path
-            if not checkout_path or not os.path.isdir(checkout_path):
-                return None, None, {"error": f"Project '{project_id}' has no workspaces and no valid workspace_path"}
+            return None, None, {
+                "error": f"Project '{project_id}' has no workspaces. "
+                f"Use /add-workspace to create one."
+            }
 
         if not os.path.isdir(checkout_path):
             return None, project, {"error": f"Path not found: {checkout_path}"}
@@ -3480,9 +3458,9 @@ class CommandHandler:
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}
-        workspace = project.workspace_path or os.path.join(
-            self.config.workspace_dir, args["project_id"]
-        )
+        workspace = await self.db.get_project_workspace_path(args["project_id"])
+        if not workspace:
+            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
         notes_dir = os.path.join(workspace, "notes")
         if not os.path.isdir(notes_dir):
             return {"project_id": args["project_id"], "notes": []}
@@ -3513,9 +3491,9 @@ class CommandHandler:
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}
-        workspace = project.workspace_path or os.path.join(
-            self.config.workspace_dir, args["project_id"]
-        )
+        workspace = await self.db.get_project_workspace_path(args["project_id"])
+        if not workspace:
+            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
         notes_dir = os.path.join(workspace, "notes")
         os.makedirs(notes_dir, exist_ok=True)
         slug = self.orchestrator.git.slugify(args["title"])
@@ -3540,9 +3518,9 @@ class CommandHandler:
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}
-        workspace = project.workspace_path or os.path.join(
-            self.config.workspace_dir, args["project_id"]
-        )
+        workspace = await self.db.get_project_workspace_path(args["project_id"])
+        if not workspace:
+            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
         notes_dir = os.path.join(workspace, "notes")
         fpath = self._resolve_note_path(notes_dir, args["title"])
         if not fpath:
@@ -3561,9 +3539,9 @@ class CommandHandler:
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}
-        workspace = project.workspace_path or os.path.join(
-            self.config.workspace_dir, args["project_id"]
-        )
+        workspace = await self.db.get_project_workspace_path(args["project_id"])
+        if not workspace:
+            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
         notes_dir = os.path.join(workspace, "notes")
         os.makedirs(notes_dir, exist_ok=True)
         slug = self.orchestrator.git.slugify(args["title"])
@@ -3597,9 +3575,9 @@ class CommandHandler:
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}
-        workspace = project.workspace_path or os.path.join(
-            self.config.workspace_dir, args["project_id"]
-        )
+        workspace = await self.db.get_project_workspace_path(args["project_id"])
+        if not workspace:
+            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
 
         # Resolve specs directory — check repo specs/ first, then workspace specs/
         specs_path = args.get("specs_path")
@@ -3654,9 +3632,9 @@ class CommandHandler:
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}
-        workspace = project.workspace_path or os.path.join(
-            self.config.workspace_dir, args["project_id"]
-        )
+        workspace = await self.db.get_project_workspace_path(args["project_id"])
+        if not workspace:
+            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
         notes_dir = os.path.join(workspace, "notes")
         fpath = self._resolve_note_path(notes_dir, args["title"])
         if not fpath:
@@ -3683,9 +3661,9 @@ class CommandHandler:
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}
-        workspace = project.workspace_path or os.path.join(
-            self.config.workspace_dir, args["project_id"]
-        )
+        workspace = await self.db.get_project_workspace_path(args["project_id"])
+        if not workspace:
+            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
         pm = self._get_prompt_manager(workspace)
         templates = pm.list_templates(
             category=args.get("category"),
@@ -3703,9 +3681,9 @@ class CommandHandler:
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}
-        workspace = project.workspace_path or os.path.join(
-            self.config.workspace_dir, args["project_id"]
-        )
+        workspace = await self.db.get_project_workspace_path(args["project_id"])
+        if not workspace:
+            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
         pm = self._get_prompt_manager(workspace)
         tmpl = pm.get_template(args["name"])
         if not tmpl:
@@ -3719,9 +3697,9 @@ class CommandHandler:
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}
-        workspace = project.workspace_path or os.path.join(
-            self.config.workspace_dir, args["project_id"]
-        )
+        workspace = await self.db.get_project_workspace_path(args["project_id"])
+        if not workspace:
+            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
         pm = self._get_prompt_manager(workspace)
         variables = args.get("variables", {})
         rendered = pm.render(args["name"], variables)
@@ -3807,9 +3785,9 @@ class CommandHandler:
         timeout = min(args.get("timeout", 30), 120)
 
         if not os.path.isabs(working_dir):
-            project = await self.db.get_project(working_dir)
-            if project and project.workspace_path:
-                working_dir = project.workspace_path
+            ws_path = await self.db.get_project_workspace_path(working_dir)
+            if ws_path:
+                working_dir = ws_path
             else:
                 working_dir = os.path.join(self.config.workspace_dir, working_dir)
 

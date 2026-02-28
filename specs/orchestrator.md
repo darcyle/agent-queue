@@ -371,11 +371,11 @@ In both cases, remove the task from `_running_tasks` in a `finally` block.
 
 **Step 4 — Prepare workspace.**
 `project = db.get_project(project_id)`.
-Call `_prepare_workspace(task, agent)` inside a try/except.  `_prepare_workspace` always
-returns a path.  On exception, send a "Workspace Error" Discord notification via
-`_notify_channel` and fall back to `project.workspace_path or config.workspace_dir`.
-Re-fetch `task` and `agent` after workspace preparation because `_prepare_workspace` may
-have updated `branch_name`.
+Call `_prepare_workspace(task, agent)` inside a try/except.  `_prepare_workspace` returns
+a path or `None`.  On exception or `None` return, transition the task back to READY,
+set the agent to IDLE, send a notification telling the user to add workspaces, and return
+early.  Re-fetch `task` and `agent` after workspace preparation because
+`_prepare_workspace` may have updated `branch_name`.
 
 **Step 5 — Notify start.**
 Send a "Task Started" message to `_notify_channel` including the task ID, title, agent
@@ -538,19 +538,13 @@ Most previously identified workspace sync gaps have been resolved. See
 
 `_prepare_workspace(task, agent) -> str`
 
-Always returns the absolute path to the workspace directory (never None).
+Returns the absolute path to the workspace directory, or `None` if no workspace is available.
 
-**Workspace resolution chain:**
+**Workspace resolution:**
 
-1. **agent_workspaces lookup** — `db.get_agent_workspace(agent.id, task.project_id)`.
-   If found, use the cached `workspace_path`.
-2. **Auto-populate from repo config** — If no cached workspace:
-   - Use `task.repo_id` if set, otherwise the project's first repo.
-   - Compute workspace path from repo source type:
-     - LINK: `workspace = repo.source_path`
-     - CLONE/INIT: `workspace = {config.workspace_dir}/{project_id}/{agent.name}/{repo_name}`
-   - Save to `agent_workspaces` for future lookups.
-3. **Fallback** — No repo at all: use `project.workspace_path` or `config.workspace_dir`.
+Calls `db.acquire_workspace(project_id, agent_id, task_id)` to atomically lock an available
+workspace for the project.  If no workspace is available (all locked or none exist), returns
+`None`.  The caller (`_execute_task`) handles the `None` case by returning the task to READY.
 
 **Branch name.**
 - For plan subtasks that have a parent task: reuse the parent's `branch_name` (to

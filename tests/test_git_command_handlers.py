@@ -83,7 +83,6 @@ async def project_with_repo(db, tmp_path):
     await db.create_project(Project(
         id=project_id,
         name="Test Project",
-        workspace_path=checkout_path,
     ))
     await db.create_repo(RepoConfig(
         id=repo_id,
@@ -476,6 +475,7 @@ class TestMergeBranch:
     async def test_uses_repo_default_branch(self, handler, db, mock_git, tmp_path):
         """Merge should use the project's configured default branch, not hardcoded 'main'."""
         import os
+        from src.models import Workspace
 
         project_id = "proj-develop"
         checkout_path = str(tmp_path / "workspaces" / "proj-develop")
@@ -484,8 +484,12 @@ class TestMergeBranch:
         await db.create_project(Project(
             id=project_id,
             name="Develop Project",
-            workspace_path=checkout_path,
             repo_default_branch="develop",
+        ))
+        await db.create_workspace(Workspace(
+            id="ws-develop", project_id=project_id,
+            workspace_path=checkout_path,
+            source_type=RepoSourceType.LINK,
         ))
 
         mock_git.merge_branch.return_value = True

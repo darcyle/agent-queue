@@ -188,13 +188,13 @@ class Project:
     """A project is the unit of scheduling and resource allocation.
 
     The scheduler distributes agent capacity across projects proportionally
-    to their credit_weight. Each project may have its own Discord channel,
-    workspace directory, and token budget. max_concurrent_agents caps how
-    many agents can work on this project simultaneously.
+    to their credit_weight. Each project may have its own Discord channel
+    and token budget. max_concurrent_agents caps how many agents can work
+    on this project simultaneously.
 
     Repo configuration (repo_url, repo_default_branch) is embedded directly
     on the project — one repo per project.  Multiple workspaces per project
-    are managed via the Workspace model.
+    are managed via the Workspace model (see ``workspaces`` table).
     """
     id: str
     name: str
@@ -203,7 +203,6 @@ class Project:
     status: ProjectStatus = ProjectStatus.ACTIVE
     total_tokens_used: int = 0
     budget_limit: int | None = None
-    workspace_path: str | None = None
     discord_channel_id: str | None = None          # Per-project Discord channel
     repo_url: str = ""
     repo_default_branch: str = "main"

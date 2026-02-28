@@ -186,3 +186,37 @@ class TestScheduler:
         assert len(actions) == 2
         task_ids = {a.task_id for a in actions}
         assert task_ids == {"t-1", "t-2"}
+
+    def test_skip_project_with_zero_available_workspaces(self):
+        state = SchedulerState(
+            projects=[
+                make_project(id="p-1", name="alpha"),
+                make_project(id="p-2", name="beta"),
+            ],
+            tasks=[
+                make_task(id="t-1", project_id="p-1"),
+                make_task(id="t-2", project_id="p-2"),
+            ],
+            agents=[make_agent()],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+            project_available_workspaces={"p-1": 0, "p-2": 1},
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 1
+        assert actions[0].project_id == "p-2"
+
+    def test_workspace_check_skipped_when_dict_empty(self):
+        """When project_available_workspaces is empty (default), no filtering."""
+        state = SchedulerState(
+            projects=[make_project()],
+            tasks=[make_task()],
+            agents=[make_agent()],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+            project_available_workspaces={},
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 1

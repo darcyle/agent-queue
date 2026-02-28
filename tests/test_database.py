@@ -311,3 +311,40 @@ class TestWorkspaces:
         assert count == 1
         ws = await db.get_workspace("ws-1")
         assert ws.locked_by_agent_id is None
+
+    async def test_get_project_workspace_path(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_workspace(Workspace(
+            id="ws-1", project_id="p-1",
+            workspace_path="/tmp/ws1", source_type=RepoSourceType.LINK,
+        ))
+        path = await db.get_project_workspace_path("p-1")
+        assert path == "/tmp/ws1"
+
+    async def test_get_project_workspace_path_no_workspaces(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        path = await db.get_project_workspace_path("p-1")
+        assert path is None
+
+    async def test_count_available_workspaces(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_task(
+            Task(id="t-1", project_id="p-1", title="A", description="D")
+        )
+        await db.create_workspace(Workspace(
+            id="ws-1", project_id="p-1",
+            workspace_path="/tmp/ws1", source_type=RepoSourceType.LINK,
+        ))
+        await db.create_workspace(Workspace(
+            id="ws-2", project_id="p-1",
+            workspace_path="/tmp/ws2", source_type=RepoSourceType.LINK,
+        ))
+        assert await db.count_available_workspaces("p-1") == 2
+
+        await db.acquire_workspace("p-1", "a-1", "t-1")
+        assert await db.count_available_workspaces("p-1") == 1
+
+    async def test_count_available_workspaces_no_workspaces(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        assert await db.count_available_workspaces("p-1") == 0

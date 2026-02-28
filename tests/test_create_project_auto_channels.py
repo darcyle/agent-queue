@@ -80,7 +80,6 @@ class TestBasicProjectCreation:
         assert "error" not in result
         assert result["created"] == "my-app"
         assert result["name"] == "My App"
-        assert "workspace" in result
 
         project = await db.get_project("my-app")
         assert project is not None
@@ -177,7 +176,6 @@ class TestResultStructure:
 
         assert "created" in result
         assert "name" in result
-        assert "workspace" in result
         assert "auto_create_channels" in result
 
     async def test_result_types(self, handler_auto_off):
@@ -187,7 +185,6 @@ class TestResultStructure:
 
         assert isinstance(result["created"], str)
         assert isinstance(result["name"], str)
-        assert isinstance(result["workspace"], str)
         assert isinstance(result["auto_create_channels"], bool)
 
 

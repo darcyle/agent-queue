@@ -475,13 +475,13 @@ class Database:
     async def create_project(self, project: Project) -> None:
         await self._db.execute(
             "INSERT INTO projects (id, name, credit_weight, max_concurrent_agents, "
-            "status, total_tokens_used, budget_limit, workspace_path, "
+            "status, total_tokens_used, budget_limit, "
             "discord_channel_id, repo_url, repo_default_branch, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (project.id, project.name, project.credit_weight,
              project.max_concurrent_agents, project.status.value,
              project.total_tokens_used, project.budget_limit,
-             project.workspace_path, project.discord_channel_id,
+             project.discord_channel_id,
              project.repo_url, project.repo_default_branch,
              time.time()),
         )
@@ -537,7 +537,6 @@ class Database:
             status=ProjectStatus(row["status"]),
             total_tokens_used=row["total_tokens_used"],
             budget_limit=row["budget_limit"],
-            workspace_path=row["workspace_path"] if "workspace_path" in keys else None,
             discord_channel_id=channel_id,
             repo_url=row["repo_url"] if "repo_url" in keys and row["repo_url"] else "",
             repo_default_branch=(
@@ -1336,6 +1335,33 @@ class Database:
             locked_by_task_id=row["locked_by_task_id"],
             locked_at=row["locked_at"],
         )
+
+    async def get_project_workspace_path(self, project_id: str) -> str | None:
+        """Return the workspace_path of the first workspace for a project.
+
+        This is a non-locking read used by notes, archive, repo status, and
+        other commands that need a project directory without acquiring a lock.
+        Returns ``None`` if the project has no workspaces.
+        """
+        cursor = await self._db.execute(
+            "SELECT workspace_path FROM workspaces WHERE project_id = ? LIMIT 1",
+            (project_id,),
+        )
+        row = await cursor.fetchone()
+        return row["workspace_path"] if row else None
+
+    async def count_available_workspaces(self, project_id: str) -> int:
+        """Count workspaces for a project that are not currently locked.
+
+        Used by the scheduler to skip projects with no available workspaces.
+        """
+        cursor = await self._db.execute(
+            "SELECT COUNT(*) AS cnt FROM workspaces "
+            "WHERE project_id = ? AND locked_by_agent_id IS NULL",
+            (project_id,),
+        )
+        row = await cursor.fetchone()
+        return row["cnt"]
 
     # --- Token Ledger ---
     # Append-only log of token consumption. Each entry records which project,

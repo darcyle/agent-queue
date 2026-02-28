@@ -788,7 +788,7 @@ Adds a repository configuration to a project.
 - `default_branch` (optional, default `"main"`): The repo's primary branch name.
 - `name` (optional): Repo name. If not provided, derived from the URL (last path segment minus `.git`) or the path basename.
 
-**Behavior:** Validates that for `clone` sources a URL is provided, and for `link` sources a valid directory path is provided. Derives the repo ID by lowercasing the name. Sets `checkout_base_path` to `{project.workspace_path}/repos/{repo_name}`.
+**Behavior:** Validates that for `clone` sources a URL is provided, and for `link` sources a valid directory path is provided. Derives the repo ID by lowercasing the name. Sets `checkout_base_path` from the workspace path (resolved via the `workspaces` table).
 
 **Returns on success:**
 ```python
@@ -1457,7 +1457,7 @@ Manually fires a hook immediately (bypasses cooldown).
 
 ### Notes
 
-Notes are stored as Markdown files in `{project.workspace_path}/notes/`. Filenames are derived from the title using `git.slugify`.
+Notes are stored as Markdown files in `{workspace_path}/notes/`, where `workspace_path` is resolved from the `workspaces` table via `db.get_project_workspace_path()`. If the project has no workspaces, note commands return an error. Filenames are derived from the title using `git.slugify`.
 
 ---
 
@@ -1852,7 +1852,7 @@ Returns a 3-tuple: `(checkout_path, repo_config, error_dict)`. On success, `erro
      - `LINK` source type: uses `repo.source_path`.
      - `CLONE` or `INIT` source type: uses `repo.checkout_base_path`.
      - If neither path is set: error.
-   - If no repo was found: uses `project.workspace_path` as the checkout path (requires project context; error if workspace path is invalid).
+   - If no repo was found: returns an error telling the user to add workspaces via `/add-workspace`.
 6. Validates that the determined path exists as a directory (error if not).
 7. Calls `git.validate_checkout(checkout_path)` to confirm it is a git repository (error if not).
 8. Returns `(checkout_path, repo, None)`.

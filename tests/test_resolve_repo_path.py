@@ -2,7 +2,7 @@
 
 Tests the resolution logic that maps (project_id, optional workspace/repo) to
 a filesystem checkout path.  Covers workspaces, legacy linked/cloned repos,
-workspace_path fallback, and various error conditions.
+and various error conditions.
 """
 
 import os
@@ -255,59 +255,25 @@ class TestInitRepo:
 
 
 # ---------------------------------------------------------------------------
-# Workspace-path fallback
+# No workspaces → fail-fast error
 # ---------------------------------------------------------------------------
 
 
-class TestWorkspaceFallback:
-    """Project with no repos/workspaces → falls back to workspace_path."""
+class TestNoWorkspaces:
+    """Project with no repos and no workspaces → clear error."""
 
-    async def test_falls_back_to_workspace_path(self, handler, db, tmp_path, mock_git):
-        workspace = _make_dir(str(tmp_path / "workspace-fallback"))
-
-        await db.create_project(Project(
-            id="p-norepo",
-            name="No Repo Project",
-            workspace_path=workspace,
-        ))
-
-        path, project, err = await handler._resolve_repo_path({"project_id": "p-norepo"})
-
-        assert err is None
-        assert path == workspace
-        assert project is not None
-        assert project.id == "p-norepo"
-        mock_git.validate_checkout.assert_called_once_with(workspace)
-
-    async def test_workspace_path_missing_on_disk(self, handler, db, tmp_path):
-        """workspace_path is set but directory doesn't exist → error."""
-        nonexistent = str(tmp_path / "does-not-exist")
-
-        await db.create_project(Project(
-            id="p-nodir",
-            name="No Dir",
-            workspace_path=nonexistent,
-        ))
-
-        path, project, err = await handler._resolve_repo_path({"project_id": "p-nodir"})
-
-        assert path is None
-        assert err is not None
-        assert "no workspaces" in err["error"].lower() or "no valid workspace" in err["error"].lower()
-
-    async def test_workspace_path_not_set(self, handler, db):
-        """Project has no workspace_path and no repos → error."""
+    async def test_no_workspaces_returns_error(self, handler, db):
+        """Project has no workspaces and no repos → error."""
         await db.create_project(Project(
             id="p-empty",
             name="Empty Project",
-            workspace_path=None,
         ))
 
         path, project, err = await handler._resolve_repo_path({"project_id": "p-empty"})
 
         assert path is None
         assert err is not None
-        assert "no workspaces" in err["error"].lower() or "no valid workspace" in err["error"].lower()
+        assert "no workspaces" in err["error"].lower()
 
 
 # ---------------------------------------------------------------------------

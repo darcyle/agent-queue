@@ -64,6 +64,20 @@ async def orch(tmp_path):
     await o.shutdown()
 
 
+async def _create_project_with_workspace(
+    db, project_id: str = "p-1", name: str = "alpha",
+    workspace_path: str = "/tmp/test-workspace",
+) -> None:
+    """Create a project and an associated workspace so task execution succeeds."""
+    await db.create_project(Project(id=project_id, name=name))
+    await db.create_workspace(Workspace(
+        id=f"ws-{project_id}",
+        project_id=project_id,
+        workspace_path=workspace_path,
+        source_type=RepoSourceType.LINK,
+    ))
+
+
 async def _run_cycle_and_wait(orch):
     """Run one scheduling cycle and wait for all background task executions."""
     await orch.run_one_cycle()
@@ -73,7 +87,7 @@ async def _run_cycle_and_wait(orch):
 class TestOrchestratorLifecycle:
     async def test_full_task_lifecycle(self, orch):
         """DEFINED → READY → ASSIGNED → IN_PROGRESS → VERIFYING → COMPLETED"""
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db)
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
                                          agent_type="claude"))
         await orch.db.create_task(Task(
@@ -88,7 +102,7 @@ class TestOrchestratorLifecycle:
 
     async def test_failed_task_retries(self, orch):
         orch._adapter_factory = MockAdapterFactory(result=AgentResult.FAILED)
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db)
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
                                          agent_type="claude"))
         await orch.db.create_task(Task(
@@ -108,7 +122,7 @@ class TestOrchestratorLifecycle:
         orch._adapter_factory = MockAdapterFactory(
             result=AgentResult.PAUSED_TOKENS
         )
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db)
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
                                          agent_type="claude"))
         await orch.db.create_task(Task(
@@ -123,7 +137,7 @@ class TestOrchestratorLifecycle:
         assert task.resume_after is not None
 
     async def test_dependencies_block_scheduling(self, orch):
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db)
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
                                          agent_type="claude"))
         await orch.db.create_task(Task(
@@ -189,7 +203,7 @@ Add REST endpoints for CRUD operations.
 Add comprehensive test suite.
 """)
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
                                          agent_type="claude"))
         await orch.db.create_task(Task(
@@ -246,7 +260,7 @@ Second step: implement the core API endpoints and handlers.
 Third step: write comprehensive tests for all components.
 """)
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
                                          agent_type="claude"))
         await orch.db.create_task(Task(
@@ -278,7 +292,7 @@ Third step: write comprehensive tests for all components.
         """When no plan file exists, no subtasks should be created."""
         orch, workspace = orch_with_workspace
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
                                          agent_type="claude"))
         await orch.db.create_task(Task(
@@ -312,7 +326,7 @@ Third step: write comprehensive tests for all components.
         claude_dir.mkdir()
         (claude_dir / "plan.md").write_text("## Step\n\nImplement the changes described in the plan file.\n")
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
                                          agent_type="claude"))
         await orch.db.create_task(Task(
@@ -336,7 +350,7 @@ Third step: write comprehensive tests for all components.
         plan_path = claude_dir / "plan.md"
         plan_path.write_text("## Task\n\nDo something interesting here.\n")
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
                                          agent_type="claude"))
         await orch.db.create_task(Task(
@@ -363,7 +377,7 @@ Third step: write comprehensive tests for all components.
         claude_dir.mkdir()
         (claude_dir / "plan.md").write_text("## Build it\n\nBuild the project artifacts and run the compilation step.\n")
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
                                          agent_type="claude"))
         await orch.db.create_task(Task(
@@ -396,7 +410,7 @@ Switch from MD5 to bcrypt.
 Implement JWT-based sessions.
 """)
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
                                          agent_type="claude"))
         await orch.db.create_task(Task(
@@ -434,7 +448,7 @@ Implement JWT-based sessions.
         claude_dir.mkdir()
         (claude_dir / "plan.md").write_text("## A\n\nFirst step: implement the core module and add dependencies.\n\n## B\n\nSecond step: add integration tests and documentation.\n")
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
                                          agent_type="claude"))
         await orch.db.create_task(Task(
@@ -480,7 +494,7 @@ Implement JWT-based sessions.
             "## Step C\n\nThird step: write tests and update documentation.\n"
         )
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
 
         parent = Task(
             id="t-1", project_id="p-1", title="Plan",
@@ -528,7 +542,7 @@ Implement JWT-based sessions.
             "## Step B\n\nSecond step: implement the API endpoints and handlers.\n"
         )
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
 
         parent = Task(
             id="t-1", project_id="p-1", title="Plan",
@@ -563,7 +577,7 @@ Implement JWT-based sessions.
 3. Add tests and documentation
 """)
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
                                          agent_type="claude"))
         await orch.db.create_task(Task(
@@ -600,7 +614,7 @@ Implement the first component with database schema changes and migrations.
 Implement the second component with API endpoints and request handlers.
 """)
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
         await orch.db.create_agent(Agent(id="a-1", name="claude-1",
                                          agent_type="claude"))
         await orch.db.create_task(Task(
@@ -634,7 +648,7 @@ class TestAwaitingApprovalNopr:
     async def test_auto_completes_no_approval_no_pr(self, orch):
         """Task without requires_approval and no pr_url gets auto-completed
         after the grace period."""
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db)
         await orch.db.create_task(Task(
             id="t-1", project_id="p-1", title="No-PR Task",
             description="This task has no PR",
@@ -660,7 +674,7 @@ class TestAwaitingApprovalNopr:
     async def test_no_auto_complete_within_grace_period(self, orch):
         """Task without requires_approval should NOT be auto-completed while
         still within the grace period."""
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db)
         await orch.db.create_task(Task(
             id="t-1", project_id="p-1", title="Fresh Task",
             description="Just entered AWAITING_APPROVAL",
@@ -686,7 +700,7 @@ class TestAwaitingApprovalNopr:
 
         orch.set_notify_callback(capture_notify)
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db)
         await orch.db.create_task(Task(
             id="t-1", project_id="p-1", title="Manual Review",
             description="Needs manual review",
@@ -711,7 +725,7 @@ class TestAwaitingApprovalNopr:
 
         orch.set_notify_callback(capture_notify)
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db)
         await orch.db.create_task(Task(
             id="t-1", project_id="p-1", title="Manual Review",
             description="Needs manual review",
@@ -739,7 +753,7 @@ class TestAwaitingApprovalNopr:
 
         orch.set_notify_callback(capture_notify)
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db)
         await orch.db.create_task(Task(
             id="t-1", project_id="p-1", title="Old Task",
             description="Been here a while",
@@ -764,7 +778,7 @@ class TestAwaitingApprovalNopr:
 
     async def test_cleanup_reminder_tracking_on_completion(self, orch):
         """When a task leaves AWAITING_APPROVAL, its reminder entry is removed."""
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db)
         await orch.db.create_task(Task(
             id="t-1", project_id="p-1", title="Manual Review",
             description="Needs manual review",
@@ -790,7 +804,7 @@ class TestAwaitingApprovalNopr:
 
     async def test_pr_task_still_checked_normally(self, orch):
         """Tasks WITH a pr_url should still go through the PR-check path."""
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db)
         await orch.db.create_repo(RepoConfig(
             id="repo-1", project_id="p-1",
             source_type=RepoSourceType.INIT,
@@ -842,7 +856,7 @@ class TestPlanSubtaskFlags:
             "## Add models\n\nCreate the user and post models in models.py with all fields.\n"
         )
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
         parent = Task(
             id="t-1", project_id="p-1", title="Plan",
             description="Create plan", status=TaskStatus.COMPLETED,
@@ -867,7 +881,7 @@ class TestPlanSubtaskFlags:
             "## Build API\n\nCreate REST endpoints for user CRUD operations.\n"
         )
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
         parent = Task(
             id="t-1", project_id="p-1", title="Plan",
             description="Create plan", status=TaskStatus.COMPLETED,
@@ -907,7 +921,7 @@ class TestRecursionGuard:
             "## Sub-sub task\n\nThis should never be generated as a task.\n"
         )
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
 
         # Create parent task first (FK constraint)
         await orch.db.create_task(Task(
@@ -937,7 +951,7 @@ class TestRecursionGuard:
             "## Real subtask\n\nThis should be created as a new task from the plan.\n"
         )
 
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
 
         root = Task(
             id="t-root", project_id="p-1", title="Root Task",
@@ -969,7 +983,7 @@ class TestIsLastSubtask:
 
     async def test_single_subtask_is_last(self, orch_with_workspace):
         orch = orch_with_workspace
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db)
         await orch.db.create_task(Task(
             id="t-parent", project_id="p-1", title="Parent",
             description="Parent task", status=TaskStatus.COMPLETED,
@@ -984,7 +998,7 @@ class TestIsLastSubtask:
 
     async def test_not_last_when_sibling_incomplete(self, orch_with_workspace):
         orch = orch_with_workspace
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db)
         await orch.db.create_task(Task(
             id="t-parent", project_id="p-1", title="Parent",
             description="Parent task", status=TaskStatus.COMPLETED,
@@ -1005,7 +1019,7 @@ class TestIsLastSubtask:
 
     async def test_is_last_when_all_siblings_completed(self, orch_with_workspace):
         orch = orch_with_workspace
-        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await _create_project_with_workspace(orch.db)
         await orch.db.create_task(Task(
             id="t-parent", project_id="p-1", title="Parent",
             description="Parent task", status=TaskStatus.COMPLETED,

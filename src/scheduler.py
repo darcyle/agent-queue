@@ -63,6 +63,7 @@ class SchedulerState:
     project_token_usage: dict[str, int]  # project_id -> tokens in window
     project_active_agent_counts: dict[str, int]  # project_id -> count
     tasks_completed_in_window: dict[str, int]  # project_id -> count
+    project_available_workspaces: dict[str, int] = field(default_factory=dict)
     global_budget: int | None = None
     global_tokens_used: int = 0
 
@@ -155,6 +156,13 @@ class Scheduler:
                 # Check concurrency limit
                 current_agents = round_agent_counts.get(project.id, 0)
                 if current_agents >= project.max_concurrent_agents:
+                    continue
+
+                # Skip projects with no available workspaces
+                if (
+                    state.project_available_workspaces
+                    and state.project_available_workspaces.get(project.id, 0) <= 0
+                ):
                     continue
 
                 # Pick highest priority ready task not yet assigned

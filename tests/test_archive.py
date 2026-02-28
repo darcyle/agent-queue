@@ -15,7 +15,10 @@ from unittest.mock import MagicMock
 from src.command_handler import CommandHandler
 from src.config import AppConfig, ArchiveConfig, DiscordConfig
 from src.database import Database
-from src.models import Agent, AgentOutput, AgentResult, Project, Task, TaskStatus, TaskType
+from src.models import (
+    Agent, AgentOutput, AgentResult, Project, RepoSourceType, Task,
+    TaskStatus, TaskType, Workspace,
+)
 from src.orchestrator import Orchestrator
 
 
@@ -36,10 +39,20 @@ async def _seed_project(
     pid: str = "p-1",
     workspace_path: str | None = None,
 ) -> None:
-    """Create a simple project for test tasks to reference."""
-    await db.create_project(
-        Project(id=pid, name=f"project-{pid}", workspace_path=workspace_path)
-    )
+    """Create a simple project for test tasks to reference.
+
+    If *workspace_path* is given, a workspace row is also created in the
+    workspaces table so that archive-note tests have a directory to write to.
+    """
+    await db.create_project(Project(id=pid, name=f"project-{pid}"))
+    if workspace_path:
+        import uuid
+        await db.create_workspace(Workspace(
+            id=f"ws-{uuid.uuid4().hex[:8]}",
+            project_id=pid,
+            workspace_path=workspace_path,
+            source_type=RepoSourceType.LINK,
+        ))
 
 
 async def _seed_task(

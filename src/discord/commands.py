@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import re
+import traceback
 
 import discord
 from discord import app_commands
@@ -637,12 +638,12 @@ def setup_commands(bot: commands.Bot) -> None:
             # Build parent→subtask lookup for tree view
             self._all_tasks = all_tasks or []
             self._subtask_ids: set[str] = set()
-            self._children: dict[str, list] = {}  # parent_id → [child tasks]
+            self._subtask_map: dict[str, list] = {}  # parent_id → [child tasks]
             for t in self._all_tasks:
                 pid = t.get("parent_task_id")
                 if pid:
                     self._subtask_ids.add(t["id"])
-                    self._children.setdefault(pid, []).append(t)
+                    self._subtask_map.setdefault(pid, []).append(t)
             self.expanded: set[str] = set()
             for status in _DEFAULT_EXPANDED:
                 if status in tasks_by_status:
@@ -660,7 +661,7 @@ def setup_commands(bot: commands.Bot) -> None:
             tags = []
             if task.get("is_plan_subtask"):
                 tags.append(TYPE_TAGS["plan_subtask"])
-            if task["id"] in self._children:
+            if task["id"] in self._subtask_map:
                 tags.append(TYPE_TAGS["has_subtasks"])
             if task.get("pr_url"):
                 tags.append(TYPE_TAGS["has_pr"])
@@ -706,7 +707,7 @@ def setup_commands(bot: commands.Bot) -> None:
             lines = [f"{tag_str}**{t['title']}** `{t['id']}`"]
 
             # Show inline subtask count if parent has children
-            children = self._children.get(t["id"], [])
+            children = self._subtask_map.get(t["id"], [])
             if children and show_children:
                 completed = sum(
                     1 for c in children if c.get("status") == "COMPLETED"
@@ -1601,8 +1602,15 @@ def setup_commands(bot: commands.Bot) -> None:
                             ),
                         )
                         return
+                desc = "No tasks found"
+                if project_id:
+                    desc += f" for project `{project_id}`"
+                    # Hint about cross-project view
+                    desc += ". Check `/status` for a cross-project overview."
+                else:
+                    desc += "."
                 await interaction.followup.send(
-                    embed=info_embed("No Tasks", description="No tasks found for this project."),
+                    embed=info_embed("No Tasks", description=desc),
                 )
                 return
 
@@ -1625,6 +1633,7 @@ def setup_commands(bot: commands.Bot) -> None:
             content = view_widget.build_content()
             await interaction.followup.send(content, view=view_widget)
         except Exception as e:
+            print(f"ERROR in /tasks: {e!r}\n{traceback.format_exc()}")
             try:
                 await interaction.followup.send(
                     embed=error_embed("Error", description=f"Failed to list tasks: {e}"),

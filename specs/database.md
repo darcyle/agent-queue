@@ -66,7 +66,7 @@ All 15 tables are declared in the module-level `SCHEMA` string. Foreign key rela
 | `status` | TEXT | NOT NULL DEFAULT 'ACTIVE' | One of: ACTIVE, PAUSED, ARCHIVED |
 | `total_tokens_used` | INTEGER | NOT NULL DEFAULT 0 | Cumulative token counter |
 | `budget_limit` | INTEGER | nullable | Max tokens allowed (NULL = unlimited) |
-| `workspace_path` | TEXT | nullable | Filesystem path to project workspace |
+| `workspace_path` | TEXT | nullable | **Deprecated/unused.** Legacy column kept for backward compatibility; workspace paths are now managed via the `workspaces` table. |
 | `discord_channel_id` | TEXT | nullable | Per-project Discord channel |
 | `discord_control_channel_id` | TEXT | nullable | Legacy column (superseded by `discord_channel_id`); kept for backward compatibility |
 | `created_at` | REAL | NOT NULL | Unix timestamp, set on insert |
@@ -329,7 +329,7 @@ Performs a cascading delete of all data owned by the project, in this order:
 
 ### `_row_to_project(row) -> Project`
 
-Private helper. Reads `discord_channel_id`; if that column is absent or NULL, falls back to `discord_control_channel_id`. Reads `workspace_path` with a `key in keys` guard for backward compatibility. Returns a `Project` dataclass instance.
+Private helper. Reads `discord_channel_id`; if that column is absent or NULL, falls back to `discord_control_channel_id`. Returns a `Project` dataclass instance. The `workspace_path` DB column is ignored (deprecated).
 
 ---
 
@@ -612,7 +612,7 @@ The full list of migrations applied in order:
 
 | Statement | Effect |
 |---|---|
-| `ALTER TABLE projects ADD COLUMN workspace_path TEXT` | Adds filesystem workspace path to projects |
+| `ALTER TABLE projects ADD COLUMN workspace_path TEXT` | Legacy migration — column is now deprecated/unused (workspace paths managed via `workspaces` table) |
 | `ALTER TABLE repos ADD COLUMN source_type TEXT NOT NULL DEFAULT 'clone'` | Adds repo source type enum |
 | `ALTER TABLE repos ADD COLUMN source_path TEXT NOT NULL DEFAULT ''` | Adds local path for linked/initialized repos |
 | `ALTER TABLE tasks ADD COLUMN requires_approval INTEGER NOT NULL DEFAULT 0` | Adds approval requirement flag |

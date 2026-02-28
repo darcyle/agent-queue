@@ -881,6 +881,11 @@ class Orchestrator:
 
         total_used = sum(project_usage.values())
 
+        # Count available (unlocked) workspaces per project
+        workspace_counts: dict[str, int] = {}
+        for p in projects:
+            workspace_counts[p.id] = await self.db.count_available_workspaces(p.id)
+
         state = SchedulerState(
             projects=projects,
             tasks=tasks,
@@ -888,19 +893,19 @@ class Orchestrator:
             project_token_usage=project_usage,
             project_active_agent_counts=active_counts,
             tasks_completed_in_window={},
+            project_available_workspaces=workspace_counts,
             global_budget=self.config.global_token_budget_daily,
             global_tokens_used=total_used,
         )
 
         return Scheduler.schedule(state)
 
-    async def _prepare_workspace(self, task: Task, agent) -> str:
+    async def _prepare_workspace(self, task: Task, agent) -> str | None:
         """Acquire a workspace lock and prepare it for the task.
 
         1. Acquire an unlocked workspace for the project via
            ``db.acquire_workspace()``.
-        2. If no workspace is available, fall back to
-           ``project.workspace_path`` or ``config.workspace_dir``.
+        2. If no workspace is available, return ``None`` (caller must handle).
         3. Perform git operations based on ``workspace.source_type``
            (clone/link) using ``project.repo_url`` / ``project.repo_default_branch``.
         4. Return the workspace path.
@@ -912,15 +917,7 @@ class Orchestrator:
         ws = await self.db.acquire_workspace(task.project_id, agent.id, task.id)
 
         if not ws:
-            # No workspace available — fall back to project workspace or config dir
-            fallback = (project.workspace_path if project and project.workspace_path
-                        else self.config.workspace_dir)
-            await self._notify_channel(
-                f"**Warning:** No workspace available for project `{task.project_id}`. "
-                f"Using fallback: `{fallback}`",
-                project_id=task.project_id,
-            )
-            return fallback
+            return None
 
         workspace = ws.workspace_path
         repo_url = project.repo_url if project else ""
@@ -1531,12 +1528,6 @@ class Orchestrator:
             workspaces = await self.db.list_workspaces(project_id=task.project_id)
             if workspaces:
                 checkout_path = workspaces[0].workspace_path
-        # Fall back to project workspace_path
-        if not checkout_path:
-            project = await self.db.get_project(task.project_id)
-            if project and project.workspace_path:
-                checkout_path = project.workspace_path
-
         if not checkout_path:
             return
 
@@ -1623,14 +1614,25 @@ class Orchestrator:
         try:
             workspace = await self._prepare_workspace(task, agent)
         except Exception as e:
-            fallback_workspace = (project.workspace_path if project and project.workspace_path
-                                  else self.config.workspace_dir)
             await self._notify_channel(
-                f"**Workspace Error:** Task `{task.id}` — {e}\n"
-                f"Falling back to project workspace.",
+                f"**Workspace Error:** Task `{task.id}` — {e}",
                 project_id=action.project_id,
             )
-            workspace = fallback_workspace
+            workspace = None
+
+        if not workspace:
+            # No workspace available — return task to READY and free the agent
+            await self.db.transition_task(
+                action.task_id, TaskStatus.READY,
+                context="no_workspace_available")
+            await self.db.update_agent(action.agent_id, state=AgentState.IDLE)
+            await self._notify_channel(
+                f"**No Workspace:** Task `{task.id}` returned to READY — "
+                f"project `{action.project_id}` has no available workspaces. "
+                f"Use `/add-workspace` to create one.",
+                project_id=action.project_id,
+            )
+            return
 
         # Re-fetch task/agent in case _prepare_workspace updated them
         task = await self.db.get_task(action.task_id)
