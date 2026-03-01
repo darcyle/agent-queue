@@ -1,0 +1,210 @@
+"""Test cases for workspace management tools: add_workspace, list_workspaces, release_workspace."""
+
+from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty
+
+CASES: list[TestCase] = [
+    # --- add_workspace ---
+    TestCase(
+        id="ws-add-link-explicit",
+        description="Add a workspace by linking an existing directory to a project",
+        category="workspaces",
+        difficulty=Difficulty.EASY,
+        tags=["add_workspace", "link"],
+        turns=[
+            Turn(
+                user_message="add a workspace for project p-1 at /home/dev/myapp",
+                expected_tools=[
+                    ExpectedTool(
+                        name="add_workspace",
+                        args={"project_id": "p-1", "source": "link", "path": "/home/dev/myapp"},
+                    ),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="ws-add-link-natural",
+        description="Link a directory to a project using natural phrasing",
+        category="workspaces",
+        difficulty=Difficulty.EASY,
+        tags=["add_workspace", "link", "natural-language"],
+        turns=[
+            Turn(
+                user_message="link /path/to/repo to project p-1",
+                expected_tools=[
+                    ExpectedTool(
+                        name="add_workspace",
+                        args={"project_id": "p-1", "source": "link", "path": "/path/to/repo"},
+                    ),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="ws-add-link-connect-phrasing",
+        description="Connect an existing directory as workspace using 'connect' verb",
+        category="workspaces",
+        difficulty=Difficulty.MEDIUM,
+        tags=["add_workspace", "link", "natural-language"],
+        turns=[
+            Turn(
+                user_message="connect /srv/projects/webapp to the webapp project",
+                expected_tools=[
+                    ExpectedTool(
+                        name="add_workspace",
+                        args={"source": "link", "path": "/srv/projects/webapp"},
+                    ),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="ws-add-clone",
+        description="Add a workspace by cloning the project repo",
+        category="workspaces",
+        difficulty=Difficulty.EASY,
+        tags=["add_workspace", "clone"],
+        turns=[
+            Turn(
+                user_message="clone a new workspace for project p-2",
+                expected_tools=[
+                    ExpectedTool(
+                        name="add_workspace",
+                        args={"project_id": "p-2", "source": "clone"},
+                    ),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="ws-add-with-name",
+        description="Add a named workspace for a project",
+        category="workspaces",
+        difficulty=Difficulty.MEDIUM,
+        tags=["add_workspace", "link"],
+        turns=[
+            Turn(
+                user_message=(
+                    "add a workspace called 'staging' for project p-1 "
+                    "pointing to /opt/staging/app"
+                ),
+                expected_tools=[
+                    ExpectedTool(
+                        name="add_workspace",
+                        args={
+                            "project_id": "p-1",
+                            "source": "link",
+                            "path": "/opt/staging/app",
+                            "name": "staging",
+                        },
+                    ),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="ws-add-use-phrasing",
+        description="User says 'use this directory' implying link source type",
+        category="workspaces",
+        difficulty=Difficulty.MEDIUM,
+        tags=["add_workspace", "link", "natural-language"],
+        active_project="p-3",
+        turns=[
+            Turn(
+                user_message="use /home/dev/api-server as a workspace",
+                expected_tools=[
+                    ExpectedTool(
+                        name="add_workspace",
+                        args={"source": "link", "path": "/home/dev/api-server"},
+                    ),
+                ],
+            ),
+        ],
+    ),
+    # --- list_workspaces ---
+    TestCase(
+        id="ws-list-all",
+        description="List all workspaces across all projects",
+        category="workspaces",
+        difficulty=Difficulty.TRIVIAL,
+        tags=["list_workspaces"],
+        turns=[
+            Turn(
+                user_message="list all workspaces",
+                expected_tools=[ExpectedTool(name="list_workspaces")],
+            ),
+        ],
+    ),
+    TestCase(
+        id="ws-list-status",
+        description="Show workspace status using alternative phrasing",
+        category="workspaces",
+        difficulty=Difficulty.EASY,
+        tags=["list_workspaces", "natural-language"],
+        turns=[
+            Turn(
+                user_message="show workspace status",
+                expected_tools=[ExpectedTool(name="list_workspaces")],
+            ),
+        ],
+    ),
+    TestCase(
+        id="ws-list-by-project",
+        description="List workspaces filtered to a specific project",
+        category="workspaces",
+        difficulty=Difficulty.EASY,
+        tags=["list_workspaces"],
+        turns=[
+            Turn(
+                user_message="show workspaces for project p-1",
+                expected_tools=[
+                    ExpectedTool(name="list_workspaces", args={"project_id": "p-1"}),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="ws-list-which-locked",
+        description="User asks which workspaces are locked (maps to list)",
+        category="workspaces",
+        difficulty=Difficulty.MEDIUM,
+        tags=["list_workspaces", "natural-language"],
+        turns=[
+            Turn(
+                user_message="which workspaces are currently locked?",
+                expected_tools=[ExpectedTool(name="list_workspaces")],
+            ),
+        ],
+    ),
+    # --- release_workspace ---
+    TestCase(
+        id="ws-release-explicit",
+        description="Release a workspace lock by ID",
+        category="workspaces",
+        difficulty=Difficulty.EASY,
+        tags=["release_workspace"],
+        turns=[
+            Turn(
+                user_message="release workspace ws-1",
+                expected_tools=[
+                    ExpectedTool(name="release_workspace", args={"workspace_id": "ws-1"}),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="ws-release-unlock-phrasing",
+        description="Unlock a workspace using the 'unlock' verb",
+        category="workspaces",
+        difficulty=Difficulty.EASY,
+        tags=["release_workspace", "natural-language"],
+        turns=[
+            Turn(
+                user_message="unlock workspace ws-2",
+                expected_tools=[
+                    ExpectedTool(name="release_workspace", args={"workspace_id": "ws-2"}),
+                ],
+            ),
+        ],
+    ),
+]

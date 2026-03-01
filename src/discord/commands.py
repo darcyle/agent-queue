@@ -731,9 +731,16 @@ def setup_commands(bot: commands.Bot) -> None:
 
         def build_content(self) -> str:
             lines: list[str] = []
-            # Add progress summary at top
-            all_count = sum(len(v) for v in self.tasks_by_status.values())
-            completed_count = len(self.tasks_by_status.get("COMPLETED", []))
+            # Add progress summary at top — use _all_tasks for accurate totals
+            # since tasks_by_status may be filtered (e.g. completed hidden).
+            if self._all_tasks:
+                all_count = len(self._all_tasks)
+                completed_count = sum(
+                    1 for t in self._all_tasks if t.get("status") == "COMPLETED"
+                )
+            else:
+                all_count = sum(len(v) for v in self.tasks_by_status.values())
+                completed_count = len(self.tasks_by_status.get("COMPLETED", []))
             active_statuses = {"IN_PROGRESS", "ASSIGNED", "VERIFYING"}
             active_count = sum(
                 len(self.tasks_by_status.get(s, []))
@@ -955,15 +962,41 @@ def setup_commands(bot: commands.Bot) -> None:
         if total > 0:
             bar = progress_bar(completed, total, width=12)
             lines.append(f"**Progress:** {bar}")
-        lines.append(
-            f"**Tasks:** {total} total — "
-            f"{by_status.get('DEFINED', 0)} pending, "
-            f"{in_progress} active, "
-            f"{by_status.get('READY', 0)} ready, "
-            f"{completed} completed, "
-            f"{failed} failed, "
-            f"{by_status.get('PAUSED', 0)} paused"
-        )
+        # Build task breakdown — include all statuses that have nonzero counts
+        # so the numbers always add up to the total.
+        pending = by_status.get('DEFINED', 0)
+        ready = by_status.get('READY', 0)
+        assigned = by_status.get('ASSIGNED', 0)
+        active = in_progress + assigned
+        waiting = by_status.get('WAITING_INPUT', 0)
+        paused = by_status.get('PAUSED', 0)
+        verifying = by_status.get('VERIFYING', 0)
+        awaiting = by_status.get('AWAITING_APPROVAL', 0)
+        blocked = by_status.get('BLOCKED', 0)
+
+        parts = []
+        if pending:
+            parts.append(f"{pending} pending")
+        if active:
+            parts.append(f"{active} active")
+        if ready:
+            parts.append(f"{ready} ready")
+        if waiting:
+            parts.append(f"{waiting} waiting input")
+        if paused:
+            parts.append(f"{paused} paused")
+        if verifying:
+            parts.append(f"{verifying} verifying")
+        if awaiting:
+            parts.append(f"{awaiting} awaiting approval")
+        if completed:
+            parts.append(f"{completed} completed")
+        if failed:
+            parts.append(f"{failed} failed")
+        if blocked:
+            parts.append(f"{blocked} blocked")
+
+        lines.append(f"**Tasks:** {total} total — " + ", ".join(parts))
         lines.append("")
 
         # Agent details
