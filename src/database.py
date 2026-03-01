@@ -29,9 +29,9 @@ import uuid
 import aiosqlite
 
 from src.models import (
-    Agent, AgentState, Hook, HookRun, Project, ProjectStatus,
+    Agent, AgentState, DashboardConfig, Hook, HookRun, Project, ProjectStatus,
     RepoConfig, RepoSourceType, Task, TaskStatus, TaskType, VerificationType,
-    Workspace,
+    WidgetPrivacyConfig, WidgetVisibility, Workspace,
 )
 from src.state_machine import is_valid_status_transition
 
@@ -230,6 +230,16 @@ CREATE TABLE IF NOT EXISTS hook_runs (
     completed_at REAL
 );
 
+CREATE TABLE IF NOT EXISTS dashboard_configs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    owner_user_id TEXT NOT NULL,
+    widget_configs TEXT NOT NULL DEFAULT '[]',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    UNIQUE(project_id)
+);
+
 CREATE TABLE IF NOT EXISTS archived_tasks (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
@@ -317,6 +327,7 @@ class Database:
         # Migrate repos -> projects and agent_workspaces -> workspaces
         await self._migrate_repos_to_projects()
         await self._migrate_agent_workspaces_to_workspaces()
+        await self._cleanup_cross_project_workspaces()
         await self._db.commit()
 
     async def close(self) -> None:
@@ -438,9 +449,27 @@ class Database:
                 "FROM agent_workspaces aw"
             )
             rows = await cursor.fetchall()
+            migrated = 0
             for row in rows:
                 project_id = row["project_id"]
                 workspace_path = row["workspace_path"]
+
+                # Skip entries where the workspace path already belongs to a
+                # different project — these are stale cross-project assignments
+                # left over from the old agent_workspaces model.
+                conflict = await self._db.execute(
+                    "SELECT id FROM workspaces "
+                    "WHERE workspace_path = ? AND project_id != ?",
+                    (workspace_path, project_id),
+                )
+                if await conflict.fetchone():
+                    logger.info(
+                        "Migration: skipping stale agent_workspace entry "
+                        "(%s -> %s) — path belongs to another project",
+                        project_id, workspace_path,
+                    )
+                    continue
+
                 # Determine source_type from repo if available
                 source_type = "clone"
                 if row["repo_id"]:
@@ -459,13 +488,54 @@ class Database:
                     "VALUES (?, ?, ?, ?, ?)",
                     (ws_id, project_id, workspace_path, source_type, time.time()),
                 )
-            if rows:
+                migrated += 1
+            if migrated:
                 logger.info(
                     "Migration: migrated %d agent_workspace entries to workspaces table",
-                    len(rows),
+                    migrated,
                 )
         except Exception as e:
             logger.debug("Agent-workspaces-to-workspaces migration (benign): %s", e)
+
+    async def _cleanup_cross_project_workspaces(self) -> None:
+        """Remove workspace entries where the path belongs to a different project.
+
+        This catches stale entries created by the old agent_workspaces migration
+        when an agent was assigned a workspace_path from project A while working
+        on project B.  A workspace path should only belong to one project.
+        """
+        try:
+            # Find workspace paths that appear under multiple projects
+            cursor = await self._db.execute(
+                "SELECT workspace_path, COUNT(DISTINCT project_id) AS proj_count "
+                "FROM workspaces GROUP BY workspace_path HAVING proj_count > 1"
+            )
+            conflicts = await cursor.fetchall()
+            for row in conflicts:
+                ws_path = row["workspace_path"]
+                # Keep the workspace for the project whose name appears in the
+                # path, or the one with the earliest ROWID (first created).
+                entries = await self._db.execute(
+                    "SELECT id, project_id, ROWID FROM workspaces "
+                    "WHERE workspace_path = ? ORDER BY ROWID",
+                    (ws_path,),
+                )
+                all_entries = await entries.fetchall()
+                # The first entry (lowest ROWID) is the canonical owner
+                canonical = all_entries[0]["project_id"]
+                for entry in all_entries[1:]:
+                    if entry["project_id"] != canonical:
+                        await self._db.execute(
+                            "DELETE FROM workspaces WHERE id = ?",
+                            (entry["id"],),
+                        )
+                        logger.info(
+                            "Cleanup: removed workspace %s — path '%s' belongs "
+                            "to project '%s', not '%s'",
+                            entry["id"], ws_path, canonical, entry["project_id"],
+                        )
+        except Exception as e:
+            logger.debug("Cross-project workspace cleanup (benign): %s", e)
 
     # --- Projects ---
     # CRUD for the projects table. Each project has a credit_weight that
@@ -1972,3 +2042,102 @@ class Database:
             "updated_at": row["updated_at"],
             "archived_at": row["archived_at"],
         }
+
+    # --- Dashboard Configs ---
+    # Per-project dashboard configurations that store widget-level privacy
+    # settings.  Each project has at most one dashboard config (enforced by
+    # UNIQUE(project_id)).  Widget configs are serialized as JSON.
+
+    async def create_dashboard_config(self, config: DashboardConfig) -> None:
+        """Create a new dashboard configuration for a project."""
+        widget_json = json.dumps([
+            {
+                "widget_id": wc.widget_id,
+                "visibility": wc.visibility.value,
+                "placeholder_text": wc.placeholder_text,
+            }
+            for wc in config.widget_configs
+        ])
+        now = time.time()
+        await self._db.execute(
+            "INSERT INTO dashboard_configs "
+            "(id, project_id, owner_user_id, widget_configs, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (config.id, config.project_id, config.owner_user_id,
+             widget_json, now, now),
+        )
+        await self._db.commit()
+
+    async def get_dashboard_config(
+        self, project_id: str,
+    ) -> DashboardConfig | None:
+        """Retrieve the dashboard configuration for a project."""
+        cursor = await self._db.execute(
+            "SELECT * FROM dashboard_configs WHERE project_id = ?",
+            (project_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_dashboard_config(row)
+
+    async def update_dashboard_config(
+        self, project_id: str, **kwargs,
+    ) -> None:
+        """Update fields on an existing dashboard configuration.
+
+        Accepts keyword arguments matching dashboard_configs columns.
+        The ``widget_configs`` kwarg should be a list of
+        :class:`WidgetPrivacyConfig` objects — they will be serialized
+        to JSON automatically.
+        """
+        sets = []
+        vals = []
+        for key, value in kwargs.items():
+            if key == "widget_configs" and isinstance(value, list):
+                value = json.dumps([
+                    {
+                        "widget_id": wc.widget_id,
+                        "visibility": wc.visibility.value,
+                        "placeholder_text": wc.placeholder_text,
+                    }
+                    for wc in value
+                ])
+            sets.append(f"{key} = ?")
+            vals.append(value)
+        sets.append("updated_at = ?")
+        vals.append(time.time())
+        vals.append(project_id)
+        await self._db.execute(
+            f"UPDATE dashboard_configs SET {', '.join(sets)} WHERE project_id = ?",
+            vals,
+        )
+        await self._db.commit()
+
+    async def delete_dashboard_config(self, project_id: str) -> None:
+        """Delete the dashboard configuration for a project."""
+        await self._db.execute(
+            "DELETE FROM dashboard_configs WHERE project_id = ?",
+            (project_id,),
+        )
+        await self._db.commit()
+
+    def _row_to_dashboard_config(self, row) -> DashboardConfig:
+        """Convert a database row to a DashboardConfig dataclass."""
+        raw_widgets = json.loads(row["widget_configs"])
+        widget_configs = [
+            WidgetPrivacyConfig(
+                widget_id=w["widget_id"],
+                visibility=WidgetVisibility(w["visibility"]),
+                placeholder_text=w.get("placeholder_text", "🔒 This widget is private"),
+            )
+            for w in raw_widgets
+        ]
+        return DashboardConfig(
+            id=row["id"],
+            project_id=row["project_id"],
+            owner_user_id=row["owner_user_id"],
+            widget_configs=widget_configs,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )

@@ -346,6 +346,93 @@ class Hook:
     updated_at: float = 0.0
 
 
+class WidgetVisibility(Enum):
+    """Controls who can see a widget's content on the dashboard.
+
+    VISIBLE means all authorized users can see the widget.
+    OWNER_ONLY means only the dashboard owner (the user who configured it)
+    can see the full content; other users see a placeholder or collapsed state.
+    COLLAPSED means the widget is collapsed for non-owners, showing only
+    the widget title without any data.
+    """
+
+    VISIBLE = "visible"
+    OWNER_ONLY = "owner_only"
+    COLLAPSED = "collapsed"
+
+
+@dataclass
+class WidgetPrivacyConfig:
+    """Privacy configuration for a single widget within a dashboard.
+
+    Each widget is identified by a ``widget_id`` string (e.g. ``"budget"``,
+    ``"task_progress"``, ``"token_usage"``).  The ``visibility`` field
+    determines whether non-owner users see the widget content, a
+    placeholder, or a collapsed header.  The ``placeholder_text`` is
+    shown to non-owners when visibility is OWNER_ONLY.
+    """
+
+    widget_id: str
+    visibility: WidgetVisibility = WidgetVisibility.VISIBLE
+    placeholder_text: str = "🔒 This widget is private"
+
+
+@dataclass
+class DashboardConfig:
+    """Per-project dashboard configuration with per-widget privacy settings.
+
+    Each project can have one dashboard configuration that specifies
+    the owner (Discord user ID) and per-widget visibility settings.
+    The owner always sees all widgets; non-owner authorized users
+    see widgets filtered by their visibility settings.
+
+    Stored as a row in the ``dashboard_configs`` table with widget
+    settings serialized as JSON.
+    """
+
+    id: str
+    project_id: str
+    owner_user_id: str  # Discord user ID of the dashboard owner
+    widget_configs: list[WidgetPrivacyConfig] = field(default_factory=list)
+    created_at: float = 0.0
+    updated_at: float = 0.0
+
+    def get_widget_config(self, widget_id: str) -> WidgetPrivacyConfig | None:
+        """Return the privacy config for a specific widget, or None."""
+        for wc in self.widget_configs:
+            if wc.widget_id == widget_id:
+                return wc
+        return None
+
+    def is_widget_visible(self, widget_id: str, user_id: str) -> bool:
+        """Check whether a widget should show its content to a given user.
+
+        Returns True if the user is the owner, or if the widget's
+        visibility is VISIBLE.  Returns False for OWNER_ONLY and
+        COLLAPSED when the user is not the owner.
+        """
+        if user_id == self.owner_user_id:
+            return True
+        wc = self.get_widget_config(widget_id)
+        if wc is None:
+            return True  # No config = visible by default
+        return wc.visibility == WidgetVisibility.VISIBLE
+
+    def get_widget_placeholder(self, widget_id: str) -> str | None:
+        """Return the placeholder text for a private widget, or None.
+
+        When a widget is OWNER_ONLY, returns the placeholder text.
+        When a widget is COLLAPSED, returns None (widget should collapse).
+        When VISIBLE, returns None (no placeholder needed).
+        """
+        wc = self.get_widget_config(widget_id)
+        if wc is None:
+            return None
+        if wc.visibility == WidgetVisibility.OWNER_ONLY:
+            return wc.placeholder_text
+        return None
+
+
 @dataclass
 class HookRun:
     """A single execution record of a Hook.
