@@ -1646,7 +1646,7 @@ class CommandHandler:
             id=task_id,
             project_id=project_id,
             title=args["title"],
-            description=args["description"],
+            description=args.get("description", args["title"]),
             priority=args.get("priority", 100),
             status=TaskStatus.READY,
             repo_id=repo_id,

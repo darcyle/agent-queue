@@ -72,13 +72,37 @@ class GitError(Exception):
 
 
 class GitManager:
-    def _run(self, args: list[str], cwd: str | None = None) -> str:
-        result = subprocess.run(
-            ["git"] + args,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-        )
+    # Environment overrides for all git/gh subprocess calls.  Prevents
+    # interactive credential prompts that would otherwise write directly to
+    # /dev/tty, bypassing capture_output and flooding the terminal (or
+    # freezing WSL entirely when the daemon runs headless).
+    _SUBPROCESS_ENV: dict[str, str] = {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",    # git: never prompt for credentials
+        "GIT_ASKPASS": "/bin/false",    # git: reject askpass-based prompts
+        "GH_PROMPT_DISABLED": "1",     # gh CLI: never prompt interactively
+    }
+
+    # Default timeout (seconds) for git operations.  Clone/fetch can be slow
+    # on large repos so we allow a generous window, but never infinite.
+    _GIT_TIMEOUT = 120
+
+    def _run(self, args: list[str], cwd: str | None = None,
+             timeout: int | None = None) -> str:
+        try:
+            result = subprocess.run(
+                ["git"] + args,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                env=self._SUBPROCESS_ENV,
+                timeout=timeout or self._GIT_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            raise GitError(
+                f"git {' '.join(args)} timed out after "
+                f"{timeout or self._GIT_TIMEOUT}s (possible credential prompt)"
+            )
         if result.returncode != 0:
             raise GitError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
         return result.stdout.strip()
@@ -590,6 +614,8 @@ class GitManager:
             ["git", "diff", "--cached", "--quiet"],
             cwd=checkout_path,
             capture_output=True,
+            env=self._SUBPROCESS_ENV,
+            timeout=self._GIT_TIMEOUT,
         )
         if result.returncode == 0:
             return False  # Nothing to commit
@@ -605,13 +631,18 @@ class GitManager:
         Delegates to ``gh pr create`` rather than the GitHub API directly,
         so the user's existing gh authentication is reused.
         """
-        result = subprocess.run(
-            ["gh", "pr", "create", "--title", title, "--body", body,
-             "--base", base, "--head", branch],
-            cwd=checkout_path,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                ["gh", "pr", "create", "--title", title, "--body", body,
+                 "--base", base, "--head", branch],
+                cwd=checkout_path,
+                capture_output=True,
+                text=True,
+                env=self._SUBPROCESS_ENV,
+                timeout=self._GIT_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            raise GitError("gh pr create timed out (possible auth prompt)")
         if result.returncode != 0:
             raise GitError(f"gh pr create failed: {result.stderr.strip()}")
         return result.stdout.strip()
@@ -623,12 +654,17 @@ class GitManager:
         The orchestrator polls this for AWAITING_APPROVAL tasks to detect when
         a human merges the PR and the task can be marked COMPLETED.
         """
-        result = subprocess.run(
-            ["gh", "pr", "view", pr_url, "--json", "state,mergedAt"],
-            cwd=checkout_path,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                ["gh", "pr", "view", pr_url, "--json", "state,mergedAt"],
+                cwd=checkout_path,
+                capture_output=True,
+                text=True,
+                env=self._SUBPROCESS_ENV,
+                timeout=self._GIT_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            raise GitError("gh pr view timed out (possible auth prompt)")
         if result.returncode != 0:
             raise GitError(f"gh pr view failed: {result.stderr.strip()}")
         data = json.loads(result.stdout)

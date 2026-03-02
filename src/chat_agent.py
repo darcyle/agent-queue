@@ -345,7 +345,7 @@ TOOLS = [
                     "description": "Categorize the task type for display and filtering (optional)",
                 },
             },
-            "required": ["title", "description"],
+            "required": ["title"],
         },
     },
     {
@@ -1041,9 +1041,8 @@ TOOLS = [
     {
         "name": "delete_note",
         "description": (
-            "Delete a project note. IMPORTANT: Always call list_notes first to get "
-            "exact filenames, then pass the 'name' field (e.g. 'my-note.md' or "
-            "'my-note') as the title parameter."
+            "Delete a project note by title. If the user provides the note name "
+            "directly, call this tool immediately — no need to list notes first."
         ),
         "input_schema": {
             "type": "object",
@@ -1341,21 +1340,6 @@ TOOLS = [
         },
     },
     {
-        "name": "create_branch",
-        "description": (
-            "Create a new git branch in a project's repository. "
-            "Operates on the active project's repository."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
-                "branch_name": {"type": "string", "description": "Name for the new branch"},
-            },
-            "required": ["branch_name"],
-        },
-    },
-    {
         "name": "checkout_branch",
         "description": (
             "Switch to an existing git branch in a project's repository. "
@@ -1366,50 +1350,6 @@ TOOLS = [
             "properties": {
                 "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
                 "branch_name": {"type": "string", "description": "Branch name to check out"},
-            },
-            "required": ["branch_name"],
-        },
-    },
-    {
-        "name": "commit_changes",
-        "description": (
-            "Stage all changes and create a git commit in a project's repository. "
-            "Operates on the active project's repository."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
-                "message": {"type": "string", "description": "Commit message"},
-            },
-            "required": ["message"],
-        },
-    },
-    {
-        "name": "push_branch",
-        "description": (
-            "Push a branch to the remote origin in a project's repository. "
-            "Operates on the active project's repository."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
-                "branch_name": {"type": "string", "description": "Branch to push (optional — pushes current branch if omitted)"},
-            },
-        },
-    },
-    {
-        "name": "merge_branch",
-        "description": (
-            "Merge a branch into the default branch (e.g., main). Aborts if there are conflicts. "
-            "Operates on the active project's repository."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
-                "branch_name": {"type": "string", "description": "Branch to merge into the default branch"},
             },
             "required": ["branch_name"],
         },
@@ -1485,14 +1425,8 @@ You can directly (using your tools):
 - Retrieve task results (summary, files changed, errors, tokens) with `get_task_result`
 - Show git diffs for completed tasks with `get_task_diff`
 - Check the git status of a project's repos with `get_git_status`
-- Commit changes with `git_commit`, push branches with `git_push`
-- Create branches with `git_create_branch`, merge branches with `git_merge`
-- Create GitHub PRs with `git_create_pr`
-- List changed files with `git_changed_files`, view commit logs with `git_log`
-- Create branches with `create_branch`, switch branches with `checkout_branch`
-- Commit changes with `commit_changes`, push branches with `push_branch`
-- Merge branches with `merge_branch`
-- View commit history with `git_log`, see diffs with `git_diff`
+- Git operations: `git_commit`, `git_push`, `git_create_branch`, `git_merge`, \
+`checkout_branch`, `git_create_pr`, `git_changed_files`, `git_log`, `git_diff`
 - All git commands automatically infer the repository from the active project — \
 you do NOT need to specify project_id when an active project is set
 - Read files from workspaces with `read_file`
@@ -1588,6 +1522,12 @@ agent to handle it. But when a user asks to link a directory, add a repo, create
 project, register an agent, or any other management action — use your tools directly. \
 Never create a task for something you can do with a tool.
 
+IMPORTANT — When the user says "create a task", call `create_task` immediately with a \
+title and description derived from their request. Use the active project if one is set. \
+Do NOT ask for clarification if the request contains enough to write a meaningful title. \
+A task description can be brief — just include the user's request. If no project exists \
+yet, `create_task` will automatically create a "Quick Tasks" project.
+
 CRITICAL — When creating tasks, the description MUST be completely self-contained. \
 The agent working on the task has NO access to this chat. Include ALL relevant context \
 from the user's message: file paths, directory names, repo URLs, specific requirements, \
@@ -1672,7 +1612,27 @@ Examples of correct confirmations:
 - "✅ Task `abc123` deleted"
 
 When creating projects or tasks, generate reasonable IDs from the name \
-(e.g., "my-web-app" for a project named "My Web App").\
+(e.g., "my-web-app" for a project named "My Web App").
+
+Action word mappings — the user may use casual language for these actions:
+- "cancel", "kill", "abort" a task → `stop_task`
+- "approve", "LGTM", "ship it", "looks good" for a task → `approve_task`
+- "restart", "retry", "rerun" a task → `restart_task`
+- "nuke", "remove", "trash" a project → `delete_project`
+
+Act directly when the user provides an ID or name — do NOT call a list tool first. \
+For example, "delete note meeting-notes from project p-1" should call `delete_note` \
+immediately, not `list_notes` followed by `delete_note`.
+
+Git tool disambiguation:
+- "git status", "what changed" → `get_git_status` (working tree status)
+- "git log", "recent commits", "commit history" → `git_log`
+- "show diff", "what's different" → `git_diff`
+- "commit", "save changes" → `git_commit`
+- These are separate tools — pick the one that matches the user's intent.
+
+When the user asks for a multi-step workflow (e.g., "commit and push"), call each \
+tool in sequence. Do not stop after the first tool — complete the full request.\
 """
 
 
@@ -1767,8 +1727,9 @@ class ChatAgent:
 
         # Multi-turn tool-use loop
         tool_actions: list[str] = []
+        max_rounds = getattr(self, "_max_tool_rounds", 10)
 
-        for _ in range(10):
+        for _ in range(max_rounds):
             resp = await self._provider.create_message(
                 messages=messages,
                 system=self._build_system_prompt(),

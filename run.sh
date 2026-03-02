@@ -59,6 +59,12 @@ case "${1:-start}" in
         echo "Starting agent-queue daemon..."
         # Strip Claude Code session markers so the daemon can launch its own agent sessions
         unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT 2>/dev/null
+        # Prevent git/gh from ever prompting for credentials interactively.
+        # Without this, expired tokens cause git to write 'Username for ...'
+        # directly to /dev/tty, flooding the terminal and freezing WSL.
+        export GIT_TERMINAL_PROMPT=0
+        export GIT_ASKPASS=/bin/false
+        export GH_PROMPT_DISABLED=1
         PYTHONUNBUFFERED=1 nohup agent-queue "$CONFIG_PATH" >> "$LOG_PATH" 2>&1 &
         DAEMON_PID=$!
         echo "$DAEMON_PID" > "$PID_FILE"

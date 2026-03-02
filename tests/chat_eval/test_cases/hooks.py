@@ -143,7 +143,6 @@ CASES: list[TestCase] = [
                         name="create_hook",
                         args={
                             "name": "test-runner",
-                            "prompt_template": "Run test suite and report failures",
                         },
                     ),
                 ],

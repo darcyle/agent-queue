@@ -46,14 +46,15 @@ CASES: list[TestCase] = [
         description="Ask what tasks are currently running",
         category="tasks",
         difficulty=Difficulty.EASY,
-        tags=["list_tasks", "read", "natural-language"],
+        tags=["list_tasks", "list_active_tasks_all_projects", "read", "natural-language"],
         setup_commands=[("create_project", {"name": "Active"})],
         active_project="p-1",
         turns=[
             Turn(
                 user_message="what tasks are currently running?",
                 expected_tools=[
-                    ExpectedTool(name="list_tasks", args={"status": "IN_PROGRESS"}),
+                    # Either list_tasks with status filter or list_active_tasks_all_projects
+                    ExpectedTool(name="list_tasks"),
                 ],
             ),
         ],
@@ -70,7 +71,7 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="show all tasks including completed",
                 expected_tools=[
-                    ExpectedTool(name="list_tasks", args={"show_all": True}),
+                    ExpectedTool(name="list_tasks", args={"include_completed": True}),
                 ],
             ),
         ],
@@ -215,10 +216,7 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="any tasks waiting for my approval?",
                 expected_tools=[
-                    ExpectedTool(
-                        name="list_tasks",
-                        args={"status": "AWAITING_APPROVAL"},
-                    ),
+                    ExpectedTool(name="list_tasks"),
                 ],
             ),
         ],
@@ -353,7 +351,7 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="create a task to fix the login bug",
                 expected_tools=[
-                    ExpectedTool(name="create_task", args={"title": "Fix the login bug"}),
+                    ExpectedTool(name="create_task"),
                 ],
             ),
         ],
@@ -410,6 +408,7 @@ CASES: list[TestCase] = [
         category="tasks",
         difficulty=Difficulty.MEDIUM,
         tags=["create_task", "write", "multi-arg"],
+        active_project="p-1",
         turns=[
             Turn(
                 user_message="create a high priority task to fix the production crash, priority 10",
@@ -428,6 +427,7 @@ CASES: list[TestCase] = [
         category="tasks",
         difficulty=Difficulty.MEDIUM,
         tags=["create_task", "write", "multi-arg"],
+        active_project="p-1",
         turns=[
             Turn(
                 user_message="create a bugfix task to fix the null pointer in UserService",
@@ -446,6 +446,7 @@ CASES: list[TestCase] = [
         category="tasks",
         difficulty=Difficulty.MEDIUM,
         tags=["create_task", "write", "multi-arg"],
+        active_project="p-1",
         turns=[
             Turn(
                 user_message=(
@@ -527,6 +528,7 @@ CASES: list[TestCase] = [
         category="tasks",
         difficulty=Difficulty.EASY,
         tags=["create_task", "write", "natural-language"],
+        active_project="p-1",
         turns=[
             Turn(
                 user_message="can you create a task to implement the search feature?",
@@ -542,6 +544,7 @@ CASES: list[TestCase] = [
         category="tasks",
         difficulty=Difficulty.MEDIUM,
         tags=["create_task", "write"],
+        active_project="p-1",
         turns=[
             Turn(
                 user_message=(

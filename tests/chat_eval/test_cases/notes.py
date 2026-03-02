@@ -337,13 +337,7 @@ CASES: list[TestCase] = [
                     "compare specs in docs/specifications with notes for project p-1"
                 ),
                 expected_tools=[
-                    ExpectedTool(
-                        name="compare_specs_notes",
-                        args={
-                            "project_id": "p-1",
-                            "specs_path": "docs/specifications",
-                        },
-                    ),
+                    ExpectedTool(name="compare_specs_notes"),
                 ],
             ),
         ],

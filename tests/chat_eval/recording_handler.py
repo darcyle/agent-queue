@@ -26,7 +26,19 @@ class CommandCall:
 
 
 class RecordingCommandHandler(CommandHandler):
-    """CommandHandler subclass that records every execute() call."""
+    """CommandHandler subclass that records every execute() call.
+
+    Dangerous commands (restart_daemon, shutdown, etc.) are intercepted and
+    return a fake success result instead of actually executing — the real
+    ``restart_daemon`` sends SIGTERM to the current process, which would
+    kill the eval runner.
+    """
+
+    # Commands that must NOT be delegated to the real handler during eval.
+    _BLOCKED_COMMANDS: set[str] = {
+        "restart_daemon",
+        "run_shell_command",
+    }
 
     def __init__(self, orchestrator: Orchestrator, config: AppConfig):
         super().__init__(orchestrator, config)
@@ -34,7 +46,10 @@ class RecordingCommandHandler(CommandHandler):
 
     async def execute(self, name: str, args: dict) -> dict:
         start = time.monotonic()
-        result = await super().execute(name, args)
+        if name in self._BLOCKED_COMMANDS:
+            result = {"success": True, "blocked_in_eval": True}
+        else:
+            result = await super().execute(name, args)
         duration = time.monotonic() - start
 
         self._calls.append(CommandCall(

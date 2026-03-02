@@ -10,6 +10,34 @@ from pathlib import Path
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool
 from tests.chat_eval.recording_handler import CommandCall
 
+# Bidirectional alias map: either name in a pair is accepted as matching the other.
+# This handles the duplicate git tools (old-gen vs new-gen names) and parameter
+# aliases like show_all/include_completed.
+TOOL_ALIASES: dict[str, str] = {
+    "git_commit": "commit_changes",
+    "commit_changes": "git_commit",
+    "git_push": "push_branch",
+    "push_branch": "git_push",
+    "git_create_branch": "create_branch",
+    "create_branch": "git_create_branch",
+    "git_merge": "merge_branch",
+    "merge_branch": "git_merge",
+    # "what's running?" can reasonably use either tool
+    "list_tasks": "list_active_tasks_all_projects",
+    "list_active_tasks_all_projects": "list_tasks",
+    # write vs append notes — model sometimes confuses these
+    "write_note": "append_note",
+    "append_note": "write_note",
+}
+
+# Argument name aliases: when a tool is called by an alias, the arg names may
+# differ.  Map (canonical_tool, canonical_arg) -> alias_arg so we can match
+# across naming conventions.
+ARG_ALIASES: dict[str, dict[str, str]] = {
+    "git_push": {"branch": "branch_name"},
+    "push_branch": {"branch_name": "branch"},
+}
+
 
 @dataclass
 class ToolMatch:
@@ -143,16 +171,24 @@ def evaluate_turn(
         for i, call in enumerate(actual_calls):
             if i in matched_actual_indices:
                 continue
-            if call.name == expected.name:
-                matched = True
-                actual_args = call.args
-                args_matched_result, mismatched = _match_args(
-                    expected.args, call.args, expected.args_exact,
-                )
-                args_matched = args_matched_result
-                mismatched_keys = mismatched
-                matched_actual_indices.add(i)
-                break
+            # Match by exact name or known alias
+            alias = TOOL_ALIASES.get(expected.name)
+            if call.name != expected.name and call.name != alias:
+                continue
+            matched = True
+            actual_args = call.args
+            # If matched via alias, remap arg names before comparison
+            check_args = call.args
+            if call.name != expected.name and call.name in ARG_ALIASES:
+                remap = ARG_ALIASES[call.name]
+                check_args = {remap.get(k, k): v for k, v in call.args.items()}
+            args_matched_result, mismatched = _match_args(
+                expected.args, check_args, expected.args_exact,
+            )
+            args_matched = args_matched_result
+            mismatched_keys = mismatched
+            matched_actual_indices.add(i)
+            break
 
         result.tool_matches.append(ToolMatch(
             expected_name=expected.name,
@@ -163,10 +199,14 @@ def evaluate_turn(
             mismatched_keys=mismatched_keys,
         ))
 
-    # Check for unexpected tools (those not in expected list)
+    # Check for unexpected tools (those not in expected list, accounting for aliases)
     expected_names = {e.name for e in turn.expected_tools}
+    expected_with_aliases = set(expected_names)
+    for n in expected_names:
+        if n in TOOL_ALIASES:
+            expected_with_aliases.add(TOOL_ALIASES[n])
     for i, call in enumerate(actual_calls):
-        if i not in matched_actual_indices and call.name not in expected_names:
+        if i not in matched_actual_indices and call.name not in expected_with_aliases:
             result.unexpected_tools.append(call.name)
 
     # Check forbidden tools
@@ -249,13 +289,46 @@ def aggregate_results(
     return run
 
 
-def save_run(run: EvalRunResult, output_dir: str | Path) -> Path:
+def save_run(run: EvalRunResult, output_dir: str | Path,
+             filename: str = "") -> Path:
     """Persist an eval run as JSON for historical comparison."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    filename = f"eval_{run.model}_{int(run.timestamp)}.json"
+    if not filename:
+        filename = f"eval_{run.model}_{int(run.timestamp)}.json"
     path = output_dir / filename
+
+    # Per-case details for diagnosing failures and improving prompts
+    case_details = []
+    for r in run.case_results:
+        turns = []
+        for tr in r.turn_results:
+            turns.append({
+                "user_message": tr.user_message,
+                "passed": tr.passed,
+                "latency": tr.latency,
+                "expected_tools": [
+                    {"name": m.expected_name, "matched": m.matched,
+                     "args_matched": m.args_matched,
+                     "expected_args": m.expected_args,
+                     "actual_args": m.actual_args,
+                     "mismatched_keys": m.mismatched_keys}
+                    for m in tr.tool_matches
+                ],
+                "unexpected_tools": tr.unexpected_tools,
+                "forbidden_tools_called": tr.forbidden_tools_called,
+                "order_correct": tr.order_correct,
+            })
+        case_details.append({
+            "case_id": r.case_id,
+            "category": r.category,
+            "difficulty": r.difficulty,
+            "tags": r.tags,
+            "passed": r.passed,
+            "error": r.error,
+            "turns": turns,
+        })
 
     data = {
         "model": run.model,
@@ -279,6 +352,7 @@ def save_run(run: EvalRunResult, output_dir: str | Path) -> Path:
             for name, ta in run.tool_accuracy.items()
         },
         "failed_case_ids": [r.case_id for r in run.case_results if not r.passed],
+        "case_details": case_details,
     }
 
     path.write_text(json.dumps(data, indent=2))

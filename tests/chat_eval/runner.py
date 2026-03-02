@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 import time
 
@@ -29,19 +30,50 @@ from tests.chat_eval.test_cases._loader import load_all_cases
 from tests.chat_eval.test_cases._types import TestCase
 
 
+class _VerboseProviderWrapper:
+    """Wraps a ChatProvider to print LLM call progress without monkey-patching."""
+
+    def __init__(self, inner: ChatProvider):
+        self._inner = inner
+        self.call_count = 0
+        self._start: float = 0.0
+
+    def reset(self, start: float) -> None:
+        self.call_count = 0
+        self._start = start
+
+    async def create_message(self, *a, **kw):
+        self.call_count += 1
+        if self.call_count > 1:
+            elapsed = time.monotonic() - self._start
+            print(f" call {self.call_count} ({elapsed:.0f}s) ...",
+                  end="", flush=True)
+        return await self._inner.create_message(*a, **kw)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 async def run_single_case(
     orchestrator: Orchestrator,
     config: AppConfig,
     provider: ChatProvider,
     case: TestCase,
+    verbose: bool = False,
+    max_tool_rounds: int = 10,
 ) -> TestCaseResult:
     """Execute a single test case and evaluate results.
 
     Each case gets a fresh ChatAgent to prevent cross-contamination.
+    *max_tool_rounds* caps the tool-use loop in chat() — lower values
+    fail faster when the model is off-track.
     """
-    # Fresh agent per case
+    # Fresh agent per case — use a wrapper for verbose logging so we never
+    # monkey-patch the shared provider object.
+    wrapper = _VerboseProviderWrapper(provider) if verbose else None
     agent = ChatAgent(orchestrator, config)
-    agent._provider = provider
+    agent._provider = wrapper if wrapper else provider
+    agent._max_tool_rounds = max_tool_rounds
 
     recorder = RecordingCommandHandler(orchestrator, config)
     agent.handler = recorder
@@ -65,7 +97,7 @@ async def run_single_case(
 
         # Run each turn
         history: list[dict] = []
-        for turn in case.turns:
+        for ti, turn in enumerate(case.turns, 1):
             # Override active project per-turn if specified
             if turn.active_project is not None:
                 agent.set_active_project(turn.active_project)
@@ -73,9 +105,22 @@ async def run_single_case(
             recorder.reset()
             start = time.monotonic()
 
-            response = await agent.chat(turn.user_message, user_name="test_user", history=history)
+            if verbose:
+                turn_label = f"turn {ti}/{len(case.turns)} " if len(case.turns) > 1 else ""
+                print(f"          {turn_label}LLM call 1 ...",
+                      end="", flush=True)
+                wrapper.reset(start)
+
+            response = await agent.chat(
+                turn.user_message, user_name="test_user", history=history,
+            )
 
             elapsed = time.monotonic() - start
+
+            if verbose:
+                tools_used = [c.name for c in recorder.calls] if recorder.calls else ["(none)"]
+                print(f" done ({elapsed:.1f}s, tools: {', '.join(tools_used)})",
+                      flush=True)
 
             # Evaluate this turn
             turn_result = evaluate_turn(turn, recorder.calls)
@@ -90,6 +135,8 @@ async def run_single_case(
         case_result.passed = all(tr.passed for tr in case_result.turn_results)
 
     except Exception as e:
+        if verbose:
+            print(f" ERROR: {e}", flush=True)
         case_result.error = str(e)
         case_result.passed = False
 
@@ -102,15 +149,100 @@ async def run_eval(
     cases: list[TestCase],
     provider: ChatProvider,
     model_name: str = "",
+    verbose: bool = False,
+    output_dir: str = "",
+    concurrency: int = 1,
+    max_tool_rounds: int = 10,
 ) -> EvalRunResult:
-    """Run all cases and return aggregated results."""
+    """Run all cases and return aggregated results.
+
+    When *output_dir* is set, intermediate results are saved after every case
+    so that progress is preserved if the run is interrupted.
+
+    *concurrency* controls how many cases run in parallel.  With a local
+    Ollama model, 2-3 can help overlap Python/network overhead even though
+    GPU inference is mostly sequential.
+
+    *max_tool_rounds* caps the tool-use loop per turn — lower values fail
+    faster when the model is off-track (default 10, recommended 3 for eval).
+    """
+    from pathlib import Path
+
     case_results: list[TestCaseResult] = []
+    total = len(cases)
+    passed = 0
+    completed = 0
+    eval_start = time.monotonic()
+    model = model_name or provider.model_name
+    print_lock = asyncio.Lock()
 
-    for case in cases:
-        result = await run_single_case(orchestrator, config, provider, case)
-        case_results.append(result)
+    # Prepare incremental output path
+    partial_path: Path | None = None
+    if output_dir:
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        partial_path = out / f"eval_{model}_{int(time.time())}_partial.json"
 
-    return aggregate_results(case_results, model=model_name or provider.model_name)
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def _run_one(i: int, case: TestCase) -> TestCaseResult:
+        nonlocal passed, completed
+        async with semaphore:
+            n_turns = len(case.turns)
+            msg_preview = case.turns[0].user_message[:60] if case.turns else ""
+            async with print_lock:
+                print(f"  [{i}/{total}] {case.id} ({n_turns} "
+                      f"turn{'s' if n_turns != 1 else ''}) "
+                      f"— \"{msg_preview}\" ...", flush=True)
+
+            case_start = time.monotonic()
+            result = await run_single_case(
+                orchestrator, config, provider, case,
+                verbose=verbose, max_tool_rounds=max_tool_rounds,
+            )
+            case_elapsed = time.monotonic() - case_start
+
+            async with print_lock:
+                completed += 1
+                passed += result.passed
+                status = "PASS" if result.passed else "FAIL"
+                rate = passed / completed * 100
+                elapsed_total = time.monotonic() - eval_start
+                print(f"          {status}  {case_elapsed:.1f}s  "
+                      f"({rate:.0f}% passing, {completed}/{total} done, "
+                      f"{elapsed_total:.0f}s elapsed)", flush=True)
+
+            return result
+
+    async def _save_partial():
+        if partial_path and case_results:
+            partial = aggregate_results(list(case_results), model=model)
+            save_run(partial, partial_path.parent, filename=partial_path.name)
+
+    if concurrency <= 1:
+        # Sequential path — preserves order and incremental saves
+        for i, case in enumerate(cases, 1):
+            result = await _run_one(i, case)
+            case_results.append(result)
+            await _save_partial()
+    else:
+        # Concurrent path — save incrementally as each case completes
+        async def _run_and_collect(i: int, case: TestCase) -> None:
+            result = await _run_one(i, case)
+            async with print_lock:
+                case_results.append(result)
+                await _save_partial()
+
+        tasks = [_run_and_collect(i, case) for i, case in enumerate(cases, 1)]
+        await asyncio.gather(*tasks)
+
+    run_result = aggregate_results(case_results, model=model)
+
+    # Clean up partial file now that we have the final result
+    if partial_path and partial_path.exists():
+        partial_path.unlink()
+
+    return run_result
 
 
 async def _main(args: argparse.Namespace) -> None:
@@ -118,7 +250,19 @@ async def _main(args: argparse.Namespace) -> None:
     import tempfile
     from pathlib import Path
     from src.chat_providers import create_chat_provider
-    from src.config import ChatProviderConfig
+    from src.config import ChatProviderConfig, load_config
+
+    # Load real config for chat_provider defaults, fall back gracefully
+    config_path = os.path.expanduser("~/.agent-queue/config.yaml")
+    try:
+        base_config = load_config(config_path)
+        chat_cfg = base_config.chat_provider
+    except (FileNotFoundError, Exception):
+        chat_cfg = ChatProviderConfig()
+
+    # CLI args override config.yaml values
+    provider_name = args.provider or chat_cfg.provider
+    model_name = args.model or chat_cfg.model
 
     # Create temp dir for DB
     with tempfile.TemporaryDirectory() as tmp:
@@ -126,8 +270,10 @@ async def _main(args: argparse.Namespace) -> None:
             database_path=str(Path(tmp) / "eval.db"),
             workspace_dir=str(Path(tmp) / "workspaces"),
             chat_provider=ChatProviderConfig(
-                provider=args.provider,
-                model=args.model,
+                provider=provider_name,
+                model=model_name,
+                base_url=chat_cfg.base_url,
+                keep_alive=chat_cfg.keep_alive,
             ),
         )
 
@@ -149,8 +295,16 @@ async def _main(args: argparse.Namespace) -> None:
             if args.difficulty:
                 cases = [c for c in cases if c.difficulty.value == args.difficulty]
 
-            print(f"Running {len(cases)} test cases with {provider.model_name}...")
-            run_result = await run_eval(orch, config, cases, provider)
+            if args.limit:
+                cases = cases[:args.limit]
+
+            print(f"Running {len(cases)} test cases with {provider.model_name} "
+                  f"(concurrency={args.concurrency}, max_rounds={args.max_rounds})...")
+            run_result = await run_eval(orch, config, cases, provider,
+                                        verbose=args.verbose,
+                                        output_dir=args.output,
+                                        concurrency=args.concurrency,
+                                        max_tool_rounds=args.max_rounds)
 
             # Save results
             output_dir = Path(args.output)
@@ -174,11 +328,19 @@ def main():
     parser = argparse.ArgumentParser(description="Run chat agent evaluation")
     parser.add_argument("--output", default="tests/chat_eval/results/",
                         help="Output directory for results")
-    parser.add_argument("--provider", default="anthropic",
-                        help="Chat provider (anthropic, ollama)")
-    parser.add_argument("--model", default="", help="Model name override")
+    parser.add_argument("--provider", default="",
+                        help="Chat provider (anthropic, ollama); default: from config.yaml")
+    parser.add_argument("--model", default="", help="Model name override; default: from config.yaml")
     parser.add_argument("--category", default="", help="Filter by category")
     parser.add_argument("--difficulty", default="", help="Filter by difficulty")
+    parser.add_argument("--limit", "-n", type=int, default=0,
+                        help="Run only the first N cases (0 = all)")
+    parser.add_argument("--concurrency", "-j", type=int, default=1,
+                        help="Run N cases in parallel (default: 1)")
+    parser.add_argument("--max-rounds", type=int, default=3,
+                        help="Max tool-use rounds per turn (default: 3, production: 10)")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Show per-turn LLM call progress")
     args = parser.parse_args()
     asyncio.run(_main(args))
 

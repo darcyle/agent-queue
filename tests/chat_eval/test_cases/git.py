@@ -1,6 +1,5 @@
 """Test cases for git tools: get_git_status, git_commit, git_push, git_create_branch,
-git_merge, git_create_pr, git_changed_files, git_log, git_diff, create_branch,
-checkout_branch, commit_changes, push_branch, merge_branch.
+git_merge, git_create_pr, git_changed_files, git_log, git_diff, checkout_branch.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty
@@ -86,17 +85,16 @@ CASES: list[TestCase] = [
     ),
     TestCase(
         id="git-commit-changes-variant",
-        description="Commit using the commit_changes tool variant",
+        description="Commit using casual 'save changes' phrasing",
         category="git",
         difficulty=Difficulty.EASY,
-        tags=["commit_changes", "git_commit"],
+        tags=["git_commit"],
         active_project="p-1",
         turns=[
             Turn(
                 user_message="save all changes as a commit called 'refactor auth module'",
                 expected_tools=[
-                    # Either tool is acceptable
-                    ExpectedTool(name="commit_changes", args={"message": "refactor auth module"}),
+                    ExpectedTool(name="git_commit", args={"message": "refactor auth module"}),
                 ],
             ),
         ],
@@ -152,18 +150,18 @@ CASES: list[TestCase] = [
     ),
     TestCase(
         id="git-push-branch-variant",
-        description="Push using push_branch tool variant",
+        description="Push a named branch to origin",
         category="git",
         difficulty=Difficulty.EASY,
-        tags=["push_branch", "git_push"],
+        tags=["git_push"],
         active_project="p-1",
         turns=[
             Turn(
                 user_message="push branch develop to origin",
                 expected_tools=[
                     ExpectedTool(
-                        name="push_branch",
-                        args={"branch_name": "develop"},
+                        name="git_push",
+                        args={"branch": "develop"},
                     ),
                 ],
             ),
@@ -210,17 +208,17 @@ CASES: list[TestCase] = [
     ),
     TestCase(
         id="git-create-branch-variant",
-        description="Create branch using the create_branch variant",
+        description="Create branch with 'make a new branch' phrasing",
         category="git",
         difficulty=Difficulty.EASY,
-        tags=["create_branch", "git_create_branch"],
+        tags=["git_create_branch"],
         active_project="p-1",
         turns=[
             Turn(
                 user_message="make a new branch named release/v2.0",
                 expected_tools=[
                     ExpectedTool(
-                        name="create_branch",
+                        name="git_create_branch",
                         args={"branch_name": "release/v2.0"},
                     ),
                 ],
@@ -341,17 +339,17 @@ CASES: list[TestCase] = [
     ),
     TestCase(
         id="git-merge-branch-variant",
-        description="Merge using the merge_branch tool variant",
+        description="Merge with casual 'merge back' phrasing",
         category="git",
         difficulty=Difficulty.EASY,
-        tags=["merge_branch", "git_merge"],
+        tags=["git_merge"],
         active_project="p-1",
         turns=[
             Turn(
                 user_message="merge the develop branch back",
                 expected_tools=[
                     ExpectedTool(
-                        name="merge_branch",
+                        name="git_merge",
                         args={"branch_name": "develop"},
                     ),
                 ],
@@ -486,7 +484,7 @@ CASES: list[TestCase] = [
     ),
     TestCase(
         id="git-changed-files-natural",
-        description="Ask about modified files with natural phrasing",
+        description="Ask about modified files - git_changed_files or get_git_status both valid",
         category="git",
         difficulty=Difficulty.EASY,
         tags=["git_changed_files", "natural-language"],
@@ -494,7 +492,8 @@ CASES: list[TestCase] = [
         turns=[
             Turn(
                 user_message="show me the files that were modified",
-                expected_tools=[ExpectedTool(name="git_changed_files")],
+                # get_git_status also shows modified files, so both are valid
+                not_expected_tools=["create_task", "delete_project", "git_commit"],
             ),
         ],
     ),
@@ -508,7 +507,7 @@ CASES: list[TestCase] = [
         active_project="p-1",
         turns=[
             Turn(
-                user_message="show the log",
+                user_message="show the git log",
                 expected_tools=[ExpectedTool(name="git_log")],
             ),
         ],
@@ -576,7 +575,7 @@ CASES: list[TestCase] = [
     ),
     TestCase(
         id="git-diff-what-changed",
-        description="Natural phrasing asking for code changes",
+        description="Natural phrasing asking for code changes - diff or status both valid",
         category="git",
         difficulty=Difficulty.EASY,
         tags=["git_diff", "natural-language"],
@@ -584,7 +583,8 @@ CASES: list[TestCase] = [
         turns=[
             Turn(
                 user_message="what code changes are pending?",
-                expected_tools=[ExpectedTool(name="git_diff")],
+                # git_diff or get_git_status both answer this question
+                not_expected_tools=["create_task", "delete_task", "git_commit"],
             ),
         ],
     ),

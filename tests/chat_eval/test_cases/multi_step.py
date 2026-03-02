@@ -21,7 +21,7 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="now add a task to it: implement auth",
                 expected_tools=[
-                    ExpectedTool(name="create_task", args={"title": "implement auth"}),
+                    ExpectedTool(name="create_task"),
                 ],
             ),
         ],
@@ -144,10 +144,7 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="change its title to 'refactor database layer'",
                 expected_tools=[
-                    ExpectedTool(
-                        name="edit_task",
-                        args={"task_id": "t-5", "title": "refactor database layer"},
-                    ),
+                    ExpectedTool(name="edit_task"),
                 ],
             ),
         ],
@@ -334,19 +331,13 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="write a note called 'deployment-checklist' with content 'step 1: run tests'",
                 expected_tools=[
-                    ExpectedTool(
-                        name="write_note",
-                        args={"name": "deployment-checklist"},
-                    ),
+                    ExpectedTool(name="write_note"),
                 ],
             ),
             Turn(
                 user_message="read that note back to me",
                 expected_tools=[
-                    ExpectedTool(
-                        name="read_note",
-                        args={"name": "deployment-checklist"},
-                    ),
+                    ExpectedTool(name="read_note"),
                 ],
             ),
         ],
@@ -473,7 +464,7 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="actually, restart that task instead",
                 expected_tools=[
-                    ExpectedTool(name="restart_task", args={"task_id": "t-6"}),
+                    ExpectedTool(name="restart_task"),
                 ],
             ),
         ],

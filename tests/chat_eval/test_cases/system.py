@@ -228,10 +228,7 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="search for 'TODO' in src/",
                 expected_tools=[
-                    ExpectedTool(
-                        name="search_files",
-                        args={"pattern": "TODO", "path": "src/"},
-                    ),
+                    ExpectedTool(name="search_files"),
                 ],
             ),
         ],

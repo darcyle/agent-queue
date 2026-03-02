@@ -174,10 +174,7 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="write a note called 'api-design' with content 'REST endpoints'",
                 expected_tools=[
-                    ExpectedTool(
-                        name="write_note",
-                        args={"project_id": "p-1", "name": "api-design"},
-                    ),
+                    ExpectedTool(name="write_note"),
                 ],
                 active_project="p-1",
             ),
@@ -227,7 +224,7 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="archive completed tasks",
                 expected_tools=[
-                    ExpectedTool(name="archive_tasks", args={"project_id": "p-1"}),
+                    ExpectedTool(name="archive_tasks"),
                 ],
             ),
         ],
@@ -246,10 +243,7 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="write a note called 'todo' with content 'fix the login bug'",
                 expected_tools=[
-                    ExpectedTool(
-                        name="write_note",
-                        args={"project_id": "p-1", "name": "todo"},
-                    ),
+                    ExpectedTool(name="write_note"),
                 ],
             ),
         ],

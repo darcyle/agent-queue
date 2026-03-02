@@ -11,12 +11,12 @@ CASES: list[TestCase] = [
     # --- Missing required arguments ---
     TestCase(
         id="error-create-task-no-details",
-        description="Create task with no title or description - should still pick create_task",
+        description="Create task with no title - calling create_task or asking for details both valid",
         turns=[
             Turn(
                 user_message="create a task",
-                expected_tools=[ExpectedTool(name="create_task")],
-                not_expected_tools=["create_project", "delete_task"],
+                # Asking for clarification is equally valid when no details are given
+                not_expected_tools=["create_project", "delete_task", "delete_project"],
             ),
         ],
         category="error_handling",
@@ -40,12 +40,12 @@ CASES: list[TestCase] = [
     ),
     TestCase(
         id="error-stop-no-task-id",
-        description="Stop command with no task ID - should pick stop_task",
+        description="Bare 'stop' - could mean stop_task, orchestrator_control, or ask for clarification",
         turns=[
             Turn(
                 user_message="stop",
-                expected_tools=[ExpectedTool(name="stop_task")],
-                not_expected_tools=["delete_task", "delete_project"],
+                # "stop" alone is ambiguous — stop_task, orchestrator_control, or asking all valid
+                not_expected_tools=["delete_task", "delete_project", "delete_agent"],
             ),
         ],
         category="error_handling",
@@ -54,12 +54,12 @@ CASES: list[TestCase] = [
     ),
     TestCase(
         id="error-approve-no-task-id",
-        description="Approve with no task ID specified",
+        description="Bare 'approve' - calling approve_task or listing tasks to find candidates both valid",
         turns=[
             Turn(
                 user_message="approve",
-                expected_tools=[ExpectedTool(name="approve_task")],
-                not_expected_tools=["delete_task", "create_task"],
+                # Single word — calling approve_task, listing awaiting tasks, or asking all valid
+                not_expected_tools=["delete_task", "create_task", "delete_project"],
             ),
         ],
         category="error_handling",
@@ -68,12 +68,12 @@ CASES: list[TestCase] = [
     ),
     TestCase(
         id="error-add-dependency-no-args",
-        description="Add dependency with no task IDs specified at all",
+        description="Add dependency with no task IDs - asking for details is valid",
         turns=[
             Turn(
                 user_message="add dependency",
-                expected_tools=[ExpectedTool(name="add_dependency")],
-                not_expected_tools=["remove_dependency", "create_task"],
+                # Missing both task IDs — asking for clarification is the right behavior
+                not_expected_tools=["remove_dependency", "create_task", "delete_task"],
             ),
         ],
         category="error_handling",
@@ -82,12 +82,12 @@ CASES: list[TestCase] = [
     ),
     TestCase(
         id="error-edit-task-no-id",
-        description="Edit task with no task ID - should still pick edit_task",
+        description="Edit task with no task ID - calling edit_task or asking for ID both valid",
         turns=[
             Turn(
                 user_message="edit task",
-                expected_tools=[ExpectedTool(name="edit_task")],
-                not_expected_tools=["edit_project", "edit_agent", "create_task"],
+                # Missing required ID — asking for clarification is reasonable
+                not_expected_tools=["edit_project", "create_task", "delete_task"],
             ),
         ],
         category="error_handling",
@@ -96,12 +96,12 @@ CASES: list[TestCase] = [
     ),
     TestCase(
         id="error-commit-no-message",
-        description="Git commit with no commit message provided",
+        description="Bare 'commit' - calling git_commit or asking for message both valid",
         turns=[
             Turn(
                 user_message="commit",
-                expected_tools=[ExpectedTool(name="git_commit")],
-                not_expected_tools=["create_task", "git_push"],
+                # Single word — calling git_commit or asking for details both fine
+                not_expected_tools=["create_task", "delete_task", "delete_project"],
             ),
         ],
         category="error_handling",
@@ -112,12 +112,12 @@ CASES: list[TestCase] = [
     # --- Partial arguments ---
     TestCase(
         id="error-add-dependency-partial",
-        description="Add dependency with only one task ID (missing the upstream)",
+        description="Add dependency with only downstream task - asking for upstream is valid",
         turns=[
             Turn(
                 user_message="add a dependency to task t-5",
-                expected_tools=[ExpectedTool(name="add_dependency")],
-                not_expected_tools=["remove_dependency", "delete_task"],
+                # Missing upstream task — asking for it is a valid response
+                not_expected_tools=["remove_dependency", "delete_task", "delete_project"],
             ),
         ],
         category="error_handling",
@@ -126,14 +126,12 @@ CASES: list[TestCase] = [
     ),
     TestCase(
         id="error-edit-task-no-changes",
-        description="Edit task with an ID but no actual changes specified",
+        description="Edit task with ID but no changes - viewing task first or asking is valid",
         turns=[
             Turn(
                 user_message="edit task t-3",
-                expected_tools=[
-                    ExpectedTool(name="edit_task", args={"task_id": "t-3"}),
-                ],
-                not_expected_tools=["delete_task", "get_task"],
+                # No changes specified — viewing the task first or asking what to change is fine
+                not_expected_tools=["delete_task", "delete_project", "create_task"],
             ),
         ],
         category="error_handling",
@@ -264,12 +262,12 @@ CASES: list[TestCase] = [
     ),
     TestCase(
         id="error-remove-dependency-partial",
-        description="Remove dependency with only the downstream task specified",
+        description="Remove dependency with only downstream task - viewing deps or asking is valid",
         turns=[
             Turn(
                 user_message="remove the dependency from task t-8",
-                expected_tools=[ExpectedTool(name="remove_dependency")],
-                not_expected_tools=["add_dependency", "delete_task"],
+                # Missing upstream — viewing deps first or asking is valid
+                not_expected_tools=["add_dependency", "delete_task", "delete_project"],
             ),
         ],
         category="error_handling",

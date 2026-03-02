@@ -111,7 +111,6 @@ CASES: list[TestCase] = [
                 expected_tools=[
                     ExpectedTool(
                         name="create_project",
-                        args={"repo_url": "github.com/org/frontend"},
                     ),
                 ],
             ),

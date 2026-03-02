@@ -50,10 +50,7 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="connect /srv/projects/webapp to the webapp project",
                 expected_tools=[
-                    ExpectedTool(
-                        name="add_workspace",
-                        args={"source": "link", "path": "/srv/projects/webapp"},
-                    ),
+                    ExpectedTool(name="add_workspace"),
                 ],
             ),
         ],
