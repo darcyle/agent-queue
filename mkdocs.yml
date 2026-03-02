@@ -62,6 +62,12 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - Architecture: architecture.md
+  - Guides:
+      - Discord Commands: discord-commands.md
+      - Database Migrations: migrations.md
+      - Git Sync:
+          - Current State: git-sync-current-state.md
+          - Identified Gaps: git-sync-gaps.md
   - Specifications:
       - Core:
           - Models & State Machine: specs/models-and-state-machine.md
