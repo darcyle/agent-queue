@@ -26,6 +26,10 @@ from __future__ import annotations
 
 import json
 import os
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 from src.chat_providers import ChatProvider, LoggedChatProvider, create_chat_provider
 from src.command_handler import CommandHandler
@@ -1706,12 +1710,20 @@ class ChatAgent:
         text: str,
         user_name: str,
         history: list[dict] | None = None,
+        on_progress: "Callable[[str, str | None], Awaitable[None]] | None" = None,
     ) -> str:
         """Process a user message with tool use. Returns response text.
 
         ``history`` is a list of {"role": "user"|"assistant", "content": ...}
         dicts.  The caller is responsible for building history from whatever
         source it uses (Discord channel, CLI readline, HTTP session, etc.).
+
+        ``on_progress`` is an optional async callback for reporting progress
+        during multi-turn processing.  It receives ``(event, detail)`` where
+        *event* is one of ``"thinking"``, ``"tool_use"``, or ``"responding"``
+        and *detail* is an optional string (e.g. tool name).  This allows the
+        caller to display intermediate status in a UI (Discord thinking
+        indicator, etc.).
         """
         if not self._provider:
             raise RuntimeError("LLM provider not initialized — call initialize() first")
@@ -1729,7 +1741,14 @@ class ChatAgent:
         tool_actions: list[str] = []
         max_rounds = getattr(self, "_max_tool_rounds", 10)
 
-        for _ in range(max_rounds):
+        for round_num in range(max_rounds):
+            # Notify caller that the LLM is thinking
+            if on_progress:
+                if round_num == 0:
+                    await on_progress("thinking", None)
+                else:
+                    await on_progress("thinking", f"round {round_num + 1}")
+
             resp = await self._provider.create_message(
                 messages=messages,
                 system=self._build_system_prompt(),
@@ -1738,6 +1757,8 @@ class ChatAgent:
             )
 
             if not resp.tool_uses:
+                if on_progress:
+                    await on_progress("responding", None)
                 response = "\n".join(resp.text_parts).strip()
                 if response:
                     return response
@@ -1750,6 +1771,8 @@ class ChatAgent:
 
             tool_results = []
             for tool_use in resp.tool_uses:
+                if on_progress:
+                    await on_progress("tool_use", tool_use.name)
                 result = await self._execute_tool(tool_use.name, tool_use.input)
                 tool_actions.append(tool_use.name)
                 tool_results.append({

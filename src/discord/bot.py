@@ -428,6 +428,23 @@ class AgentQueueBot(commands.Bot):
         asyncio.create_task(self._periodic_buffer_cleanup())
 
     @staticmethod
+    async def _delete_thinking_msg(msg: discord.Message | None) -> None:
+        """Silently delete a thinking indicator message.
+
+        Fail-open: if the message was already deleted or any Discord error
+        occurs, we swallow the exception so the main response flow is never
+        interrupted.
+        """
+        if msg is None:
+            return
+        try:
+            await msg.delete()
+        except discord.NotFound:
+            pass  # Already deleted externally
+        except Exception:
+            pass  # Fail-open on cleanup
+
+    @staticmethod
     async def _send_long_message(
         channel: discord.abc.Messageable,
         text: str,
@@ -812,6 +829,7 @@ class AgentQueueBot(commands.Bot):
             except Exception:
                 pass  # fail-open — skip notification silently
 
+            thinking_msg: discord.Message | None = None
             async with message.channel.typing():
                 try:
                     if not self.agent.is_ready:
@@ -855,9 +873,57 @@ class AgentQueueBot(commands.Bot):
                     # Build history from Discord channel
                     history = await self._build_message_history(message.channel, before=message)
 
+                    # Send a thinking indicator that updates as the agent works.
+                    # This gives users real-time feedback on what the agent is
+                    # doing: thinking, calling tools, or composing a reply.
+                    thinking_msg = await message.reply("💭 Thinking...")
+                    tool_names_used: list[str] = []
+
+                    async def _on_progress(event: str, detail: str | None) -> None:
+                        """Update the thinking indicator as the agent progresses.
+
+                        Events:
+                        - "thinking" (detail=None): initial LLM call
+                        - "thinking" (detail="round N"): subsequent LLM round
+                        - "tool_use" (detail=tool_name): a tool is being called
+                        - "responding": LLM is producing final text response
+                        """
+                        nonlocal thinking_msg
+                        if thinking_msg is None:
+                            return
+                        try:
+                            if event == "thinking" and not detail:
+                                # Initial thinking — already showing "Thinking..."
+                                pass
+                            elif event == "thinking" and detail:
+                                # Subsequent LLM round after tool use
+                                steps = " → ".join(f"`{t}`" for t in tool_names_used)
+                                await thinking_msg.edit(
+                                    content=f"💭 Thinking... {steps} → 💭"
+                                )
+                            elif event == "tool_use" and detail:
+                                tool_names_used.append(detail)
+                                steps = " → ".join(f"`{t}`" for t in tool_names_used)
+                                await thinking_msg.edit(
+                                    content=f"🔧 Working... {steps}"
+                                )
+                            elif event == "responding":
+                                steps = " → ".join(f"`{t}`" for t in tool_names_used)
+                                if steps:
+                                    await thinking_msg.edit(
+                                        content=f"✅ {steps} → composing reply..."
+                                    )
+                                else:
+                                    await thinking_msg.edit(content="✍️ Composing reply...")
+                        except discord.NotFound:
+                            thinking_msg = None  # Deleted externally; stop updating
+                        except Exception:
+                            pass  # Fail-open — don't break the chat flow
+
                     try:
                         response = await self.agent.chat(
-                            user_text, message.author.display_name, history=history
+                            user_text, message.author.display_name,
+                            history=history, on_progress=_on_progress,
                         )
                     except Exception as e:
                         import anthropic
@@ -866,7 +932,8 @@ class AgentQueueBot(commands.Bot):
                             print(f"Auth error — reloading credentials: {e}")
                             if self.agent.reload_credentials():
                                 response = await self.agent.chat(
-                                    user_text, message.author.display_name, history=history
+                                    user_text, message.author.display_name,
+                                    history=history, on_progress=_on_progress,
                                 )
                             else:
                                 response = (
@@ -876,10 +943,16 @@ class AgentQueueBot(commands.Bot):
                         else:
                             raise
 
+                    # Delete the thinking indicator and send the actual response
+                    await self._delete_thinking_msg(thinking_msg)
+                    thinking_msg = None
+
                     await self._send_long_message(
                         message.channel, response, reply_to=message
                     )
                 except Exception as e:
+                    await self._delete_thinking_msg(thinking_msg)
+                    thinking_msg = None
                     print(f"LLM error: {e}\n{traceback.format_exc()}")
                     await message.reply(f"**LLM error:** {e}")
                 finally:
