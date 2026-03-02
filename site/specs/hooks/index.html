@@ -79,6 +79,11 @@
     <label class="md-overlay" for="__drawer"></label>
     <div data-md-component="skip">
       
+        
+        <a href="#hook-engine-specification" class="md-skip">
+          Skip to content
+        </a>
+      
     </div>
     <div data-md-component="announce">
       
@@ -960,6 +965,26 @@
       <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
       
       
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hooks
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
       
       <a href="./" class="md-nav__link md-nav__link--active">
         
@@ -977,6 +1002,402 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#source-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source Files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-hook-data-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Hook Data Model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-hook-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Hook Lifecycle
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Hook Lifecycle">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-trigger-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Trigger Types
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3.1 Trigger Types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#event-driven-type-event" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Event-Driven (type: "event")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#periodic-type-periodic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Periodic (type: "periodic")
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-execution-entry-point" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Execution Entry Point
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-cooldown-logic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Cooldown Logic
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-concurrency-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Concurrency Limits
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-context-gathering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Context Gathering
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Context Gathering">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-step-type-shell" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Step Type: shell
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-step-type-read_file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Step Type: read_file
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-step-type-http" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Step Type: http
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-step-type-db_query" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 Step Type: db_query
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#45-step-type-git_diff" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.5 Step Type: git_diff
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-short-circuit-skip-conditions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Short-Circuit (Skip) Conditions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-prompt-template-system" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Prompt Template System
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Prompt Template System">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#placeholder-syntax" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Placeholder Syntax
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parameter-resolution-in-db_query-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parameter Resolution in db_query Steps
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-llm-invocation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. LLM Invocation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. LLM Invocation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#provider-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provider Selection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#invocation-mechanism" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Invocation Mechanism
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#token-counting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Token Counting
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-hook-run-recording" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Hook Run Recording
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="8. Hook Run Recording">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#hookrun-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HookRun Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#status-transitions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Status Transitions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-manual-triggering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Manual Triggering
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-initialization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Initialization
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-shutdown" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Shutdown
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12-configuration-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. Configuration Reference
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -1027,6 +1448,8 @@
   
     
     
+      
+        
       
         
       
@@ -1117,6 +1540,34 @@
     
   
     Command Handler
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../discord/discord/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discord
   
 
     
@@ -2389,6 +2840,393 @@
   
   
   
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#source-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source Files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-hook-data-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Hook Data Model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-hook-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Hook Lifecycle
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Hook Lifecycle">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-trigger-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Trigger Types
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3.1 Trigger Types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#event-driven-type-event" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Event-Driven (type: "event")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#periodic-type-periodic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Periodic (type: "periodic")
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-execution-entry-point" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Execution Entry Point
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-cooldown-logic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Cooldown Logic
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-concurrency-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Concurrency Limits
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-context-gathering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Context Gathering
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Context Gathering">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-step-type-shell" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Step Type: shell
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-step-type-read_file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Step Type: read_file
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-step-type-http" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Step Type: http
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-step-type-db_query" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 Step Type: db_query
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#45-step-type-git_diff" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.5 Step Type: git_diff
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-short-circuit-skip-conditions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Short-Circuit (Skip) Conditions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-prompt-template-system" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Prompt Template System
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Prompt Template System">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#placeholder-syntax" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Placeholder Syntax
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parameter-resolution-in-db_query-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parameter Resolution in db_query Steps
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-llm-invocation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. LLM Invocation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. LLM Invocation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#provider-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provider Selection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#invocation-mechanism" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Invocation Mechanism
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#token-counting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Token Counting
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-hook-run-recording" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Hook Run Recording
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="8. Hook Run Recording">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#hookrun-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HookRun Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#status-transitions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Status Transitions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-manual-triggering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Manual Triggering
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-initialization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Initialization
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-shutdown" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Shutdown
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12-configuration-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. Configuration Reference
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
   
 </nav>
                   </div>
@@ -2408,9 +3246,754 @@
   
 
 
-  <h1>Hooks</h1>
-
-<p>../../specs/hooks.md</p>
+<h1 id="hook-engine-specification">Hook Engine Specification<a class="headerlink" href="#hook-engine-specification" title="Permanent link">&para;</a></h1>
+<p><strong>Source file:</strong> <code>src/hooks.py</code>
+<strong>Related models:</strong> <code>src/models.py</code> (<code>Hook</code>, <code>HookRun</code>)
+<strong>Related config:</strong> <code>src/config.py</code> (<code>HookEngineConfig</code>, <code>ChatProviderConfig</code>)</p>
+<hr />
+<h2 id="1-overview">1. Overview<a class="headerlink" href="#1-overview" title="Permanent link">&para;</a></h2>
+<p>The <code>HookEngine</code> class implements a generic, event-driven automation layer that runs
+alongside the main orchestrator loop. Its purpose is to let operators attach
+executable reactions to system events or scheduled intervals without writing custom
+code.</p>
+<p>The pipeline for every hook execution follows four stages:</p>
+<pre class="mermaid"><code>flowchart TD
+    A[Trigger&lt;br/&gt;&lt;i&gt;event or periodic&lt;/i&gt;] --&gt; B[Context Gathering&lt;br/&gt;&lt;i&gt;shell, read_file, http, db_query, git_diff&lt;/i&gt;]
+    B --&gt; C{Short-Circuit&lt;br/&gt;condition met?}
+    C -- Yes --&gt; D[Record as skipped&lt;br/&gt;&lt;i&gt;zero tokens&lt;/i&gt;]
+    C -- No --&gt; E[Render Prompt&lt;br/&gt;&lt;i&gt;substitute step_N, event vars&lt;/i&gt;]
+    E --&gt; F[LLM Invocation&lt;br/&gt;&lt;i&gt;ChatAgent with full tool access&lt;/i&gt;]
+    F --&gt; G[Record Run&lt;br/&gt;&lt;i&gt;status, response, tokens&lt;/i&gt;]</code></pre>
+<p>The LLM call is optional: if any step's skip condition is satisfied after context
+gathering, the pipeline halts before calling the LLM and the run is recorded with
+<code>status = "skipped"</code>.</p>
+<p>All orchestration is synchronous and deterministic — no LLM tokens are spent on
+deciding whether to run a hook.</p>
+<h2 id="source-files">Source Files<a class="headerlink" href="#source-files" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>src/hooks.py</code></li>
+</ul>
+<hr />
+<h2 id="2-hook-data-model">2. Hook Data Model<a class="headerlink" href="#2-hook-data-model" title="Permanent link">&para;</a></h2>
+<p>A hook is persisted as a <code>Hook</code> dataclass in the <code>hooks</code> table:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td><code>str</code></td>
+<td>Unique identifier</td>
+</tr>
+<tr>
+<td><code>project_id</code></td>
+<td><code>str</code></td>
+<td>Owning project</td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td><code>str</code></td>
+<td>Human-readable label</td>
+</tr>
+<tr>
+<td><code>enabled</code></td>
+<td><code>bool</code></td>
+<td>Whether the engine considers this hook (default <code>True</code>)</td>
+</tr>
+<tr>
+<td><code>trigger</code></td>
+<td><code>str</code></td>
+<td>JSON object — see Trigger Types below</td>
+</tr>
+<tr>
+<td><code>context_steps</code></td>
+<td><code>str</code></td>
+<td>JSON array — see Context Gathering below</td>
+</tr>
+<tr>
+<td><code>prompt_template</code></td>
+<td><code>str</code></td>
+<td>Template string with <code>{{...}}</code> placeholders</td>
+</tr>
+<tr>
+<td><code>llm_config</code></td>
+<td><code>str \| None</code></td>
+<td>JSON object overriding the global chat provider</td>
+</tr>
+<tr>
+<td><code>cooldown_seconds</code></td>
+<td><code>int</code></td>
+<td>Minimum seconds between two executions (default <code>3600</code>)</td>
+</tr>
+<tr>
+<td><code>max_tokens_per_run</code></td>
+<td><code>int \| None</code></td>
+<td>Reserved for future enforcement</td>
+</tr>
+<tr>
+<td><code>created_at</code> / <code>updated_at</code></td>
+<td><code>float</code></td>
+<td>Unix timestamps</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="3-hook-lifecycle">3. Hook Lifecycle<a class="headerlink" href="#3-hook-lifecycle" title="Permanent link">&para;</a></h2>
+<h3 id="31-trigger-types">3.1 Trigger Types<a class="headerlink" href="#31-trigger-types" title="Permanent link">&para;</a></h3>
+<p>A hook's <code>trigger</code> field is a JSON object with a <code>type</code> key. Two types are supported.</p>
+<h4 id="event-driven-type-event">Event-Driven (<code>type: "event"</code>)<a class="headerlink" href="#event-driven-type-event" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">    </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;event&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">&quot;event_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;task_completed&quot;</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="p">}</span>
+</code></pre></div>
+<p>The engine subscribes to every event on the <code>EventBus</code> using a wildcard (<code>"*"</code>).
+When an event fires, <code>_on_event</code> receives the event payload dict. The engine then
+queries all enabled hooks and checks each one in order:</p>
+<ol>
+<li>Skip hooks already in-flight (<code>hook.id in self._running</code>).</li>
+<li>Skip hooks whose trigger type is not <code>"event"</code>.</li>
+<li>Skip hooks whose <code>event_type</code> does not match the incoming <code>_event_type</code> field.</li>
+<li>Apply the cooldown check (see 3.3).</li>
+<li>Apply the global concurrency cap (see 3.4) — if the cap is reached, stop examining
+   further hooks (<code>break</code>).</li>
+<li>If all checks pass, launch the hook with <code>trigger_reason = "event:&lt;event_type&gt;"</code>.</li>
+</ol>
+<p>The full event payload dict is passed through as <code>event_data</code> and made available
+inside context steps and the prompt template.</p>
+<h4 id="periodic-type-periodic">Periodic (<code>type: "periodic"</code>)<a class="headerlink" href="#periodic-type-periodic" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">    </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;periodic&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">&quot;interval_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">7200</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="p">}</span>
+</code></pre></div>
+<p>Periodic hooks are checked during each call to <code>tick()</code>, which the orchestrator
+invokes approximately every 5 seconds. For each enabled hook in the list, the engine
+iterates and applies the following checks in order:</p>
+<ol>
+<li>Apply the global concurrency cap (see 3.4) — if the cap is reached, stop examining
+   further hooks for this cycle entirely (<code>break</code>).</li>
+<li>Skip hooks already in-flight (<code>hook.id in self._running</code>).</li>
+<li>Skip hooks whose trigger type is not <code>"periodic"</code>.</li>
+<li>Elapsed time since last run <code>&gt;= interval_seconds</code> (default <code>3600</code> if omitted).</li>
+<li>Cooldown check (see 3.3).</li>
+</ol>
+<p>If all checks pass, the hook is launched with <code>trigger_reason = "periodic"</code>.</p>
+<h3 id="32-execution-entry-point">3.2 Execution Entry Point<a class="headerlink" href="#32-execution-entry-point" title="Permanent link">&para;</a></h3>
+<p>Both trigger types ultimately call <code>_launch_hook</code>, which:</p>
+<ol>
+<li>Records the current time in <code>self._last_run_time[hook.id]</code> immediately (before
+   the async task starts) so that a rapid second trigger cannot race past the
+   cooldown.</li>
+<li>Creates an <code>asyncio.Task</code> wrapping <code>_execute_hook</code>.</li>
+<li>Stores the task in <code>self._running[hook.id]</code>.</li>
+</ol>
+<p>Completed tasks are cleaned up at the start of each <code>tick()</code> call. If a task raised
+an unhandled exception it is logged at <code>ERROR</code> level at that point.</p>
+<h3 id="33-cooldown-logic">3.3 Cooldown Logic<a class="headerlink" href="#33-cooldown-logic" title="Permanent link">&para;</a></h3>
+<p>The cooldown is enforced by <code>_check_cooldown(hook, now)</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">return</span> <span class="p">(</span><span class="n">now</span> <span class="o">-</span> <span class="bp">self</span><span class="o">.</span><span class="n">_last_run_time</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">hook</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="mi">0</span><span class="p">))</span> <span class="o">&gt;=</span> <span class="n">hook</span><span class="o">.</span><span class="n">cooldown_seconds</span>
+</code></pre></div>
+<ul>
+<li><code>_last_run_time</code> is an in-memory dict keyed by <code>hook.id</code>.</li>
+<li>On <code>initialize()</code>, the last run time for each hook is pre-populated from the
+  database (see Section 8).</li>
+<li><code>_launch_hook</code> updates <code>_last_run_time</code> immediately upon launch, not on
+  completion, preventing simultaneous overlapping runs.</li>
+<li>The <code>fire_hook</code> manual trigger bypasses the cooldown check entirely but still
+  updates <code>_last_run_time</code> to prevent an immediate automatic re-run.</li>
+</ul>
+<h3 id="34-concurrency-limits">3.4 Concurrency Limits<a class="headerlink" href="#34-concurrency-limits" title="Permanent link">&para;</a></h3>
+<p>The global cap is read from <code>config.hook_engine.max_concurrent_hooks</code> (default
+<code>2</code>). Before launching any hook — in both <code>tick()</code> and <code>_on_event</code> — the engine
+checks:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_running</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="n">max_concurrent</span><span class="p">:</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="k">break</span>  <span class="c1"># Stop evaluating further hooks for this cycle</span>
+</code></pre></div>
+<p>If the cap is reached, no further hooks are examined until the next cycle or event.
+A hook already tracked in <code>self._running</code> (even if its task has completed but not
+yet been cleaned up by <code>tick()</code>) counts toward the cap.</p>
+<hr />
+<h2 id="4-context-gathering">4. Context Gathering<a class="headerlink" href="#4-context-gathering" title="Permanent link">&para;</a></h2>
+<p>After a hook is triggered, <code>_run_context_steps</code> executes each step in the
+<code>context_steps</code> JSON array <strong>sequentially</strong>. Earlier step results are available to
+later steps through the shared <code>step_results</code> list, which is also available in the
+prompt template.</p>
+<p>Each step returns a dict. On exception, the dict contains <code>{"error": "&lt;message&gt;"}</code>.
+Every result also has <code>_step_index</code> appended (the zero-based position in the array).</p>
+<h3 id="41-step-type-shell">4.1 Step Type: <code>shell</code><a class="headerlink" href="#41-step-type-shell" title="Permanent link">&para;</a></h3>
+<p>Runs a shell command asynchronously using <code>asyncio.create_subprocess_shell</code>.</p>
+<p><strong>Inputs (from step config):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>command</code></td>
+<td><code>str</code></td>
+<td><code>""</code></td>
+<td>Shell command string</td>
+</tr>
+<tr>
+<td><code>timeout</code></td>
+<td><code>int</code></td>
+<td><code>60</code></td>
+<td>Seconds before the process is killed</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Output dict:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>stdout</code></td>
+<td>Captured stdout, UTF-8 decoded, truncated to 50,000 characters</td>
+</tr>
+<tr>
+<td><code>stderr</code></td>
+<td>Captured stderr, UTF-8 decoded, truncated to 10,000 characters</td>
+</tr>
+<tr>
+<td><code>exit_code</code></td>
+<td>Process return code, or <code>-1</code> on timeout</td>
+</tr>
+</tbody>
+</table>
+<p>On timeout the process is killed and <code>exit_code</code> is set to <code>-1</code> with a descriptive
+<code>stderr</code> message.</p>
+<h3 id="42-step-type-read_file">4.2 Step Type: <code>read_file</code><a class="headerlink" href="#42-step-type-read_file" title="Permanent link">&para;</a></h3>
+<p>Reads a local file synchronously (within the async loop via a blocking open call).</p>
+<p><strong>Inputs:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>path</code></td>
+<td><code>str</code></td>
+<td><code>""</code></td>
+<td>Absolute or relative filesystem path</td>
+</tr>
+<tr>
+<td><code>max_lines</code></td>
+<td><code>int</code></td>
+<td><code>500</code></td>
+<td>Maximum number of lines to read</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Output dict:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>content</code></td>
+<td>Lines joined with <code>\n</code>, stripped of trailing newlines</td>
+</tr>
+<tr>
+<td><code>error</code></td>
+<td>Present only if an exception occurred (e.g., file not found)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="43-step-type-http">4.3 Step Type: <code>http</code><a class="headerlink" href="#43-step-type-http" title="Permanent link">&para;</a></h3>
+<p>Makes a GET HTTP request using <code>urllib.request</code> (run in a thread via
+<code>asyncio.to_thread</code>).</p>
+<p><strong>Inputs:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>url</code></td>
+<td><code>str</code></td>
+<td><code>""</code></td>
+<td>Full URL</td>
+</tr>
+<tr>
+<td><code>timeout</code></td>
+<td><code>int</code></td>
+<td><code>30</code></td>
+<td>Request timeout in seconds</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Output dict:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>body</code></td>
+<td>Response body, UTF-8 decoded, truncated to 50,000 characters</td>
+</tr>
+<tr>
+<td><code>status_code</code></td>
+<td>HTTP status code; <code>0</code> on network-level error</td>
+</tr>
+<tr>
+<td><code>error</code></td>
+<td>Present on non-HTTP exceptions</td>
+</tr>
+</tbody>
+</table>
+<p>HTTP errors (4xx/5xx) are captured as <code>HTTPError</code> with the error message as <code>body</code>
+and the numeric code as <code>status_code</code>. They do not raise; they return an error dict.</p>
+<h3 id="44-step-type-db_query">4.4 Step Type: <code>db_query</code><a class="headerlink" href="#44-step-type-db_query" title="Permanent link">&para;</a></h3>
+<p>Executes a named read-only SQL query against the application database.</p>
+<p><strong>Inputs:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>query</code></td>
+<td><code>str</code></td>
+<td>Name of a query from the <code>NAMED_QUERIES</code> registry</td>
+</tr>
+<tr>
+<td><code>params</code></td>
+<td><code>dict</code></td>
+<td>Named parameters for the query</td>
+</tr>
+</tbody>
+</table>
+<p>Param values that are <code>{{...}}</code> placeholders are resolved against <code>event_data</code>
+before the query runs (using <code>_resolve_placeholder</code>).</p>
+<p><strong>Available named queries:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>recent_task_results</code></td>
+<td>Last 20 tasks with their results, joined from <code>tasks</code> and <code>task_results</code></td>
+</tr>
+<tr>
+<td><code>task_detail</code></td>
+<td>Single task detail by <code>:task_id</code> parameter</td>
+</tr>
+<tr>
+<td><code>recent_events</code></td>
+<td>Last 50 rows from the <code>events</code> table</td>
+</tr>
+<tr>
+<td><code>hook_runs</code></td>
+<td>Last 10 hook runs for a given <code>:hook_id</code> parameter</td>
+</tr>
+</tbody>
+</table>
+<p>Raw SQL is not accepted; any unrecognised <code>query</code> name returns <code>{"error": "Unknown query: ..."}</code>.</p>
+<p><strong>Output dict:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rows</code></td>
+<td>List of row dicts</td>
+</tr>
+<tr>
+<td><code>count</code></td>
+<td>Number of rows returned</td>
+</tr>
+<tr>
+<td><code>error</code></td>
+<td>Present on SQL exception</td>
+</tr>
+</tbody>
+</table>
+<h3 id="45-step-type-git_diff">4.5 Step Type: <code>git_diff</code><a class="headerlink" href="#45-step-type-git_diff" title="Permanent link">&para;</a></h3>
+<p>Runs <code>git diff &lt;base_branch&gt;...HEAD</code> in a given workspace directory.</p>
+<p><strong>Inputs:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>workspace</code></td>
+<td><code>str</code></td>
+<td><code>"."</code></td>
+<td>Working directory for the git command</td>
+</tr>
+<tr>
+<td><code>base_branch</code></td>
+<td><code>str</code></td>
+<td><code>"main"</code></td>
+<td>Branch to diff against</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Output dict:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>diff</code></td>
+<td>Diff output, UTF-8 decoded, truncated to 50,000 characters</td>
+</tr>
+<tr>
+<td><code>exit_code</code></td>
+<td>Git process return code</td>
+</tr>
+<tr>
+<td><code>error</code></td>
+<td>Present on exception (e.g., not a git repo)</td>
+</tr>
+</tbody>
+</table>
+<p>Timeout is hardcoded at 30 seconds.</p>
+<hr />
+<h2 id="5-short-circuit-skip-conditions">5. Short-Circuit (Skip) Conditions<a class="headerlink" href="#5-short-circuit-skip-conditions" title="Permanent link">&para;</a></h2>
+<p>After all context steps complete, <code>_should_skip_llm</code> iterates over each step config
+and its corresponding result. The first matching condition causes the entire LLM
+invocation to be skipped.</p>
+<table>
+<thead>
+<tr>
+<th>Step config flag</th>
+<th>Condition to skip</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>skip_llm_if_exit_zero: true</code></td>
+<td><code>exit_code == 0</code> in the step result</td>
+</tr>
+<tr>
+<td><code>skip_llm_if_empty: true</code></td>
+<td><code>stdout + content</code> is blank or whitespace</td>
+</tr>
+<tr>
+<td><code>skip_llm_if_status_ok: true</code></td>
+<td><code>status_code</code> is in the range <code>[200, 300)</code></td>
+</tr>
+</tbody>
+</table>
+<p>When skipped, <code>_execute_hook</code> records the run with:</p>
+<ul>
+<li><code>status = "skipped"</code></li>
+<li><code>skipped_reason = "step_&lt;N&gt;: &lt;description&gt;"</code></li>
+<li><code>completed_at = time.time()</code></li>
+</ul>
+<p>No prompt is rendered and no LLM call is made.</p>
+<hr />
+<h2 id="6-prompt-template-system">6. Prompt Template System<a class="headerlink" href="#6-prompt-template-system" title="Permanent link">&para;</a></h2>
+<p>The <code>prompt_template</code> field of a <code>Hook</code> is a string that may contain <code>{{...}}</code>
+placeholders. <code>_render_prompt</code> replaces all placeholders using a regex
+(<code>\{\{(.+?)\}\}</code>) before the string is sent to the LLM.</p>
+<h3 id="placeholder-syntax">Placeholder Syntax<a class="headerlink" href="#placeholder-syntax" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Placeholder</th>
+<th>Resolves to</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>{{step_N}}</code></td>
+<td>The primary output of step N. Tries <code>stdout</code>, <code>content</code>, <code>body</code>, <code>diff</code> in that order; falls back to <code>json.dumps(result)</code> if none are present</td>
+</tr>
+<tr>
+<td><code>{{step_N.field}}</code></td>
+<td>A specific field from step N's result dict, e.g. <code>{{step_0.exit_code}}</code></td>
+</tr>
+<tr>
+<td><code>{{event}}</code></td>
+<td>The full <code>event_data</code> dict serialised as JSON</td>
+</tr>
+<tr>
+<td><code>{{event.field}}</code></td>
+<td>A single field from <code>event_data</code>, e.g. <code>{{event.task_id}}</code></td>
+</tr>
+</tbody>
+</table>
+<p>Unrecognised placeholders are left unchanged (the original <code>{{...}}</code> text is
+returned by <code>_resolve_placeholder</code>).</p>
+<h3 id="parameter-resolution-in-db_query-steps">Parameter Resolution in <code>db_query</code> Steps<a class="headerlink" href="#parameter-resolution-in-db_query-steps" title="Permanent link">&para;</a></h3>
+<p>The same <code>_resolve_placeholder</code> function is used to resolve <code>{{...}}</code> values inside
+<code>db_query</code> step <code>params</code> before the query executes. However, <code>_step_db_query</code> passes
+an empty list as <code>step_results</code> when calling <code>_resolve_placeholder</code>, so only
+<code>{{event.field}}</code> and <code>{{event}}</code> patterns are meaningful — step result references
+such as <code>{{step_0.stdout}}</code> will always resolve to an empty string.</p>
+<hr />
+<h2 id="7-llm-invocation">7. LLM Invocation<a class="headerlink" href="#7-llm-invocation" title="Permanent link">&para;</a></h2>
+<p>LLM invocation happens in <code>_invoke_llm</code> when the pipeline is not short-circuited.</p>
+<h3 id="provider-selection">Provider Selection<a class="headerlink" href="#provider-selection" title="Permanent link">&para;</a></h3>
+<p>If <code>hook.llm_config</code> is set (a JSON object), it is parsed and merged with global
+defaults to produce a <code>ChatProviderConfig</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">    </span><span class="nt">&quot;provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;anthropic&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;claude-opus-4-6&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="nt">&quot;base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="p">}</span>
+</code></pre></div>
+<p>Any keys absent from <code>hook.llm_config</code> fall back to the corresponding value in
+<code>config.chat_provider</code>. If <code>hook.llm_config</code> is <code>None</code>, the global
+<code>config.chat_provider</code> is used without modification.</p>
+<h3 id="invocation-mechanism">Invocation Mechanism<a class="headerlink" href="#invocation-mechanism" title="Permanent link">&para;</a></h3>
+<p><code>_invoke_llm</code> creates a <code>ChatAgent</code> instance (from <code>src/chat_agent.py</code>) with a
+reference to the owning <code>Orchestrator</code>. It replaces the agent's <code>_provider</code> with one
+created from the resolved <code>ChatProviderConfig</code>. The hook prompt is passed as a user
+message via <code>chat_agent.chat(text=prompt, user_name="hook:&lt;hook_name&gt;")</code>.</p>
+<p>This means the LLM has access to all tools registered in <code>ChatAgent</code> — the same set
+available to a human operator typing in Discord. The hook can therefore issue
+commands, create tasks, update projects, etc.</p>
+<h3 id="token-counting">Token Counting<a class="headerlink" href="#token-counting" title="Permanent link">&para;</a></h3>
+<p>Because <code>chat_agent.chat()</code> does not return an exact token count, tokens are
+estimated post-hoc:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">tokens</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">prompt</span><span class="p">)</span> <span class="o">//</span> <span class="mi">4</span> <span class="o">+</span> <span class="nb">len</span><span class="p">(</span><span class="n">response</span><span class="p">)</span> <span class="o">//</span> <span class="mi">4</span>
+</code></pre></div>
+<p>This is a character-count approximation (4 characters per token). The value is
+stored in <code>HookRun.tokens_used</code> for record-keeping but is not used for budget
+enforcement.</p>
+<hr />
+<h2 id="8-hook-run-recording">8. Hook Run Recording<a class="headerlink" href="#8-hook-run-recording" title="Permanent link">&para;</a></h2>
+<p>Every execution creates a <code>HookRun</code> record that is updated progressively through
+the pipeline.</p>
+<h3 id="hookrun-fields">HookRun Fields<a class="headerlink" href="#hookrun-fields" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td><code>str</code></td>
+<td>First 12 characters of a UUID4</td>
+</tr>
+<tr>
+<td><code>hook_id</code></td>
+<td><code>str</code></td>
+<td>Foreign key to the <code>hooks</code> table</td>
+</tr>
+<tr>
+<td><code>project_id</code></td>
+<td><code>str</code></td>
+<td>Copied from the <code>Hook</code> at run time</td>
+</tr>
+<tr>
+<td><code>trigger_reason</code></td>
+<td><code>str</code></td>
+<td><code>"periodic"</code>, <code>"event:&lt;type&gt;"</code>, or <code>"manual"</code></td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td><code>str</code></td>
+<td><code>running</code> → <code>completed</code> / <code>failed</code> / <code>skipped</code></td>
+</tr>
+<tr>
+<td><code>event_data</code></td>
+<td><code>str \| None</code></td>
+<td>JSON-serialised <code>event_data</code> dict</td>
+</tr>
+<tr>
+<td><code>context_results</code></td>
+<td><code>str \| None</code></td>
+<td>JSON-serialised list of step result dicts</td>
+</tr>
+<tr>
+<td><code>prompt_sent</code></td>
+<td><code>str \| None</code></td>
+<td>Fully rendered prompt string</td>
+</tr>
+<tr>
+<td><code>llm_response</code></td>
+<td><code>str \| None</code></td>
+<td>LLM reply text, or exception message on failure</td>
+</tr>
+<tr>
+<td><code>actions_taken</code></td>
+<td><code>str \| None</code></td>
+<td>Reserved; not written by current implementation</td>
+</tr>
+<tr>
+<td><code>skipped_reason</code></td>
+<td><code>str \| None</code></td>
+<td>Human-readable skip reason when <code>status = "skipped"</code></td>
+</tr>
+<tr>
+<td><code>tokens_used</code></td>
+<td><code>int</code></td>
+<td>Estimated token count (see Section 7)</td>
+</tr>
+<tr>
+<td><code>started_at</code></td>
+<td><code>float</code></td>
+<td>Unix timestamp set at run creation</td>
+</tr>
+<tr>
+<td><code>completed_at</code></td>
+<td><code>float \| None</code></td>
+<td>Unix timestamp set on terminal status transition</td>
+</tr>
+</tbody>
+</table>
+<h3 id="status-transitions">Status Transitions<a class="headerlink" href="#status-transitions" title="Permanent link">&para;</a></h3>
+<pre class="mermaid"><code>stateDiagram-v2
+    [*] --&gt; running : HookRun created
+    running --&gt; skipped : short-circuit matched
+    running --&gt; completed : LLM returned response
+    running --&gt; failed : unhandled exception</code></pre>
+<ul>
+<li><strong>skipped</strong>: short-circuit condition matched; <code>skipped_reason</code> is set.</li>
+<li><strong>completed</strong>: LLM returned a response; <code>llm_response</code> and <code>tokens_used</code> are set.</li>
+<li><strong>failed</strong>: any unhandled exception; <code>llm_response</code> holds the exception string.</li>
+</ul>
+<p>The <code>context_results</code> field is written after step execution regardless of the
+terminal status — it captures whatever was gathered before the failure or skip.</p>
+<hr />
+<h2 id="9-manual-triggering">9. Manual Triggering<a class="headerlink" href="#9-manual-triggering" title="Permanent link">&para;</a></h2>
+<p><code>fire_hook(hook_id: str) -&gt; str</code> allows an administrator to run a hook immediately,
+bypassing the cooldown and periodic scheduling checks.</p>
+<p><strong>Behaviour:</strong></p>
+<ol>
+<li>Fetches the <code>Hook</code> from the database; raises <code>ValueError</code> if not found.</li>
+<li>Raises <code>ValueError</code> if the hook is already in <code>self._running</code>.</li>
+<li>Updates <code>_last_run_time[hook.id]</code> to the current time (prevents an immediate
+   automatic re-run after the manual fire).</li>
+<li>Creates an <code>asyncio.Task</code> for <code>_execute_hook</code> with <code>trigger_reason = "manual"</code>.</li>
+<li>Stores the task in <code>self._running</code>.</li>
+<li>Returns <code>hook.id</code> (not the run ID) to the caller.</li>
+</ol>
+<p>Note: the return value is <code>hook.id</code>, not the <code>HookRun.id</code>. The run record's ID is
+generated inside <code>_execute_hook</code> and is not surfaced back to the caller.</p>
+<hr />
+<h2 id="10-initialization">10. Initialization<a class="headerlink" href="#10-initialization" title="Permanent link">&para;</a></h2>
+<p><code>initialize()</code> is called once during system startup before the orchestrator loop
+begins.</p>
+<ol>
+<li>
+<p><strong>EventBus subscription:</strong> Calls <code>self.bus.subscribe("*", self._on_event)</code>. The
+   wildcard means every published event on the bus is delivered to <code>_on_event</code>.</p>
+</li>
+<li>
+<p><strong>Pre-populate last run times:</strong> Queries <code>db.list_hooks(enabled=True)</code> to get all
+   active hooks. For each hook, calls <code>db.get_last_hook_run(hook.id)</code>. If a record
+   is found, sets <code>self._last_run_time[hook.id] = last_run.started_at</code>.</p>
+</li>
+</ol>
+<p>This prevents hooks from firing immediately on startup just because their
+   <code>interval_seconds</code> has technically elapsed (the last run happened before the
+   current process started).</p>
+<p><strong>Dependency injection:</strong> The <code>HookEngine</code> constructor does not accept an
+<code>Orchestrator</code> reference directly. The orchestrator must call
+<code>hook_engine.set_orchestrator(self)</code> after construction. <code>_invoke_llm</code> reads
+<code>self._orchestrator</code>; calling <code>_invoke_llm</code> before <code>set_orchestrator</code> will raise an
+<code>AttributeError</code>.</p>
+<hr />
+<h2 id="11-shutdown">11. Shutdown<a class="headerlink" href="#11-shutdown" title="Permanent link">&para;</a></h2>
+<p><code>shutdown()</code> cancels all in-flight asyncio tasks and waits for them to finish.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">for</span> <span class="n">hook_id</span><span class="p">,</span> <span class="n">task</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_running</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="n">task</span><span class="o">.</span><span class="n">done</span><span class="p">():</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>        <span class="n">task</span><span class="o">.</span><span class="n">cancel</span><span class="p">()</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">gather</span><span class="p">(</span><span class="o">*</span><span class="bp">self</span><span class="o">.</span><span class="n">_running</span><span class="o">.</span><span class="n">values</span><span class="p">(),</span> <span class="n">return_exceptions</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="bp">self</span><span class="o">.</span><span class="n">_running</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+</code></pre></div>
+<p><code>return_exceptions=True</code> ensures a <code>CancelledError</code> from a cancelled task does not
+propagate and abort the gather. After the gather completes, <code>self._running</code> is
+cleared. Hook runs that were cancelled mid-execution will remain in the database with
+<code>status = "running"</code> because the cancellation interrupts the coroutine before the
+final <code>update_hook_run</code> call.</p>
+<hr />
+<h2 id="12-configuration-reference">12. Configuration Reference<a class="headerlink" href="#12-configuration-reference" title="Permanent link">&para;</a></h2>
+<p><code>HookEngineConfig</code> (from <code>src/config.py</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td><code>bool</code></td>
+<td><code>True</code></td>
+<td>Master switch; if <code>False</code> the orchestrator does not call <code>tick()</code></td>
+</tr>
+<tr>
+<td><code>max_concurrent_hooks</code></td>
+<td><code>int</code></td>
+<td><code>2</code></td>
+<td>Maximum number of hooks that may execute simultaneously</td>
+</tr>
+</tbody>
+</table>
+<p>YAML config path: <code>hook_engine</code> top-level key.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">hook_engine</span><span class="p">:</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">max_concurrent_hooks</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+</code></pre></div>
 
 
 

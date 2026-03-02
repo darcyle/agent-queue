@@ -79,6 +79,11 @@
     <label class="md-overlay" for="__drawer"></label>
     <div data-md-component="skip">
       
+        
+        <a href="#config-module-specification" class="md-skip">
+          Skip to content
+        </a>
+      
     </div>
     <div data-md-component="announce">
       
@@ -725,6 +730,26 @@
       <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
       
       
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
       
       <a href="./" class="md-nav__link md-nav__link--active">
         
@@ -742,6 +767,374 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#source-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source Files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-config-file-location-and-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Config File Location and Format
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Config File Location and Format">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#file-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File Format
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#file-location" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File Location
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#env-sidecar-file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .env Sidecar File
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-environment-variable-substitution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Environment Variable Substitution
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Environment Variable Substitution">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#env-file-loading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .env File Loading
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#yaml-value-substitution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        YAML Value Substitution
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-config-sections" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Config Sections
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Config Sections">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-top-level-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Top-Level Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-discord-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 discord Section
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4.2 discord Section">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#backward-compatibility-channel-merging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backward-Compatibility Channel Merging
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#421-per_project_channels-sub-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2.1 per_project_channels Sub-Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-agents-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 agents Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-scheduling-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 scheduling Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#45-pause_retry-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.5 pause_retry Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#46-chat_provider-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.6 chat_provider Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#47-hook_engine-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.7 hook_engine Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#48-monitoring-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.8 monitoring Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#49-auto_task-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.9 auto_task Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#410-rate_limits-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.10 rate_limits Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-loading-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Loading Behavior
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Loading Behavior">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-call-sequence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Call Sequence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-section-presence-vs-absence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Section Presence vs. Absence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-unrecognized-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Unrecognized Keys
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#54-type-coercion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.4 Type Coercion
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#55-error-conditions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.5 Error Conditions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#56-environment-variable-precedence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.6 Environment Variable Precedence
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -1034,6 +1427,8 @@
       
         
       
+        
+      
     
     
     
@@ -1117,6 +1512,34 @@
     
   
     Command Handler
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../discord/discord/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discord
   
 
     
@@ -2389,6 +2812,365 @@
   
   
   
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#source-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source Files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-config-file-location-and-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Config File Location and Format
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Config File Location and Format">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#file-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File Format
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#file-location" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File Location
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#env-sidecar-file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .env Sidecar File
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-environment-variable-substitution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Environment Variable Substitution
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Environment Variable Substitution">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#env-file-loading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .env File Loading
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#yaml-value-substitution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        YAML Value Substitution
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-config-sections" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Config Sections
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Config Sections">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-top-level-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Top-Level Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-discord-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 discord Section
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4.2 discord Section">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#backward-compatibility-channel-merging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backward-Compatibility Channel Merging
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#421-per_project_channels-sub-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2.1 per_project_channels Sub-Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-agents-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 agents Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-scheduling-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 scheduling Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#45-pause_retry-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.5 pause_retry Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#46-chat_provider-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.6 chat_provider Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#47-hook_engine-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.7 hook_engine Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#48-monitoring-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.8 monitoring Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#49-auto_task-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.9 auto_task Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#410-rate_limits-section" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.10 rate_limits Section
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-loading-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Loading Behavior
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Loading Behavior">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-call-sequence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Call Sequence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-section-presence-vs-absence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Section Presence vs. Absence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-unrecognized-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Unrecognized Keys
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#54-type-coercion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.4 Type Coercion
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#55-error-conditions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.5 Error Conditions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#56-environment-variable-precedence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.6 Environment Variable Precedence
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
   
 </nav>
                   </div>
@@ -2408,9 +3190,478 @@
   
 
 
-  <h1>Configuration</h1>
-
-<p>../../specs/config.md</p>
+<h1 id="config-module-specification">Config Module Specification<a class="headerlink" href="#config-module-specification" title="Permanent link">&para;</a></h1>
+<h2 id="1-overview">1. Overview<a class="headerlink" href="#1-overview" title="Permanent link">&para;</a></h2>
+<p>The config module is responsible for loading, parsing, and structuring the application's runtime configuration. It reads a single YAML file from a caller-supplied path, loads an optional <code>.env</code> file from the same directory, performs environment variable substitution on all string values, and returns a fully populated <code>AppConfig</code> dataclass instance.</p>
+<p>The module never writes configuration, never searches for the config file itself, and never falls back to alternative paths. All of that is the caller's responsibility. The module's only public entry point is the <code>load_config(path: str) -&gt; AppConfig</code> function.</p>
+<h2 id="source-files">Source Files<a class="headerlink" href="#source-files" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>src/config.py</code></li>
+</ul>
+<hr />
+<h2 id="2-config-file-location-and-format">2. Config File Location and Format<a class="headerlink" href="#2-config-file-location-and-format" title="Permanent link">&para;</a></h2>
+<h3 id="file-format">File Format<a class="headerlink" href="#file-format" title="Permanent link">&para;</a></h3>
+<p>The config file must be valid YAML. It is parsed with <code>yaml.safe_load</code>, which means only standard YAML scalar types, mappings, and sequences are accepted. An empty file or a file that produces <code>None</code> after parsing is treated as an empty mapping and does not raise an error.</p>
+<h3 id="file-location">File Location<a class="headerlink" href="#file-location" title="Permanent link">&para;</a></h3>
+<p>The config file path is passed directly to <code>load_config</code>. There is no automatic discovery. If the file does not exist at the given path, <code>load_config</code> raises <code>FileNotFoundError</code> immediately, before any other processing.</p>
+<h3 id="env-sidecar-file">.env Sidecar File<a class="headerlink" href="#env-sidecar-file" title="Permanent link">&para;</a></h3>
+<p>Before reading the YAML, <code>load_config</code> attempts to load a <code>.env</code> file located in the <strong>same directory</strong> as the config file. The <code>.env</code> path is constructed as <code>os.path.join(os.path.dirname(config_path), ".env")</code>.</p>
+<p>If no <code>.env</code> file exists at that path, the step is silently skipped.</p>
+<hr />
+<h2 id="3-environment-variable-substitution">3. Environment Variable Substitution<a class="headerlink" href="#3-environment-variable-substitution" title="Permanent link">&para;</a></h2>
+<h3 id="env-file-loading">.env File Loading<a class="headerlink" href="#env-file-loading" title="Permanent link">&para;</a></h3>
+<p>The <code>.env</code> file is a line-oriented key-value file. Processing rules:</p>
+<ul>
+<li>Lines are stripped of leading and trailing whitespace before evaluation.</li>
+<li>Empty lines (after stripping) are skipped.</li>
+<li>Lines beginning with <code>#</code> (after stripping) are treated as comments and skipped.</li>
+<li>Lines that do not contain <code>=</code> are skipped.</li>
+<li>Each qualifying line is split into a key and a value using <code>partition("=")</code>: the key is everything before the first <code>=</code>, the value is everything after. Both key and value are stripped of leading and trailing whitespace after splitting.</li>
+<li>If the resulting key is an empty string, the entry is skipped.</li>
+<li>A key is only written into <code>os.environ</code> if it does <strong>not</strong> already exist there. Existing environment variables are never overwritten by the <code>.env</code> file.</li>
+</ul>
+<h3 id="yaml-value-substitution">YAML Value Substitution<a class="headerlink" href="#yaml-value-substitution" title="Permanent link">&para;</a></h3>
+<p>After the YAML is parsed into a Python object (dict/list/scalar), every string value in the entire structure is scanned for <code>${VAR_NAME}</code> placeholders using the pattern <code>\$\{(\w+)\}</code>.</p>
+<ul>
+<li>The substitution is recursive: it descends into nested dicts and lists.</li>
+<li>Non-string values (integers, booleans, <code>None</code>, etc.) are passed through unchanged.</li>
+<li>For each placeholder found in a string, the variable name is looked up with <code>os.environ.get(var_name)</code>.</li>
+<li>If the environment variable is not set (returns <code>None</code>), a <code>ValueError</code> is raised with the message <code>"Environment variable {var_name} not set"</code>. This is a hard error; loading stops.</li>
+<li>If the environment variable is set, its value replaces the placeholder text in the string. A single string may contain multiple placeholders; all are substituted.</li>
+</ul>
+<p>Substitution occurs on the fully parsed YAML structure before any config section is mapped to dataclasses.</p>
+<hr />
+<h2 id="4-config-sections">4. Config Sections<a class="headerlink" href="#4-config-sections" title="Permanent link">&para;</a></h2>
+<h3 id="41-top-level-fields">4.1 Top-Level Fields<a class="headerlink" href="#41-top-level-fields" title="Permanent link">&para;</a></h3>
+<p>These fields appear at the root of the YAML document and map directly to scalar fields on <code>AppConfig</code>.</p>
+<table>
+<thead>
+<tr>
+<th>YAML key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>workspace_dir</code></td>
+<td><code>str</code></td>
+<td><code>~/agent-queue-workspaces</code> (home-expanded at class instantiation time)</td>
+<td>Filesystem path to the directory where agent workspaces are stored.</td>
+</tr>
+<tr>
+<td><code>database_path</code></td>
+<td><code>str</code></td>
+<td><code>~/.agent-queue/agent-queue.db</code> (home-expanded at class instantiation time)</td>
+<td>Filesystem path to the SQLite database file.</td>
+</tr>
+<tr>
+<td><code>global_token_budget_daily</code></td>
+<td><code>int</code> or <code>None</code></td>
+<td><code>None</code></td>
+<td>Daily token budget across all agents. <code>None</code> means no global cap is enforced.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="42-discord-section">4.2 <code>discord</code> Section<a class="headerlink" href="#42-discord-section" title="Permanent link">&para;</a></h3>
+<p>Maps to <code>DiscordConfig</code>. The YAML key is <code>discord</code>.</p>
+<table>
+<thead>
+<tr>
+<th>YAML key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bot_token</code></td>
+<td><code>str</code></td>
+<td><code>""</code></td>
+<td>Discord bot token for authentication.</td>
+</tr>
+<tr>
+<td><code>guild_id</code></td>
+<td><code>str</code></td>
+<td><code>""</code></td>
+<td>Discord server (guild) ID the bot operates in.</td>
+</tr>
+<tr>
+<td><code>channels</code></td>
+<td><code>dict[str, str]</code></td>
+<td><code>{"channel": "agent-queue", "agent_questions": "agent-questions"}</code></td>
+<td>Mapping of logical channel role names to Discord channel names. See backward-compatibility note below.</td>
+</tr>
+<tr>
+<td><code>authorized_users</code></td>
+<td><code>list[str]</code></td>
+<td><code>[]</code></td>
+<td>List of Discord usernames or IDs permitted to issue commands.</td>
+</tr>
+<tr>
+<td><code>per_project_channels</code></td>
+<td>nested object</td>
+<td>See section 4.2.1</td>
+<td>Settings for automatic per-project Discord channel management.</td>
+</tr>
+</tbody>
+</table>
+<h4 id="backward-compatibility-channel-merging">Backward-Compatibility Channel Merging<a class="headerlink" href="#backward-compatibility-channel-merging" title="Permanent link">&para;</a></h4>
+<p>When the <code>channels</code> dict is loaded, a check is performed for old-style configs that used <code>control</code> and/or <code>notifications</code> as channel keys instead of the unified <code>channel</code> key.</p>
+<p>The merging rule:</p>
+<ol>
+<li>If the parsed <code>channels</code> dict already contains a <code>channel</code> key, no merging occurs and the dict is used as-is.</li>
+<li>If <code>channel</code> is absent but either <code>control</code> or <code>notifications</code> (or both) is present:</li>
+<li>The unified <code>channel</code> value is set to the value of <code>control</code> if that value is truthy (non-empty); otherwise it falls back to <code>notifications</code> (with <code>"agent-queue"</code> as the final default if <code>notifications</code> is also absent or empty).</li>
+<li>The <code>agent_questions</code> key is preserved from the raw dict if present, otherwise defaults to <code>"agent-questions"</code>.</li>
+<li>All other keys from the old config are discarded.</li>
+</ol>
+<p>This merging only activates when <code>channel</code> is absent and at least one of <code>control</code> or <code>notifications</code> is present. Any other combination of keys (including completely custom keys) is passed through untouched.</p>
+<h4 id="421-per_project_channels-sub-section">4.2.1 <code>per_project_channels</code> Sub-Section<a class="headerlink" href="#421-per_project_channels-sub-section" title="Permanent link">&para;</a></h4>
+<p>Maps to <code>PerProjectChannelsConfig</code>. The YAML key within <code>discord</code> is <code>per_project_channels</code>.</p>
+<table>
+<thead>
+<tr>
+<th>YAML key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>auto_create</code></td>
+<td><code>bool</code></td>
+<td><code>False</code></td>
+<td>When <code>True</code>, the bot automatically creates a Discord channel for each project.</td>
+</tr>
+<tr>
+<td><code>naming_convention</code></td>
+<td><code>str</code></td>
+<td><code>"{project_id}"</code></td>
+<td>Template string for the generated channel name. The placeholder <code>{project_id}</code> is substituted with the project's ID at runtime.</td>
+</tr>
+<tr>
+<td><code>category_name</code></td>
+<td><code>str</code></td>
+<td><code>""</code></td>
+<td>Name of the Discord category to place project channels under. Empty string means no category grouping.</td>
+</tr>
+<tr>
+<td><code>private</code></td>
+<td><code>bool</code></td>
+<td><code>True</code></td>
+<td>When <code>True</code>, auto-created channels and categories are private — the <code>@everyone</code> role is denied <code>view_channel</code>, and the bot is explicitly granted <code>view_channel</code> and <code>send_messages</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="43-agents-section">4.3 <code>agents</code> Section<a class="headerlink" href="#43-agents-section" title="Permanent link">&para;</a></h3>
+<p>Maps to <code>AgentsDefaultConfig</code>. The YAML key is <code>agents</code>.</p>
+<table>
+<thead>
+<tr>
+<th>YAML key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>heartbeat_interval_seconds</code></td>
+<td><code>int</code></td>
+<td><code>30</code></td>
+<td>How often (in seconds) a running agent must emit a heartbeat to be considered alive.</td>
+</tr>
+<tr>
+<td><code>stuck_timeout_seconds</code></td>
+<td><code>int</code></td>
+<td><code>0</code></td>
+<td>Seconds without a heartbeat before an agent is declared stuck. <code>0</code> disables the timeout entirely (no stuck detection).</td>
+</tr>
+<tr>
+<td><code>graceful_shutdown_timeout_seconds</code></td>
+<td><code>int</code></td>
+<td><code>30</code></td>
+<td>Maximum seconds to wait for an agent to finish cleanly during shutdown before forcibly terminating it.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="44-scheduling-section">4.4 <code>scheduling</code> Section<a class="headerlink" href="#44-scheduling-section" title="Permanent link">&para;</a></h3>
+<p>Maps to <code>SchedulingConfig</code>. The YAML key is <code>scheduling</code>.</p>
+<table>
+<thead>
+<tr>
+<th>YAML key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rolling_window_hours</code></td>
+<td><code>int</code></td>
+<td><code>24</code></td>
+<td>Length of the rolling window (in hours) used for credit-weight scheduling calculations.</td>
+</tr>
+<tr>
+<td><code>min_task_guarantee</code></td>
+<td><code>bool</code></td>
+<td><code>True</code></td>
+<td>When <code>True</code>, the scheduler guarantees every project receives at least one task slot even if its credit weight is proportionally very small.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="45-pause_retry-section">4.5 <code>pause_retry</code> Section<a class="headerlink" href="#45-pause_retry-section" title="Permanent link">&para;</a></h3>
+<p>Maps to <code>PauseRetryConfig</code>. The YAML key is <code>pause_retry</code>.</p>
+<table>
+<thead>
+<tr>
+<th>YAML key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rate_limit_backoff_seconds</code></td>
+<td><code>int</code></td>
+<td><code>60</code></td>
+<td>Seconds to pause a task after hitting a rate limit, before the task is eligible to resume.</td>
+</tr>
+<tr>
+<td><code>token_exhaustion_retry_seconds</code></td>
+<td><code>int</code></td>
+<td><code>300</code></td>
+<td>Seconds to wait before retrying after daily token budget is exhausted.</td>
+</tr>
+<tr>
+<td><code>rate_limit_max_retries</code></td>
+<td><code>int</code></td>
+<td><code>3</code></td>
+<td>Maximum number of in-process retries for rate limit errors before the task is paused at the orchestrator level.</td>
+</tr>
+<tr>
+<td><code>rate_limit_max_backoff_seconds</code></td>
+<td><code>int</code></td>
+<td><code>300</code></td>
+<td>Maximum backoff duration (in seconds) for exponential in-process retry, capping the growth of the delay.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="46-chat_provider-section">4.6 <code>chat_provider</code> Section<a class="headerlink" href="#46-chat_provider-section" title="Permanent link">&para;</a></h3>
+<p>Maps to <code>ChatProviderConfig</code>. The YAML key is <code>chat_provider</code>.</p>
+<table>
+<thead>
+<tr>
+<th>YAML key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>provider</code></td>
+<td><code>str</code></td>
+<td><code>"anthropic"</code></td>
+<td>LLM provider to use for the chat agent. Valid values are <code>"anthropic"</code> and <code>"ollama"</code>.</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td><code>str</code></td>
+<td><code>""</code></td>
+<td>Model name to use. An empty string means the provider's own default model is used.</td>
+</tr>
+<tr>
+<td><code>base_url</code></td>
+<td><code>str</code></td>
+<td><code>""</code></td>
+<td>Base URL for the provider's API endpoint. Primarily used for Ollama installations. Empty string means the provider SDK's default URL is used.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="47-hook_engine-section">4.7 <code>hook_engine</code> Section<a class="headerlink" href="#47-hook_engine-section" title="Permanent link">&para;</a></h3>
+<p>Maps to <code>HookEngineConfig</code>. The YAML key is <code>hook_engine</code>.</p>
+<table>
+<thead>
+<tr>
+<th>YAML key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td><code>bool</code></td>
+<td><code>True</code></td>
+<td>Whether the hook engine runs at all. When <code>False</code>, no hooks are triggered or executed.</td>
+</tr>
+<tr>
+<td><code>max_concurrent_hooks</code></td>
+<td><code>int</code></td>
+<td><code>2</code></td>
+<td>Maximum number of hooks that may execute simultaneously.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="48-monitoring-section">4.8 <code>monitoring</code> Section<a class="headerlink" href="#48-monitoring-section" title="Permanent link">&para;</a></h3>
+<p>Maps to <code>MonitoringConfig</code>. The YAML key is <code>monitoring</code>.</p>
+<table>
+<thead>
+<tr>
+<th>YAML key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>stuck_task_threshold_seconds</code></td>
+<td><code>int</code></td>
+<td><code>3600</code></td>
+<td>A task that has been in <code>IN_PROGRESS</code> state without any status change for longer than this threshold (in seconds) is considered stuck. Defaults to 1 hour.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="49-auto_task-section">4.9 <code>auto_task</code> Section<a class="headerlink" href="#49-auto_task-section" title="Permanent link">&para;</a></h3>
+<p>Maps to <code>AutoTaskConfig</code>. The YAML key is <code>auto_task</code>.</p>
+<table>
+<thead>
+<tr>
+<th>YAML key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td><code>bool</code></td>
+<td><code>True</code></td>
+<td>Whether automatic task generation from plan files is active.</td>
+</tr>
+<tr>
+<td><code>plan_file_patterns</code></td>
+<td><code>list[str]</code></td>
+<td><code>[".claude/plan.md", "plan.md", "docs/plans/*.md", "plans/*.md", "docs/plan.md"]</code></td>
+<td>Ordered list of file path patterns (relative to the repo root) to search for implementation plans. Glob patterns are supported.</td>
+</tr>
+<tr>
+<td><code>inherit_repo</code></td>
+<td><code>bool</code></td>
+<td><code>True</code></td>
+<td>When <code>True</code>, generated subtasks inherit the <code>repo_id</code> of the parent task.</td>
+</tr>
+<tr>
+<td><code>inherit_approval</code></td>
+<td><code>bool</code></td>
+<td><code>True</code></td>
+<td>When <code>True</code>, generated subtasks inherit the <code>requires_approval</code> flag of the parent task.</td>
+</tr>
+<tr>
+<td><code>base_priority</code></td>
+<td><code>int</code></td>
+<td><code>100</code></td>
+<td>Base priority value assigned to generated tasks.</td>
+</tr>
+<tr>
+<td><code>chain_dependencies</code></td>
+<td><code>bool</code></td>
+<td><code>True</code></td>
+<td>When <code>True</code>, each generated step depends on the previous step completing before it can start.</td>
+</tr>
+<tr>
+<td><code>max_plan_depth</code></td>
+<td><code>int</code></td>
+<td><code>1</code></td>
+<td>Maximum nesting depth for plan-generated tasks. A value of <code>1</code> means only one level of plan generation is allowed; a plan-generated task cannot itself trigger further plan generation.</td>
+</tr>
+<tr>
+<td><code>max_steps_per_plan</code></td>
+<td><code>int</code></td>
+<td><code>20</code></td>
+<td>Maximum number of steps extracted from a single plan file. Steps beyond this limit are ignored.</td>
+</tr>
+<tr>
+<td><code>use_llm_parser</code></td>
+<td><code>bool</code></td>
+<td><code>False</code></td>
+<td>When <code>True</code>, an LLM (Claude) is invoked to parse plan files instead of the deterministic parser.</td>
+</tr>
+<tr>
+<td><code>llm_parser_model</code></td>
+<td><code>str</code></td>
+<td><code>""</code></td>
+<td>Model name to use when <code>use_llm_parser</code> is <code>True</code>. An empty string means the system uses its default model.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="410-rate_limits-section">4.10 <code>rate_limits</code> Section<a class="headerlink" href="#410-rate_limits-section" title="Permanent link">&para;</a></h3>
+<p>Maps directly to <code>AppConfig.rate_limits</code> as a raw dict. The YAML key is <code>rate_limits</code>.</p>
+<p>The value must be a dict whose values are themselves dicts mapping string keys to integer values. There is no fixed schema for the inner dicts; the structure is passed through to the rate-limit subsystem without transformation.</p>
+<p>Default value is an empty dict <code>{}</code> if the key is absent.</p>
+<hr />
+<h2 id="5-loading-behavior">5. Loading Behavior<a class="headerlink" href="#5-loading-behavior" title="Permanent link">&para;</a></h2>
+<h3 id="51-call-sequence">5.1 Call Sequence<a class="headerlink" href="#51-call-sequence" title="Permanent link">&para;</a></h3>
+<p><code>load_config(path)</code> executes the following steps in order:</p>
+<ol>
+<li>Check that the file at <code>path</code> exists. Raise <code>FileNotFoundError</code> if it does not.</li>
+<li>Call <code>_load_env_file(path)</code> to load the <code>.env</code> sidecar (see section 3).</li>
+<li>Open and parse the YAML file with <code>yaml.safe_load</code>. A <code>None</code> result (empty file) is normalized to <code>{}</code>.</li>
+<li>Call <code>_process_values(raw)</code> to recursively substitute all <code>${VAR}</code> placeholders in string values. This raises <code>ValueError</code> on any unset variable reference.</li>
+<li>Instantiate a default <code>AppConfig()</code> object. All fields receive their default values at this point, including home-directory expansion for path fields.</li>
+<li>For each recognized top-level key present in <code>raw</code>, construct the corresponding dataclass and assign it to the appropriate field on <code>config</code>. Keys absent from <code>raw</code> leave the corresponding <code>AppConfig</code> field at its default value.</li>
+<li>Return the populated <code>AppConfig</code>.</li>
+</ol>
+<h3 id="52-section-presence-vs-absence">5.2 Section Presence vs. Absence<a class="headerlink" href="#52-section-presence-vs-absence" title="Permanent link">&para;</a></h3>
+<p>Each config section is optional. If a section key is absent from the YAML, the corresponding <code>AppConfig</code> field retains its default-constructed value. There is no merging of partial YAML sections with defaults at the YAML level; instead, each field within a section uses <code>dict.get(key, default)</code> to supply defaults field-by-field, so a partial section (e.g., <code>scheduling</code> with only <code>rolling_window_hours</code> specified) correctly defaults the omitted fields.</p>
+<h3 id="53-unrecognized-keys">5.3 Unrecognized Keys<a class="headerlink" href="#53-unrecognized-keys" title="Permanent link">&para;</a></h3>
+<p>Unrecognized top-level YAML keys are silently ignored. Unrecognized keys within a section are also silently ignored, because section dicts are accessed field-by-field with <code>.get()</code> rather than unpacked wholesale.</p>
+<h3 id="54-type-coercion">5.4 Type Coercion<a class="headerlink" href="#54-type-coercion" title="Permanent link">&para;</a></h3>
+<p>No explicit type coercion is performed. Values are assigned directly from the YAML-parsed Python object. YAML's own type inference handles basic scalar types: unquoted integers become Python <code>int</code>, unquoted <code>true</code>/<code>false</code> become Python <code>bool</code>, and quoted values become <code>str</code>. If a YAML author provides a string where an integer is expected, the dataclass field will hold a string value; there is no schema validation.</p>
+<h3 id="55-error-conditions">5.5 Error Conditions<a class="headerlink" href="#55-error-conditions" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Config file does not exist</td>
+<td><code>FileNotFoundError</code> raised immediately.</td>
+</tr>
+<tr>
+<td>YAML is syntactically invalid</td>
+<td><code>yaml.YAMLError</code> (or a subclass) propagates from <code>yaml.safe_load</code>.</td>
+</tr>
+<tr>
+<td>A <code>${VAR}</code> placeholder references an unset environment variable</td>
+<td><code>ValueError</code> raised with the message <code>"Environment variable {VAR} not set"</code>.</td>
+</tr>
+<tr>
+<td><code>.env</code> file does not exist</td>
+<td>Silently skipped; not an error.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="56-environment-variable-precedence">5.6 Environment Variable Precedence<a class="headerlink" href="#56-environment-variable-precedence" title="Permanent link">&para;</a></h3>
+<p>Environment variables set in the process environment before <code>load_config</code> is called take precedence over values in the <code>.env</code> file. The <code>.env</code> loader explicitly skips any key already present in <code>os.environ</code>. Therefore, the precedence order (highest to lowest) is:</p>
+<ol>
+<li>Process environment (set externally before launch, or by the OS)</li>
+<li><code>.env</code> file in the same directory as the config file</li>
+<li>Hardcoded defaults in the dataclasses</li>
+</ol>
 
 
 

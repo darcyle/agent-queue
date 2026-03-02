@@ -87,6 +87,7 @@ nav:
       - Interfaces:
           - Chat Agent: specs/chat-agent.md
           - Command Handler: specs/command-handler.md
+          - Discord: specs/discord/discord.md
           - Chat Providers: specs/chat-providers/providers.md
       - Infrastructure:
           - Adapters — Claude: specs/adapters/claude.md

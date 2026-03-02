@@ -79,6 +79,11 @@
     <label class="md-overlay" for="__drawer"></label>
     <div data-md-component="skip">
       
+        
+        <a href="#scheduler-and-budget-specification" class="md-skip">
+          Skip to content
+        </a>
+      
     </div>
     <div data-md-component="announce">
       
@@ -904,6 +909,26 @@
       <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
       
       
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scheduler & Budget
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
       
       <a href="./" class="md-nav__link md-nav__link--active">
         
@@ -921,6 +946,318 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#source-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source Files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-scheduling-algorithm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Scheduling Algorithm
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Scheduling Algorithm">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-entry-point" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Entry Point
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-schedulerstate-snapshot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 SchedulerState Snapshot
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-assignaction-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 AssignAction Output
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24-step-by-step-algorithm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.4 Step-by-Step Algorithm
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#25-project-sort-key-deficit-based-ordering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.5 Project Sort Key (Deficit-Based Ordering)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#26-per-project-eligibility-checks-inner-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.6 Per-Project Eligibility Checks (Inner Loop)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#27-task-selection-within-a-project" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.7 Task Selection Within a Project
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#28-recording-an-assignment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.8 Recording an Assignment
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-budget-manager" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Budget Manager
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Budget Manager">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-construction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Construction
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-target-ratio-calculation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Target Ratio Calculation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-deficit-calculation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Deficit Calculation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-global-budget-exhaustion-check" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Global Budget Exhaustion Check
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#35-per-project-budget-exhaustion-check" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.5 Per-Project Budget Exhaustion Check
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-rate-limit-window-tracker" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Rate Limit Window Tracker
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Rate Limit Window Tracker">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-data-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Data Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-window-duration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Window Duration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-window-reset-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Window Reset Behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-is_exceeded-check" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 is_exceeded Check
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#45-seconds_until_reset-calculation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.5 seconds_until_reset Calculation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#46-recording-tokens" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.6 Recording Tokens
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-interactions-and-invariants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Interactions and Invariants
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -1034,6 +1371,8 @@
       
         
       
+        
+      
     
     
     
@@ -1117,6 +1456,34 @@
     
   
     Command Handler
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../discord/discord/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discord
   
 
     
@@ -2389,6 +2756,309 @@
   
   
   
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#source-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source Files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-scheduling-algorithm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Scheduling Algorithm
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Scheduling Algorithm">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-entry-point" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Entry Point
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-schedulerstate-snapshot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 SchedulerState Snapshot
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-assignaction-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 AssignAction Output
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24-step-by-step-algorithm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.4 Step-by-Step Algorithm
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#25-project-sort-key-deficit-based-ordering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.5 Project Sort Key (Deficit-Based Ordering)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#26-per-project-eligibility-checks-inner-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.6 Per-Project Eligibility Checks (Inner Loop)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#27-task-selection-within-a-project" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.7 Task Selection Within a Project
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#28-recording-an-assignment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.8 Recording an Assignment
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-budget-manager" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Budget Manager
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Budget Manager">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-construction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Construction
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-target-ratio-calculation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Target Ratio Calculation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-deficit-calculation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Deficit Calculation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-global-budget-exhaustion-check" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Global Budget Exhaustion Check
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#35-per-project-budget-exhaustion-check" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.5 Per-Project Budget Exhaustion Check
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-rate-limit-window-tracker" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Rate Limit Window Tracker
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Rate Limit Window Tracker">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-data-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Data Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-window-duration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Window Duration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-window-reset-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Window Reset Behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-is_exceeded-check" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 is_exceeded Check
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#45-seconds_until_reset-calculation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.5 seconds_until_reset Calculation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#46-recording-tokens" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.6 Recording Tokens
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-interactions-and-invariants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Interactions and Invariants
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
   
 </nav>
                   </div>
@@ -2408,9 +3078,319 @@
   
 
 
-  <h1>Scheduler & Budget</h1>
-
-<p>../../specs/scheduler-and-budget.md</p>
+<h1 id="scheduler-and-budget-specification">Scheduler and Budget Specification<a class="headerlink" href="#scheduler-and-budget-specification" title="Permanent link">&para;</a></h1>
+<h2 id="1-overview">1. Overview<a class="headerlink" href="#1-overview" title="Permanent link">&para;</a></h2>
+<p>The scheduler and budget subsystem controls which tasks get assigned to which agents, in what order, and under what resource constraints. It is entirely deterministic and stateless: given the same snapshot of system state, it always produces the same assignment decisions. No LLM calls, no randomness, no side effects. All scheduling logic runs in-process inside the asyncio event loop.</p>
+<p>The subsystem is split across three files:</p>
+<ul>
+<li><code>src/scheduler.py</code> — the core scheduling algorithm</li>
+<li><code>src/tokens/budget.py</code> — reusable budget math (target ratios, deficits, exhaustion checks)</li>
+<li><code>src/tokens/tracker.py</code> — sliding-window rate limit tracking per agent type</li>
+</ul>
+<p>The scheduler is called once per orchestrator tick (roughly every 5 seconds). It produces a list of zero or more <code>AssignAction</code> objects, each pairing one idle agent with one ready task. The orchestrator then executes those assignments by updating the database and launching agent processes.</p>
+<hr />
+<h2 id="source-files">Source Files<a class="headerlink" href="#source-files" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>src/scheduler.py</code></li>
+<li><code>src/tokens/budget.py</code></li>
+<li><code>src/tokens/tracker.py</code></li>
+</ul>
+<hr />
+<h2 id="2-scheduling-algorithm">2. Scheduling Algorithm<a class="headerlink" href="#2-scheduling-algorithm" title="Permanent link">&para;</a></h2>
+<h3 id="21-entry-point">2.1 Entry Point<a class="headerlink" href="#21-entry-point" title="Permanent link">&para;</a></h3>
+<p>The scheduler exposes a single static method:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Scheduler.schedule(state: SchedulerState) -&gt; list[AssignAction]
+</code></pre></div>
+<p>It takes a complete snapshot of the current system state and returns a list of assignment actions to execute. It never mutates any state.</p>
+<h3 id="22-schedulerstate-snapshot">2.2 SchedulerState Snapshot<a class="headerlink" href="#22-schedulerstate-snapshot" title="Permanent link">&para;</a></h3>
+<p><code>SchedulerState</code> is a plain dataclass that packages everything the scheduler needs in one object. The orchestrator constructs it by querying the database immediately before calling <code>schedule()</code>.</p>
+<p>Fields:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>projects</code></td>
+<td><code>list[Project]</code></td>
+<td>All projects known to the system</td>
+</tr>
+<tr>
+<td><code>tasks</code></td>
+<td><code>list[Task]</code></td>
+<td>All tasks known to the system (any status)</td>
+</tr>
+<tr>
+<td><code>agents</code></td>
+<td><code>list[Agent]</code></td>
+<td>All agents known to the system (any state)</td>
+</tr>
+<tr>
+<td><code>project_token_usage</code></td>
+<td><code>dict[str, int]</code></td>
+<td>Maps project ID to token count consumed in the current rolling window</td>
+</tr>
+<tr>
+<td><code>project_active_agent_counts</code></td>
+<td><code>dict[str, int]</code></td>
+<td>Maps project ID to the number of agents currently running tasks for that project</td>
+</tr>
+<tr>
+<td><code>tasks_completed_in_window</code></td>
+<td><code>dict[str, int]</code></td>
+<td>Maps project ID to the number of tasks completed in the current rolling window</td>
+</tr>
+<tr>
+<td><code>global_budget</code></td>
+<td><code>int or None</code></td>
+<td>Optional hard cap on total tokens across all projects; <code>None</code> means unlimited</td>
+</tr>
+<tr>
+<td><code>global_tokens_used</code></td>
+<td><code>int</code></td>
+<td>Total tokens consumed across all projects in all time (or the relevant window)</td>
+</tr>
+</tbody>
+</table>
+<p>All token counts are integers representing individual tokens.</p>
+<h3 id="23-assignaction-output">2.3 AssignAction Output<a class="headerlink" href="#23-assignaction-output" title="Permanent link">&para;</a></h3>
+<p>Each assignment the scheduler decides to make is represented as an <code>AssignAction</code> dataclass:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agent_id</code></td>
+<td><code>str</code></td>
+<td>The ID of the idle agent to assign</td>
+</tr>
+<tr>
+<td><code>task_id</code></td>
+<td><code>str</code></td>
+<td>The ID of the READY task to assign to that agent</td>
+</tr>
+<tr>
+<td><code>project_id</code></td>
+<td><code>str</code></td>
+<td>The project the task belongs to (denormalized for convenience)</td>
+</tr>
+</tbody>
+</table>
+<p>The scheduler returns a list of these. One agent and one task appear in at most one <code>AssignAction</code> per call. The list may be empty if no valid assignments can be made.</p>
+<h3 id="24-step-by-step-algorithm">2.4 Step-by-Step Algorithm<a class="headerlink" href="#24-step-by-step-algorithm" title="Permanent link">&para;</a></h3>
+<p><strong>Step 1: Global budget check.</strong>
+If <code>global_budget</code> is not <code>None</code> and <code>global_tokens_used &gt;= global_budget</code>, return an empty list immediately. No assignments are made when the global token budget is exhausted.</p>
+<p><strong>Step 2: Idle agent check.</strong>
+Collect all agents whose state is <code>IDLE</code>. If there are none, return an empty list immediately.</p>
+<p><strong>Step 3: Group READY tasks by project.</strong>
+Iterate over all tasks. For each task with status <code>READY</code>, add it to a dictionary keyed by <code>project_id</code>. Tasks with any other status are ignored.</p>
+<p><strong>Step 4: Sort tasks within each project.</strong>
+For each project's list of READY tasks, sort by <code>(priority, id)</code> ascending. Lower priority value means higher scheduling priority. The task <code>id</code> is used as a stable tiebreaker, so earlier-created tasks win.</p>
+<p><strong>Step 5: Filter to eligible projects.</strong>
+Keep only projects where both conditions hold:
+- The project's <code>status</code> is <code>ACTIVE</code>.
+- The project has at least one READY task (i.e., it appears in the grouped task dict).</p>
+<p>If no eligible projects remain, return an empty list.</p>
+<p><strong>Step 6: Compute total weight and total token usage.</strong>
+Sum the <code>credit_weight</code> of all eligible projects to get <code>total_weight</code>. Sum all values in <code>project_token_usage</code> to get <code>total_tokens</code>. If <code>total_tokens</code> is zero, set it to 1 to avoid division by zero in ratio calculations.</p>
+<p><strong>Step 7: Iterate over idle agents.</strong>
+Maintain three local tracking structures that accumulate across iterations:
+- <code>assigned_agents</code>: set of agent IDs already assigned this round.
+- <code>assigned_tasks</code>: set of task IDs already assigned this round.
+- <code>round_agent_counts</code>: a copy of <code>project_active_agent_counts</code> that is incremented as assignments are made, so later iterations see the up-to-date concurrency count.</p>
+<p>For each idle agent (in whatever order they appear in <code>state.agents</code>):</p>
+<ul>
+<li>Skip the agent if it is already in <code>assigned_agents</code>.</li>
+<li>Sort the eligible projects using the project sort key described in section 2.5.</li>
+<li>Iterate over the sorted projects and attempt to assign a task. Stop at the first project that accepts an assignment.</li>
+<li>If a valid assignment is found, record it and move to the next agent.</li>
+</ul>
+<p><strong>Step 8: Return the collected actions.</strong></p>
+<h3 id="25-project-sort-key-deficit-based-ordering">2.5 Project Sort Key (Deficit-Based Ordering)<a class="headerlink" href="#25-project-sort-key-deficit-based-ordering" title="Permanent link">&para;</a></h3>
+<p>For each agent assignment attempt, eligible projects are sorted by a two-element tuple <code>(has_guarantee, deficit)</code> in ascending order.</p>
+<p><strong><code>has_guarantee</code></strong> is an integer:
+- <code>0</code> if the project has completed zero tasks in the current window (i.e., <code>tasks_completed_in_window.get(project_id, 0) == 0</code>). These projects sort first because they have not yet received their minimum-task guarantee.
+- <code>1</code> if the project has completed at least one task in the window. These projects sort after projects that need their guarantee.</p>
+<p><strong><code>deficit</code></strong> is a float:
+- Computed as <code>actual_ratio - target_ratio</code>.
+- <code>target_ratio = project.credit_weight / total_weight</code>
+- <code>actual_ratio = project_token_usage.get(project_id, 0) / total_tokens</code>
+- A negative deficit means the project has consumed fewer tokens than its fair share. Negative values sort before positive ones, so projects that are behind get priority.</p>
+<p>Together, the sort key ensures: (1) any project that has not yet received a single task in the window is always considered before projects that have, regardless of deficit; (2) among projects in the same guarantee tier, the one furthest below its token target goes first.</p>
+<h3 id="26-per-project-eligibility-checks-inner-loop">2.6 Per-Project Eligibility Checks (Inner Loop)<a class="headerlink" href="#26-per-project-eligibility-checks-inner-loop" title="Permanent link">&para;</a></h3>
+<p>When evaluating a project as a candidate for the current agent, two checks must both pass:</p>
+<p><strong>Budget check:</strong> If <code>project.budget_limit</code> is not <code>None</code> and <code>project_token_usage.get(project_id, 0) &gt;= project.budget_limit</code>, skip this project. It has exhausted its token budget for the window.</p>
+<p><strong>Concurrency check:</strong> If <code>round_agent_counts.get(project_id, 0) &gt;= project.max_concurrent_agents</code>, skip this project. It already has as many agents running as it is allowed.</p>
+<p>If either check fails, the project is skipped and the next project in sorted order is tried.</p>
+<h3 id="27-task-selection-within-a-project">2.7 Task Selection Within a Project<a class="headerlink" href="#27-task-selection-within-a-project" title="Permanent link">&para;</a></h3>
+<p>Once a project passes both checks, the scheduler picks the first task from the project's sorted READY list that is not already in <code>assigned_tasks</code>. Because tasks were sorted in step 4 by <code>(priority, id)</code>, this is always the highest-priority, earliest-created unassigned task.</p>
+<p>If all tasks for this project are already assigned in the current round, the project is skipped and the next project is tried.</p>
+<h3 id="28-recording-an-assignment">2.8 Recording an Assignment<a class="headerlink" href="#28-recording-an-assignment" title="Permanent link">&para;</a></h3>
+<p>When a valid <code>(agent, project, task)</code> triple is found:
+1. Append an <code>AssignAction(agent_id, task_id, project_id)</code> to <code>actions</code>.
+2. Add <code>agent_id</code> to <code>assigned_agents</code>.
+3. Add <code>task_id</code> to <code>assigned_tasks</code>.
+4. Increment <code>round_agent_counts[project_id]</code> by 1.
+5. Break out of the project loop and proceed to the next idle agent.</p>
+<hr />
+<h2 id="3-budget-manager">3. Budget Manager<a class="headerlink" href="#3-budget-manager" title="Permanent link">&para;</a></h2>
+<p><code>BudgetManager</code> in <code>src/tokens/budget.py</code> is a lightweight class that encapsulates the arithmetic for fair-share budget allocation. It holds one piece of persistent state: the configured <code>global_budget</code> (an integer or <code>None</code>). All methods are pure functions of their arguments.</p>
+<h3 id="31-construction">3.1 Construction<a class="headerlink" href="#31-construction" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>BudgetManager(global_budget: int | None = None)
+</code></pre></div>
+<p><code>global_budget</code> is the maximum total number of tokens that can be spent across all projects. <code>None</code> means there is no global limit.</p>
+<h3 id="32-target-ratio-calculation">3.2 Target Ratio Calculation<a class="headerlink" href="#32-target-ratio-calculation" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>calculate_target_ratios(weights: dict[str, float]) -&gt; dict[str, float]
+</code></pre></div>
+<p>Given a mapping of project ID to credit weight, returns a mapping of project ID to its target fraction of the total token budget.</p>
+<ul>
+<li>Sum all weight values. If the sum is zero, return an empty dict.</li>
+<li>For each project, <code>target_ratio = weight / total_weight</code>.</li>
+<li>All ratios are in <code>[0.0, 1.0]</code> and sum to 1.0.</li>
+</ul>
+<p>This is used to express the intended proportional spending for each project. For example, if project A has weight 2 and project B has weight 1, A's target ratio is 0.667 and B's is 0.333.</p>
+<h3 id="33-deficit-calculation">3.3 Deficit Calculation<a class="headerlink" href="#33-deficit-calculation" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>calculate_deficits(weights: dict[str, float], usage: dict[str, int]) -&gt; dict[str, float]
+</code></pre></div>
+<p>Given credit weights and current token usage per project, returns a deficit score for each project. A positive deficit means the project has received less than its fair share; a negative deficit means it has received more.</p>
+<p>Algorithm:
+1. Compute target ratios via <code>calculate_target_ratios(weights)</code>.
+2. Sum all values in <code>usage</code> to get <code>total_usage</code>.
+3. If <code>total_usage</code> is zero, return the target ratios directly as deficits (every project is equally behind because nothing has been spent yet).
+4. Otherwise, for each project in the target ratios:
+   - <code>actual = usage.get(project_id, 0) / total_usage</code>
+   - <code>deficit = target - actual</code></p>
+<p>Note: the sign convention here (target minus actual) is the inverse of what the scheduler's inline sort key computes (actual minus target). The <code>BudgetManager.calculate_deficits</code> method returns positive-means-behind, while the scheduler's sort key uses negative-means-behind. Both arrive at the same ordering when sorted ascending: the scheduler sorts by <code>actual - target</code> ascending, which is equivalent to sorting by <code>target - actual</code> descending. The <code>BudgetManager</code> class is available as a utility but the scheduler does its own inline calculation rather than calling <code>BudgetManager</code> directly.</p>
+<h3 id="34-global-budget-exhaustion-check">3.4 Global Budget Exhaustion Check<a class="headerlink" href="#34-global-budget-exhaustion-check" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>is_global_budget_exhausted(total_used: int) -&gt; bool
+</code></pre></div>
+<p>Returns <code>True</code> if <code>global_budget</code> is not <code>None</code> and <code>total_used &gt;= global_budget</code>. Returns <code>False</code> if there is no global budget configured.</p>
+<h3 id="35-per-project-budget-exhaustion-check">3.5 Per-Project Budget Exhaustion Check<a class="headerlink" href="#35-per-project-budget-exhaustion-check" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>is_project_budget_exhausted(project_used: int, budget_limit: int | None) -&gt; bool
+</code></pre></div>
+<p>Returns <code>True</code> if <code>budget_limit</code> is not <code>None</code> and <code>project_used &gt;= budget_limit</code>. Returns <code>False</code> if the project has no budget limit configured.</p>
+<hr />
+<h2 id="4-rate-limit-window-tracker">4. Rate Limit Window Tracker<a class="headerlink" href="#4-rate-limit-window-tracker" title="Permanent link">&para;</a></h2>
+<p><code>RateLimitWindow</code> in <code>src/tokens/tracker.py</code> is a dataclass that tracks token consumption within a single sliding time window for a single (agent type, limit type) pair. It is stateful and mutates in place as tokens are recorded.</p>
+<h3 id="41-data-fields">4.1 Data Fields<a class="headerlink" href="#41-data-fields" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agent_type</code></td>
+<td><code>str</code></td>
+<td>Identifies the agent type this limit applies to (e.g., <code>"claude"</code>)</td>
+</tr>
+<tr>
+<td><code>limit_type</code></td>
+<td><code>str</code></td>
+<td>One of <code>"per_minute"</code>, <code>"per_hour"</code>, or <code>"per_day"</code></td>
+</tr>
+<tr>
+<td><code>max_tokens</code></td>
+<td><code>int</code></td>
+<td>The maximum number of tokens allowed in one window</td>
+</tr>
+<tr>
+<td><code>current_tokens</code></td>
+<td><code>int</code></td>
+<td>Tokens consumed in the current window; starts at 0</td>
+</tr>
+<tr>
+<td><code>window_start</code></td>
+<td><code>float</code></td>
+<td>Unix timestamp (from <code>time.time()</code>) when the current window began</td>
+</tr>
+</tbody>
+</table>
+<p>On construction, if <code>window_start</code> is not provided (or is 0.0), it is set to <code>time.time()</code> in <code>__post_init__</code>.</p>
+<h3 id="42-window-duration">4.2 Window Duration<a class="headerlink" href="#42-window-duration" title="Permanent link">&para;</a></h3>
+<p>The <code>window_seconds</code> property maps <code>limit_type</code> to its duration in seconds:</p>
+<table>
+<thead>
+<tr>
+<th><code>limit_type</code></th>
+<th><code>window_seconds</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"per_minute"</code></td>
+<td>60</td>
+</tr>
+<tr>
+<td><code>"per_hour"</code></td>
+<td>3600</td>
+</tr>
+<tr>
+<td><code>"per_day"</code></td>
+<td>86400</td>
+</tr>
+</tbody>
+</table>
+<p>Any other value for <code>limit_type</code> raises a <code>KeyError</code>.</p>
+<h3 id="43-window-reset-behavior">4.3 Window Reset Behavior<a class="headerlink" href="#43-window-reset-behavior" title="Permanent link">&para;</a></h3>
+<p>A window is considered expired when <code>time.time() - window_start &gt; window_seconds</code>. The window does not reset automatically in the background. It resets lazily: only when <code>record()</code> is called after the window has expired.</p>
+<p>When <code>record(tokens)</code> is called:
+1. Compute <code>now = time.time()</code>.
+2. If <code>now - window_start &gt; window_seconds</code>, the window has expired: reset <code>current_tokens</code> to 0 and set <code>window_start = now</code>.
+3. Add <code>tokens</code> to <code>current_tokens</code>.</p>
+<p>The reset sets the new window start to the moment <code>record()</code> is called, not to the exact moment the old window expired. This means windows do not slide continuously — they restart from the first event after expiry.</p>
+<h3 id="44-is_exceeded-check">4.4 is_exceeded Check<a class="headerlink" href="#44-is_exceeded-check" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>is_exceeded() -&gt; bool
+</code></pre></div>
+<p>Returns <code>True</code> if the rate limit is currently exceeded, <code>False</code> otherwise.</p>
+<p>Algorithm:
+1. If <code>time.time() - window_start &gt; window_seconds</code>, the window has already expired and no tokens have been recorded yet in the new window. Return <code>False</code> immediately — the limit is not exceeded.
+2. Otherwise, return <code>current_tokens &gt;= max_tokens</code>.</p>
+<p>Important: <code>is_exceeded()</code> does not mutate state. If the window has expired, it returns <code>False</code> without resetting the counters. The reset only happens in <code>record()</code>. This means a brief inconsistency is possible: <code>is_exceeded()</code> can return <code>False</code> (because the window expired) while <code>current_tokens</code> still holds the old value. The next call to <code>record()</code> will clear it.</p>
+<h3 id="45-seconds_until_reset-calculation">4.5 seconds_until_reset Calculation<a class="headerlink" href="#45-seconds_until_reset-calculation" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>seconds_until_reset() -&gt; float
+</code></pre></div>
+<p>Returns the number of seconds remaining before the current window expires and the counter resets.</p>
+<p>Algorithm:
+1. <code>elapsed = time.time() - window_start</code>
+2. <code>remaining = window_seconds - elapsed</code>
+3. Return <code>max(0.0, remaining)</code>.</p>
+<p>If the window has already expired, this returns 0.0. It does not account for whether the limit is currently exceeded — it only reports time until the window boundary, regardless of <code>current_tokens</code>.</p>
+<h3 id="46-recording-tokens">4.6 Recording Tokens<a class="headerlink" href="#46-recording-tokens" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>record(tokens: int) -&gt; None
+</code></pre></div>
+<p>Adds <code>tokens</code> to the current window's consumption counter, resetting the window first if it has expired. See section 4.3 for the full reset behavior.</p>
+<hr />
+<h2 id="5-interactions-and-invariants">5. Interactions and Invariants<a class="headerlink" href="#5-interactions-and-invariants" title="Permanent link">&para;</a></h2>
+<ul>
+<li>
+<p>The <code>Scheduler</code> does not call <code>BudgetManager</code> methods directly. It replicates the target ratio and deficit arithmetic inline within the sort key closure. <code>BudgetManager</code> is a utility class intended for use elsewhere (e.g., reporting or hook logic).</p>
+</li>
+<li>
+<p>The <code>Scheduler</code> does not interact with <code>RateLimitWindow</code> directly. Rate limit tracking is the responsibility of the orchestrator and agent adapter layers. The scheduler only sees the aggregate <code>project_token_usage</code> and <code>global_tokens_used</code> values after rate limits have already been factored into whether tasks are runnable.</p>
+</li>
+<li>
+<p><code>SchedulerState</code> is constructed fresh on every orchestrator tick. The scheduler never holds a reference to it between calls, so there is no risk of stale state.</p>
+</li>
+<li>
+<p>The <code>round_agent_counts</code> dict is a local copy made at the start of each <code>schedule()</code> call. Mutations to it do not propagate back to the database or to <code>state.project_active_agent_counts</code>. The orchestrator applies the returned <code>AssignAction</code> list to the database separately.</p>
+</li>
+<li>
+<p>If two projects have identical sort keys, their relative order is determined by Python's stable sort behavior applied to whatever order they appear in <code>active_projects</code>, which itself comes from <code>state.projects</code> filtered by status. No secondary tiebreaker is applied beyond what the sort key provides.</p>
+</li>
+</ul>
 
 
 

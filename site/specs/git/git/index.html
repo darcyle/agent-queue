@@ -79,6 +79,11 @@
     <label class="md-overlay" for="__drawer"></label>
     <div data-md-component="skip">
       
+        
+        <a href="#git-manager-specification" class="md-skip">
+          Skip to content
+        </a>
+      
     </div>
     <div data-md-component="announce">
       
@@ -1024,6 +1029,8 @@
       
         
       
+        
+      
     
     
     
@@ -1107,6 +1114,34 @@
     
   
     Command Handler
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../discord/discord/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discord
   
 
     
@@ -1252,6 +1287,26 @@
       <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
       
       
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Git Manager
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
       
       <a href="./" class="md-nav__link md-nav__link--active">
         
@@ -1269,6 +1324,756 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#source-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source Files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-error-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Error Handling
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Error Handling">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#giterror" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GitError
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_run-internal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _run (internal)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-repository-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Repository Setup
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Repository Setup">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#create_checkoutrepo_url-checkout_path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        create_checkout(repo_url, checkout_path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validate_checkoutcheckout_path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        validate_checkout(checkout_path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#init_repopath" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        init_repo(path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-branching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Branching
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Branching">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#create_branchcheckout_path-branch_name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        create_branch(checkout_path, branch_name)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#checkout_branchcheckout_path-branch_name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        checkout_branch(checkout_path, branch_name)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#list_branchescheckout_path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        list_branches(checkout_path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pull_latest_maincheckout_path-default_branchmain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        pull_latest_main(checkout_path, default_branch="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#prepare_for_taskcheckout_path-branch_name-default_branchmain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        prepare_for_task(checkout_path, branch_name, default_branch="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#switch_to_branchcheckout_path-branch_name-default_branchmain-rebasefalse" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switch_to_branch(checkout_path, branch_name, default_branch="main", rebase=False)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#delete_branchcheckout_path-branch_name-delete_remotetrue" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        delete_branch(checkout_path, branch_name, *, delete_remote=True)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_rebase_onto_defaultcheckout_path-default_branchmain-internal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _rebase_onto_default(checkout_path, default_branch="main") (internal)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-worktrees" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Worktrees
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Worktrees">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_is_worktreecheckout_path-internal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _is_worktree(checkout_path) (internal)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#create_worktreesource_path-worktree_path-branch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        create_worktree(source_path, worktree_path, branch)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#remove_worktreesource_path-worktree_path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        remove_worktree(source_path, worktree_path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-committing-and-pushing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Committing and Pushing
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Committing and Pushing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#commit_allcheckout_path-message" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        commit_all(checkout_path, message)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#push_branchcheckout_path-branch_name-force_with_leasefalse" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        push_branch(checkout_path, branch_name, *, force_with_lease=False)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#merge_branchcheckout_path-branch_name-default_branchmain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        merge_branch(checkout_path, branch_name, default_branch="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rebase_ontocheckout_path-branch_name-ontomain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rebase_onto(checkout_path, branch_name, onto="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sync_and_mergecheckout_path-branch_name-default_branchmain-max_retries1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sync_and_merge(checkout_path, branch_name, default_branch="main", max_retries=1)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mid_chain_synccheckout_path-branch_name-default_branchmain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mid_chain_sync(checkout_path, branch_name, default_branch="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recover_workspacecheckout_path-default_branchmain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        recover_workspace(checkout_path, default_branch="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-github-pr-operations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. GitHub PR Operations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. GitHub PR Operations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#create_prcheckout_path-branch-title-body-basemain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        create_pr(checkout_path, branch, title, body, base="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#check_pr_mergedcheckout_path-pr_url" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        check_pr_merged(checkout_path, pr_url)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-inspection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Inspection
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="8. Inspection">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get_diffcheckout_path-base_branchmain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_diff(checkout_path, base_branch="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get_changed_filescheckout_path-base_branchmain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_changed_files(checkout_path, base_branch="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get_statuscheckout_path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_status(checkout_path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get_current_branchcheckout_path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_current_branch(checkout_path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get_recent_commitscheckout_path-count5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_recent_commits(checkout_path, count=5)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-utilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Utilities
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9. Utilities">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#slugifytext" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        slugify(text)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#make_branch_nametask_id-title" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        make_branch_name(task_id, title)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-design-principles-workspace-sync" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Design Principles — Workspace Sync
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="10. Design Principles — Workspace Sync">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#p1-per-agent-workspace-isolation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P1. Per-Agent Workspace Isolation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p2-branch-per-task-naming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P2. Branch-per-Task Naming
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p3-fresh-starting-point-before-each-task" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P3. Fresh Starting Point Before Each Task
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p4-atomic-post-completion-commit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P4. Atomic Post-Completion Commit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p5-graceful-degradation-on-git-errors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P5. Graceful Degradation on Git Errors
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p6-dual-completion-paths-pr-vs-direct-merge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P6. Dual Completion Paths (PR vs Direct Merge)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p7-worktree-aware-branching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P7. Worktree-Aware Branching
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p8-retry-resilience" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P8. Retry Resilience
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p9-best-effort-branch-cleanup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P9. Best-Effort Branch Cleanup
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-known-gaps-workspace-sync" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Known Gaps — Workspace Sync
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="11. Known Gaps — Workspace Sync">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#g1-no-pre-merge-pull-in-_merge_and_push-resolved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G1. No Pre-Merge Pull in _merge_and_push — RESOLVED
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g2-push-failures-leave-workspace-in-a-dirty-state-resolved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G2. Push Failures Leave Workspace in a Dirty State — RESOLVED
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g3-no-merge-conflict-recovery-strategy-resolved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G3. No Merge Conflict Recovery Strategy — RESOLVED
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g4-retried-tasks-dont-rebase-onto-latest-main-resolved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G4. Retried Tasks Don't Rebase onto Latest Main — RESOLVED
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g5-no-force-with-lease-for-pr-branch-pushes-resolved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G5. No --force-with-lease for PR Branch Pushes — RESOLVED
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g6-subtask-chains-accumulate-drift-resolved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G6. Subtask Chains Accumulate Drift — RESOLVED
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g7-link-repos-with-shared-filesystem-no-file-level-locking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G7. LINK Repos with Shared Filesystem — No File-Level Locking
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-summary-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gap Summary Table
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -2389,6 +3194,747 @@
   
   
   
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#source-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source Files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-error-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Error Handling
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Error Handling">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#giterror" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GitError
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_run-internal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _run (internal)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-repository-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Repository Setup
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Repository Setup">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#create_checkoutrepo_url-checkout_path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        create_checkout(repo_url, checkout_path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validate_checkoutcheckout_path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        validate_checkout(checkout_path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#init_repopath" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        init_repo(path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-branching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Branching
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Branching">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#create_branchcheckout_path-branch_name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        create_branch(checkout_path, branch_name)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#checkout_branchcheckout_path-branch_name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        checkout_branch(checkout_path, branch_name)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#list_branchescheckout_path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        list_branches(checkout_path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pull_latest_maincheckout_path-default_branchmain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        pull_latest_main(checkout_path, default_branch="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#prepare_for_taskcheckout_path-branch_name-default_branchmain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        prepare_for_task(checkout_path, branch_name, default_branch="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#switch_to_branchcheckout_path-branch_name-default_branchmain-rebasefalse" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switch_to_branch(checkout_path, branch_name, default_branch="main", rebase=False)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#delete_branchcheckout_path-branch_name-delete_remotetrue" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        delete_branch(checkout_path, branch_name, *, delete_remote=True)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_rebase_onto_defaultcheckout_path-default_branchmain-internal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _rebase_onto_default(checkout_path, default_branch="main") (internal)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-worktrees" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Worktrees
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Worktrees">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_is_worktreecheckout_path-internal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _is_worktree(checkout_path) (internal)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#create_worktreesource_path-worktree_path-branch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        create_worktree(source_path, worktree_path, branch)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#remove_worktreesource_path-worktree_path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        remove_worktree(source_path, worktree_path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-committing-and-pushing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Committing and Pushing
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Committing and Pushing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#commit_allcheckout_path-message" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        commit_all(checkout_path, message)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#push_branchcheckout_path-branch_name-force_with_leasefalse" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        push_branch(checkout_path, branch_name, *, force_with_lease=False)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#merge_branchcheckout_path-branch_name-default_branchmain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        merge_branch(checkout_path, branch_name, default_branch="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rebase_ontocheckout_path-branch_name-ontomain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rebase_onto(checkout_path, branch_name, onto="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sync_and_mergecheckout_path-branch_name-default_branchmain-max_retries1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sync_and_merge(checkout_path, branch_name, default_branch="main", max_retries=1)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mid_chain_synccheckout_path-branch_name-default_branchmain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mid_chain_sync(checkout_path, branch_name, default_branch="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recover_workspacecheckout_path-default_branchmain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        recover_workspace(checkout_path, default_branch="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-github-pr-operations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. GitHub PR Operations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. GitHub PR Operations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#create_prcheckout_path-branch-title-body-basemain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        create_pr(checkout_path, branch, title, body, base="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#check_pr_mergedcheckout_path-pr_url" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        check_pr_merged(checkout_path, pr_url)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-inspection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Inspection
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="8. Inspection">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#get_diffcheckout_path-base_branchmain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_diff(checkout_path, base_branch="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get_changed_filescheckout_path-base_branchmain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_changed_files(checkout_path, base_branch="main")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get_statuscheckout_path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_status(checkout_path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get_current_branchcheckout_path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_current_branch(checkout_path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get_recent_commitscheckout_path-count5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_recent_commits(checkout_path, count=5)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-utilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Utilities
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9. Utilities">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#slugifytext" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        slugify(text)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#make_branch_nametask_id-title" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        make_branch_name(task_id, title)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-design-principles-workspace-sync" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Design Principles — Workspace Sync
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="10. Design Principles — Workspace Sync">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#p1-per-agent-workspace-isolation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P1. Per-Agent Workspace Isolation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p2-branch-per-task-naming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P2. Branch-per-Task Naming
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p3-fresh-starting-point-before-each-task" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P3. Fresh Starting Point Before Each Task
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p4-atomic-post-completion-commit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P4. Atomic Post-Completion Commit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p5-graceful-degradation-on-git-errors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P5. Graceful Degradation on Git Errors
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p6-dual-completion-paths-pr-vs-direct-merge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P6. Dual Completion Paths (PR vs Direct Merge)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p7-worktree-aware-branching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P7. Worktree-Aware Branching
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p8-retry-resilience" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P8. Retry Resilience
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p9-best-effort-branch-cleanup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P9. Best-Effort Branch Cleanup
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-known-gaps-workspace-sync" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Known Gaps — Workspace Sync
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="11. Known Gaps — Workspace Sync">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#g1-no-pre-merge-pull-in-_merge_and_push-resolved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G1. No Pre-Merge Pull in _merge_and_push — RESOLVED
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g2-push-failures-leave-workspace-in-a-dirty-state-resolved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G2. Push Failures Leave Workspace in a Dirty State — RESOLVED
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g3-no-merge-conflict-recovery-strategy-resolved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G3. No Merge Conflict Recovery Strategy — RESOLVED
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g4-retried-tasks-dont-rebase-onto-latest-main-resolved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G4. Retried Tasks Don't Rebase onto Latest Main — RESOLVED
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g5-no-force-with-lease-for-pr-branch-pushes-resolved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G5. No --force-with-lease for PR Branch Pushes — RESOLVED
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g6-subtask-chains-accumulate-drift-resolved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G6. Subtask Chains Accumulate Drift — RESOLVED
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g7-link-repos-with-shared-filesystem-no-file-level-locking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G7. LINK Repos with Shared Filesystem — No File-Level Locking
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-summary-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gap Summary Table
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
   
 </nav>
                   </div>
@@ -2408,9 +3954,576 @@
   
 
 
-  <h1>Git Manager</h1>
-
-<p>../../../specs/git/git.md</p>
+<h1 id="git-manager-specification">Git Manager Specification<a class="headerlink" href="#git-manager-specification" title="Permanent link">&para;</a></h1>
+<p><strong>Source:</strong> <code>src/git/manager.py</code></p>
+<h2 id="1-overview">1. Overview<a class="headerlink" href="#1-overview" title="Permanent link">&para;</a></h2>
+<p><code>GitManager</code> is a thin synchronous wrapper around the <code>git</code> CLI and the <code>gh</code> (GitHub CLI) tool. All git operations are executed as subprocesses via <code>subprocess.run</code>. There are no direct calls to any git library (e.g. GitPython or libgit2).</p>
+<ul>
+<li>Standard repository operations (clone, branch, commit, push, merge, worktree) use <code>git</code> subcommands.</li>
+<li>GitHub-specific operations (creating pull requests, checking PR status) use the <code>gh</code> CLI and are therefore only available in environments where <code>gh</code> is installed and authenticated.</li>
+<li>The class is instantiated with no arguments and holds no state. All methods accept an explicit <code>checkout_path</code> (or <code>source_path</code>) to identify which repository to operate on.</li>
+</ul>
+<h2 id="source-files">Source Files<a class="headerlink" href="#source-files" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>src/git/manager.py</code></li>
+</ul>
+<hr />
+<h2 id="2-error-handling">2. Error Handling<a class="headerlink" href="#2-error-handling" title="Permanent link">&para;</a></h2>
+<h3 id="giterror"><code>GitError</code><a class="headerlink" href="#giterror" title="Permanent link">&para;</a></h3>
+<p><code>GitError</code> is the single exception type raised by this module. It inherits directly from <code>Exception</code>.</p>
+<p>Any <code>git</code> subprocess that exits with a non-zero return code causes <code>_run</code> to raise:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>GitError(&quot;git &lt;args&gt; failed: &lt;stderr&gt;&quot;)
+</code></pre></div>
+<p><code>gh</code> subcommands (<code>create_pr</code>, <code>check_pr_merged</code>) are not routed through <code>_run</code>. They call <code>subprocess.run</code> directly and raise <code>GitError</code> manually when <code>returncode != 0</code>.</p>
+<h3 id="_run-internal"><code>_run</code> (internal)<a class="headerlink" href="#_run-internal" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">_run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">args</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span> <span class="n">cwd</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span>
+</code></pre></div>
+<p>Executes <code>["git"] + args</code> in the given working directory. Captures both stdout and stderr. On success returns <code>stdout.strip()</code>. On failure raises <code>GitError</code> with the stderr content.</p>
+<p>Several public methods intentionally catch <code>GitError</code> and suppress it (e.g. a failed <code>pull</code> that has no upstream tracking is silently ignored). Each such suppression is documented in the relevant method section below.</p>
+<hr />
+<h2 id="3-repository-setup">3. Repository Setup<a class="headerlink" href="#3-repository-setup" title="Permanent link">&para;</a></h2>
+<h3 id="create_checkoutrepo_url-checkout_path"><code>create_checkout(repo_url, checkout_path)</code><a class="headerlink" href="#create_checkoutrepo_url-checkout_path" title="Permanent link">&para;</a></h3>
+<p>Clones a remote repository to a local path.</p>
+<ul>
+<li>Creates all intermediate parent directories with <code>os.makedirs(..., exist_ok=True)</code>.</li>
+<li>Runs <code>git clone &lt;repo_url&gt; &lt;checkout_path&gt;</code>.</li>
+<li>Raises <code>GitError</code> on clone failure.</li>
+</ul>
+<h3 id="validate_checkoutcheckout_path"><code>validate_checkout(checkout_path)</code><a class="headerlink" href="#validate_checkoutcheckout_path" title="Permanent link">&para;</a></h3>
+<p>Returns <code>True</code> if <code>checkout_path</code> is a valid git repository, <code>False</code> otherwise.</p>
+<ul>
+<li>Returns <code>False</code> immediately if the path is not an existing directory.</li>
+<li>Runs <code>git rev-parse --git-dir</code> inside the directory. Returns <code>True</code> if it succeeds, <code>False</code> if it raises <code>GitError</code>.</li>
+<li>Does not raise exceptions; always returns a boolean.</li>
+</ul>
+<h3 id="init_repopath"><code>init_repo(path)</code><a class="headerlink" href="#init_repopath" title="Permanent link">&para;</a></h3>
+<p>Initializes a brand-new git repository with an empty initial commit.</p>
+<ul>
+<li>Creates the directory with <code>os.makedirs(path, exist_ok=True)</code>.</li>
+<li>Runs <code>git init</code>.</li>
+<li>Runs <code>git commit --allow-empty -m "Initial commit"</code> to create a HEAD reference immediately (avoids detached-HEAD edge cases on first branch creation).</li>
+<li>Raises <code>GitError</code> on failure.</li>
+</ul>
+<hr />
+<h2 id="4-branching">4. Branching<a class="headerlink" href="#4-branching" title="Permanent link">&para;</a></h2>
+<h3 id="create_branchcheckout_path-branch_name"><code>create_branch(checkout_path, branch_name)</code><a class="headerlink" href="#create_branchcheckout_path-branch_name" title="Permanent link">&para;</a></h3>
+<p>Creates a new branch and checks it out.</p>
+<ul>
+<li>Attempts <code>git checkout -b &lt;branch_name&gt;</code>.</li>
+<li>If that fails (branch already exists), falls back to <code>git checkout &lt;branch_name&gt;</code>.</li>
+<li>Does not update the branch from the remote; use <code>prepare_for_task</code> for a full pre-task setup.</li>
+</ul>
+<h3 id="checkout_branchcheckout_path-branch_name"><code>checkout_branch(checkout_path, branch_name)</code><a class="headerlink" href="#checkout_branchcheckout_path-branch_name" title="Permanent link">&para;</a></h3>
+<p>Switches to an existing local branch.</p>
+<ul>
+<li>Runs <code>git checkout &lt;branch_name&gt;</code>.</li>
+<li>Raises <code>GitError</code> if the branch does not exist locally.</li>
+</ul>
+<h3 id="list_branchescheckout_path"><code>list_branches(checkout_path)</code><a class="headerlink" href="#list_branchescheckout_path" title="Permanent link">&para;</a></h3>
+<p>Returns all local branch names as a list of strings.</p>
+<ul>
+<li>Runs <code>git branch --list</code>.</li>
+<li>Each entry in the returned list has leading/trailing whitespace stripped. The current branch retains the <code>*</code> prefix that git adds (e.g. <code>"* main"</code>).</li>
+<li>Returns an empty list on <code>GitError</code> rather than raising.</li>
+</ul>
+<h3 id="pull_latest_maincheckout_path-default_branchmain"><code>pull_latest_main(checkout_path, default_branch="main")</code><a class="headerlink" href="#pull_latest_maincheckout_path-default_branchmain" title="Permanent link">&para;</a></h3>
+<p>Fetches from origin and hard-resets the default branch to match remote. This is the canonical way to sync a workspace's default branch with <code>origin</code>.</p>
+<ol>
+<li>Runs <code>git fetch origin</code> to get the latest remote state.</li>
+<li>Runs <code>git checkout &lt;default_branch&gt;</code> to switch to the default branch.</li>
+<li>Runs <code>git reset --hard origin/&lt;default_branch&gt;</code> to discard any local divergence.</li>
+</ol>
+<p>This is safer than <code>git pull</code> because pull can fail when the local branch has diverged (e.g. from un-pushed merge commits left by <code>_merge_and_push</code>). A hard reset unconditionally moves the branch pointer to match the remote. The caller must have the default branch checked out or be prepared for the checkout side-effect.</p>
+<h3 id="prepare_for_taskcheckout_path-branch_name-default_branchmain"><code>prepare_for_task(checkout_path, branch_name, default_branch="main")</code><a class="headerlink" href="#prepare_for_taskcheckout_path-branch_name-default_branchmain" title="Permanent link">&para;</a></h3>
+<p>Full pre-task branch setup. Handles both normal clones and git worktrees differently.</p>
+<ol>
+<li>Detects whether <code>checkout_path</code> is a worktree via <code>_is_worktree</code>.</li>
+<li>Runs <code>git fetch origin</code> unconditionally.</li>
+<li><strong>Worktree path:</strong></li>
+<li>Creates the task branch directly from <code>origin/&lt;default_branch&gt;</code> with <code>git checkout -b &lt;branch_name&gt; origin/&lt;default_branch&gt;</code>.</li>
+<li>If that fails (branch already exists — retry scenario), falls back to <code>git checkout &lt;branch_name&gt;</code>, then calls <code>_rebase_onto_default</code> to rebase the branch onto the latest <code>origin/&lt;default_branch&gt;</code> so the agent works on the latest code rather than a stale snapshot. If the rebase encounters conflicts, it is aborted silently — the agent works with whatever is on the branch as-is.</li>
+<li>Avoids checking out the default branch locally because it may already be checked out in the main working tree, which git forbids.</li>
+<li><strong>Normal clone path:</strong></li>
+<li>Checks out <code>default_branch</code> locally.</li>
+<li>Runs <code>git reset --hard origin/&lt;default_branch&gt;</code> to force the local default branch to match the remote exactly. This is used instead of <code>git pull</code> because pull can fail when local has diverged (e.g. from un-pushed merge commits left by <code>_merge_and_push</code>). <strong>Resolves G4 for fresh branches.</strong></li>
+<li>Creates the task branch with <code>git checkout -b &lt;branch_name&gt;</code>.</li>
+<li>If that fails (task is being retried after a restart), falls back to <code>git checkout &lt;branch_name&gt;</code>, then calls <code>_rebase_onto_default</code> to rebase the branch onto the latest <code>origin/&lt;default_branch&gt;</code> so the agent doesn't work on stale code. <strong>Resolves G4 for retried branches.</strong></li>
+<li>If the rebase encounters conflicts, it is aborted silently — the agent works with whatever is on the branch as-is.</li>
+</ol>
+<h3 id="switch_to_branchcheckout_path-branch_name-default_branchmain-rebasefalse"><code>switch_to_branch(checkout_path, branch_name, default_branch="main", rebase=False)</code><a class="headerlink" href="#switch_to_branchcheckout_path-branch_name-default_branchmain-rebasefalse" title="Permanent link">&para;</a></h3>
+<p>Switches to an existing branch, pulling latest, and optionally rebasing onto the
+default branch.</p>
+<p>Used for subtask branch reuse: when a plan generates multiple subtasks that share
+a branch, this lets subsequent subtasks pick up where the previous one left off.</p>
+<ol>
+<li>Attempts <code>git fetch origin</code>. Silently ignores <code>GitError</code> (no remote configured).</li>
+<li>Attempts <code>git checkout &lt;branch_name&gt;</code>.</li>
+<li>If that fails (branch exists only on the remote), tries <code>git checkout -b &lt;branch_name&gt; origin/&lt;branch_name&gt;</code> to create a local tracking branch.</li>
+<li>If that also fails (no remote branch either, e.g. LINK repos), creates a fresh local branch with <code>git checkout -b &lt;branch_name&gt;</code>.</li>
+<li>Attempts <code>git pull origin &lt;branch_name&gt;</code>. Silently ignores <code>GitError</code> (no upstream tracking).</li>
+<li><strong>Rebase (when <code>rebase=True</code>):</strong> Calls <code>_rebase_onto_default(checkout_path, default_branch)</code> to rebase the branch onto <code>origin/&lt;default_branch&gt;</code>, keeping subtask chains closer to main and reducing merge conflicts at the end. If the rebase encounters conflicts, it is aborted silently — the agent works with the branch as-is and conflicts will be handled at merge time.</li>
+</ol>
+<p>The <code>rebase</code> parameter is controlled by <code>config.auto_task.rebase_between_subtasks</code> and is passed by <code>_prepare_workspace()</code> when switching to a shared subtask branch.</p>
+<h3 id="delete_branchcheckout_path-branch_name-delete_remotetrue"><code>delete_branch(checkout_path, branch_name, *, delete_remote=True)</code><a class="headerlink" href="#delete_branchcheckout_path-branch_name-delete_remotetrue" title="Permanent link">&para;</a></h3>
+<p>Deletes a branch locally and optionally on the remote.</p>
+<ol>
+<li>Attempts <code>git branch -d &lt;branch_name&gt;</code> (safe delete — only if fully merged).</li>
+<li>If that fails, attempts <code>git branch -D &lt;branch_name&gt;</code> (force delete — handles squash-merged PRs).</li>
+<li>If both local deletes fail, silently suppresses the error (branch may not exist locally).</li>
+<li>If <code>delete_remote=True</code>, runs <code>git push origin --delete &lt;branch_name&gt;</code>. Silently ignores <code>GitError</code> (branch may not exist on the remote).</li>
+</ol>
+<h3 id="_rebase_onto_defaultcheckout_path-default_branchmain-internal"><code>_rebase_onto_default(checkout_path, default_branch="main")</code> (internal)<a class="headerlink" href="#_rebase_onto_defaultcheckout_path-default_branchmain-internal" title="Permanent link">&para;</a></h3>
+<p>Attempts to rebase the currently checked-out branch onto <code>origin/&lt;default_branch&gt;</code>.</p>
+<ol>
+<li>Runs <code>git rebase origin/&lt;default_branch&gt;</code>.</li>
+<li>If the rebase encounters conflicts, runs <code>git rebase --abort</code> and leaves the branch
+   in its original pre-rebase state. The agent can still work with the branch — it
+   just won't have the latest main changes incorporated.</li>
+<li>If <code>rebase --abort</code> itself fails (rebase may not be in progress if it failed early),
+   silently ignores the error.</li>
+</ol>
+<p>Used internally by <code>prepare_for_task</code> (retry path), <code>switch_to_branch</code> (when
+<code>rebase=True</code>), and <code>mid_chain_sync</code>.</p>
+<hr />
+<h2 id="5-worktrees">5. Worktrees<a class="headerlink" href="#5-worktrees" title="Permanent link">&para;</a></h2>
+<p>Git worktrees allow multiple working trees to share a single <code>.git</code> directory. This is used for agent isolation when multiple agents operate on the same repository simultaneously.</p>
+<h3 id="_is_worktreecheckout_path-internal"><code>_is_worktree(checkout_path)</code> (internal)<a class="headerlink" href="#_is_worktreecheckout_path-internal" title="Permanent link">&para;</a></h3>
+<p>Returns <code>True</code> if <code>checkout_path</code> is a linked worktree (not the main working tree).</p>
+<ul>
+<li>Runs <code>git rev-parse --git-dir</code>.</li>
+<li>In a linked worktree the git-dir resolves to <code>.git/worktrees/&lt;name&gt;</code>, so the string <code>"worktrees"</code> appears in the output.</li>
+<li>In the main working tree the git-dir is simply <code>.git</code>.</li>
+<li>Returns <code>False</code> on <code>GitError</code>.</li>
+</ul>
+<h3 id="create_worktreesource_path-worktree_path-branch"><code>create_worktree(source_path, worktree_path, branch)</code><a class="headerlink" href="#create_worktreesource_path-worktree_path-branch" title="Permanent link">&para;</a></h3>
+<p>Creates a new linked worktree with a new branch.</p>
+<ul>
+<li>Creates all intermediate parent directories for <code>worktree_path</code> with <code>os.makedirs</code>.</li>
+<li>Runs <code>git worktree add -b &lt;branch&gt; &lt;worktree_path&gt;</code> from <code>source_path</code>.</li>
+<li>The new branch is created at the current HEAD of <code>source_path</code>.</li>
+<li>Raises <code>GitError</code> on failure.</li>
+</ul>
+<h3 id="remove_worktreesource_path-worktree_path"><code>remove_worktree(source_path, worktree_path)</code><a class="headerlink" href="#remove_worktreesource_path-worktree_path" title="Permanent link">&para;</a></h3>
+<p>Removes a linked worktree.</p>
+<ul>
+<li>Attempts <code>git worktree remove &lt;worktree_path&gt;</code> from <code>source_path</code>.</li>
+<li>If that fails (e.g. the worktree has untracked or modified files), retries with <code>git worktree remove --force &lt;worktree_path&gt;</code>.</li>
+<li>Raises <code>GitError</code> only if the force removal also fails.</li>
+</ul>
+<hr />
+<h2 id="6-committing-and-pushing">6. Committing and Pushing<a class="headerlink" href="#6-committing-and-pushing" title="Permanent link">&para;</a></h2>
+<h3 id="commit_allcheckout_path-message"><code>commit_all(checkout_path, message)</code><a class="headerlink" href="#commit_allcheckout_path-message" title="Permanent link">&para;</a></h3>
+<p>Stages all changes and creates a commit. Returns <code>True</code> if a commit was made, <code>False</code> if the working tree was clean.</p>
+<ol>
+<li>Runs <code>git add -A</code> to stage all tracked and untracked changes.</li>
+<li>Runs <code>git diff --cached --quiet</code> directly via <code>subprocess.run</code> (bypassing <code>_run</code>) to check whether anything is staged. Exit code <code>0</code> means nothing staged.</li>
+<li>If nothing is staged, returns <code>False</code> without creating a commit.</li>
+<li>Otherwise runs <code>git commit -m &lt;message&gt;</code> and returns <code>True</code>.</li>
+<li>Raises <code>GitError</code> if the commit fails.</li>
+</ol>
+<h3 id="push_branchcheckout_path-branch_name-force_with_leasefalse"><code>push_branch(checkout_path, branch_name, *, force_with_lease=False)</code><a class="headerlink" href="#push_branchcheckout_path-branch_name-force_with_leasefalse" title="Permanent link">&para;</a></h3>
+<p>Pushes a local branch to the <code>origin</code> remote.</p>
+<ul>
+<li>Constructs the command as <code>git push origin &lt;branch_name&gt;</code>.</li>
+<li>When <code>force_with_lease=True</code>, inserts <code>--force-with-lease</code> into the command: <code>git push origin --force-with-lease &lt;branch_name&gt;</code>. This makes push idempotent for retries: if the branch was already pushed in a previous attempt, a second push with amended/additional commits succeeds as long as no other user pushed to the same branch in the meantime. It is safe for task branches because they are owned by a single agent and are never concurrently updated by others.</li>
+<li>The <code>force_with_lease</code> parameter is keyword-only to prevent accidental positional use.</li>
+<li>Used with <code>force_with_lease=True</code> by the orchestrator when pushing task branches for PR creation (task branches are agent-owned and safe to force-push).</li>
+<li>Raises <code>GitError</code> on failure (e.g. non-fast-forward without the flag, authentication error, or remote ref updated by another clone when using <code>--force-with-lease</code>).</li>
+</ul>
+<h3 id="merge_branchcheckout_path-branch_name-default_branchmain"><code>merge_branch(checkout_path, branch_name, default_branch="main")</code><a class="headerlink" href="#merge_branchcheckout_path-branch_name-default_branchmain" title="Permanent link">&para;</a></h3>
+<p>Merges a feature branch into the default branch. Returns <code>True</code> on success, <code>False</code> on conflict.</p>
+<ol>
+<li>Runs <code>git fetch origin</code> to get the latest remote state. Silently ignores <code>GitError</code> (no remote configured, e.g. LINK repos).</li>
+<li>Checks out <code>default_branch</code>.</li>
+<li>Runs <code>git reset --hard origin/&lt;default_branch&gt;</code> to force the local default branch to match the remote. This ensures the merge incorporates the latest remote changes even if other agents have pushed since the last fetch. Silently ignores <code>GitError</code> (no remote tracking branch — uses local state as-is). <strong>Resolves G1.</strong></li>
+<li>Attempts <code>git merge &lt;branch_name&gt;</code>.</li>
+<li>If the merge raises <code>GitError</code> (conflict), runs <code>git merge --abort</code> to restore the working tree and returns <code>False</code>.</li>
+<li>Returns <code>True</code> on a clean merge.</li>
+</ol>
+<p>The fetch-and-hard-reset step ensures that concurrent agents always merge against the latest remote state, preventing stale-main problems. For repos without a remote (LINK repos), the method falls through to merge against whatever local state is available.</p>
+<blockquote>
+<p><strong>Note:</strong> For rebase-before-merge conflict resolution, use <code>sync_and_merge</code> which
+attempts a rebase of the task branch onto <code>origin/&lt;default_branch&gt;</code> when the direct
+merge fails.</p>
+</blockquote>
+<h3 id="rebase_ontocheckout_path-branch_name-ontomain"><code>rebase_onto(checkout_path, branch_name, onto="main")</code><a class="headerlink" href="#rebase_ontocheckout_path-branch_name-ontomain" title="Permanent link">&para;</a></h3>
+<p>Public API for rebasing an arbitrary branch onto a target. Returns <code>True</code> on success,
+<code>False</code> on conflict.</p>
+<ol>
+<li>Records the currently checked-out branch.</li>
+<li>Checks out <code>branch_name</code>.</li>
+<li>Runs <code>git rebase origin/&lt;onto&gt;</code>.</li>
+<li>On conflict (<code>GitError</code>): runs <code>git rebase --abort</code> to restore the branch, then attempts to return to the original branch. Returns <code>False</code>.</li>
+<li>On success: attempts to return to the original branch. Returns <code>True</code>.</li>
+</ol>
+<p>The caller is responsible for ensuring <code>onto</code> is up-to-date (e.g. via a prior fetch + hard-reset). Used by <code>sync_and_merge</code> for its rebase-before-merge conflict resolution (Gap G3), and available for callers that need to rebase an arbitrary branch onto any target.</p>
+<h3 id="sync_and_mergecheckout_path-branch_name-default_branchmain-max_retries1"><code>sync_and_merge(checkout_path, branch_name, default_branch="main", max_retries=1)</code><a class="headerlink" href="#sync_and_mergecheckout_path-branch_name-default_branchmain-max_retries1" title="Permanent link">&para;</a></h3>
+<p>High-level merge-and-push flow. Returns <code>(success: bool, error_msg: str)</code>.</p>
+<p>Encapsulates the full sync-merge-push flow as a single operation. Callers (e.g. the
+orchestrator's <code>_merge_and_push</code>) no longer need to coordinate fetch / checkout /
+reset / merge / push individually. <strong>Resolves G1, G2, G3.</strong></p>
+<p><strong>Steps:</strong></p>
+<ol>
+<li><strong>Fetch:</strong> <code>git fetch origin</code> to get the latest remote state.</li>
+<li><strong>Reset:</strong> Checkout <code>default_branch</code> and <code>git reset --hard origin/&lt;default_branch&gt;</code> — discards any stale local state (e.g. un-pushed merge commits from a prior attempt).</li>
+<li><strong>Merge:</strong> Attempt <code>git merge &lt;branch_name&gt;</code>.</li>
+<li>On conflict: abort the merge, then attempt rebase-before-merge recovery:<ul>
+<li>Call <code>rebase_onto(checkout_path, branch_name, default_branch)</code> to rebase the task branch onto <code>origin/&lt;default_branch&gt;</code>.</li>
+<li>If rebase conflicts: return <code>(False, "merge_conflict")</code>. Switch back to <code>default_branch</code> for a clean state.</li>
+<li>If rebase succeeds: checkout <code>default_branch</code>, hard-reset again, retry the merge.</li>
+<li>If retry merge still fails: return <code>(False, "merge_conflict")</code>.</li>
+</ul>
+</li>
+<li><strong>Push with retry:</strong> Attempt <code>git push origin &lt;default_branch&gt;</code> up to <code>max_retries + 1</code> times total.</li>
+<li>On push rejection (another agent pushed between our fetch and push): run <code>git pull --rebase origin &lt;default_branch&gt;</code> to incorporate the new commits, then retry.</li>
+<li>Repeat up to <code>max_retries</code> times.</li>
+<li>If all attempts fail: return <code>(False, "push_failed: &lt;details&gt;")</code>.</li>
+<li>On success: return <code>(True, "")</code>.</li>
+</ol>
+<p><strong>Return values:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Result</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(True, "")</code></td>
+<td>Merge and push succeeded</td>
+</tr>
+<tr>
+<td><code>(False, "merge_conflict")</code></td>
+<td>Both direct merge and rebase-before-merge failed</td>
+</tr>
+<tr>
+<td><code>(False, "push_failed: ...")</code></td>
+<td>Push failed after all retries</td>
+</tr>
+</tbody>
+</table>
+<h3 id="mid_chain_synccheckout_path-branch_name-default_branchmain"><code>mid_chain_sync(checkout_path, branch_name, default_branch="main")</code><a class="headerlink" href="#mid_chain_synccheckout_path-branch_name-default_branchmain" title="Permanent link">&para;</a></h3>
+<p>Push intermediate subtask work and rebase onto latest main. Returns <code>True</code> on success,
+<code>False</code> on rebase conflict. <strong>Resolves G6.</strong></p>
+<p>Called between subtask completions in a chained plan to:</p>
+<ol>
+<li><strong>Push</strong> current commits to remote — saves intermediate work so it survives agent
+   crashes and is visible to other clones. First attempts a plain push; if that fails
+   (e.g. branch was previously pushed and rebased), falls back to <code>--force-with-lease</code>.</li>
+<li><strong>Fetch</strong> latest remote state via <code>git fetch origin</code>.</li>
+<li><strong>Rebase</strong> the branch onto <code>origin/&lt;default_branch&gt;</code> — keeps the subtask chain
+   close to main and reduces the chance of large merge conflicts when the final subtask
+   merges the accumulated work. If the rebase conflicts, aborts and returns <code>False</code>.</li>
+<li><strong>Force-push</strong> the rebased branch with <code>--force-with-lease</code> — updates the remote ref
+   to match the rewritten (rebased) history.</li>
+</ol>
+<p>The <code>push</code> parameter (when available as keyword-only on <code>mid_chain_rebase</code>) enables intermediate progress to be backed up on the remote. Push failures are silently ignored (rebase still succeeded).</p>
+<p>All failures are non-fatal: callers should catch exceptions and continue — the next
+subtask can still work on the branch as-is.</p>
+<h3 id="recover_workspacecheckout_path-default_branchmain"><code>recover_workspace(checkout_path, default_branch="main")</code><a class="headerlink" href="#recover_workspacecheckout_path-default_branchmain" title="Permanent link">&para;</a></h3>
+<p>Reset workspace to a clean state after a failed merge-and-push. <strong>Resolves G2.</strong></p>
+<ol>
+<li>Runs <code>git checkout &lt;default_branch&gt;</code>.</li>
+<li>Runs <code>git reset --hard origin/&lt;default_branch&gt;</code>.</li>
+</ol>
+<p>This undoes any local merge commit left behind by a failed push, ensuring the workspace
+is ready for the next task. The orchestrator's <code>_merge_and_push</code> calls <code>recover_workspace</code> automatically after <code>sync_and_merge</code> returns a failure. Best-effort: callers should wrap in try/except if they cannot tolerate failures.</p>
+<hr />
+<h2 id="7-github-pr-operations">7. GitHub PR Operations<a class="headerlink" href="#7-github-pr-operations" title="Permanent link">&para;</a></h2>
+<p>These methods use the <code>gh</code> CLI rather than <code>git</code>. They require <code>gh</code> to be installed and authenticated with appropriate repository access. Both methods call <code>subprocess.run</code> directly and raise <code>GitError</code> manually on non-zero exit codes.</p>
+<h3 id="create_prcheckout_path-branch-title-body-basemain"><code>create_pr(checkout_path, branch, title, body, base="main")</code><a class="headerlink" href="#create_prcheckout_path-branch-title-body-basemain" title="Permanent link">&para;</a></h3>
+<p>Creates a GitHub pull request. Returns the PR URL as a string.</p>
+<ul>
+<li>Runs: <code>gh pr create --title &lt;title&gt; --body &lt;body&gt; --base &lt;base&gt; --head &lt;branch&gt;</code></li>
+<li>The command is executed with <code>cwd=checkout_path</code> so that <code>gh</code> can determine the correct GitHub repository from the local git config.</li>
+<li>Returns <code>stdout.strip()</code> which is the PR URL (e.g. <code>https://github.com/owner/repo/pull/123</code>).</li>
+<li>Raises <code>GitError</code> if <code>gh</code> exits with a non-zero code.</li>
+</ul>
+<h3 id="check_pr_mergedcheckout_path-pr_url"><code>check_pr_merged(checkout_path, pr_url)</code><a class="headerlink" href="#check_pr_mergedcheckout_path-pr_url" title="Permanent link">&para;</a></h3>
+<p>Polls the state of a pull request. Returns one of three values:</p>
+<table>
+<thead>
+<tr>
+<th>Return value</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>True</code></td>
+<td>PR has been merged</td>
+</tr>
+<tr>
+<td><code>False</code></td>
+<td>PR is still open</td>
+</tr>
+<tr>
+<td><code>None</code></td>
+<td>PR was closed without merging</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>Runs: <code>gh pr view &lt;pr_url&gt; --json state,mergedAt</code></li>
+<li>Parses the JSON response. Checks <code>state</code> (uppercased) and <code>mergedAt</code>.</li>
+<li><code>True</code> if <code>state == "MERGED"</code> or <code>mergedAt</code> is non-null.</li>
+<li><code>False</code> if <code>state == "OPEN"</code>.</li>
+<li><code>None</code> for all other states (e.g. <code>"CLOSED"</code>).</li>
+<li>Raises <code>GitError</code> if <code>gh</code> exits with a non-zero code.</li>
+</ul>
+<hr />
+<h2 id="8-inspection">8. Inspection<a class="headerlink" href="#8-inspection" title="Permanent link">&para;</a></h2>
+<p>All inspection methods return an empty string or empty list (never raise) when the underlying <code>git</code> command fails.</p>
+<h3 id="get_diffcheckout_path-base_branchmain"><code>get_diff(checkout_path, base_branch="main")</code><a class="headerlink" href="#get_diffcheckout_path-base_branchmain" title="Permanent link">&para;</a></h3>
+<p>Returns the full unified diff of the working tree against <code>base_branch</code>.</p>
+<ul>
+<li>Runs <code>git diff &lt;base_branch&gt;</code>.</li>
+<li>Returns the raw diff string, or <code>""</code> on <code>GitError</code>.</li>
+</ul>
+<h3 id="get_changed_filescheckout_path-base_branchmain"><code>get_changed_files(checkout_path, base_branch="main")</code><a class="headerlink" href="#get_changed_filescheckout_path-base_branchmain" title="Permanent link">&para;</a></h3>
+<p>Returns a list of file paths changed relative to <code>base_branch</code>.</p>
+<ul>
+<li>Runs <code>git diff --name-only &lt;base_branch&gt;</code>.</li>
+<li>Splits on newlines. Returns <code>[]</code> if output is empty or on <code>GitError</code>.</li>
+</ul>
+<h3 id="get_statuscheckout_path"><code>get_status(checkout_path)</code><a class="headerlink" href="#get_statuscheckout_path" title="Permanent link">&para;</a></h3>
+<p>Returns the output of <code>git status</code> as a string.</p>
+<ul>
+<li>Returns <code>""</code> on <code>GitError</code>.</li>
+</ul>
+<h3 id="get_current_branchcheckout_path"><code>get_current_branch(checkout_path)</code><a class="headerlink" href="#get_current_branchcheckout_path" title="Permanent link">&para;</a></h3>
+<p>Returns the name of the currently checked-out branch.</p>
+<ul>
+<li>Runs <code>git rev-parse --abbrev-ref HEAD</code>.</li>
+<li>Returns <code>""</code> on <code>GitError</code> (e.g. repository has no commits yet).</li>
+</ul>
+<h3 id="get_recent_commitscheckout_path-count5"><code>get_recent_commits(checkout_path, count=5)</code><a class="headerlink" href="#get_recent_commitscheckout_path-count5" title="Permanent link">&para;</a></h3>
+<p>Returns the last <code>count</code> commits in one-line format.</p>
+<ul>
+<li>Runs <code>git log --oneline -&lt;count&gt;</code>.</li>
+<li>Returns <code>""</code> on <code>GitError</code>.</li>
+<li>Default <code>count</code> is <code>5</code>.</li>
+</ul>
+<hr />
+<h2 id="9-utilities">9. Utilities<a class="headerlink" href="#9-utilities" title="Permanent link">&para;</a></h2>
+<p>Both utility methods are <code>@staticmethod</code> and do not require a <code>GitManager</code> instance.</p>
+<h3 id="slugifytext"><code>slugify(text)</code><a class="headerlink" href="#slugifytext" title="Permanent link">&para;</a></h3>
+<p>Converts arbitrary text into a string safe for use in a branch name.</p>
+<p>Transformation steps applied in order:</p>
+<ol>
+<li>Lowercase and strip leading/trailing whitespace.</li>
+<li>Remove all characters that are not word characters (<code>\w</code>), whitespace, or hyphens.</li>
+<li>Replace whitespace and underscores (<code>[\s_]+</code>) with a single hyphen.</li>
+<li>Collapse consecutive hyphens (<code>-+</code>) into one.</li>
+<li>Strip leading and trailing hyphens.</li>
+</ol>
+<p>Examples:
+- <code>"Fix the OAuth2 bug!"</code> → <code>"fix-the-oauth2-bug"</code>
+- <code>"  update_user_profile  "</code> → <code>"update-user-profile"</code></p>
+<h3 id="make_branch_nametask_id-title"><code>make_branch_name(task_id, title)</code><a class="headerlink" href="#make_branch_nametask_id-title" title="Permanent link">&para;</a></h3>
+<p>Combines a task ID and a title into a full branch name.</p>
+<ul>
+<li>Format: <code>"&lt;task_id&gt;/&lt;slugify(title)&gt;"</code></li>
+<li>Example: <code>make_branch_name("clever-fox", "Fix login timeout")</code> → <code>"clever-fox/fix-login-timeout"</code></li>
+<li>The slash separator creates a namespaced branch, which most git hosts display as a grouped branch hierarchy.</li>
+</ul>
+<hr />
+<h2 id="10-design-principles-workspace-sync">10. Design Principles — Workspace Sync<a class="headerlink" href="#10-design-principles-workspace-sync" title="Permanent link">&para;</a></h2>
+<p>These principles govern how <code>GitManager</code> and the orchestrator's workspace methods
+interact to keep agent workspaces synchronized. They serve as invariants that must
+be preserved when modifying the git sync workflow.</p>
+<p>See also: <code>docs/git-sync-current-state.md</code> for a prose description of current
+strengths with rationale.</p>
+<h3 id="p1-per-agent-workspace-isolation">P1. Per-Agent Workspace Isolation<a class="headerlink" href="#p1-per-agent-workspace-isolation" title="Permanent link">&para;</a></h3>
+<p>Each <code>(agent, project)</code> pair receives its own filesystem-level workspace. Two agents
+working on the same project never share a working tree. This eliminates file-level
+conflicts (dirty index, mixed staged changes) and makes branch operations safe for
+concurrent execution.</p>
+<p><strong>Maintained by:</strong> <code>_prepare_workspace</code> in the orchestrator, via
+<code>_compute_workspace_path</code> and the <code>agent_workspaces</code> SQLite cache.</p>
+<h3 id="p2-branch-per-task-naming">P2. Branch-per-Task Naming<a class="headerlink" href="#p2-branch-per-task-naming" title="Permanent link">&para;</a></h3>
+<p>Every task gets a unique branch named <code>&lt;task-id&gt;/&lt;slugified-title&gt;</code>. The task ID
+prefix makes branches trivially traceable to their originating task. Plan subtasks
+reuse the parent task's branch to accumulate commits sequentially.</p>
+<p><strong>Maintained by:</strong> <code>make_branch_name</code>, <code>prepare_for_task</code>, <code>switch_to_branch</code>.</p>
+<h3 id="p3-fresh-starting-point-before-each-task">P3. Fresh Starting Point Before Each Task<a class="headerlink" href="#p3-fresh-starting-point-before-each-task" title="Permanent link">&para;</a></h3>
+<p>Before creating a task branch, <code>prepare_for_task</code> fetches the latest remote state
+(<code>git fetch origin</code>) and synchronizes the local default branch. Agents always start
+from a reasonably recent version of the codebase.</p>
+<p><strong>Maintained by:</strong> <code>prepare_for_task</code> (fetch + pull/reset on default branch).</p>
+<h3 id="p4-atomic-post-completion-commit">P4. Atomic Post-Completion Commit<a class="headerlink" href="#p4-atomic-post-completion-commit" title="Permanent link">&para;</a></h3>
+<p>After every task, the orchestrator commits all agent work before any merge, push,
+or PR operation. The <code>commit_all</code> method uses an add-all-then-check-staged pattern
+(<code>git add -A</code> followed by <code>git diff --cached --quiet</code>) to avoid race conditions
+between status checks and staging.</p>
+<p><strong>Maintained by:</strong> <code>commit_all</code>, called from <code>_complete_workspace</code>.</p>
+<h3 id="p5-graceful-degradation-on-git-errors">P5. Graceful Degradation on Git Errors<a class="headerlink" href="#p5-graceful-degradation-on-git-errors" title="Permanent link">&para;</a></h3>
+<p>Git operations that may legitimately fail (no remote configured, no upstream tracking
+branch, network errors during fetch) are caught and suppressed. The outer
+<code>_prepare_workspace</code> wraps all git operations in a catch-all that logs but still
+returns a valid workspace path. An agent can always start work even if branch setup
+fails.</p>
+<p><strong>Maintained by:</strong> <code>try/except GitError: pass</code> patterns in <code>prepare_for_task</code>,
+<code>switch_to_branch</code>, and the catch-all in <code>_prepare_workspace</code>.</p>
+<h3 id="p6-dual-completion-paths-pr-vs-direct-merge">P6. Dual Completion Paths (PR vs Direct Merge)<a class="headerlink" href="#p6-dual-completion-paths-pr-vs-direct-merge" title="Permanent link">&para;</a></h3>
+<p>Tasks requiring approval push the branch and create a GitHub PR. Tasks without
+approval merge the branch into the default branch and push. Both paths include
+error handling with user-facing notifications. The orchestrator polls PR merge
+status for approval-gated tasks.</p>
+<p><strong>Maintained by:</strong> <code>_complete_workspace</code>, <code>_merge_and_push</code>,
+<code>_create_pr_for_task</code>, <code>check_pr_merged</code>.</p>
+<h3 id="p7-worktree-aware-branching">P7. Worktree-Aware Branching<a class="headerlink" href="#p7-worktree-aware-branching" title="Permanent link">&para;</a></h3>
+<p>When a checkout is a git worktree (not the main working tree), <code>prepare_for_task</code>
+avoids checking out the default branch locally (which would conflict with the main
+working tree) and instead creates the task branch directly from
+<code>origin/&lt;default_branch&gt;</code>.</p>
+<p><strong>Maintained by:</strong> <code>_is_worktree</code>, worktree branch in <code>prepare_for_task</code>.</p>
+<h3 id="p8-retry-resilience">P8. Retry Resilience<a class="headerlink" href="#p8-retry-resilience" title="Permanent link">&para;</a></h3>
+<p>Both <code>prepare_for_task</code> and <code>switch_to_branch</code> handle existing branches gracefully
+(e.g. after a crash or restart mid-task). Instead of failing, they switch to the
+existing branch so work can resume without manual cleanup.</p>
+<p><strong>Maintained by:</strong> fallback <code>checkout</code> calls in <code>prepare_for_task</code>,
+<code>create_branch</code>, and <code>switch_to_branch</code>.</p>
+<h3 id="p9-best-effort-branch-cleanup">P9. Best-Effort Branch Cleanup<a class="headerlink" href="#p9-best-effort-branch-cleanup" title="Permanent link">&para;</a></h3>
+<p>After successful merge or PR completion, task branches are deleted locally and
+remotely. Cleanup failures are silently ignored to avoid blocking the workflow when
+a branch was already deleted (e.g. by GitHub's "delete branch after merge" setting).</p>
+<p><strong>Maintained by:</strong> <code>delete_branch</code> (called from <code>_merge_and_push</code>).</p>
+<hr />
+<h2 id="11-known-gaps-workspace-sync">11. Known Gaps — Workspace Sync<a class="headerlink" href="#11-known-gaps-workspace-sync" title="Permanent link">&para;</a></h2>
+<p>These are identified weaknesses in the current git sync workflow that cause
+failures or data staleness when multiple agents work concurrently. Each gap is
+labeled G1–G7 for cross-referencing from other documents and code comments.</p>
+<h3 id="g1-no-pre-merge-pull-in-_merge_and_push-resolved">G1. No Pre-Merge Pull in <code>_merge_and_push</code> — <strong>RESOLVED</strong><a class="headerlink" href="#g1-no-pre-merge-pull-in-_merge_and_push-resolved" title="Permanent link">&para;</a></h3>
+<p>~~<code>_merge_and_push()</code> executes <code>checkout main → merge branch → push main</code>, but
+never pulls remote changes before the merge.~~</p>
+<p><strong>Resolution:</strong> <code>merge_branch()</code> now fetches from origin and hard-resets the local
+default branch to <code>origin/&lt;default_branch&gt;</code> before merging. The orchestrator's
+<code>_merge_and_push</code> uses <code>sync_and_merge()</code> which encapsulates the full
+fetch → checkout → reset → merge → push flow with automatic retry on push failures.</p>
+<h3 id="g2-push-failures-leave-workspace-in-a-dirty-state-resolved">G2. Push Failures Leave Workspace in a Dirty State — <strong>RESOLVED</strong><a class="headerlink" href="#g2-push-failures-leave-workspace-in-a-dirty-state-resolved" title="Permanent link">&para;</a></h3>
+<p>~~After a failed push in <code>_merge_and_push</code>, the local <code>main</code> contains the merge
+commit but <code>origin/main</code> does not.~~</p>
+<p><strong>Resolution:</strong> <code>recover_workspace()</code> resets the local default branch to
+<code>origin/&lt;default_branch&gt;</code> after any failed merge-and-push, ensuring the workspace
+is clean for the next task. The orchestrator's <code>_merge_and_push</code> calls
+<code>recover_workspace</code> automatically after <code>sync_and_merge</code> returns a failure.</p>
+<h3 id="g3-no-merge-conflict-recovery-strategy-resolved">G3. No Merge Conflict Recovery Strategy — <strong>RESOLVED</strong><a class="headerlink" href="#g3-no-merge-conflict-recovery-strategy-resolved" title="Permanent link">&para;</a></h3>
+<p>~~When <code>merge_branch()</code> detects conflicts, it aborts the merge and notifies the
+user, but there is no automated attempt to rebase the task branch onto the
+latest <code>main</code> and retry.~~</p>
+<p><strong>Resolution:</strong> <code>sync_and_merge()</code> now attempts rebase-before-merge when a direct
+merge fails with conflicts. The task branch is rebased onto <code>origin/&lt;default_branch&gt;</code>
+via <code>rebase_onto()</code>, and the merge is retried. If the rebase itself conflicts
+(true content conflict), the original <code>merge_conflict</code> error is returned. This
+resolves conflicts caused by branch staleness while still reporting true conflicts
+to the user.</p>
+<h3 id="g4-retried-tasks-dont-rebase-onto-latest-main-resolved">G4. Retried Tasks Don't Rebase onto Latest Main — <strong>RESOLVED</strong><a class="headerlink" href="#g4-retried-tasks-dont-rebase-onto-latest-main-resolved" title="Permanent link">&para;</a></h3>
+<p>~~When a task retries (branch already exists from a previous attempt),
+<code>prepare_for_task()</code> falls back to <code>git checkout &lt;branch_name&gt;</code> without
+rebasing it onto the latest <code>origin/main</code>.~~</p>
+<p><strong>Resolution:</strong> <code>prepare_for_task()</code> now uses hard-reset on the normal path
+and calls <code>_rebase_onto_default()</code> on existing branches when a task is retried.
+Both the normal clone path and the worktree path rebase existing branches onto
+<code>origin/&lt;default_branch&gt;</code>, ensuring agents start from recent code even on retry.
+If the rebase conflicts, the branch is left as-is (agent can still work with it).</p>
+<h3 id="g5-no-force-with-lease-for-pr-branch-pushes-resolved">G5. No <code>--force-with-lease</code> for PR Branch Pushes — <strong>RESOLVED</strong><a class="headerlink" href="#g5-no-force-with-lease-for-pr-branch-pushes-resolved" title="Permanent link">&para;</a></h3>
+<p>~~<code>push_branch</code> could fail on retry if the branch was previously pushed.~~</p>
+<p><strong>Resolution:</strong> <code>push_branch</code> now accepts a <code>force_with_lease</code> keyword argument.
+When <code>True</code>, <code>--force-with-lease</code> is added to the push command, making it
+idempotent for retries. The orchestrator's <code>_create_pr_for_task</code> passes
+<code>force_with_lease=True</code> when pushing task branches, since these branches are
+agent-owned and safe to force-push. Plain push (the default) is still used for
+the <code>sync_and_merge</code> flow where only the default branch is pushed.</p>
+<h3 id="g6-subtask-chains-accumulate-drift-resolved">G6. Subtask Chains Accumulate Drift — <strong>RESOLVED</strong><a class="headerlink" href="#g6-subtask-chains-accumulate-drift-resolved" title="Permanent link">&para;</a></h3>
+<p>~~Plan subtasks share a branch and commit sequentially. Over a long chain,
+the branch drifts progressively further from <code>main</code>.~~</p>
+<p><strong>Resolution:</strong> Two complementary mechanisms reduce drift:</p>
+<ol>
+<li>
+<p><code>mid_chain_sync()</code> is called by the orchestrator's <code>_complete_workspace</code> after each
+   non-final subtask when <code>auto_task.rebase_between_subtasks</code> is enabled. It pushes
+   intermediate work to the remote and rebases the chain branch onto
+   <code>origin/&lt;default_branch&gt;</code>, keeping the branch close to main.</p>
+</li>
+<li>
+<p><code>switch_to_branch(..., rebase=True)</code> is called by <code>_prepare_workspace</code> when setting
+   up the workspace for the next subtask (also gated by <code>rebase_between_subtasks</code>),
+   ensuring the branch is rebased before the agent starts work.</p>
+</li>
+</ol>
+<p>Both operations are non-fatal: if rebase conflicts, the branch is left as-is and
+the subtask chain continues normally (just with the accumulated drift).</p>
+<h3 id="g7-link-repos-with-shared-filesystem-no-file-level-locking">G7. LINK Repos with Shared Filesystem — No File-Level Locking<a class="headerlink" href="#g7-link-repos-with-shared-filesystem-no-file-level-locking" title="Permanent link">&para;</a></h3>
+<p>Multiple agents assigned to the same LINK repo share a single filesystem
+directory. Without worktrees, concurrent agents can clobber each other's
+branch state, staged changes, and working tree files. There is no file-level
+locking or worktree-per-agent strategy for LINK repos.</p>
+<p><strong>Impact:</strong> Concurrent agents on a LINK repo produce corrupted git state,
+lost changes, and unpredictable behavior. Currently mitigated only by the
+low probability of multiple agents being assigned to the same LINK project
+simultaneously.</p>
+<p><strong>Affected code:</strong> <code>Orchestrator._prepare_workspace</code> (LINK path uses
+<code>workspace = repo.source_path</code> without isolation),
+<code>Orchestrator._compute_workspace_path</code> (returns shared path for LINK repos).</p>
+<p><strong>Violates:</strong> P1 (Per-Agent Workspace Isolation) — LINK repos are the
+exception where isolation is not enforced.</p>
+<h3 id="gap-summary-table">Gap Summary Table<a class="headerlink" href="#gap-summary-table" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Severity</th>
+<th>Root Cause</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>G1</td>
+<td>~~High~~</td>
+<td>~~Missing <code>pull</code> before merge+push~~</td>
+<td><strong>RESOLVED</strong> — <code>merge_branch</code> and <code>sync_and_merge</code> fetch+reset before merge</td>
+</tr>
+<tr>
+<td>G2</td>
+<td>~~High~~</td>
+<td>~~No rollback after failed push~~</td>
+<td><strong>RESOLVED</strong> — <code>recover_workspace</code> resets after failures</td>
+</tr>
+<tr>
+<td>G3</td>
+<td>~~Medium~~</td>
+<td>~~No automated rebase-and-retry on conflict~~</td>
+<td><strong>RESOLVED</strong> — <code>sync_and_merge</code> attempts rebase-before-merge</td>
+</tr>
+<tr>
+<td>G4</td>
+<td>~~Medium~~</td>
+<td>~~Retry uses existing branch without rebase~~</td>
+<td><strong>RESOLVED</strong> — <code>prepare_for_task</code> rebases on retry</td>
+</tr>
+<tr>
+<td>G5</td>
+<td>~~Low~~</td>
+<td>~~Plain push instead of <code>--force-with-lease</code>~~</td>
+<td><strong>RESOLVED</strong> — <code>push_branch</code> accepts <code>force_with_lease</code> flag</td>
+</tr>
+<tr>
+<td>G6</td>
+<td>~~Medium~~</td>
+<td>~~No periodic rebase during subtask chains~~</td>
+<td><strong>RESOLVED</strong> — <code>mid_chain_sync</code> + <code>switch_to_branch(rebase=True)</code></td>
+</tr>
+<tr>
+<td>G7</td>
+<td>High</td>
+<td>LINK repos share filesystem without locking</td>
+<td>Open — no file-level isolation for concurrent LINK repo agents</td>
+</tr>
+</tbody>
+</table>
 
 
 

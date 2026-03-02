@@ -79,6 +79,11 @@
     <label class="md-overlay" for="__drawer"></label>
     <div data-md-component="skip">
       
+        
+        <a href="#chatagent-specification" class="md-skip">
+          Skip to content
+        </a>
+      
     </div>
     <div data-md-component="announce">
       
@@ -1026,6 +1031,8 @@
       
         
       
+        
+      
     
     
     
@@ -1079,6 +1086,26 @@
       <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
       
       
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chat Agent
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
       
       <a href="./" class="md-nav__link md-nav__link--active">
         
@@ -1096,6 +1123,490 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#source-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source Files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-tool-definitions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Tool Definitions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Tool Definitions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#project-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Project Management
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#per-project-discord-channel-routing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-Project Discord Channel Routing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task Management
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#repository-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Repository Management
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#agent-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agent Management
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#system-status-and-monitoring" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        System Status and Monitoring
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#workspace-file-operations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workspace File Operations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#git-operations-repo-id-based" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Git Operations (repo-ID based)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#git-operations-project-id-based" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Git Operations (project-ID based)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#notes-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Notes Management
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hook-system" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hook System
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-conversation-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Conversation Loop
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Conversation Loop">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#input-preparation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input Preparation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tool-use-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool-Use Loop
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tool-execution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool Execution
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-system-prompt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. System Prompt
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. System Prompt">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#template-system_prompt_template" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Template (SYSTEM_PROMPT_TEMPLATE)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#active-project-injection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Active Project Injection
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-history-compaction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. History Compaction
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. History Compaction">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#constants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constants
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#when-compaction-triggers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When Compaction Triggers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#how-summarization-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How Summarization Works
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#injecting-the-summary-into-history" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Injecting the Summary into History
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#consecutive-same-role-merging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consecutive Same-Role Merging
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-active-project" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Active Project
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Active Project">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Storage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#setting-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Setting It
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#effect-on-tool-calls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Effect on Tool Calls
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#channel-context-injection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Channel Context Injection
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-initialization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Initialization
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. Initialization">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#__init__" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        __init__
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#initialize-bool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        initialize() -&gt; bool
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#is_ready-property" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        is_ready (property)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#model-property" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        model (property)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reload_credentials-bool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        reload_credentials() -&gt; bool
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-streaming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Streaming
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -1117,6 +1628,34 @@
     
   
     Command Handler
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../discord/discord/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discord
   
 
     
@@ -2389,6 +2928,481 @@
   
   
   
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#source-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source Files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-tool-definitions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Tool Definitions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Tool Definitions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#project-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Project Management
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#per-project-discord-channel-routing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-Project Discord Channel Routing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task Management
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#repository-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Repository Management
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#agent-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agent Management
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#system-status-and-monitoring" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        System Status and Monitoring
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#workspace-file-operations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workspace File Operations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#git-operations-repo-id-based" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Git Operations (repo-ID based)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#git-operations-project-id-based" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Git Operations (project-ID based)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#notes-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Notes Management
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hook-system" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hook System
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-conversation-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Conversation Loop
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Conversation Loop">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#input-preparation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input Preparation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tool-use-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool-Use Loop
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tool-execution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool Execution
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-system-prompt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. System Prompt
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. System Prompt">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#template-system_prompt_template" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Template (SYSTEM_PROMPT_TEMPLATE)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#active-project-injection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Active Project Injection
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-history-compaction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. History Compaction
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. History Compaction">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#constants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constants
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#when-compaction-triggers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When Compaction Triggers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#how-summarization-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How Summarization Works
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#injecting-the-summary-into-history" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Injecting the Summary into History
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#consecutive-same-role-merging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consecutive Same-Role Merging
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-active-project" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Active Project
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Active Project">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Storage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#setting-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Setting It
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#effect-on-tool-calls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Effect on Tool Calls
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#channel-context-injection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Channel Context Injection
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-initialization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Initialization
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. Initialization">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#__init__" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        __init__
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#initialize-bool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        initialize() -&gt; bool
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#is_ready-property" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        is_ready (property)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#model-property" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        model (property)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reload_credentials-bool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        reload_credentials() -&gt; bool
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-streaming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Streaming
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
   
 </nav>
                   </div>
@@ -2408,9 +3422,562 @@
   
 
 
-  <h1>Chat Agent</h1>
-
-<p>../../specs/chat-agent.md</p>
+<h1 id="chatagent-specification">ChatAgent Specification<a class="headerlink" href="#chatagent-specification" title="Permanent link">&para;</a></h1>
+<h2 id="1-overview">1. Overview<a class="headerlink" href="#1-overview" title="Permanent link">&para;</a></h2>
+<p><code>ChatAgent</code> (<code>src/chat_agent.py</code>) is the LLM-powered natural language interface for the AgentQueue system. It sits between Discord (or any caller) and the <code>CommandHandler</code>, translating free-form user messages into structured tool calls and returning plain-English responses.</p>
+<p>Its responsibilities are:</p>
+<ul>
+<li>Hold the <code>TOOLS</code> list that the LLM can invoke.</li>
+<li>Build a per-request system prompt that includes workspace context and the active project.</li>
+<li>Run the multi-turn tool-use loop: send messages to the LLM, execute any tool calls it requests, feed results back, and repeat until the LLM produces a text-only reply.</li>
+<li>Provide a <code>summarize()</code> method for history compaction (called by the Discord bot layer).</li>
+<li>Delegate all business logic to <code>CommandHandler.execute()</code> — ChatAgent contains no business logic itself.</li>
+</ul>
+<p><code>ChatAgent</code> is platform-agnostic. The Discord bot (<code>src/discord/bot.py</code>) constructs it, calls <code>chat()</code>, and handles rendering the response text to Discord. A CLI or HTTP server could use the same <code>ChatAgent</code> without modification.</p>
+<hr />
+<h2 id="source-files">Source Files<a class="headerlink" href="#source-files" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>src/chat_agent.py</code></li>
+</ul>
+<hr />
+<h2 id="2-tool-definitions">2. Tool Definitions<a class="headerlink" href="#2-tool-definitions" title="Permanent link">&para;</a></h2>
+<p>The module-level <code>TOOLS</code> list contains 61 tool definitions passed verbatim to the LLM on every request. Each entry is a dict with <code>name</code>, <code>description</code>, and <code>input_schema</code> (JSON Schema object). The LLM reads these definitions to decide which tool to invoke.</p>
+<p>Tools are grouped below by functional category. Every tool name listed is an exact string in the <code>TOOLS</code> list.</p>
+<h3 id="project-management">Project Management<a class="headerlink" href="#project-management" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>list_projects</code></td>
+<td>List all projects in the system</td>
+</tr>
+<tr>
+<td><code>create_project</code></td>
+<td>Create a new project with optional channel auto-creation</td>
+</tr>
+<tr>
+<td><code>pause_project</code></td>
+<td>Pause a project so no new tasks are scheduled</td>
+</tr>
+<tr>
+<td><code>resume_project</code></td>
+<td>Resume a paused project</td>
+</tr>
+<tr>
+<td><code>edit_project</code></td>
+<td>Edit a project's name, credit weight, or max concurrent agents</td>
+</tr>
+<tr>
+<td><code>delete_project</code></td>
+<td>Delete a project and all cascading data; optionally archive its Discord channels</td>
+</tr>
+<tr>
+<td><code>set_active_project</code></td>
+<td>Set or clear the active project context for this conversation</td>
+</tr>
+</tbody>
+</table>
+<h3 id="per-project-discord-channel-routing">Per-Project Discord Channel Routing<a class="headerlink" href="#per-project-discord-channel-routing" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>set_project_channel</code></td>
+<td>Link a Discord channel ID to a project</td>
+</tr>
+<tr>
+<td><code>set_control_interface</code></td>
+<td>Link a Discord channel to a project by channel name (string lookup)</td>
+</tr>
+<tr>
+<td><code>get_project_channels</code></td>
+<td>Get the Discord channel ID configured for a project</td>
+</tr>
+<tr>
+<td><code>get_project_for_channel</code></td>
+<td>Reverse lookup: given a channel ID, return which project it belongs to</td>
+</tr>
+</tbody>
+</table>
+<h3 id="task-management">Task Management<a class="headerlink" href="#task-management" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>list_tasks</code></td>
+<td>List tasks, optionally filtered by project or status</td>
+</tr>
+<tr>
+<td><code>create_task</code></td>
+<td>Create a new task; uses the active project if no project_id given</td>
+</tr>
+<tr>
+<td><code>get_task</code></td>
+<td>Get full details of a specific task</td>
+</tr>
+<tr>
+<td><code>edit_task</code></td>
+<td>Edit a task's title, description, or priority</td>
+</tr>
+<tr>
+<td><code>stop_task</code></td>
+<td>Stop an in-progress task; cancels the agent and marks the task BLOCKED</td>
+</tr>
+<tr>
+<td><code>restart_task</code></td>
+<td>Reset a completed, failed, or blocked task back to READY</td>
+</tr>
+<tr>
+<td><code>delete_task</code></td>
+<td>Delete a task (cannot delete an in-progress task)</td>
+</tr>
+<tr>
+<td><code>approve_task</code></td>
+<td>Manually approve and complete an AWAITING_APPROVAL task</td>
+</tr>
+<tr>
+<td><code>skip_task</code></td>
+<td>Skip a BLOCKED or FAILED task to unblock its dependency chain</td>
+</tr>
+<tr>
+<td><code>get_task_result</code></td>
+<td>Retrieve a completed task's output: summary, files changed, error, tokens used</td>
+</tr>
+<tr>
+<td><code>get_task_diff</code></td>
+<td>Show the git diff for a task's branch against the base branch</td>
+</tr>
+<tr>
+<td><code>get_chain_health</code></td>
+<td>Show downstream tasks stuck because of a blocked task</td>
+</tr>
+<tr>
+<td><code>set_task_status</code></td>
+<td>Manually override a task's status, bypassing the state machine</td>
+</tr>
+<tr>
+<td><code>get_agent_error</code></td>
+<td>Get the last error recorded for a task, including classification and suggested fix</td>
+</tr>
+</tbody>
+</table>
+<h3 id="repository-management">Repository Management<a class="headerlink" href="#repository-management" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>add_repo</code></td>
+<td>Register a repository for a project (clone, link, or init)</td>
+</tr>
+<tr>
+<td><code>list_repos</code></td>
+<td>List registered repositories, optionally filtered by project</td>
+</tr>
+</tbody>
+</table>
+<h3 id="agent-management">Agent Management<a class="headerlink" href="#agent-management" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>list_agents</code></td>
+<td>List all configured agents and their current state</td>
+</tr>
+<tr>
+<td><code>create_agent</code></td>
+<td>Register a new agent; optionally assign a repo as its permanent workspace</td>
+</tr>
+</tbody>
+</table>
+<h3 id="system-status-and-monitoring">System Status and Monitoring<a class="headerlink" href="#system-status-and-monitoring" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_status</code></td>
+<td>High-level system overview: project, agent, and task counts</td>
+</tr>
+<tr>
+<td><code>get_recent_events</code></td>
+<td>Get recent system events (completions, failures, etc.)</td>
+</tr>
+<tr>
+<td><code>get_token_usage</code></td>
+<td>Get token usage breakdown by project or task</td>
+</tr>
+<tr>
+<td><code>orchestrator_control</code></td>
+<td>Pause, resume, or check the status of the orchestrator</td>
+</tr>
+<tr>
+<td><code>restart_daemon</code></td>
+<td>Restart the agent-queue daemon process</td>
+</tr>
+</tbody>
+</table>
+<h3 id="workspace-file-operations">Workspace File Operations<a class="headerlink" href="#workspace-file-operations" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>read_file</code></td>
+<td>Read a file's contents from a workspace</td>
+</tr>
+<tr>
+<td><code>run_command</code></td>
+<td>Execute a shell command in a workspace directory</td>
+</tr>
+<tr>
+<td><code>search_files</code></td>
+<td>Search file contents (grep mode) or filenames (find mode) in a workspace</td>
+</tr>
+</tbody>
+</table>
+<h3 id="git-operations-repo-id-based">Git Operations (repo-ID based)<a class="headerlink" href="#git-operations-repo-id-based" title="Permanent link">&para;</a></h3>
+<p>These tools take a <code>repo_id</code> directly and are lower-level.</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>git_commit</code></td>
+<td>Stage all changes and create a commit</td>
+</tr>
+<tr>
+<td><code>git_push</code></td>
+<td>Push a branch to the remote origin</td>
+</tr>
+<tr>
+<td><code>git_create_branch</code></td>
+<td>Create and switch to a new branch</td>
+</tr>
+<tr>
+<td><code>git_merge</code></td>
+<td>Merge a branch into the default branch; aborts on conflicts</td>
+</tr>
+<tr>
+<td><code>git_create_pr</code></td>
+<td>Create a GitHub pull request using the gh CLI</td>
+</tr>
+<tr>
+<td><code>git_changed_files</code></td>
+<td>List files changed compared to a base branch</td>
+</tr>
+</tbody>
+</table>
+<h3 id="git-operations-project-id-based">Git Operations (project-ID based)<a class="headerlink" href="#git-operations-project-id-based" title="Permanent link">&para;</a></h3>
+<p>These tools take a <code>project_id</code> and resolve the repository automatically. <code>get_git_status</code>, <code>git_log</code>, and <code>git_diff</code> report across all repos for a project. The remaining five are convenience wrappers that use the first repo for a project.</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_git_status</code></td>
+<td>Get current branch, working tree status, and recent commits for a project's repos</td>
+</tr>
+<tr>
+<td><code>git_log</code></td>
+<td>Show recent commits for a project's repository</td>
+</tr>
+<tr>
+<td><code>git_diff</code></td>
+<td>Show the git diff for a project's repository</td>
+</tr>
+<tr>
+<td><code>create_branch</code></td>
+<td>Create a new branch in a project's repository</td>
+</tr>
+<tr>
+<td><code>checkout_branch</code></td>
+<td>Switch to an existing branch</td>
+</tr>
+<tr>
+<td><code>commit_changes</code></td>
+<td>Stage all changes and commit</td>
+</tr>
+<tr>
+<td><code>push_branch</code></td>
+<td>Push a branch to the remote</td>
+</tr>
+<tr>
+<td><code>merge_branch</code></td>
+<td>Merge a branch into the default branch</td>
+</tr>
+</tbody>
+</table>
+<h3 id="notes-management">Notes Management<a class="headerlink" href="#notes-management" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>list_notes</code></td>
+<td>List all markdown notes for a project</td>
+</tr>
+<tr>
+<td><code>write_note</code></td>
+<td>Create or overwrite a project note</td>
+</tr>
+<tr>
+<td><code>delete_note</code></td>
+<td>Delete a project note</td>
+</tr>
+<tr>
+<td><code>read_note</code></td>
+<td>Read note contents by title</td>
+</tr>
+<tr>
+<td><code>append_note</code></td>
+<td>Append content to note (stream-of-consciousness)</td>
+</tr>
+<tr>
+<td><code>compare_specs_notes</code></td>
+<td>List specs and notes for gap analysis</td>
+</tr>
+</tbody>
+</table>
+<h3 id="hook-system">Hook System<a class="headerlink" href="#hook-system" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>create_hook</code></td>
+<td>Create a hook that auto-triggers context gathering and LLM actions on a schedule or event</td>
+</tr>
+<tr>
+<td><code>list_hooks</code></td>
+<td>List hooks, optionally filtered by project</td>
+</tr>
+<tr>
+<td><code>edit_hook</code></td>
+<td>Update any field of an existing hook</td>
+</tr>
+<tr>
+<td><code>delete_hook</code></td>
+<td>Delete a hook and its run history</td>
+</tr>
+<tr>
+<td><code>list_hook_runs</code></td>
+<td>Show recent execution history for a hook</td>
+</tr>
+<tr>
+<td><code>fire_hook</code></td>
+<td>Manually trigger a hook immediately, ignoring cooldown</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="3-conversation-loop">3. Conversation Loop<a class="headerlink" href="#3-conversation-loop" title="Permanent link">&para;</a></h2>
+<p><code>ChatAgent.chat(text, user_name, history)</code> runs the multi-turn tool-use loop. It is an <code>async</code> method that returns a single <code>str</code> response.</p>
+<h3 id="input-preparation">Input Preparation<a class="headerlink" href="#input-preparation" title="Permanent link">&para;</a></h3>
+<ol>
+<li>The caller passes <code>history</code>: a list of <code>{"role": "user"|"assistant", "content": ...}</code> dicts representing prior turns in the conversation. History construction is the caller's responsibility (the Discord bot builds it from channel messages; see Section 5 below).</li>
+<li>The current user message is formatted as <code>"[from {user_name}]: {text}"</code> and appended to the message list. If the last existing message already has role <code>"user"</code>, the new content is concatenated with a newline rather than adding a new message (to maintain the alternating-role requirement of the Anthropic API).</li>
+</ol>
+<h3 id="tool-use-loop">Tool-Use Loop<a class="headerlink" href="#tool-use-loop" title="Permanent link">&para;</a></h3>
+<pre class="mermaid"><code>flowchart TD
+    A[Call provider.create_message] --&gt; B{Tool uses&lt;br/&gt;in response?}
+    B -- No --&gt; C[Return text response]
+    B -- Yes --&gt; D[Execute each tool via&lt;br/&gt;CommandHandler.execute]
+    D --&gt; E[Append tool results&lt;br/&gt;to message history]
+    E --&gt; F{Iteration&lt;br/&gt;&lt; 10?}
+    F -- Yes --&gt; A
+    F -- No --&gt; G["Return fallback:&lt;br/&gt;'Done. Actions taken: ...'"]</code></pre>
+<p>The loop runs up to 10 iterations:</p>
+<ol>
+<li>Call <code>provider.create_message(messages, system, tools, max_tokens=1024)</code>. The system prompt and full <code>TOOLS</code> list are passed on every call.</li>
+<li>The response is a <code>ChatResponse</code> with <code>.text_parts</code> (list of text strings) and <code>.tool_uses</code> (list of <code>ToolUseBlock</code>).</li>
+<li><strong>No tool uses:</strong> The loop exits. The final response is <code>"\n".join(resp.text_parts).strip()</code>. If that is empty but tools were executed during this request, the response falls back to <code>"Done. Actions taken: {comma-separated tool names}"</code>. If no tools were executed at all, the response is <code>"Done."</code>.</li>
+<li><strong>Tool uses present:</strong> Only the <code>ToolUseBlock</code> objects (not any pre-tool text commentary) are appended to <code>messages</code> as an <code>"assistant"</code> turn. Each tool is executed in sequence via <code>_execute_tool()</code>, and results are collected into a <code>"user"</code> turn with content type <code>"tool_result"</code>. The tool name is also tracked in <code>tool_actions</code> for fallback messaging. The loop continues with the enriched message list.</li>
+<li>After 10 iterations without a text-only response, the loop exits and returns the same fallback message as above.</li>
+</ol>
+<h3 id="tool-execution">Tool Execution<a class="headerlink" href="#tool-execution" title="Permanent link">&para;</a></h3>
+<p><code>_execute_tool(name, input_data)</code> delegates directly to <code>CommandHandler.execute(name, input_data)</code>. There is no in-agent validation or transformation — the command handler owns all business logic. The result is serialized as <code>json.dumps(result)</code> and placed in the tool result content.</p>
+<hr />
+<h2 id="4-system-prompt">4. System Prompt<a class="headerlink" href="#4-system-prompt" title="Permanent link">&para;</a></h2>
+<p>The system prompt is built fresh on every LLM call by <code>_build_system_prompt()</code>.</p>
+<h3 id="template-system_prompt_template">Template (<code>SYSTEM_PROMPT_TEMPLATE</code>)<a class="headerlink" href="#template-system_prompt_template" title="Permanent link">&para;</a></h3>
+<p>The template is a long multi-paragraph string with one substitution: <code>{workspace_dir}</code>, filled from <code>config.workspace_dir</code>. The template covers:</p>
+<ul>
+<li><strong>Identity</strong>: AgentQueue Discord bot that manages an AI agent task queue.</li>
+<li><strong>Workspace layout</strong>: Workspaces root path; each project gets a subdirectory.</li>
+<li><strong>Capability summary</strong>: A prose + bullet list of every tool group the LLM can use.</li>
+<li><strong>Repository source types</strong>: Explains <code>clone</code>, <code>link</code>, and <code>init</code> semantics and when to use each.</li>
+<li><strong>Agent workspace model</strong>: How agents get assigned repos; how to set up parallel workspaces.</li>
+<li><strong>Notes management workflow</strong>: How to read, edit, and write notes; when to turn notes into tasks.</li>
+<li><strong>Hook system overview</strong>: Periodic vs. event hooks, context steps, short-circuit conditions, and template variables.</li>
+<li><strong>Per-project Discord channel routing</strong>: How to configure and use dedicated channels.</li>
+<li><strong>Dispatcher mandate (IMPORTANT)</strong>: The agent is explicitly a dispatcher, not a worker. It must create tasks for technical work but use its own tools for management actions. Never create a task for something a tool can do directly.</li>
+<li><strong>Task description quality (CRITICAL)</strong>: Task descriptions must be completely self-contained with all context an engineer needs. When a plan is discussed and approved, the full plan must be included in the description — not a summary.</li>
+<li><strong>Response style</strong>: Be concise, use markdown, act on requests using tools. After completing a management action, respond with exactly one short confirmation line (specific examples are given). Generate IDs from names using lowercase kebab-case.</li>
+</ul>
+<h3 id="active-project-injection">Active Project Injection<a class="headerlink" href="#active-project-injection" title="Permanent link">&para;</a></h3>
+<p>After formatting the template, if <code>_active_project_id</code> is set, the following text is appended:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>ACTIVE PROJECT: `{project_id}`.
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>Use this as the default project_id for all tools unless the user
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>explicitly specifies a different project. When creating tasks,
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>listing notes, or any project-scoped operation, use this project.
+</code></pre></div>
+<p>This means the active project is communicated to the LLM through the system prompt, not through any special message or tool call.</p>
+<hr />
+<h2 id="5-history-compaction">5. History Compaction<a class="headerlink" href="#5-history-compaction" title="Permanent link">&para;</a></h2>
+<p>History compaction is implemented in the Discord bot layer (<code>src/discord/bot.py</code>), not in <code>ChatAgent</code> itself. <code>ChatAgent</code> only provides the <code>summarize()</code> method that the bot calls.</p>
+<h3 id="constants">Constants<a class="headerlink" href="#constants" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Constant</th>
+<th>Value</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MAX_HISTORY_MESSAGES</code></td>
+<td>50</td>
+<td>Maximum messages fetched from Discord channel history</td>
+</tr>
+<tr>
+<td><code>COMPACT_THRESHOLD</code></td>
+<td>20</td>
+<td>If message count exceeds this, older messages are summarized</td>
+</tr>
+<tr>
+<td><code>RECENT_KEEP</code></td>
+<td>14</td>
+<td>How many recent messages are always kept verbatim</td>
+</tr>
+</tbody>
+</table>
+<h3 id="when-compaction-triggers">When Compaction Triggers<a class="headerlink" href="#when-compaction-triggers" title="Permanent link">&para;</a></h3>
+<p>Before every <code>agent.chat()</code> call, <code>_build_message_history()</code> fetches up to 50 prior messages from the Discord channel. If the count exceeds 20, the messages are split:</p>
+<ul>
+<li><strong>Older messages</strong>: everything except the last 14.</li>
+<li><strong>Recent messages</strong>: the last 14, always kept verbatim.</li>
+</ul>
+<p>If there are no older messages (total count is 20 or fewer), no compaction occurs.</p>
+<h3 id="how-summarization-works">How Summarization Works<a class="headerlink" href="#how-summarization-works" title="Permanent link">&para;</a></h3>
+<p><code>_get_or_create_summary(channel_id, older_messages)</code> manages a per-channel summary cache stored in <code>self._channel_summaries</code> (a dict mapping <code>channel_id</code> to <code>(last_message_id, summary_text)</code>).</p>
+<ol>
+<li><strong>Cache hit</strong>: If the cached summary covers messages up to or beyond the last message ID in <code>older_messages</code>, the cached summary is returned directly without calling the LLM.</li>
+<li><strong>Cache miss</strong>: A plaintext transcript is built from the older messages with lines formatted as <code>"{author}: {content}"</code> (using "AgentQueue" for bot messages). The transcript is passed to <code>agent.summarize()</code>.</li>
+</ol>
+<p><code>ChatAgent.summarize(transcript)</code> calls the provider with:
+- A single <code>"user"</code> message asking to summarize the transcript, instructing it to preserve project names, task IDs, repo names, decisions made, and pending questions.
+- System prompt: <code>"You are a helpful assistant that summarizes conversations."</code>
+- <code>max_tokens=512</code></p>
+<p>The first text part of the response is returned. Failures are caught, logged to stdout, and return <code>None</code>.</p>
+<h3 id="injecting-the-summary-into-history">Injecting the Summary into History<a class="headerlink" href="#injecting-the-summary-into-history" title="Permanent link">&para;</a></h3>
+<p>If a summary is produced, two messages are prepended to the history list passed to <code>agent.chat()</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span><span class="s2">&quot;role&quot;</span><span class="p">:</span> <span class="s2">&quot;user&quot;</span><span class="p">,</span> <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="s2">&quot;[CONVERSATION SUMMARY — earlier messages]</span><span class="se">\n</span><span class="si">{summary}</span><span class="s2">&quot;</span><span class="p">}</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="p">{</span><span class="s2">&quot;role&quot;</span><span class="p">:</span> <span class="s2">&quot;assistant&quot;</span><span class="p">,</span> <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="s2">&quot;Understood, I have the conversation context.&quot;</span><span class="p">}</span>
+</code></pre></div>
+<p>The assistant acknowledgment message is required to satisfy the Anthropic API's alternating-role constraint.</p>
+<p>Recent messages are then appended verbatim, with bot messages mapped to role <code>"assistant"</code> and all other messages mapped to role <code>"user"</code> with a <code>"[from {display_name}]: "</code> prefix.</p>
+<h3 id="consecutive-same-role-merging">Consecutive Same-Role Merging<a class="headerlink" href="#consecutive-same-role-merging" title="Permanent link">&para;</a></h3>
+<p>After all messages are assembled, consecutive messages with the same role are merged by concatenating their content with a newline. This is a final normalization step to comply with the Anthropic API requirement that messages alternate between <code>"user"</code> and <code>"assistant"</code> roles.</p>
+<hr />
+<h2 id="6-active-project">6. Active Project<a class="headerlink" href="#6-active-project" title="Permanent link">&para;</a></h2>
+<p>The active project is a session-level concept that makes all project-scoped tools default to a specific project without requiring the user to specify it each time.</p>
+<h3 id="storage">Storage<a class="headerlink" href="#storage" title="Permanent link">&para;</a></h3>
+<p>The active project ID is stored in <code>CommandHandler._active_project_id</code> (a <code>str | None</code>). <code>ChatAgent</code> exposes it via a pass-through property and setter:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nd">@property</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="k">def</span><span class="w"> </span><span class="nf">_active_project_id</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">handler</span><span class="o">.</span><span class="n">_active_project_id</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="k">def</span><span class="w"> </span><span class="nf">set_active_project</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">project_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">handler</span><span class="o">.</span><span class="n">set_active_project</span><span class="p">(</span><span class="n">project_id</span><span class="p">)</span>
+</code></pre></div>
+<h3 id="setting-it">Setting It<a class="headerlink" href="#setting-it" title="Permanent link">&para;</a></h3>
+<p>Active project can be set two ways:</p>
+<ol>
+<li><strong>Via the <code>set_active_project</code> tool</strong>: The LLM calls this tool when the user says something like "work on project X" or "switch to project Y". This routes through <code>CommandHandler.execute("set_active_project", {"project_id": ...})</code>.</li>
+<li><strong>Directly by the caller</strong>: The Discord bot can call <code>agent.set_active_project(project_id)</code> before invoking <code>chat()</code>. The bot does this when a message is received in a per-project channel or a notes thread (it prepends context text to the user message rather than calling <code>set_active_project</code> directly — see the channel-context injection in Section 3).</li>
+</ol>
+<h3 id="effect-on-tool-calls">Effect on Tool Calls<a class="headerlink" href="#effect-on-tool-calls" title="Permanent link">&para;</a></h3>
+<p>The active project ID is injected into the system prompt as an <code>ACTIVE PROJECT:</code> directive (see Section 4). The LLM is instructed to use it as the default <code>project_id</code> for all project-scoped tool calls unless the user explicitly specifies a different project.</p>
+<h3 id="channel-context-injection">Channel Context Injection<a class="headerlink" href="#channel-context-injection" title="Permanent link">&para;</a></h3>
+<p>When a user message arrives in a per-project channel or a notes thread, the Discord bot prepends a context prefix to <code>user_text</code> before calling <code>agent.chat()</code>:</p>
+<ul>
+<li><strong>Project channel</strong>: <code project_id="project_id">"[Context: this is the channel for project</code><code>. Default to using project_id='{project_id}' for all project-scoped commands.]\n{original_text}"</code></li>
+<li><strong>Notes thread</strong>: <code project_id="project_id">"[Context: this is the notes thread for project</code><code>. Default to using notes tools with project_id='{project_id}'.]\n{original_text}"</code> — Enhanced NOTES MODE: When operating in a notes thread, the agent enters a special mode with auto-categorization behavior. Stream-of-consciousness input from the user is handled by appending to the appropriate note (using <code>append_note</code>) rather than requiring structured commands. The agent uses brief confirmation responses (e.g., "Added to {note title}.") to minimize noise in the thread.</li>
+</ul>
+<p>This is additional guidance beyond (and independent of) the active project system prompt injection.</p>
+<hr />
+<h2 id="7-initialization">7. Initialization<a class="headerlink" href="#7-initialization" title="Permanent link">&para;</a></h2>
+<h3 id="__init__"><code>__init__</code><a class="headerlink" href="#__init__" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">orchestrator</span><span class="p">:</span> <span class="n">Orchestrator</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">AppConfig</span><span class="p">):</span>
+</code></pre></div>
+<ul>
+<li>Stores references to <code>orchestrator</code> and <code>config</code>.</li>
+<li>Sets <code>_provider</code> to <code>None</code>.</li>
+<li>Creates <code>CommandHandler(orchestrator, config)</code> and stores it as <code>self.handler</code>.</li>
+</ul>
+<h3 id="initialize-bool"><code>initialize() -&gt; bool</code><a class="headerlink" href="#initialize-bool" title="Permanent link">&para;</a></h3>
+<p>Calls <code>create_chat_provider(config.chat_provider)</code> from <code>src/chat_providers/__init__.py</code>, which selects and constructs the appropriate <code>ChatProvider</code> implementation (Anthropic or Ollama) based on config. Returns <code>True</code> if a provider was created, <code>False</code> otherwise.</p>
+<h3 id="is_ready-property"><code>is_ready</code> (property)<a class="headerlink" href="#is_ready-property" title="Permanent link">&para;</a></h3>
+<p>Returns <code>True</code> if <code>_provider is not None</code>. The Discord bot checks this before attempting <code>chat()</code> and responds with a guidance message if <code>False</code>.</p>
+<h3 id="model-property"><code>model</code> (property)<a class="headerlink" href="#model-property" title="Permanent link">&para;</a></h3>
+<p>Returns <code>_provider.model_name</code> if a provider is set, otherwise <code>None</code>.</p>
+<h3 id="reload_credentials-bool"><code>reload_credentials() -&gt; bool</code><a class="headerlink" href="#reload_credentials-bool" title="Permanent link">&para;</a></h3>
+<p>Re-calls <code>initialize()</code>. Used by the Discord bot to recover from <code>anthropic.AuthenticationError</code>: after a token refresh (e.g., <code>claude login</code>), the bot calls this and then retries the failed <code>chat()</code> call once. Returns <code>True</code> on success.</p>
+<hr />
+<h2 id="8-streaming">8. Streaming<a class="headerlink" href="#8-streaming" title="Permanent link">&para;</a></h2>
+<p><code>ChatAgent</code> does not implement streaming. The <code>chat()</code> method is a coroutine that awaits the full LLM response before returning. The provider's <code>create_message()</code> interface returns a complete <code>ChatResponse</code> object, not an async generator.</p>
+<p>The <code>_provider.create_message()</code> call waits for the full response, then the loop processes it synchronously. There is no partial-response yielding at any layer in <code>ChatAgent</code>.</p>
+<p>From the caller's perspective, <code>chat()</code> returns a single <code>str</code> when the entire multi-turn loop completes. The Discord bot then sends this string to the channel as a single message (split into multiple Discord messages if it exceeds the 2000-character limit, via <code>_send_long_message()</code>).</p>
 
 
 

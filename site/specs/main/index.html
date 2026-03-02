@@ -79,6 +79,11 @@
     <label class="md-overlay" for="__drawer"></label>
     <div data-md-component="skip">
       
+        
+        <a href="#specification-srcmainpy" class="md-skip">
+          Skip to content
+        </a>
+      
     </div>
     <div data-md-component="announce">
       
@@ -753,6 +758,26 @@
       <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
       
       
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Main Entry Point
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
       
       <a href="./" class="md-nav__link md-nav__link--active">
         
@@ -770,6 +795,169 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#source-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source Files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-cli-interface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. CLI Interface
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-startup-sequence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Startup Sequence
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-concurrent-tasks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Concurrent Tasks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Concurrent Tasks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-bot_task-discord-bot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 bot_task — Discord Bot
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-scheduler_task-orchestrator-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 scheduler_task — Orchestrator Loop
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-signal-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Signal Handling
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-restart-mechanism" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Restart Mechanism
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Restart Mechanism">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#how-it-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How it works
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#why-execv-instead-of-subprocess" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why execv instead of subprocess
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-shutdown-sequence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Shutdown Sequence
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -1034,6 +1222,8 @@
       
         
       
+        
+      
     
     
     
@@ -1117,6 +1307,34 @@
     
   
     Command Handler
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../discord/discord/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discord
   
 
     
@@ -2389,6 +2607,160 @@
   
   
   
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#source-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source Files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-cli-interface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. CLI Interface
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-startup-sequence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Startup Sequence
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-concurrent-tasks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Concurrent Tasks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Concurrent Tasks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-bot_task-discord-bot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 bot_task — Discord Bot
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-scheduler_task-orchestrator-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 scheduler_task — Orchestrator Loop
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-signal-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Signal Handling
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-restart-mechanism" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Restart Mechanism
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Restart Mechanism">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#how-it-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How it works
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#why-execv-instead-of-subprocess" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why execv instead of subprocess
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-shutdown-sequence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Shutdown Sequence
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
   
 </nav>
                   </div>
@@ -2408,9 +2780,152 @@
   
 
 
-  <h1>Main Entry Point</h1>
-
-<p>../../specs/main.md</p>
+<h1 id="specification-srcmainpy">Specification: src/main.py<a class="headerlink" href="#specification-srcmainpy" title="Permanent link">&para;</a></h1>
+<h2 id="1-overview">1. Overview<a class="headerlink" href="#1-overview" title="Permanent link">&para;</a></h2>
+<p><code>src/main.py</code> is the entry point for the Agent Queue daemon. Its responsibilities are:</p>
+<ul>
+<li>Parse the single optional CLI argument (config file path).</li>
+<li>Load configuration and initialize all top-level components.</li>
+<li>Run the Discord bot and the orchestrator scheduler loop concurrently inside a single asyncio event loop.</li>
+<li>Install OS signal handlers so that SIGTERM or SIGINT triggers a clean shutdown.</li>
+<li>After the async run completes, check whether a restart was requested and, if so, replace the current process with a fresh copy of itself using <code>os.execv</code>.</li>
+</ul>
+<p>The module exports two callable symbols: <code>run</code> (the async coroutine) and <code>main</code> (the synchronous entry point).</p>
+<hr />
+<h2 id="source-files">Source Files<a class="headerlink" href="#source-files" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>src/main.py</code></li>
+</ul>
+<hr />
+<h2 id="2-cli-interface">2. CLI Interface<a class="headerlink" href="#2-cli-interface" title="Permanent link">&para;</a></h2>
+<p>The program accepts at most one positional argument:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>python -m src.main [config_path]
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Argument</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>config_path</code></td>
+<td>string (optional)</td>
+<td><code>~/.agent-queue/config.yaml</code></td>
+<td>Path to the YAML configuration file. The default is produced by <code>os.path.expanduser</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>The default path is stored in the module-level constant <code>DEFAULT_CONFIG_PATH</code>.</p>
+<p>No flags, no subcommands, no <code>argparse</code> — the path is read directly from <code>sys.argv[1]</code> when present.</p>
+<hr />
+<h2 id="3-startup-sequence">3. Startup Sequence<a class="headerlink" href="#3-startup-sequence" title="Permanent link">&para;</a></h2>
+<p>The <code>run(config_path: str) -&gt; bool</code> coroutine performs startup in the following strict order:</p>
+<ol>
+<li>
+<p><strong>Load configuration</strong> — Call <code>load_config(config_path)</code>. This returns a fully-populated config dataclass with all <code>${ENV_VAR}</code> substitutions resolved.</p>
+</li>
+<li>
+<p><strong>Ensure database directory exists</strong> — Call <code>os.makedirs(os.path.dirname(config.database_path), exist_ok=True)</code>. This guarantees the SQLite file can be created without a missing-directory error.</p>
+</li>
+<li>
+<p><strong>Create adapter factory</strong> — Instantiate <code>AdapterFactory()</code>. This is the registry/factory used by the orchestrator to construct agent adapters (e.g. Claude Code).</p>
+</li>
+<li>
+<p><strong>Create and initialize orchestrator</strong> — Instantiate <code>Orchestrator(config, adapter_factory=adapter_factory)</code>, then <code>await orch.initialize()</code>. The <code>initialize()</code> call opens the database connection, runs migrations, and prepares internal state.</p>
+</li>
+<li>
+<p><strong>Create Discord bot</strong> — Instantiate <code>AgentQueueBot(config, orch)</code>. The bot holds a reference to the orchestrator so that Discord commands can invoke orchestrator operations directly.</p>
+</li>
+<li>
+<p><strong>Create shutdown event</strong> — Create an <code>asyncio.Event()</code> named <code>shutdown_event</code>. This event is the single mechanism by which signal handlers, the main coroutine, and the scheduler loop coordinate a clean stop.</p>
+</li>
+<li>
+<p><strong>Register OS signal handlers</strong> — Register a synchronous callback <code>handle_signal</code> on both <code>SIGTERM</code> and <code>SIGINT</code> via <code>loop.add_signal_handler</code>. The callback does one thing: call <code>shutdown_event.set()</code>.</p>
+</li>
+<li>
+<p><strong>Create concurrent tasks</strong> — Create two <code>asyncio.Task</code> objects (<code>bot_task</code> and <code>scheduler_task</code>) as described in Section 4.</p>
+</li>
+<li>
+<p><strong>Await shutdown</strong> — Block with <code>await shutdown_event.wait()</code>. The coroutine sits here until a signal fires or the bot internally sets the event.</p>
+</li>
+</ol>
+<hr />
+<h2 id="4-concurrent-tasks">4. Concurrent Tasks<a class="headerlink" href="#4-concurrent-tasks" title="Permanent link">&para;</a></h2>
+<p>Two tasks run concurrently from the moment <code>run()</code> reaches step 8:</p>
+<h3 id="41-bot_task-discord-bot">4.1 <code>bot_task</code> — Discord Bot<a class="headerlink" href="#41-bot_task-discord-bot" title="Permanent link">&para;</a></h3>
+<p>Wraps the coroutine <code>run_bot()</code>.</p>
+<p>Behaviour:
+- Calls <code>await bot.start(config.discord.bot_token)</code>.
+- The bot connects to Discord's gateway and begins receiving events.
+- If the task is cancelled (as part of shutdown), <code>asyncio.CancelledError</code> is caught and silently suppressed, allowing clean teardown.</p>
+<h3 id="42-scheduler_task-orchestrator-loop">4.2 <code>scheduler_task</code> — Orchestrator Loop<a class="headerlink" href="#42-scheduler_task-orchestrator-loop" title="Permanent link">&para;</a></h3>
+<p>Wraps the coroutine <code>run_scheduler()</code>.</p>
+<p>Behaviour:
+1. <strong>Wait for bot readiness</strong> — Calls <code>await bot.wait_until_ready()</code> before doing any work. This ensures the bot is connected to Discord before the orchestrator starts sending notifications.
+2. <strong>Polling loop</strong> — Repeats until <code>shutdown_event</code> is set:
+   a. Call <code>await orch.run_one_cycle()</code> — executes one full orchestration tick (promotes tasks, assigns work, checks heartbeats, etc.).
+   b. Attempt <code>await asyncio.wait_for(shutdown_event.wait(), timeout=5.0)</code>. If the event fires before the timeout, the loop exits on the next iteration check. If the timeout expires (<code>asyncio.TimeoutError</code> is caught and discarded), the loop immediately executes the next cycle.</p>
+<p>The effective cycle interval is approximately 5 seconds when idle, or longer if a single <code>run_one_cycle()</code> call takes more than 5 seconds.</p>
+<hr />
+<h2 id="5-signal-handling">5. Signal Handling<a class="headerlink" href="#5-signal-handling" title="Permanent link">&para;</a></h2>
+<p>Both <code>SIGTERM</code> (process termination) and <code>SIGINT</code> (keyboard interrupt / Ctrl-C) are handled identically.</p>
+<p>The handler is registered using the asyncio event loop's <code>add_signal_handler</code> method, which means the callback runs safely inside the event loop on the next iteration rather than as a raw Unix signal handler.</p>
+<p>When either signal is received:
+1. <code>shutdown_event.set()</code> is called.
+2. <code>await shutdown_event.wait()</code> in the main coroutine unblocks.
+3. The <code>finally</code> block in <code>run()</code> begins the shutdown sequence (see Section 7).</p>
+<p>No other signals are handled. There is no SIGHUP reload or SIGUSR1/2 handling.</p>
+<hr />
+<h2 id="6-restart-mechanism">6. Restart Mechanism<a class="headerlink" href="#6-restart-mechanism" title="Permanent link">&para;</a></h2>
+<p>The restart mechanism allows the daemon to replace itself with a fresh process without manual intervention. It is triggered by the Discord <code>/restart</code> command (or the equivalent chat command).</p>
+<h3 id="how-it-works">How it works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h3>
+<ol>
+<li>
+<p><strong>Flag is set on the bot object</strong> — When a restart is requested, <code>AgentQueueBot</code> sets its <code>_restart_requested</code> attribute to <code>True</code> and then calls <code>shutdown_event.set()</code> to initiate normal shutdown.</p>
+</li>
+<li>
+<p><strong>Flag is read during teardown</strong> — In the <code>finally</code> block of <code>run()</code>, the value of <code>bot._restart_requested</code> is captured into a local variable <code>restart</code> <em>before</em> <code>bot.close()</code> is called.</p>
+</li>
+<li>
+<p><strong><code>run()</code> returns the flag</strong> — The coroutine returns <code>restart</code> (a <code>bool</code>). <code>True</code> means restart was requested; <code>False</code> means normal shutdown.</p>
+</li>
+<li>
+<p><strong><code>main()</code> performs the exec</strong> — After <code>asyncio.run(run(config_path))</code> returns, <code>main()</code> checks the return value:</p>
+</li>
+<li>If <code>False</code>: the function returns normally, and the process exits.</li>
+<li>If <code>True</code>:
+     a. A message is printed: <code>"Restart requested — exec'ing new process..."</code>.
+     b. The executable path is resolved to an absolute path using <code>shutil.which(sys.argv[0])</code>, falling back to <code>os.path.abspath(sys.argv[0])</code> if <code>which</code> returns <code>None</code>.
+     c. <code>os.execv(exe, sys.argv)</code> is called. This replaces the current process image with a new invocation of the same executable and the same arguments. The PID is preserved. No new process is forked.</li>
+</ol>
+<h3 id="why-execv-instead-of-subprocess">Why <code>execv</code> instead of subprocess<a class="headerlink" href="#why-execv-instead-of-subprocess" title="Permanent link">&para;</a></h3>
+<p>Using <code>os.execv</code> means the process ID stays the same, any process supervisor (systemd, Docker, etc.) continues tracking the same PID, and there is no transient period with two running instances.</p>
+<hr />
+<h2 id="7-shutdown-sequence">7. Shutdown Sequence<a class="headerlink" href="#7-shutdown-sequence" title="Permanent link">&para;</a></h2>
+<p>The <code>finally</code> block in <code>run()</code> executes regardless of how shutdown was triggered (signal, restart request, or unhandled exception). The steps are:</p>
+<ol>
+<li>
+<p><strong>Capture restart flag</strong> — Read <code>bot._restart_requested</code> before closing the bot (the attribute may be reset or become unavailable after close).</p>
+</li>
+<li>
+<p><strong>Close the Discord bot</strong> — <code>await bot.close()</code>. This disconnects from Discord's gateway and stops the bot's internal event dispatch.</p>
+</li>
+<li>
+<p><strong>Cancel <code>bot_task</code></strong> — <code>bot_task.cancel()</code>. Cancels the asyncio task that was running <code>run_bot()</code>. The task's <code>CancelledError</code> handler suppresses the exception.</p>
+</li>
+<li>
+<p><strong>Cancel <code>scheduler_task</code></strong> — <code>scheduler_task.cancel()</code>. Cancels the polling loop task.</p>
+</li>
+<li>
+<p><strong>Shut down the orchestrator</strong> — <code>await orch.shutdown()</code>. This closes the database connection and performs any other orchestrator-level cleanup (e.g. stopping in-progress agent subprocesses).</p>
+</li>
+</ol>
+<p>Note: the cancelled tasks are not explicitly awaited after cancellation. Cleanup relies on the tasks' own <code>CancelledError</code> handling and on <code>orch.shutdown()</code> for database/agent cleanup.</p>
+<p>After the <code>finally</code> block completes, <code>run()</code> returns the <code>restart</code> boolean to <code>main()</code>.</p>
 
 
 
