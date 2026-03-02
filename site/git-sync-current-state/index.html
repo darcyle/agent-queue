@@ -3214,25 +3214,24 @@ While this correctly picks up the previous subtask's commits, it never rebases
 onto the latest <code>origin/main</code>. Over a long chain (5–10 subtasks), the branch
 drifts progressively further from <code>main</code>.</p>
 <p><strong>Example timeline:</strong>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>gitGraph
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    commit id: &quot;A&quot;
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    branch task-branch
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    commit id: &quot;X1&quot; tag: &quot;subtask 1&quot;
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    commit id: &quot;X2&quot; tag: &quot;subtask 2&quot;
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    commit id: &quot;X3&quot; tag: &quot;subtask 3&quot;
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    commit id: &quot;X4&quot; tag: &quot;subtask 4&quot;
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    checkout main
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    commit id: &quot;B&quot;
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    commit id: &quot;C&quot;
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    commit id: &quot;D&quot;
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    commit id: &quot;E&quot;
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    commit id: &quot;F&quot;
-</code></pre></div></p>
+<pre class="mermaid"><code>gitGraph
+    commit id: "A"
+    branch task-branch
+    commit id: "X1" tag: "subtask 1"
+    commit id: "X2" tag: "subtask 2"
+    commit id: "X3" tag: "subtask 3"
+    commit id: "X4" tag: "subtask 4"
+    checkout main
+    commit id: "B"
+    commit id: "C"
+    commit id: "D"
+    commit id: "E"
+    commit id: "F"</code></pre></p>
 <p>By the time the final subtask merges, the branch is 5 commits behind <code>main</code>
 and 4 commits ahead, maximizing conflict surface.</p>
 <h3 id="g7-link-repos-with-shared-filesystem">G7. LINK Repos with Shared Filesystem<a class="headerlink" href="#g7-link-repos-with-shared-filesystem" title="Permanent link">&para;</a></h3>
 <p>LINK repos use the source path directly as the workspace for all agents:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>workspace = repo.source_path    # same for every agent
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>workspace = repo.source_path    # same for every agent
 </code></pre></div></p>
 <p>Without worktrees or per-agent clones, concurrent agents on a LINK repo
 share the git index, staging area, and working tree. Operations from one

@@ -2650,27 +2650,26 @@
 <h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
 <p>Agent Queue is a single-process Python daemon that orchestrates AI coding agents through a Discord interface. The system is designed around the constraint of throttled AI API plans — maximizing token utilization by keeping agents busy and automatically recovering from rate limits.</p>
 <h2 id="system-components">System Components<a class="headerlink" href="#system-components" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>graph TD
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    Discord[&quot;Discord Interface&lt;br/&gt;&lt;i&gt;Bot + Commands + Notifications&lt;/i&gt;&quot;]
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    Chat[&quot;Chat Agent&lt;br/&gt;&lt;i&gt;Natural language → commands&lt;/i&gt;&quot;]
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    Orch[&quot;Orchestrator&lt;br/&gt;&lt;i&gt;Task lifecycle + agent management&lt;/i&gt;&quot;]
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    Sched[Scheduler]
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    SM[State Machine]
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    EB[Event Bus]
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    PP[Plan Parser]
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    Adapter[&quot;Adapter&lt;br/&gt;&lt;i&gt;(Claude)&lt;/i&gt;&quot;]
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    Git[&quot;Git Manager&quot;]
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    DB[&quot;Database&lt;br/&gt;&lt;i&gt;(SQLite)&lt;/i&gt;&quot;]
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    Discord --&gt; Chat --&gt; Orch
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    Orch --- Sched
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    Orch --- SM
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    Orch --- EB
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    Orch --- PP
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>    Orch --&gt; Adapter
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>    Orch --&gt; Git
-<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>    Orch --&gt; DB
-</code></pre></div>
+<pre class="mermaid"><code>graph TD
+    Discord["Discord Interface&lt;br/&gt;&lt;i&gt;Bot + Commands + Notifications&lt;/i&gt;"]
+    Chat["Chat Agent&lt;br/&gt;&lt;i&gt;Natural language → commands&lt;/i&gt;"]
+    Orch["Orchestrator&lt;br/&gt;&lt;i&gt;Task lifecycle + agent management&lt;/i&gt;"]
+    Sched[Scheduler]
+    SM[State Machine]
+    EB[Event Bus]
+    PP[Plan Parser]
+    Adapter["Adapter&lt;br/&gt;&lt;i&gt;(Claude)&lt;/i&gt;"]
+    Git["Git Manager"]
+    DB["Database&lt;br/&gt;&lt;i&gt;(SQLite)&lt;/i&gt;"]
+
+    Discord --&gt; Chat --&gt; Orch
+    Orch --- Sched
+    Orch --- SM
+    Orch --- EB
+    Orch --- PP
+    Orch --&gt; Adapter
+    Orch --&gt; Git
+    Orch --&gt; DB</code></pre>
 <h2 id="key-design-decisions">Key Design Decisions<a class="headerlink" href="#key-design-decisions" title="Permanent link">&para;</a></h2>
 <h3 id="zero-llm-overhead-for-orchestration">Zero LLM Overhead for Orchestration<a class="headerlink" href="#zero-llm-overhead-for-orchestration" title="Permanent link">&para;</a></h3>
 <p>The scheduler and task routing use no LLM calls. Every token the system spends is a token an agent spends on actual work. Scheduling decisions are made via proportional credit-weight allocation.</p>
