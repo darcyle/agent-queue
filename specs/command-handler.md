@@ -383,12 +383,12 @@ Returns up to 200 tasks, optionally filtered.
 
 #### `create_task`
 
-Creates a new task in READY status. If no `project_id` is given, a `quick-tasks` project is auto-created if it does not already exist.
+Creates a new task in READY status. If no `project_id` is given, the active project is used. Returns an error if no project can be resolved.
 
 **Parameters:**
 - `title` (required): Short task title.
 - `description` (required): Full task description/prompt for the agent.
-- `project_id` (optional, default: `"quick-tasks"`): Project to assign the task to.
+- `project_id` (optional, falls back to active project): Project to assign the task to.
 - `priority` (optional, default: `100`): Scheduling priority (lower value = higher priority).
 - `repo_id` (optional): Associate the task with a specific repo.
 - `requires_approval` (optional, default: `False`): If true, task moves to AWAITING_APPROVAL instead of COMPLETED when done.

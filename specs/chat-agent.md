@@ -53,7 +53,7 @@ Tools are grouped below by functional category. Every tool name listed is an exa
 | Tool | Purpose |
 |------|---------|
 | `list_tasks` | List tasks, optionally filtered by project or status |
-| `create_task` | Create a new task; defaults to the "quick-tasks" project if no project_id given |
+| `create_task` | Create a new task; uses the active project if no project_id given |
 | `get_task` | Get full details of a specific task |
 | `edit_task` | Edit a task's title, description, or priority |
 | `stop_task` | Stop an in-progress task; cancels the agent and marks the task BLOCKED |

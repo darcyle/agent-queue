@@ -140,7 +140,7 @@ The quickest way to create a task from Discord.
 |-----------|----------|-------------|
 | `description` | Yes | What the task should do |
 
-The project is auto-detected from the channel, or falls back to the active project, or defaults to `quick-tasks`.
+The project is auto-detected from the channel, or falls back to the active project. Returns an error if no project can be resolved.
 
 **Via chat** — you can provide much richer context:
 

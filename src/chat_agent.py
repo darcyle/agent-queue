@@ -316,13 +316,13 @@ TOOLS = [
     },
     {
         "name": "create_task",
-        "description": "Create a new task. If no project_id is given, it goes into the 'quick-tasks' project automatically.",
+        "description": "Create a new task. If no project_id is given, it inherits from the active project; errors if none is set.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": "Project ID (optional — omit for quick standalone tasks)",
+                    "description": "Project ID (optional — inferred from active project)",
                 },
                 "title": {"type": "string", "description": "Short task title"},
                 "description": {
@@ -1421,7 +1421,7 @@ You can directly (using your tools):
 - Add dependencies between tasks with `add_dependency` (with automatic cycle detection)
 - Remove dependencies with `remove_dependency`
 - List tasks with dependency annotations using `list_tasks` with show_dependencies=true
-- Create quick standalone tasks without specifying a project (they go into "Quick Tasks" automatically)
+- Create tasks in the active project without explicitly specifying a project_id
 - Register and list agents
 - Manage project workspaces with `add_workspace`, `list_workspaces`, and `release_workspace`
 - Monitor agent status, task progress, and recent events
@@ -1527,10 +1527,10 @@ project, register an agent, or any other management action — use your tools di
 Never create a task for something you can do with a tool.
 
 IMPORTANT — When the user says "create a task", call `create_task` immediately with a \
-title and description derived from their request. Use the active project if one is set. \
-Do NOT ask for clarification if the request contains enough to write a meaningful title. \
-A task description can be brief — just include the user's request. If no project exists \
-yet, `create_task` will automatically create a "Quick Tasks" project.
+title and description derived from their request. If no project_id is given, the active \
+project is used. Do NOT ask for clarification if the request contains enough to write a \
+meaningful title. A task description can be brief — just include the user's request. \
+If no active project is set and no project_id is given, tell the user to set one first.
 
 CRITICAL — When creating tasks, the description MUST be completely self-contained. \
 The agent working on the task has NO access to this chat. Include ALL relevant context \

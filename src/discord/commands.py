@@ -1889,8 +1889,13 @@ def setup_commands(bot: commands.Bot) -> None:
         project_id = (
             bot.get_project_for_channel(interaction.channel_id)
             or handler._active_project_id
-            or "quick-tasks"
         )
+        if not project_id:
+            await interaction.response.send_message(
+                "No project context — use this in a project channel or set an active project.",
+                ephemeral=True,
+            )
+            return
         title = description[:100] if len(description) > 100 else description
         result = await handler.execute("create_task", {
             "project_id": project_id,

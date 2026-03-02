@@ -392,7 +392,7 @@ Shows full details of a single task: title, status, project, priority, assigned 
 | `task_id` | str | Task ID |
 
 #### `/add-task`
-Adds a task manually. Auto-detects project from channel context, falling back to `handler._active_project_id`, then `"quick-tasks"`. Title is truncated to 100 chars from the description.
+Adds a task manually. Auto-detects project from channel context, falling back to `handler._active_project_id`. Returns an error if no project can be resolved. Title is truncated to 100 chars from the description.
 
 | Parameter | Type | Description |
 |---|---|---|

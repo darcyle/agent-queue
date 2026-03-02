@@ -1618,17 +1618,9 @@ class CommandHandler:
         return result
 
     async def _cmd_create_task(self, args: dict) -> dict:
-        project_id = args.get("project_id")
+        project_id = args.get("project_id") or self._active_project_id
         if not project_id:
-            project_id = "quick-tasks"
-            existing = await self.db.get_project(project_id)
-            if not existing:
-                await self.db.create_project(Project(
-                    id=project_id,
-                    name="Quick Tasks",
-                    credit_weight=0.5,
-                    max_concurrent_agents=1,
-                ))
+            return {"error": "project_id is required (no active project set)"}
         task_id = await generate_task_id(self.db)
         repo_id = args.get("repo_id")
         requires_approval = args.get("requires_approval", False)
