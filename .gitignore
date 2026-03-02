@@ -13,5 +13,6 @@ spin_utility.log
 logs/
 
 # Documentation build output
+site/
 docs_out/
 eval_results
