@@ -8,27 +8,16 @@ Agent Queue is a task queue and orchestrator built specifically around this cons
 
 You manage everything from Discord on your phone. Queue up a week's worth of tasks before you leave the house. Come back to a stack of completed PRs.
 
-![Conversational Discord interface — chatting with the bot to check project status, get suggestions, and manage agents](docs/img/project-chat-00.png)
+<table>
+<tr>
+<td><img src="docs/img/project-chat-00.png" alt="Chatting with the bot — status, suggestions, agent management" width="450"></td>
+<td><img src="docs/img/project-chat-01.png" alt="Task started and completed — token usage, change summary" width="450"></td>
+</tr>
+</table>
 
 ## How it works
 
-Agent Queue runs as a background daemon. You talk to it through a dedicated Discord channel — just type naturally, like you're texting a dev lead who has root access to your machine.
-
-```
-You:     hey can you add a task to fix the login bug in my-app?
-         the error is "JWT expired" in auth.py line 47
-
-Bot:     Created task `task-89` — "Fix JWT expiry bug in auth.py"
-         Assigned to claude-1. Branch: task-89/fix-jwt-expiry-bug
-         I'll post updates in the task thread.
-
-[5 minutes later, in the task thread]
-
-Bot:     ✅ Task Complete — auth.py updated, tests passing
-         18,420 tokens · 2 files changed
-```
-
-The bot is powered by Claude. It understands context, remembers what you were working on, and acts — it doesn't just give you instructions on what to do yourself.
+Agent Queue runs as a background daemon. You talk to it through a dedicated Discord channel — just type naturally, like you're texting a dev lead who has root access to your machine. It understands context, remembers what you were working on, and acts.
 
 ![Agent working in a task thread — reading code, fixing bugs, running tests, committing](docs/img/task-thread.png)
 
@@ -93,36 +82,6 @@ You:  add a task to add rate limiting to the API
 Bot:  Created task `task-1` — "Add rate limiting to API"
       Assigned to claude-1. I'll post updates in the thread.
 ```
-
-![Completed task — summary, token usage, files changed, posted to the project channel](docs/img/project-chat-01.png)
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────┐
-│              asyncio event loop             │
-│                                             │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
-│  │ Discord  │  │Scheduler │  │Heartbeat │  │
-│  │  Bot     │  │          │  │ Monitor  │  │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  │
-│       └──────────────┼──────────────┘        │
-│                      ▼                       │
-│              ┌──────────────┐                │
-│              │  Event Bus   │                │
-│              └──────┬───────┘                │
-│       ┌─────────────┼─────────────┐          │
-│       ▼             ▼             ▼          │
-│  ┌─────────┐  ┌──────────┐  ┌─────────┐    │
-│  │ Agent 1 │  │ Agent 2  │  │ Agent 3 │    │
-│  │ (Claude)│  │ (Claude) │  │ (Claude)│    │
-│  └─────────┘  └──────────┘  └─────────┘    │
-│                                             │
-│                 SQLite DB                   │
-└─────────────────────────────────────────────┘
-```
-
-Single process. No external dependencies beyond SQLite. Runs on a Raspberry Pi 5.
 
 ## Documentation
 
