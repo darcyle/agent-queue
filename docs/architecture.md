@@ -6,33 +6,27 @@ Agent Queue is a single-process Python daemon that orchestrates AI coding agents
 
 ## System Components
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Discord Interface                     │
-│              (Bot + Commands + Notifications)            │
-└────────────────────────┬────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────┐
-│                     Chat Agent                          │
-│            (Natural language → commands)                 │
-└────────────────────────┬────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Orchestrator                          │
-│           (Task lifecycle + agent management)            │
-├─────────┬───────────┬──────────────┬────────────────────┤
-│Scheduler│State Mach.│  Event Bus   │   Plan Parser      │
-│         │           │              │                     │
-└─────────┴───────────┴──────────────┴────────────────────┘
-                         │
-              ┌──────────┼──────────┐
-              ▼          ▼          ▼
-         ┌────────┐ ┌────────┐ ┌────────┐
-         │Adapter │ │  Git   │ │Database│
-         │(Claude)│ │Manager │ │(SQLite)│
-         └────────┘ └────────┘ └────────┘
+```mermaid
+graph TD
+    Discord["Discord Interface<br/><i>Bot + Commands + Notifications</i>"]
+    Chat["Chat Agent<br/><i>Natural language → commands</i>"]
+    Orch["Orchestrator<br/><i>Task lifecycle + agent management</i>"]
+    Sched[Scheduler]
+    SM[State Machine]
+    EB[Event Bus]
+    PP[Plan Parser]
+    Adapter["Adapter<br/><i>(Claude)</i>"]
+    Git["Git Manager"]
+    DB["Database<br/><i>(SQLite)</i>"]
+
+    Discord --> Chat --> Orch
+    Orch --- Sched
+    Orch --- SM
+    Orch --- EB
+    Orch --- PP
+    Orch --> Adapter
+    Orch --> Git
+    Orch --> DB
 ```
 
 ## Key Design Decisions

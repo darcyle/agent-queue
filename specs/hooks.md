@@ -15,23 +15,14 @@ code.
 
 The pipeline for every hook execution follows four stages:
 
-```
-Trigger (event or periodic)
-    |
-    v
-Context Gathering (sequential steps: shell, read_file, http, db_query, git_diff)
-    |
-    v
-Short-Circuit Check (skip LLM if a step condition is met)
-    |
-    v
-Prompt Rendering ({{step_N}}, {{event}} substitution)
-    |
-    v
-LLM Invocation (via ChatAgent with full tool access)
-    |
-    v
-Hook Run Recording (status, response, tokens stored in DB)
+```mermaid
+flowchart TD
+    A[Trigger<br/><i>event or periodic</i>] --> B[Context Gathering<br/><i>shell, read_file, http, db_query, git_diff</i>]
+    B --> C{Short-Circuit<br/>condition met?}
+    C -- Yes --> D[Record as skipped<br/><i>zero tokens</i>]
+    C -- No --> E[Render Prompt<br/><i>substitute step_N, event vars</i>]
+    E --> F[LLM Invocation<br/><i>ChatAgent with full tool access</i>]
+    F --> G[Record Run<br/><i>status, response, tokens</i>]
 ```
 
 The LLM call is optional: if any step's skip condition is satisfied after context
@@ -416,12 +407,12 @@ the pipeline.
 
 ### Status Transitions
 
-```
-created  →  running  (immediately on HookRun creation)
-             |
-    ┌────────┼────────┐
-    v        v        v
-skipped  completed  failed
+```mermaid
+stateDiagram-v2
+    [*] --> running : HookRun created
+    running --> skipped : short-circuit matched
+    running --> completed : LLM returned response
+    running --> failed : unhandled exception
 ```
 
 - **skipped**: short-circuit condition matched; `skipped_reason` is set.

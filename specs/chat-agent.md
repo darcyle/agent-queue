@@ -162,6 +162,17 @@ These tools take a `project_id` and resolve the repository automatically. `get_g
 
 ### Tool-Use Loop
 
+```mermaid
+flowchart TD
+    A[Call provider.create_message] --> B{Tool uses<br/>in response?}
+    B -- No --> C[Return text response]
+    B -- Yes --> D[Execute each tool via<br/>CommandHandler.execute]
+    D --> E[Append tool results<br/>to message history]
+    E --> F{Iteration<br/>< 10?}
+    F -- Yes --> A
+    F -- No --> G["Return fallback:<br/>'Done. Actions taken: ...'"]
+```
+
 The loop runs up to 10 iterations:
 
 1. Call `provider.create_message(messages, system, tools, max_tokens=1024)`. The system prompt and full `TOOLS` list are passed on every call.

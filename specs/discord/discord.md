@@ -124,14 +124,22 @@ When a message is routed to the **global channel** for a project that has no ded
 | Message in a registered notes thread | Yes |
 | Any other channel, not mentioned | No (silent) |
 
-Filtering sequence:
-1. Ignore own messages.
-2. Ignore unauthorized users (silent).
-3. Dedup: skip if `message.id` is in `_processed_messages`. The set is trimmed to 100 entries when it exceeds 200.
-4. Skip messages created before `_boot_time` (prevents reprocessing history after restart).
-5. Determine channel context (global, per-project, mentioned, or notes thread).
-6. Strip the bot mention (`<@{user_id}>`) from the message text.
-7. Reply with a prompt if text is empty.
+```mermaid
+flowchart TD
+    M[Incoming message] --> A{Own message?}
+    A -- Yes --> X1[Ignore]
+    A -- No --> B{Authorized user?}
+    B -- No --> X2[Ignore]
+    B -- Yes --> C{Already processed?}
+    C -- Yes --> X3[Ignore]
+    C -- No --> D{Before boot_time?}
+    D -- Yes --> X4[Ignore]
+    D -- No --> E[Determine channel context<br/><i>global / project / mention / notes</i>]
+    E --> F[Strip bot mention]
+    F --> G{Text empty?}
+    G -- Yes --> H[Reply with prompt]
+    G -- No --> I[Route to Chat Agent]
+```
 
 For per-project channels (when not the global bot channel), a context prefix is prepended to the user message before passing it to the LLM:
 ```

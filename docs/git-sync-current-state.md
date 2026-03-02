@@ -248,9 +248,20 @@ onto the latest `origin/main`. Over a long chain (5–10 subtasks), the branch
 drifts progressively further from `main`.
 
 **Example timeline:**
-```
-main:   A ─ B ─ C ─ D ─ E ─ F     (other agents landing work)
-branch: A ─ X₁ ─ X₂ ─ X₃ ─ X₄    (subtask chain, based on commit A)
+```mermaid
+gitGraph
+    commit id: "A"
+    branch task-branch
+    commit id: "X1" tag: "subtask 1"
+    commit id: "X2" tag: "subtask 2"
+    commit id: "X3" tag: "subtask 3"
+    commit id: "X4" tag: "subtask 4"
+    checkout main
+    commit id: "B"
+    commit id: "C"
+    commit id: "D"
+    commit id: "E"
+    commit id: "F"
 ```
 
 By the time the final subtask merges, the branch is 5 commits behind `main`
