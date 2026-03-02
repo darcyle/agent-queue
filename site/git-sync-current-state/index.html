@@ -1,0 +1,3361 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Documentation for Agent Queue — a task queue and orchestrator for AI coding agents">
+      
+      
+      
+        <link rel="canonical" href="https://electricjack.github.io/agent-queue/git-sync-current-state/">
+      
+      
+        <link rel="prev" href="../migrations/">
+      
+      
+        <link rel="next" href="../git-sync-gaps/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.3">
+    
+    
+      
+        <title>Current State - Agent Queue Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="amber">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#git-sync-for-agent-workspaces-current-state" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Agent Queue Documentation" class="md-header__button md-logo" aria-label="Agent Queue Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Agent Queue Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Current State
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="amber"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="deep-purple" data-md-color-accent="amber"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/ElectricJack/agent-queue" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    ElectricJack/agent-queue
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Agent Queue Documentation" class="md-nav__button md-logo" aria-label="Agent Queue Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Agent Queue Documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/ElectricJack/agent-queue" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    ElectricJack/agent-queue
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../discord-commands/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discord Commands
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Database Migrations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4_3" id="__nav_4_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Git Sync
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Git Sync
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Current State
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Current State
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-works-well-today" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Works Well Today
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What Works Well Today">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-workspace-isolation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Workspace Isolation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-branch-per-task-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Branch-per-Task Model
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-pre-task-fetch-and-pull" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Pre-Task Fetch and Pull
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-graceful-error-suppression" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Graceful Error Suppression
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-post-completion-commit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Post-Completion Commit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-plan-subtask-branch-accumulation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Plan Subtask Branch Accumulation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#7-dual-completion-paths-pr-vs-direct-merge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Dual Completion Paths (PR vs Direct Merge)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#8-merge-conflict-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Merge Conflict Detection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#9-branch-cleanup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Branch Cleanup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#10-task-retry-resilience" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Task Retry Resilience
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#11-approval-polling-with-escalation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Approval Polling with Escalation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#summary-of-existing-strengths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Summary of Existing Strengths
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#identified-gaps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Identified Gaps
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Identified Gaps">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#g1-_merge_and_push-never-pulls-main-before-merging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G1. _merge_and_push Never Pulls Main Before Merging
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g2-push-failures-leave-workspace-in-a-dirty-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G2. Push Failures Leave Workspace in a Dirty State
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g3-no-merge-conflict-recovery-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G3. No Merge Conflict Recovery Strategy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g4-retried-tasks-dont-rebase-onto-latest-main" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G4. Retried Tasks Don't Rebase onto Latest Main
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g5-no-force-with-lease-for-pr-branch-pushes-resolved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G5. No --force-with-lease for PR Branch Pushes — RESOLVED
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g6-subtask-chains-accumulate-drift" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G6. Subtask Chains Accumulate Drift
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g7-link-repos-with-shared-filesystem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G7. LINK Repos with Shared Filesystem
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gap-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gap Summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../git-sync-gaps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Identified Gaps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Specifications
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Specifications
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_1" id="__nav_5_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Core
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/models-and-state-machine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Models & State Machine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/main/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Main Entry Point
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/database/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Database
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_2" id="__nav_5_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Orchestration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Orchestration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/orchestrator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Orchestrator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/scheduler-and-budget/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scheduler & Budget
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/plan-parser/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plan Parser
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/hooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/event-bus/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Event Bus
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_3" id="__nav_5_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Interfaces
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Interfaces
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/chat-agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chat Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/command-handler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Command Handler
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/chat-providers/providers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chat Providers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_4" id="__nav_5_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Infrastructure
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Infrastructure
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/adapters/claude/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adapters — Claude
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/git/git/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Git Manager
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../api/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_2" id="__nav_6_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Core
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/database/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Database
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/state_machine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    State Machine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/main/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Main
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_3" id="__nav_6_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Orchestration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Orchestration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/orchestrator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Orchestrator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/scheduler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scheduler
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/event_bus/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Event Bus
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/plan_parser/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plan Parser
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/hooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_4" id="__nav_6_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adapters
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Adapters
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/adapters/base/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Base Adapter
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/adapters/claude/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Claude Adapter
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_5" id="__nav_6_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chat Providers
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Chat Providers
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/chat_providers/anthropic/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Anthropic
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/chat_providers/ollama/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ollama
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_6" id="__nav_6_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discord
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Discord
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/discord/bot/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bot
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/discord/commands/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Commands
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/discord/notifications/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Notifications
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_7" id="__nav_6_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Git
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Git
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/git/manager/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Manager
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_8" id="__nav_6_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tokens
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Tokens
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/tokens/budget/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Budget
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/tokens/tracker/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tracker
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-works-well-today" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Works Well Today
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What Works Well Today">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-workspace-isolation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Workspace Isolation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-branch-per-task-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Branch-per-Task Model
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-pre-task-fetch-and-pull" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Pre-Task Fetch and Pull
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-graceful-error-suppression" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Graceful Error Suppression
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-post-completion-commit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Post-Completion Commit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-plan-subtask-branch-accumulation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Plan Subtask Branch Accumulation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#7-dual-completion-paths-pr-vs-direct-merge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Dual Completion Paths (PR vs Direct Merge)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#8-merge-conflict-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Merge Conflict Detection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#9-branch-cleanup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Branch Cleanup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#10-task-retry-resilience" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Task Retry Resilience
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#11-approval-polling-with-escalation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Approval Polling with Escalation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#summary-of-existing-strengths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Summary of Existing Strengths
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#identified-gaps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Identified Gaps
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Identified Gaps">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#g1-_merge_and_push-never-pulls-main-before-merging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G1. _merge_and_push Never Pulls Main Before Merging
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g2-push-failures-leave-workspace-in-a-dirty-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G2. Push Failures Leave Workspace in a Dirty State
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g3-no-merge-conflict-recovery-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G3. No Merge Conflict Recovery Strategy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g4-retried-tasks-dont-rebase-onto-latest-main" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G4. Retried Tasks Don't Rebase onto Latest Main
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g5-no-force-with-lease-for-pr-branch-pushes-resolved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G5. No --force-with-lease for PR Branch Pushes — RESOLVED
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g6-subtask-chains-accumulate-drift" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G6. Subtask Chains Accumulate Drift
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g7-link-repos-with-shared-filesystem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G7. LINK Repos with Shared Filesystem
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gap-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gap Summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="git-sync-for-agent-workspaces-current-state">Git Sync for Agent Workspaces — Current State<a class="headerlink" href="#git-sync-for-agent-workspaces-current-state" title="Permanent link">&para;</a></h1>
+<p><strong>Source files:</strong> <code>src/git/manager.py</code>, <code>src/orchestrator.py</code>
+<strong>Design principles reference:</strong> <code>specs/git/git.md</code> §10</p>
+<p>This document captures what the current git sync workflow does well, identifies
+the design decisions already in place, and serves as a baseline for future
+improvements to multi-agent workspace synchronization. The strengths documented
+here are formalized as design invariants in the git spec (§10) and the
+orchestrator spec (§10, "Design Invariants" table) to ensure they are preserved
+during refactoring.</p>
+<hr />
+<h2 id="what-works-well-today">What Works Well Today<a class="headerlink" href="#what-works-well-today" title="Permanent link">&para;</a></h2>
+<h3 id="1-workspace-isolation">1. Workspace Isolation<a class="headerlink" href="#1-workspace-isolation" title="Permanent link">&para;</a></h3>
+<p>Each <code>(agent, project)</code> pair gets its own cloned directory, stored at
+<code>{workspace_dir}/{project_id}/{agent.name}/{repo_name}</code>. This is cached in the
+<code>agent_workspaces</code> SQLite table so the mapping is stable across restarts.</p>
+<p><strong>Why it matters:</strong> Two agents working on the same project never touch the same
+working tree, eliminating an entire class of filesystem-level conflicts (dirty
+index, mixed staged changes, etc.).</p>
+<p>Three source types are handled cleanly:</p>
+<table>
+<thead>
+<tr>
+<th>Source type</th>
+<th>Workspace strategy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>CLONE</strong></td>
+<td>Per-agent clone in workspace dir</td>
+</tr>
+<tr>
+<td><strong>LINK</strong></td>
+<td>Shared local path (all agents see the same directory)</td>
+</tr>
+<tr>
+<td><strong>INIT</strong></td>
+<td>Per-agent new repo in workspace dir</td>
+</tr>
+</tbody>
+</table>
+<h3 id="2-branch-per-task-model">2. Branch-per-Task Model<a class="headerlink" href="#2-branch-per-task-model" title="Permanent link">&para;</a></h3>
+<p>Every task gets a unique branch named <code>&lt;task-id&gt;/&lt;slugified-title&gt;</code>
+(e.g. <code>brave-fox/add-retry-logic</code>). The task ID prefix makes branches trivially
+traceable back to their originating task, and the slug provides human context.</p>
+<p><strong>Why it matters:</strong> Agents' work is isolated at the git level, not just the
+filesystem level. Concurrent agents can work on different branches in their own
+clones without interfering with each other.</p>
+<h3 id="3-pre-task-fetch-and-pull">3. Pre-Task Fetch and Pull<a class="headerlink" href="#3-pre-task-fetch-and-pull" title="Permanent link">&para;</a></h3>
+<p><code>prepare_for_task()</code> always runs <code>git fetch origin</code> before creating the task
+branch, ensuring the agent starts from the latest known state of the remote.
+For normal clones, it also does <code>git pull origin &lt;default_branch&gt;</code> to
+fast-forward the local default branch.</p>
+<p><strong>Worktree-aware branching:</strong> When the checkout is a git worktree (detected via
+<code>_is_worktree()</code>), the code correctly avoids checking out the default branch
+locally (which would conflict with the main working tree) and instead creates
+the task branch directly from <code>origin/&lt;default_branch&gt;</code>.</p>
+<p><strong>Why it matters:</strong> Agents start each task from a reasonably fresh base,
+reducing the chance that their work diverges too far from the remote.</p>
+<h3 id="4-graceful-error-suppression">4. Graceful Error Suppression<a class="headerlink" href="#4-graceful-error-suppression" title="Permanent link">&para;</a></h3>
+<p>Git operations that may legitimately fail (no remote configured, no upstream
+tracking branch, network errors during fetch) are wrapped in <code>try/except
+GitError: pass</code> blocks. This allows LINK repos with no remote and newly-init'd
+repos to go through the same code paths as fully-configured CLONE repos.</p>
+<p>The outer <code>_prepare_workspace()</code> method wraps <em>all</em> git operations in a
+catch-all that logs a warning but still returns the correct workspace path.
+The agent can always start work even if branch setup fails.</p>
+<p><strong>Why it matters:</strong> The system degrades gracefully rather than failing
+catastrophically when git operations don't succeed.</p>
+<h3 id="5-post-completion-commit">5. Post-Completion Commit<a class="headerlink" href="#5-post-completion-commit" title="Permanent link">&para;</a></h3>
+<p><code>_complete_workspace()</code> always commits agent work using <code>commit_all()</code>, which:</p>
+<ol>
+<li>Runs <code>git add -A</code> to stage everything (including untracked files the agent
+   created).</li>
+<li>Checks <code>git diff --cached --quiet</code> to detect whether anything is staged.</li>
+<li>Only creates a commit if there are actual changes.</li>
+</ol>
+<p>The add-then-check pattern avoids the race condition of checking working-tree
+status before staging.</p>
+<p><strong>Why it matters:</strong> Agent work is never silently lost — every modification is
+captured in a commit before any merge/push/PR logic runs.</p>
+<h3 id="6-plan-subtask-branch-accumulation">6. Plan Subtask Branch Accumulation<a class="headerlink" href="#6-plan-subtask-branch-accumulation" title="Permanent link">&para;</a></h3>
+<p>When a plan generates multiple subtasks, they all share the parent task's
+branch name. Subtasks use <code>switch_to_branch()</code> (which fetches and pulls) rather
+than <code>prepare_for_task()</code> (which would create a new branch off default). This
+lets sequential subtasks accumulate commits on a single branch.</p>
+<p>Only the <em>final</em> subtask in a chain triggers the merge-or-PR decision, and it
+inherits the parent's <code>requires_approval</code> flag.</p>
+<p><strong>Why it matters:</strong> A multi-step plan produces a single coherent branch with
+all changes, rather than N separate branches that would each need independent
+review.</p>
+<h3 id="7-dual-completion-paths-pr-vs-direct-merge">7. Dual Completion Paths (PR vs Direct Merge)<a class="headerlink" href="#7-dual-completion-paths-pr-vs-direct-merge" title="Permanent link">&para;</a></h3>
+<p>The system cleanly supports both:</p>
+<ul>
+<li><strong>Tasks requiring approval</strong> → push branch + create PR via <code>gh pr create</code>.
+  Task moves to <code>AWAITING_APPROVAL</code>. The orchestrator polls PR status every
+  60 seconds via <code>gh pr view --json state,mergedAt</code>.</li>
+<li><strong>Tasks without approval</strong> → merge branch into default + push (CLONE repos)
+  or merge locally only (LINK repos).</li>
+</ul>
+<p>Both paths include error handling with user-facing notifications on failure.</p>
+<p><strong>Why it matters:</strong> Teams that want human review before code lands can use the
+PR path; solo developers or trusted automation can use direct merge.</p>
+<h3 id="8-merge-conflict-detection">8. Merge Conflict Detection<a class="headerlink" href="#8-merge-conflict-detection" title="Permanent link">&para;</a></h3>
+<p><code>merge_branch()</code> attempts the merge and, on failure, runs <code>git merge --abort</code>
+to restore the working tree. The orchestrator notifies the user with a clear
+message identifying the conflicting task and branch.</p>
+<p><strong>Why it matters:</strong> A failed merge never leaves the working tree in a broken
+state, and the user is told exactly which branch needs manual resolution.</p>
+<h3 id="9-branch-cleanup">9. Branch Cleanup<a class="headerlink" href="#9-branch-cleanup" title="Permanent link">&para;</a></h3>
+<p>After a successful merge or PR completion, the system attempts to delete the
+task branch both locally (<code>git branch -D</code>) and remotely
+(<code>git push origin --delete</code>). This is best-effort — failures are silently
+ignored.</p>
+<p><strong>Why it matters:</strong> Prevents branch proliferation without risking errors if
+the branch was already cleaned up (e.g. by GitHub's "delete branch after merge"
+setting).</p>
+<h3 id="10-task-retry-resilience">10. Task Retry Resilience<a class="headerlink" href="#10-task-retry-resilience" title="Permanent link">&para;</a></h3>
+<p>Both <code>prepare_for_task()</code> and <code>switch_to_branch()</code> handle the case where the
+task branch already exists (e.g. after a crash or restart mid-task). Instead of
+failing, they switch to the existing branch so work can resume.</p>
+<p><strong>Why it matters:</strong> The system survives restarts and retries without requiring
+manual cleanup of stale branches.</p>
+<h3 id="11-approval-polling-with-escalation">11. Approval Polling with Escalation<a class="headerlink" href="#11-approval-polling-with-escalation" title="Permanent link">&para;</a></h3>
+<p>The <code>_check_awaiting_approval()</code> loop handles edge cases thoughtfully:</p>
+<ul>
+<li><strong>PR-backed tasks:</strong> Polls merge status; transitions to COMPLETED on merge
+  or BLOCKED on close-without-merge (with downstream chain notifications).</li>
+<li><strong>Tasks without a PR URL that don't require approval:</strong> Auto-completes after
+  a grace period (handles intermediate subtasks that end up in
+  AWAITING_APPROVAL without actually needing review).</li>
+<li><strong>Tasks without a PR URL that do require approval:</strong> Sends periodic reminders
+  (hourly) and escalates after 24 hours to prevent tasks from rotting silently.</li>
+</ul>
+<p><strong>Why it matters:</strong> No task gets permanently stuck in AWAITING_APPROVAL without
+the user being notified.</p>
+<hr />
+<h2 id="summary-of-existing-strengths">Summary of Existing Strengths<a class="headerlink" href="#summary-of-existing-strengths" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>Implementation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Workspace isolation</td>
+<td>Per-agent clone directories, cached in SQLite</td>
+</tr>
+<tr>
+<td>Branch isolation</td>
+<td>Unique <code>&lt;task-id&gt;/&lt;slug&gt;</code> branches per task</td>
+</tr>
+<tr>
+<td>Fresh starting point</td>
+<td><code>git fetch</code> + <code>git pull</code> before each task</td>
+</tr>
+<tr>
+<td>Worktree support</td>
+<td>Detects worktrees, avoids default-branch checkout conflicts</td>
+</tr>
+<tr>
+<td>Graceful degradation</td>
+<td>Silent error suppression for optional git operations</td>
+</tr>
+<tr>
+<td>Atomic commits</td>
+<td>Add-all-then-check-staged pattern in <code>commit_all()</code></td>
+</tr>
+<tr>
+<td>Subtask accumulation</td>
+<td>Shared branch across plan subtasks with final-step merge</td>
+</tr>
+<tr>
+<td>PR workflow</td>
+<td><code>gh</code> CLI integration for create + poll + complete</td>
+</tr>
+<tr>
+<td>Direct merge workflow</td>
+<td>Merge + push with conflict detection and abort</td>
+</tr>
+<tr>
+<td>Retry resilience</td>
+<td>Existing branches reused on task retry</td>
+</tr>
+<tr>
+<td>Stuck task detection</td>
+<td>Escalating reminders for approval-blocked tasks</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="identified-gaps">Identified Gaps<a class="headerlink" href="#identified-gaps" title="Permanent link">&para;</a></h2>
+<p>The following gaps have been identified in the current workflow. Each is
+labeled G1–G7 for traceability. See <code>specs/git/git.md</code> §11 for the formal
+gap catalogue with affected code references and violated design principles.</p>
+<h3 id="g1-_merge_and_push-never-pulls-main-before-merging">G1. <code>_merge_and_push</code> Never Pulls Main Before Merging<a class="headerlink" href="#g1-_merge_and_push-never-pulls-main-before-merging" title="Permanent link">&para;</a></h3>
+<p>The direct-merge path executes <code>checkout main → merge branch → push main</code>,
+but skips <code>pull origin main</code> before the merge. If another agent pushed to
+<code>main</code> since the workspace's last fetch, the push fails with a
+non-fast-forward error. The failure is notified but not recovered from —
+the local <code>main</code> is left with a merge commit that the remote doesn't have.</p>
+<p><strong>Scenario:</strong> Agent A completes task and pushes to <code>main</code>. Agent B
+(whose <code>main</code> is behind) tries to merge and push. Agent B's push fails.
+Agent B's next task starts from a diverged <code>main</code> that includes both the
+old merge commit and whatever <code>origin/main</code> has moved to.</p>
+<h3 id="g2-push-failures-leave-workspace-in-a-dirty-state">G2. Push Failures Leave Workspace in a Dirty State<a class="headerlink" href="#g2-push-failures-leave-workspace-in-a-dirty-state" title="Permanent link">&para;</a></h3>
+<p>After a failed push in <code>_merge_and_push</code>, there is no <code>git reset</code> to undo the
+local merge. The workspace's <code>main</code> branch contains a merge commit that only
+exists locally. Subsequent tasks from the same agent inherit this dirty state.</p>
+<p><strong>Compounding effect:</strong> Each failed push adds another local-only merge commit.
+Over time the workspace's <code>main</code> diverges further from <code>origin/main</code>, making
+future merges and pushes increasingly unlikely to succeed.</p>
+<h3 id="g3-no-merge-conflict-recovery-strategy">G3. No Merge Conflict Recovery Strategy<a class="headerlink" href="#g3-no-merge-conflict-recovery-strategy" title="Permanent link">&para;</a></h3>
+<p>When <code>merge_branch()</code> detects conflicts, it aborts the merge and notifies the
+user. There is no automated attempt to:</p>
+<ol>
+<li>Rebase the task branch onto the latest <code>origin/main</code>.</li>
+<li>Retry the merge after the rebase.</li>
+<li>Create a PR instead (as a fallback for manual resolution).</li>
+</ol>
+<p>The agent's completed work is stranded on its task branch until a human
+resolves the conflict manually.</p>
+<h3 id="g4-retried-tasks-dont-rebase-onto-latest-main">G4. Retried Tasks Don't Rebase onto Latest Main<a class="headerlink" href="#g4-retried-tasks-dont-rebase-onto-latest-main" title="Permanent link">&para;</a></h3>
+<p>When <code>prepare_for_task()</code> finds the task branch already exists (retry after
+crash or failure), it falls back to <code>git checkout &lt;branch_name&gt;</code> without
+rebasing onto <code>origin/main</code>. The agent resumes work on code that may be
+many commits behind the current remote state.</p>
+<p>This applies to both the normal-clone and worktree paths in
+<code>prepare_for_task()</code>.</p>
+<h3 id="g5-no-force-with-lease-for-pr-branch-pushes-resolved">G5. No <code>--force-with-lease</code> for PR Branch Pushes — <strong>RESOLVED</strong><a class="headerlink" href="#g5-no-force-with-lease-for-pr-branch-pushes-resolved" title="Permanent link">&para;</a></h3>
+<p>~~<code>push_branch()</code> uses <code>git push origin &lt;branch&gt;</code>. On retry — where the branch
+was already pushed in a previous attempt — the push fails.~~</p>
+<p><strong>Resolution:</strong> <code>push_branch()</code> now accepts <code>force_with_lease=True</code>, which adds
+<code>--force-with-lease</code> to the push command. The orchestrator uses this when pushing
+task branches for PR creation, making retries idempotent while still preventing
+accidental overwrites of other people's changes.</p>
+<h3 id="g6-subtask-chains-accumulate-drift">G6. Subtask Chains Accumulate Drift<a class="headerlink" href="#g6-subtask-chains-accumulate-drift" title="Permanent link">&para;</a></h3>
+<p>Plan subtasks share a branch and commit sequentially via <code>switch_to_branch()</code>.
+While this correctly picks up the previous subtask's commits, it never rebases
+onto the latest <code>origin/main</code>. Over a long chain (5–10 subtasks), the branch
+drifts progressively further from <code>main</code>.</p>
+<p><strong>Example timeline:</strong>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>gitGraph
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    commit id: &quot;A&quot;
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    branch task-branch
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    commit id: &quot;X1&quot; tag: &quot;subtask 1&quot;
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    commit id: &quot;X2&quot; tag: &quot;subtask 2&quot;
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    commit id: &quot;X3&quot; tag: &quot;subtask 3&quot;
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    commit id: &quot;X4&quot; tag: &quot;subtask 4&quot;
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    checkout main
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    commit id: &quot;B&quot;
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    commit id: &quot;C&quot;
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    commit id: &quot;D&quot;
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    commit id: &quot;E&quot;
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    commit id: &quot;F&quot;
+</code></pre></div></p>
+<p>By the time the final subtask merges, the branch is 5 commits behind <code>main</code>
+and 4 commits ahead, maximizing conflict surface.</p>
+<h3 id="g7-link-repos-with-shared-filesystem">G7. LINK Repos with Shared Filesystem<a class="headerlink" href="#g7-link-repos-with-shared-filesystem" title="Permanent link">&para;</a></h3>
+<p>LINK repos use the source path directly as the workspace for all agents:
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>workspace = repo.source_path    # same for every agent
+</code></pre></div></p>
+<p>Without worktrees or per-agent clones, concurrent agents on a LINK repo
+share the git index, staging area, and working tree. Operations from one
+agent (e.g. <code>git checkout</code>, <code>git add -A</code>) directly interfere with the other.</p>
+<p><strong>Current mitigation:</strong> Low probability — most LINK projects are single-agent.
+But the system does not <em>enforce</em> this constraint, so it is a latent failure
+mode.</p>
+<hr />
+<h2 id="gap-summary">Gap Summary<a class="headerlink" href="#gap-summary" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Severity</th>
+<th>Single-Agent Impact</th>
+<th>Multi-Agent Impact</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>G1</td>
+<td>High</td>
+<td>None (only one pusher)</td>
+<td>Push failures on every non-first merge</td>
+</tr>
+<tr>
+<td>G2</td>
+<td>High</td>
+<td>None</td>
+<td>Cascading workspace drift after first push failure</td>
+</tr>
+<tr>
+<td>G3</td>
+<td>Medium</td>
+<td>Rare conflicts</td>
+<td>Frequent conflicts as main moves fast</td>
+</tr>
+<tr>
+<td>G4</td>
+<td>Medium</td>
+<td>Stale retry</td>
+<td>Stale retry with higher conflict risk</td>
+</tr>
+<tr>
+<td>G5</td>
+<td>~~Low~~</td>
+<td>~~Rare~~</td>
+<td><strong>RESOLVED</strong> — <code>push_branch</code> supports <code>--force-with-lease</code></td>
+</tr>
+<tr>
+<td>G6</td>
+<td>Medium</td>
+<td>No drift (only agent)</td>
+<td>Branch falls behind during long chains</td>
+</tr>
+<tr>
+<td>G7</td>
+<td>High</td>
+<td>N/A</td>
+<td>Filesystem corruption between concurrent agents</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["content.code.copy", "navigation.indexes", "navigation.top", "search.highlight", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

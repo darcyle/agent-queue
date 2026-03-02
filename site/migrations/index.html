@@ -1,0 +1,3222 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Documentation for Agent Queue — a task queue and orchestrator for AI coding agents">
+      
+      
+      
+        <link rel="canonical" href="https://electricjack.github.io/agent-queue/migrations/">
+      
+      
+        <link rel="prev" href="../discord-commands/">
+      
+      
+        <link rel="next" href="../git-sync-current-state/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.3">
+    
+    
+      
+        <title>Database Migrations - Agent Queue Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="amber">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#database-migrations-technical-debt-inventory" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Agent Queue Documentation" class="md-header__button md-logo" aria-label="Agent Queue Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Agent Queue Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Database Migrations
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="amber"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="deep-purple" data-md-color-accent="amber"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/ElectricJack/agent-queue" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    ElectricJack/agent-queue
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Agent Queue Documentation" class="md-nav__button md-logo" aria-label="Agent Queue Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Agent Queue Documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/ElectricJack/agent-queue" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    ElectricJack/agent-queue
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../discord-commands/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discord Commands
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Database Migrations
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Database Migrations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#legacy-tables-candidates-for-drop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Legacy Tables (candidates for DROP)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Legacy Tables (candidates for DROP)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#repos-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        repos table
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#agent_workspaces-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        agent_workspaces table
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#legacy-columns-candidates-for-drop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Legacy Columns (candidates for DROP)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Legacy Columns (candidates for DROP)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#agentscheckout_path-and-agentsrepo_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        agents.checkout_path and agents.repo_id
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#projectsworkspace_path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        projects.workspace_path
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#projectsdiscord_control_channel_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        projects.discord_control_channel_id
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#column-migrations-alter-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Column Migrations (ALTER TABLE)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-migration-methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data Migration Methods
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Data Migration Methods">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_migrate_agent_workspaces" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _migrate_agent_workspaces()
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_migrate_repos_to_projects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _migrate_repos_to_projects()
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_migrate_agent_workspaces_to_workspaces" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _migrate_agent_workspaces_to_workspaces()
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_cleanup_cross_project_workspaces" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _cleanup_cross_project_workspaces()
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#removal-checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Removal Checklist
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Removal Checklist">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#phase-1-drop-agent_workspaces-safest-highest-value" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 1: Drop agent_workspaces (safest, highest value)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-2-drop-repos-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 2: Drop repos table
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-3-drop-legacy-columns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 3: Drop legacy columns
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-4-clean-up-remaining-alter-migrations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 4: Clean up remaining ALTER migrations
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_3" id="__nav_4_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Git Sync
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Git Sync
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../git-sync-current-state/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Current State
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../git-sync-gaps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Identified Gaps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Specifications
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Specifications
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_1" id="__nav_5_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Core
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/models-and-state-machine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Models & State Machine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/main/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Main Entry Point
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/database/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Database
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_2" id="__nav_5_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Orchestration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Orchestration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/orchestrator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Orchestrator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/scheduler-and-budget/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scheduler & Budget
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/plan-parser/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plan Parser
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/hooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/event-bus/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Event Bus
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_3" id="__nav_5_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Interfaces
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Interfaces
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/chat-agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chat Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/command-handler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Command Handler
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/chat-providers/providers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chat Providers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_4" id="__nav_5_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Infrastructure
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Infrastructure
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/adapters/claude/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adapters — Claude
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../specs/git/git/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Git Manager
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../api/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_2" id="__nav_6_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Core
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/database/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Database
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/state_machine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    State Machine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/main/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Main
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_3" id="__nav_6_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Orchestration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Orchestration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/orchestrator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Orchestrator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/scheduler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scheduler
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/event_bus/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Event Bus
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/plan_parser/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plan Parser
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/hooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_4" id="__nav_6_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adapters
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Adapters
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/adapters/base/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Base Adapter
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/adapters/claude/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Claude Adapter
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_5" id="__nav_6_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chat Providers
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Chat Providers
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/chat_providers/anthropic/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Anthropic
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/chat_providers/ollama/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ollama
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_6" id="__nav_6_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discord
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Discord
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/discord/bot/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bot
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/discord/commands/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Commands
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/discord/notifications/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Notifications
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_7" id="__nav_6_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Git
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Git
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/git/manager/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Manager
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_8" id="__nav_6_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tokens
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Tokens
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/tokens/budget/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Budget
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/tokens/tracker/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tracker
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#legacy-tables-candidates-for-drop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Legacy Tables (candidates for DROP)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Legacy Tables (candidates for DROP)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#repos-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        repos table
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#agent_workspaces-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        agent_workspaces table
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#legacy-columns-candidates-for-drop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Legacy Columns (candidates for DROP)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Legacy Columns (candidates for DROP)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#agentscheckout_path-and-agentsrepo_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        agents.checkout_path and agents.repo_id
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#projectsworkspace_path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        projects.workspace_path
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#projectsdiscord_control_channel_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        projects.discord_control_channel_id
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#column-migrations-alter-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Column Migrations (ALTER TABLE)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-migration-methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data Migration Methods
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Data Migration Methods">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_migrate_agent_workspaces" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _migrate_agent_workspaces()
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_migrate_repos_to_projects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _migrate_repos_to_projects()
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_migrate_agent_workspaces_to_workspaces" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _migrate_agent_workspaces_to_workspaces()
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_cleanup_cross_project_workspaces" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        _cleanup_cross_project_workspaces()
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#removal-checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Removal Checklist
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Removal Checklist">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#phase-1-drop-agent_workspaces-safest-highest-value" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 1: Drop agent_workspaces (safest, highest value)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-2-drop-repos-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 2: Drop repos table
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-3-drop-legacy-columns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 3: Drop legacy columns
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-4-clean-up-remaining-alter-migrations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 4: Clean up remaining ALTER migrations
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="database-migrations-technical-debt-inventory">Database Migrations — Technical Debt Inventory<a class="headerlink" href="#database-migrations-technical-debt-inventory" title="Permanent link">&para;</a></h1>
+<p>All migrations run in <code>Database.initialize()</code> on every startup. They are
+idempotent (safe to re-run) but represent technical debt from schema evolution.
+This document catalogs every migration and its removal criteria.</p>
+<hr />
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Database.initialize()
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>├── SCHEMA (DDL)                          — CREATE TABLE IF NOT EXISTS (14 tables)
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>├── Column migrations (ALTER TABLE)       — 11 one-liners
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>├── Index creation                        — 2 indexes
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>├── _migrate_agent_workspaces()           — agents.checkout_path → agent_workspaces
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>├── _migrate_repos_to_projects()          — repos table → projects.repo_url columns
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>├── _migrate_agent_workspaces_to_workspaces()  — agent_workspaces → workspaces
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>├── _cleanup_cross_project_workspaces()   — fix stale cross-project entries
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>└── COMMIT
+</code></pre></div>
+<hr />
+<h2 id="legacy-tables-candidates-for-drop">Legacy Tables (candidates for DROP)<a class="headerlink" href="#legacy-tables-candidates-for-drop" title="Permanent link">&para;</a></h2>
+<h3 id="repos-table"><code>repos</code> table<a class="headerlink" href="#repos-table" title="Permanent link">&para;</a></h3>
+<p><strong>Schema location:</strong> <code>database.py</code> line ~57
+<strong>Created:</strong> Original schema
+<strong>Superseded by:</strong> <code>projects.repo_url</code> + <code>projects.repo_default_branch</code> columns
+<strong>Migration that replaced it:</strong> <code>_migrate_repos_to_projects()</code>
+<strong>Still referenced by:</strong>
+- <code>_migrate_repos_to_projects()</code> — reads from <code>repos</code> to populate project columns
+- <code>_migrate_agent_workspaces_to_workspaces()</code> — reads <code>repos.source_type</code>
+- <code>_cmd_get_task_diff()</code> in command_handler.py — fallback path resolution via <code>task.repo_id</code>
+- <code>_resolve_repo_path()</code> in command_handler.py — fallback when no workspace found
+- <code>Database.create_repo()</code>, <code>get_repo()</code>, <code>list_repos()</code>, <code>delete_repo()</code> — full CRUD still exists
+- <code>delete_project()</code> cascade — <code>DELETE FROM repos WHERE project_id = ?</code></p>
+<p><strong>Removal plan:</strong>
+1. Audit <code>_resolve_repo_path()</code> — replace <code>repo.source_path</code>/<code>repo.checkout_base_path</code> fallbacks with workspace lookups
+2. Remove <code>task.repo_id</code> column (and <code>tasks.repo_id</code> FK in schema)
+3. Remove <code>agents.repo_id</code> column from schema
+4. Remove all <code>Database.*_repo()</code> methods
+5. Drop <code>repos</code> table from SCHEMA
+6. Remove <code>_migrate_repos_to_projects()</code>
+7. Remove <code>RepoConfig</code> from models.py</p>
+<h3 id="agent_workspaces-table"><code>agent_workspaces</code> table<a class="headerlink" href="#agent_workspaces-table" title="Permanent link">&para;</a></h3>
+<p><strong>Schema location:</strong> <code>database.py</code> line ~179
+<strong>Created:</strong> Intermediate migration step (agents had per-project workspace assignments)
+<strong>Superseded by:</strong> <code>workspaces</code> table (project-scoped, agent-agnostic with dynamic locking)
+<strong>Migration that replaced it:</strong> <code>_migrate_agent_workspaces_to_workspaces()</code>
+<strong>Still referenced by:</strong>
+- <code>_migrate_agent_workspaces()</code> — writes into it from <code>agents.checkout_path</code>
+- <code>_migrate_agent_workspaces_to_workspaces()</code> — reads from it to populate <code>workspaces</code>
+- <code>delete_agent()</code> cascade — <code>DELETE FROM agent_workspaces WHERE agent_id = ?</code>
+- <code>delete_project()</code> cascade — <code>DELETE FROM agent_workspaces WHERE project_id = ?</code></p>
+<p><strong>Known bug (fixed):</strong> This table contained a stale row mapping
+<code>(agent-queue-worker, moss-and-spade-inventory-manager) → /mnt/d/Dev/agent-queue2</code>
+which caused the migration to re-create a bogus workspace entry on every restart,
+sending agents to the wrong project directory.</p>
+<p><strong>Removal plan:</strong>
+1. Remove <code>_migrate_agent_workspaces()</code> method
+2. Remove <code>_migrate_agent_workspaces_to_workspaces()</code> method
+3. Remove cascade DELETEs in <code>delete_agent()</code> and <code>delete_project()</code>
+4. Drop <code>agent_workspaces</code> table from SCHEMA</p>
+<hr />
+<h2 id="legacy-columns-candidates-for-drop">Legacy Columns (candidates for DROP)<a class="headerlink" href="#legacy-columns-candidates-for-drop" title="Permanent link">&para;</a></h2>
+<h3 id="agentscheckout_path-and-agentsrepo_id"><code>agents.checkout_path</code> and <code>agents.repo_id</code><a class="headerlink" href="#agentscheckout_path-and-agentsrepo_id" title="Permanent link">&para;</a></h3>
+<p><strong>Schema location:</strong> <code>database.py</code> line ~125-126
+<strong>Superseded by:</strong> <code>workspaces</code> table (agents acquire workspace locks dynamically)
+<strong>Migration that reads it:</strong> <code>_migrate_agent_workspaces()</code> — copies to <code>agent_workspaces</code>
+<strong>Removal plan:</strong> Drop columns from SCHEMA DDL. The migration already checks
+<code>if "checkout_path" not in columns: return</code> so it's safe to remove the column first.</p>
+<h3 id="projectsworkspace_path"><code>projects.workspace_path</code><a class="headerlink" href="#projectsworkspace_path" title="Permanent link">&para;</a></h3>
+<p><strong>Schema location:</strong> <code>database.py</code> line ~51
+<strong>Superseded by:</strong> <code>workspaces</code> table
+<strong>Column migration:</strong> <code>ALTER TABLE projects ADD COLUMN workspace_path TEXT</code> (line ~299)
+<strong>Still referenced by:</strong> Only the schema DDL and the ALTER migration. No production code reads it.
+<strong>Removal plan:</strong> Remove from SCHEMA DDL and remove the ALTER migration line.</p>
+<h3 id="projectsdiscord_control_channel_id"><code>projects.discord_control_channel_id</code><a class="headerlink" href="#projectsdiscord_control_channel_id" title="Permanent link">&para;</a></h3>
+<p><strong>Schema location:</strong> <code>database.py</code> line ~53 (in DDL after ALTER migration)
+<strong>Column migration:</strong> line ~305
+<strong>Status:</strong> Appears unused — <code>discord_channel_id</code> is the only channel column used in production.
+<strong>Removal plan:</strong> Verify no code reads it, then remove from SCHEMA and migrations.</p>
+<hr />
+<h2 id="column-migrations-alter-table">Column Migrations (ALTER TABLE)<a class="headerlink" href="#column-migrations-alter-table" title="Permanent link">&para;</a></h2>
+<p>All in <code>Database.initialize()</code> lines ~298-311. Each runs in a try/except that
+swallows "column already exists" errors.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Migration SQL</th>
+<th>Target</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>ALTER TABLE projects ADD COLUMN workspace_path TEXT</code></td>
+<td><code>projects</code></td>
+<td><strong>Removable</strong> — superseded by <code>workspaces</code> table</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>ALTER TABLE repos ADD COLUMN source_type TEXT NOT NULL DEFAULT 'clone'</code></td>
+<td><code>repos</code></td>
+<td><strong>Removable</strong> when <code>repos</code> table is dropped</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>ALTER TABLE repos ADD COLUMN source_path TEXT NOT NULL DEFAULT ''</code></td>
+<td><code>repos</code></td>
+<td><strong>Removable</strong> when <code>repos</code> table is dropped</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>ALTER TABLE tasks ADD COLUMN requires_approval INTEGER NOT NULL DEFAULT 0</code></td>
+<td><code>tasks</code></td>
+<td><strong>Keep</strong> — already in SCHEMA DDL, but migration needed for pre-existing DBs</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>ALTER TABLE tasks ADD COLUMN pr_url TEXT</code></td>
+<td><code>tasks</code></td>
+<td><strong>Keep</strong> — same</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>ALTER TABLE projects ADD COLUMN discord_channel_id TEXT</code></td>
+<td><code>projects</code></td>
+<td><strong>Keep</strong> — actively used</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>ALTER TABLE projects ADD COLUMN discord_control_channel_id TEXT</code></td>
+<td><code>projects</code></td>
+<td><strong>Removable</strong> — appears unused</td>
+</tr>
+<tr>
+<td>8</td>
+<td><code>ALTER TABLE tasks ADD COLUMN plan_source TEXT</code></td>
+<td><code>tasks</code></td>
+<td><strong>Keep</strong> — actively used</td>
+</tr>
+<tr>
+<td>9</td>
+<td><code>ALTER TABLE tasks ADD COLUMN is_plan_subtask INTEGER NOT NULL DEFAULT 0</code></td>
+<td><code>tasks</code></td>
+<td><strong>Keep</strong> — actively used</td>
+</tr>
+<tr>
+<td>10</td>
+<td><code>ALTER TABLE tasks ADD COLUMN task_type TEXT</code></td>
+<td><code>tasks</code></td>
+<td><strong>Keep</strong> — actively used</td>
+</tr>
+<tr>
+<td>11</td>
+<td><code>ALTER TABLE projects ADD COLUMN repo_url TEXT DEFAULT ''</code></td>
+<td><code>projects</code></td>
+<td><strong>Keep</strong> — actively used</td>
+</tr>
+<tr>
+<td>12</td>
+<td><code>ALTER TABLE projects ADD COLUMN repo_default_branch TEXT DEFAULT 'main'</code></td>
+<td><code>projects</code></td>
+<td><strong>Keep</strong> — actively used</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Note:</strong> Migrations 4-12 are technically no-ops for new databases (the columns
+are already in the SCHEMA DDL) but are needed for databases created before those
+columns were added. Once all production databases have been migrated, they can
+be removed.</p>
+<hr />
+<h2 id="data-migration-methods">Data Migration Methods<a class="headerlink" href="#data-migration-methods" title="Permanent link">&para;</a></h2>
+<h3 id="_migrate_agent_workspaces"><code>_migrate_agent_workspaces()</code><a class="headerlink" href="#_migrate_agent_workspaces" title="Permanent link">&para;</a></h3>
+<p><strong>Location:</strong> <code>database.py</code> line ~337
+<strong>Purpose:</strong> Copy <code>agents.checkout_path</code> + <code>agents.repo_id</code> into <code>agent_workspaces</code> table
+<strong>Source:</strong> <code>agents</code> table (columns: <code>checkout_path</code>, <code>repo_id</code>, <code>current_task_id</code>)
+<strong>Destination:</strong> <code>agent_workspaces</code> table
+<strong>Guard:</strong> Returns early if <code>checkout_path</code> column no longer exists in <code>agents</code>
+<strong>Status:</strong> <strong>Removable</strong> — intermediate step, feeds into <code>_migrate_agent_workspaces_to_workspaces</code></p>
+<h3 id="_migrate_repos_to_projects"><code>_migrate_repos_to_projects()</code><a class="headerlink" href="#_migrate_repos_to_projects" title="Permanent link">&para;</a></h3>
+<p><strong>Location:</strong> <code>database.py</code> line ~420
+<strong>Purpose:</strong> Copy first repo's <code>url</code>/<code>default_branch</code> into <code>projects.repo_url</code>/<code>repo_default_branch</code>
+<strong>Source:</strong> <code>repos</code> table
+<strong>Destination:</strong> <code>projects</code> table
+<strong>Guard:</strong> Only writes to projects where <code>repo_url IS NULL OR repo_url = ''</code>
+<strong>Status:</strong> <strong>Removable</strong> once <code>repos</code> table is dropped and all projects have <code>repo_url</code> populated</p>
+<h3 id="_migrate_agent_workspaces_to_workspaces"><code>_migrate_agent_workspaces_to_workspaces()</code><a class="headerlink" href="#_migrate_agent_workspaces_to_workspaces" title="Permanent link">&para;</a></h3>
+<p><strong>Location:</strong> <code>database.py</code> line ~444
+<strong>Purpose:</strong> Deduplicate <code>agent_workspaces</code> rows into the canonical <code>workspaces</code> table
+<strong>Source:</strong> <code>agent_workspaces</code> table
+<strong>Destination:</strong> <code>workspaces</code> table
+<strong>Guard:</strong> <code>INSERT OR IGNORE</code> + <code>UNIQUE(project_id, workspace_path)</code> constraint. Skips entries where workspace path belongs to a different project.
+<strong>Status:</strong> <strong>Removable</strong> once <code>agent_workspaces</code> table is dropped</p>
+<h3 id="_cleanup_cross_project_workspaces"><code>_cleanup_cross_project_workspaces()</code><a class="headerlink" href="#_cleanup_cross_project_workspaces" title="Permanent link">&para;</a></h3>
+<p><strong>Location:</strong> <code>database.py</code> line ~500
+<strong>Purpose:</strong> Remove workspace entries where the same path is claimed by multiple projects
+<strong>Trigger:</strong> Runs every startup to catch stale data from old migrations
+<strong>Status:</strong> <strong>Keep for now</strong> — defensive cleanup. Can be removed once <code>agent_workspaces</code> table (the source of bad data) is dropped.</p>
+<hr />
+<h2 id="removal-checklist">Removal Checklist<a class="headerlink" href="#removal-checklist" title="Permanent link">&para;</a></h2>
+<p>When you're ready to clean up, do this in order:</p>
+<h3 id="phase-1-drop-agent_workspaces-safest-highest-value">Phase 1: Drop <code>agent_workspaces</code> (safest, highest value)<a class="headerlink" href="#phase-1-drop-agent_workspaces-safest-highest-value" title="Permanent link">&para;</a></h3>
+<ul>
+<li>[ ] Remove <code>_migrate_agent_workspaces()</code> method</li>
+<li>[ ] Remove <code>_migrate_agent_workspaces_to_workspaces()</code> method</li>
+<li>[ ] Remove <code>_cleanup_cross_project_workspaces()</code> method (no longer needed)</li>
+<li>[ ] Remove <code>DELETE FROM agent_workspaces</code> in <code>delete_agent()</code> and <code>delete_project()</code></li>
+<li>[ ] Remove <code>agent_workspaces</code> from SCHEMA DDL</li>
+<li>[ ] Remove migration call chain from <code>initialize()</code></li>
+</ul>
+<h3 id="phase-2-drop-repos-table">Phase 2: Drop <code>repos</code> table<a class="headerlink" href="#phase-2-drop-repos-table" title="Permanent link">&para;</a></h3>
+<ul>
+<li>[ ] Refactor <code>_resolve_repo_path()</code> to use only <code>workspaces</code> table (no <code>repos</code> fallback)</li>
+<li>[ ] Remove <code>task.repo_id</code> usage — grep for <code>repo_id</code> in command_handler.py and orchestrator.py</li>
+<li>[ ] Remove <code>Database.create_repo()</code>, <code>get_repo()</code>, <code>list_repos()</code>, <code>delete_repo()</code></li>
+<li>[ ] Remove <code>_migrate_repos_to_projects()</code> method</li>
+<li>[ ] Remove <code>DELETE FROM repos</code> in <code>delete_project()</code></li>
+<li>[ ] Remove <code>repos</code> from SCHEMA DDL</li>
+<li>[ ] Remove <code>RepoConfig</code> from models.py</li>
+<li>[ ] Remove ALTER TABLE migrations #2 and #3</li>
+</ul>
+<h3 id="phase-3-drop-legacy-columns">Phase 3: Drop legacy columns<a class="headerlink" href="#phase-3-drop-legacy-columns" title="Permanent link">&para;</a></h3>
+<ul>
+<li>[ ] Remove <code>agents.checkout_path</code> and <code>agents.repo_id</code> from SCHEMA DDL</li>
+<li>[ ] Remove <code>projects.workspace_path</code> from SCHEMA DDL + ALTER migration #1</li>
+<li>[ ] Remove <code>projects.discord_control_channel_id</code> from SCHEMA DDL + ALTER migration #7</li>
+<li>[ ] Remove <code>tasks.repo_id</code> from SCHEMA DDL</li>
+</ul>
+<h3 id="phase-4-clean-up-remaining-alter-migrations">Phase 4: Clean up remaining ALTER migrations<a class="headerlink" href="#phase-4-clean-up-remaining-alter-migrations" title="Permanent link">&para;</a></h3>
+<ul>
+<li>[ ] Once confident all production DBs have the columns, remove migrations #4-12</li>
+<li>[ ] The SCHEMA DDL alone is sufficient for new databases</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["content.code.copy", "navigation.indexes", "navigation.top", "search.highlight", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
