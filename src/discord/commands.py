@@ -23,7 +23,7 @@ from src.discord.embeds import (
     truncate, progress_bar, format_tree_task,
     TREE_PIPE, TREE_SPACE, LIMIT_FIELD_VALUE,
 )
-from src.models import DashboardConfig, TaskStatus, WidgetVisibility
+from src.models import TaskStatus
 
 _NOTES_PER_PAGE = 20  # Max note buttons (4 rows × 5 buttons)
 
@@ -623,12 +623,6 @@ def setup_commands(bot: commands.Bot) -> None:
 
         Displays tasks grouped by status with tree-view for parent/subtask
         relationships and type tags for quick identification.
-
-        When a ``dashboard_config`` is provided the view filters widgets
-        according to per-widget privacy settings.  The ``viewer_user_id``
-        is compared to the dashboard owner to decide what to show.  The
-        ``task_list`` widget id controls whether the task list section is
-        visible, and ``task_progress`` controls the progress bar.
         """
 
         def __init__(
@@ -637,14 +631,10 @@ def setup_commands(bot: commands.Bot) -> None:
             total: int,
             *,
             all_tasks: list | None = None,
-            dashboard_config: DashboardConfig | None = None,
-            viewer_user_id: str | None = None,
         ) -> None:
             super().__init__(timeout=600)
             self.tasks_by_status = tasks_by_status
             self.total = total
-            self.dashboard_config = dashboard_config
-            self.viewer_user_id = viewer_user_id or ""
             # Build parent→subtask lookup for tree view
             self._all_tasks = all_tasks or []
             self._subtask_ids: set[str] = set()
@@ -665,31 +655,6 @@ def setup_commands(bot: commands.Bot) -> None:
                         self.expanded.add(status)
                         break
             self._rebuild_components()
-
-        def _is_widget_visible(self, widget_id: str) -> bool:
-            """Check if a widget should display its content to the current viewer."""
-            if not self.dashboard_config:
-                return True
-            return self.dashboard_config.is_widget_visible(
-                widget_id, self.viewer_user_id,
-            )
-
-        def _get_widget_placeholder(self, widget_id: str) -> str | None:
-            """Return placeholder text for a private widget, or None."""
-            if not self.dashboard_config:
-                return None
-            return self.dashboard_config.get_widget_placeholder(widget_id)
-
-        def _get_widget_visibility(self, widget_id: str) -> WidgetVisibility:
-            """Return the visibility setting for a widget."""
-            if not self.dashboard_config:
-                return WidgetVisibility.VISIBLE
-            wc = self.dashboard_config.get_widget_config(widget_id)
-            if wc is None:
-                return WidgetVisibility.VISIBLE
-            if self.viewer_user_id == self.dashboard_config.owner_user_id:
-                return WidgetVisibility.VISIBLE
-            return wc.visibility
 
         def _get_type_tag(self, task: dict) -> str:
             """Return a type tag emoji based on task properties."""
@@ -766,83 +731,62 @@ def setup_commands(bot: commands.Bot) -> None:
 
         def build_content(self) -> str:
             lines: list[str] = []
-
-            # -- Progress summary widget -----------------------------------------
-            progress_visibility = self._get_widget_visibility("task_progress")
-            if progress_visibility == WidgetVisibility.COLLAPSED:
-                lines.append("📊 **Progress** — 🔒 _collapsed_")
-                lines.append("")
-            elif progress_visibility == WidgetVisibility.OWNER_ONLY:
-                placeholder = self._get_widget_placeholder("task_progress")
-                lines.append(placeholder or "🔒 This widget is private")
-                lines.append("")
-            else:
-                # Add progress summary at top — use _all_tasks for accurate totals
-                # since tasks_by_status may be filtered (e.g. completed hidden).
-                if self._all_tasks:
-                    all_count = len(self._all_tasks)
-                    completed_count = sum(
-                        1 for t in self._all_tasks if t.get("status") == "COMPLETED"
-                    )
-                else:
-                    all_count = sum(len(v) for v in self.tasks_by_status.values())
-                    completed_count = len(self.tasks_by_status.get("COMPLETED", []))
-                active_statuses = {"IN_PROGRESS", "ASSIGNED", "VERIFYING"}
-                active_count = sum(
-                    len(self.tasks_by_status.get(s, []))
-                    for s in active_statuses
+            # Add progress summary at top — use _all_tasks for accurate totals
+            # since tasks_by_status may be filtered (e.g. completed hidden).
+            if self._all_tasks:
+                all_count = len(self._all_tasks)
+                completed_count = sum(
+                    1 for t in self._all_tasks if t.get("status") == "COMPLETED"
                 )
-                if all_count > 0:
-                    bar = progress_bar(completed_count, all_count, width=10)
-                    lines.append(f"**Progress:** {bar}")
-                    if active_count:
-                        lines.append(f"**Active:** {active_count} task(s) running")
-                    lines.append("")
-
-            # -- Task list widget ------------------------------------------------
-            task_list_visibility = self._get_widget_visibility("task_list")
-            if task_list_visibility == WidgetVisibility.COLLAPSED:
-                total_count = sum(len(v) for v in self.tasks_by_status.values())
-                lines.append(f"📋 **Task List** ({total_count} tasks) — 🔒 _collapsed_")
-            elif task_list_visibility == WidgetVisibility.OWNER_ONLY:
-                placeholder = self._get_widget_placeholder("task_list")
-                lines.append(placeholder or "🔒 This widget is private")
             else:
-                for status in _STATUS_ORDER:
-                    if status not in self.tasks_by_status:
-                        continue
-                    tasks = self.tasks_by_status[status]
-                    emoji = _STATUS_EMOJIS.get(status, "⚪")
-                    display = _STATUS_DISPLAY.get(status, status)
-                    count = len(tasks)
-                    if status in self.expanded:
-                        lines.append(f"### {emoji} {display} ({count})")
-                        shown = tasks[:_MAX_TASKS_PER_SECTION]
-                        for t in shown:
-                            # Skip subtasks that are shown under their parent
-                            if t["id"] in self._subtask_ids:
-                                # Only skip if parent is in the same expanded section
-                                parent_id = t.get("parent_task_id")
-                                parent_in_section = any(
-                                    pt["id"] == parent_id
-                                    for pt in self.tasks_by_status.get(status, [])
-                                )
-                                if parent_in_section:
-                                    continue
-                            task_lines = self._format_task_line(t)
-                            lines.extend(task_lines)
-                        if count > _MAX_TASKS_PER_SECTION:
-                            lines.append(
-                                f"_...and {count - _MAX_TASKS_PER_SECTION} more_"
-                            )
-                        lines.append("")
-                    else:
-                        lines.append(f"{emoji} **{display}** ({count})")
+                all_count = sum(len(v) for v in self.tasks_by_status.values())
+                completed_count = len(self.tasks_by_status.get("COMPLETED", []))
+            active_statuses = {"IN_PROGRESS", "ASSIGNED", "VERIFYING"}
+            active_count = sum(
+                len(self.tasks_by_status.get(s, []))
+                for s in active_statuses
+            )
+            if all_count > 0:
+                bar = progress_bar(completed_count, all_count, width=10)
+                lines.append(f"**Progress:** {bar}")
+                if active_count:
+                    lines.append(f"**Active:** {active_count} task(s) running")
+                lines.append("")
 
+            for status in _STATUS_ORDER:
+                if status not in self.tasks_by_status:
+                    continue
+                tasks = self.tasks_by_status[status]
+                emoji = _STATUS_EMOJIS.get(status, "⚪")
+                display = _STATUS_DISPLAY.get(status, status)
+                count = len(tasks)
+                if status in self.expanded:
+                    lines.append(f"### {emoji} {display} ({count})")
+                    shown = tasks[:_MAX_TASKS_PER_SECTION]
+                    for t in shown:
+                        # Skip subtasks that are shown under their parent
+                        if t["id"] in self._subtask_ids:
+                            # Only skip if parent is in the same expanded section
+                            parent_id = t.get("parent_task_id")
+                            parent_in_section = any(
+                                pt["id"] == parent_id
+                                for pt in self.tasks_by_status.get(status, [])
+                            )
+                            if parent_in_section:
+                                continue
+                        task_lines = self._format_task_line(t)
+                        lines.extend(task_lines)
+                    if count > _MAX_TASKS_PER_SECTION:
+                        lines.append(
+                            f"_...and {count - _MAX_TASKS_PER_SECTION} more_"
+                        )
+                    lines.append("")
+                else:
+                    lines.append(f"{emoji} **{display}** ({count})")
             content = "\n".join(lines)
             # Trim if over Discord's 2000-char message limit.
             # Progressively reduce the per-section cap until content fits.
-            if len(content) > 1950 and task_list_visibility == WidgetVisibility.VISIBLE:
+            if len(content) > 1950:
                 for cap in (8, 4, 2):
                     lines = []
                     for status in _STATUS_ORDER:
@@ -1718,19 +1662,7 @@ def setup_commands(bot: commands.Bot) -> None:
                 all_tasks = all_result.get("tasks", [])
             else:
                 all_tasks = tasks
-            # Load dashboard config for widget privacy filtering
-            dash_config = None
-            if project_id:
-                dash_config = await handler.orchestrator.db.get_dashboard_config(
-                    project_id,
-                )
-            viewer_id = str(interaction.user.id)
-            view_widget = TaskReportView(
-                tasks_by_status, total,
-                all_tasks=all_tasks,
-                dashboard_config=dash_config,
-                viewer_user_id=viewer_id,
-            )
+            view_widget = TaskReportView(tasks_by_status, total, all_tasks=all_tasks)
             content = view_widget.build_content()
             await interaction.followup.send(content, view=view_widget)
         except Exception as e:
@@ -3833,214 +3765,3 @@ def setup_commands(bot: commands.Bot) -> None:
         await _send_warning(interaction, "Restarting", description="Agent-queue daemon is restarting…")
         bot._restart_requested = True
         await handler.execute("restart_daemon", {})
-
-    # ===================================================================
-    # WIDGET PRIVACY COMMANDS
-    # ===================================================================
-
-    @bot.tree.command(
-        name="widget-privacy",
-        description="Set a widget's visibility (owner_only, collapsed, or visible)",
-    )
-    @app_commands.describe(
-        widget_id="Widget to configure (e.g. task_list, task_progress, budget, token_usage)",
-        visibility="Who can see this widget",
-        placeholder_text="Custom placeholder text for owner_only widgets",
-        project_id="Target project (defaults to current channel's project)",
-    )
-    @app_commands.choices(
-        visibility=[
-            app_commands.Choice(name="Owner Only — show placeholder to others", value="owner_only"),
-            app_commands.Choice(name="Collapsed — hide content, show title only", value="collapsed"),
-            app_commands.Choice(name="Visible — show to everyone", value="visible"),
-        ],
-        widget_id=[
-            app_commands.Choice(name="Task List", value="task_list"),
-            app_commands.Choice(name="Task Progress", value="task_progress"),
-            app_commands.Choice(name="Budget / Token Usage", value="budget"),
-            app_commands.Choice(name="Token Usage Breakdown", value="token_usage"),
-        ],
-    )
-    async def widget_privacy_command(
-        interaction: discord.Interaction,
-        widget_id: app_commands.Choice[str],
-        visibility: app_commands.Choice[str],
-        placeholder_text: str | None = None,
-        project_id: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-
-        args: dict = {
-            "project_id": project_id,
-            "widget_id": widget_id.value,
-            "visibility": visibility.value,
-            "owner_user_id": str(interaction.user.id),
-        }
-        if placeholder_text:
-            args["placeholder_text"] = placeholder_text
-
-        result = await handler.execute("set_widget_privacy", args)
-        if "error" in result:
-            await _send_error(interaction, result["error"])
-            return
-
-        vis_display = {
-            "owner_only": "🔒 Owner Only",
-            "collapsed": "📦 Collapsed",
-            "visible": "👁 Visible",
-        }.get(visibility.value, visibility.value)
-
-        await _send_success(
-            interaction,
-            "Widget Privacy Updated",
-            description=(
-                f"**Widget:** {widget_id.name}\n"
-                f"**Visibility:** {vis_display}\n"
-                f"**Project:** `{project_id}`"
-            ),
-        )
-
-    @bot.tree.command(
-        name="widget-privacy-list",
-        description="List all widget privacy settings for the current project",
-    )
-    @app_commands.describe(
-        project_id="Target project (defaults to current channel's project)",
-    )
-    async def widget_privacy_list_command(
-        interaction: discord.Interaction,
-        project_id: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-
-        result = await handler.execute("list_widget_privacy", {
-            "project_id": project_id,
-        })
-        if "error" in result:
-            await _send_error(interaction, result["error"])
-            return
-
-        widgets = result.get("widgets", [])
-        owner = result.get("owner_user_id")
-
-        if not widgets:
-            await _send_info(
-                interaction,
-                "No Widget Privacy Settings",
-                description=(
-                    f"Project `{project_id}` has no widget privacy settings configured.\n"
-                    "All widgets are visible to everyone.\n\n"
-                    "Use `/widget-privacy` to restrict a widget."
-                ),
-            )
-            return
-
-        vis_icons = {
-            "owner_only": "🔒",
-            "collapsed": "📦",
-            "visible": "👁",
-        }
-        lines = []
-        if owner:
-            lines.append(f"**Dashboard Owner:** <@{owner}>")
-            lines.append("")
-        for w in widgets:
-            icon = vis_icons.get(w["visibility"], "❓")
-            lines.append(
-                f"{icon} **{w['widget_id']}** — {w['visibility']}"
-            )
-            if w["visibility"] == "owner_only" and w.get("placeholder_text"):
-                lines.append(f"  _Placeholder: {w['placeholder_text']}_")
-
-        await _send_info(
-            interaction,
-            f"Widget Privacy — `{project_id}`",
-            description="\n".join(lines),
-        )
-
-    @bot.tree.command(
-        name="widget-privacy-remove",
-        description="Remove privacy settings for a widget (make it visible)",
-    )
-    @app_commands.describe(
-        widget_id="Widget to make visible again",
-        project_id="Target project (defaults to current channel's project)",
-    )
-    @app_commands.choices(widget_id=[
-        app_commands.Choice(name="Task List", value="task_list"),
-        app_commands.Choice(name="Task Progress", value="task_progress"),
-        app_commands.Choice(name="Budget / Token Usage", value="budget"),
-        app_commands.Choice(name="Token Usage Breakdown", value="token_usage"),
-    ])
-    async def widget_privacy_remove_command(
-        interaction: discord.Interaction,
-        widget_id: app_commands.Choice[str],
-        project_id: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-
-        result = await handler.execute("remove_widget_privacy", {
-            "project_id": project_id,
-            "widget_id": widget_id.value,
-        })
-        if "error" in result:
-            await _send_error(interaction, result["error"])
-            return
-
-        await _send_success(
-            interaction,
-            "Widget Privacy Removed",
-            description=(
-                f"**Widget:** {widget_id.name}\n"
-                f"**Visibility:** 👁 Visible (default)\n"
-                f"**Project:** `{project_id}`"
-            ),
-        )
-
-    @bot.tree.command(
-        name="dashboard-owner",
-        description="Set the dashboard owner for a project (controls who sees private widgets)",
-    )
-    @app_commands.describe(
-        user="The user who should own the dashboard",
-        project_id="Target project (defaults to current channel's project)",
-    )
-    async def dashboard_owner_command(
-        interaction: discord.Interaction,
-        user: discord.User,
-        project_id: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project_id)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-
-        result = await handler.execute("set_dashboard_owner", {
-            "project_id": project_id,
-            "owner_user_id": str(user.id),
-        })
-        if "error" in result:
-            await _send_error(interaction, result["error"])
-            return
-
-        status = result.get("status", "updated")
-        await _send_success(
-            interaction,
-            "Dashboard Owner Set",
-            description=(
-                f"**Owner:** {user.mention}\n"
-                f"**Project:** `{project_id}`\n"
-                f"**Status:** {status}\n\n"
-                f"This user will always see all widgets. "
-                f"Other users will see widgets filtered by privacy settings."
-            ),
-        )
