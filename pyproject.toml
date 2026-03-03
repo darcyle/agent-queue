@@ -30,6 +30,10 @@ where = ["."]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "functional: tests that launch real Claude CLI (require auth + API key)",
+    "functional_mcp: functional tests requiring npm/npx for MCP servers",
+]
 
 [tool.ruff]
 target-version = "py312"

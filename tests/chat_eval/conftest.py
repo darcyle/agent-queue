@@ -29,7 +29,13 @@ class MockAdapter(AgentAdapter):
 
 
 class MockAdapterFactory:
-    def create(self, agent_type: str) -> AgentAdapter:
+    def __init__(self):
+        self.last_profile = None
+        self.create_calls = []
+
+    def create(self, agent_type: str, profile=None) -> AgentAdapter:
+        self.last_profile = profile
+        self.create_calls.append({"agent_type": agent_type, "profile": profile})
         return MockAdapter()
 
 

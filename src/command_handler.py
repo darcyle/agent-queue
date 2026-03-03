@@ -31,7 +31,7 @@ from src.discord.embeds import STATUS_EMOJIS, progress_bar
 from src.discord.notifications import classify_error
 from src.git.manager import GitError
 from src.models import (
-    Agent, AgentState, Hook, Project, ProjectStatus, RepoSourceType,
+    Agent, AgentProfile, AgentState, Hook, Project, ProjectStatus, RepoSourceType,
     Task, TaskStatus, TaskType, VerificationType, TASK_TYPE_VALUES, Workspace,
 )
 from src.orchestrator import Orchestrator
@@ -833,11 +833,19 @@ class CommandHandler:
             updates["budget_limit"] = args["budget_limit"]
         if "discord_channel_id" in args:
             updates["discord_channel_id"] = args["discord_channel_id"]
+        if "default_profile_id" in args:
+            dpid = args["default_profile_id"]
+            if dpid is not None:
+                profile = await self.db.get_profile(dpid)
+                if not profile:
+                    return {"error": f"Profile '{dpid}' not found"}
+            updates["default_profile_id"] = dpid  # None clears it
         if not updates:
             return {
                 "error": (
                     "No fields to update. Provide name, credit_weight, "
-                    "max_concurrent_agents, budget_limit, or discord_channel_id."
+                    "max_concurrent_agents, budget_limit, discord_channel_id, "
+                    "or default_profile_id."
                 )
             }
         await self.db.update_project(pid, **updates)
@@ -1633,6 +1641,12 @@ class CommandHandler:
             else:
                 return {"error": f"Invalid task_type '{raw_task_type}'. "
                         f"Allowed: {', '.join(sorted(TASK_TYPE_VALUES))}"}
+        # Validate optional profile_id
+        profile_id = args.get("profile_id")
+        if profile_id:
+            profile = await self.db.get_profile(profile_id)
+            if not profile:
+                return {"error": f"Profile '{profile_id}' not found"}
         task = Task(
             id=task_id,
             project_id=project_id,
@@ -1643,6 +1657,7 @@ class CommandHandler:
             repo_id=repo_id,
             requires_approval=requires_approval,
             task_type=task_type,
+            profile_id=profile_id,
         )
         await self.db.create_task(task)
         result = {
@@ -1656,6 +1671,8 @@ class CommandHandler:
             result["requires_approval"] = True
         if task_type:
             result["task_type"] = task_type.value
+        if profile_id:
+            result["profile_id"] = profile_id
         return result
 
     async def _cmd_get_task(self, args: dict) -> dict:
@@ -1676,6 +1693,7 @@ class CommandHandler:
             "is_plan_subtask": task.is_plan_subtask,
             "task_type": task.task_type.value if task.task_type else None,
             "parent_task_id": task.parent_task_id,
+            "profile_id": task.profile_id,
         }
         if task.pr_url:
             info["pr_url"] = task.pr_url
@@ -1906,6 +1924,13 @@ class CommandHandler:
                 updates["verification_type"] = VerificationType(raw_vt)
             else:
                 return {"error": f"Invalid verification_type '{raw_vt}'. Allowed: {', '.join(sorted(VERIFICATION_VALUES))}"}
+        if "profile_id" in args:
+            pid = args["profile_id"]
+            if pid is not None:
+                profile = await self.db.get_profile(pid)
+                if not profile:
+                    return {"error": f"Profile '{pid}' not found"}
+            updates["profile_id"] = pid  # None clears the profile
 
         if updates:
             await self.db.update_task(args["task_id"], **updates)
@@ -1918,7 +1943,7 @@ class CommandHandler:
             return {
                 "error": (
                     "No fields to update. Provide title, description, priority, "
-                    "task_type, status, max_retries, or verification_type."
+                    "task_type, status, max_retries, verification_type, or profile_id."
                 )
             }
 
@@ -3839,3 +3864,466 @@ class CommandHandler:
             return {"results": output, "mode": mode}
         except subprocess.TimeoutExpired:
             return {"error": "Search timed out"}
+
+    # -----------------------------------------------------------------------
+    # Agent Profile commands -- CRUD for capability bundles that configure
+    # agents with specific tools, MCP servers, and system prompt overrides.
+    # -----------------------------------------------------------------------
+
+    async def _cmd_list_profiles(self, args: dict) -> dict:
+        profiles = await self.db.list_profiles()
+        if not profiles:
+            return {"profiles": [], "count": 0}
+        return {
+            "profiles": [
+                {
+                    "id": p.id,
+                    "name": p.name,
+                    "description": p.description,
+                    "model": p.model or "(default)",
+                    "allowed_tools": p.allowed_tools,
+                    "mcp_servers": list(p.mcp_servers.keys()) if p.mcp_servers else [],
+                    "has_system_prompt": bool(p.system_prompt_suffix),
+                }
+                for p in profiles
+            ],
+            "count": len(profiles),
+        }
+
+    async def _cmd_create_profile(self, args: dict) -> dict:
+        profile_id = args.get("id", "").strip()
+        name = args.get("name", "").strip()
+        if not profile_id:
+            return {"error": "Profile id is required"}
+        if not name:
+            return {"error": "Profile name is required"}
+
+        existing = await self.db.get_profile(profile_id)
+        if existing:
+            return {"error": f"Profile '{profile_id}' already exists"}
+
+        profile = AgentProfile(
+            id=profile_id,
+            name=name,
+            description=args.get("description", ""),
+            model=args.get("model", ""),
+            permission_mode=args.get("permission_mode", ""),
+            allowed_tools=args.get("allowed_tools", []),
+            mcp_servers=args.get("mcp_servers", {}),
+            system_prompt_suffix=args.get("system_prompt_suffix", ""),
+            install=args.get("install", {}),
+        )
+        await self.db.create_profile(profile)
+        result: dict = {"created": profile_id, "name": name}
+        # Soft validation — warn about unrecognized tool names
+        from src.known_tools import validate_tool_names
+        unknown = validate_tool_names(profile.allowed_tools)
+        if unknown:
+            result["warnings"] = [
+                f"Unrecognized tools (will still be set): {', '.join(unknown)}"
+            ]
+        return result
+
+    async def _cmd_get_profile(self, args: dict) -> dict:
+        profile_id = args.get("profile_id", "").strip()
+        if not profile_id:
+            return {"error": "profile_id is required"}
+        profile = await self.db.get_profile(profile_id)
+        if not profile:
+            return {"error": f"Profile '{profile_id}' not found"}
+        return {
+            "id": profile.id,
+            "name": profile.name,
+            "description": profile.description,
+            "model": profile.model or "(default)",
+            "permission_mode": profile.permission_mode or "(default)",
+            "allowed_tools": profile.allowed_tools,
+            "mcp_servers": profile.mcp_servers,
+            "system_prompt_suffix": profile.system_prompt_suffix or "(none)",
+            "install": profile.install,
+        }
+
+    async def _cmd_edit_profile(self, args: dict) -> dict:
+        profile_id = args.get("profile_id", "").strip()
+        if not profile_id:
+            return {"error": "profile_id is required"}
+        profile = await self.db.get_profile(profile_id)
+        if not profile:
+            return {"error": f"Profile '{profile_id}' not found"}
+
+        updates = {}
+        for fld in (
+            "name", "description", "model", "permission_mode",
+            "allowed_tools", "mcp_servers", "system_prompt_suffix", "install",
+        ):
+            if fld in args:
+                updates[fld] = args[fld]
+        if not updates:
+            return {
+                "error": (
+                    "No fields to update. Provide name, description, model, "
+                    "permission_mode, allowed_tools, mcp_servers, "
+                    "system_prompt_suffix, or install."
+                )
+            }
+        await self.db.update_profile(profile_id, **updates)
+        result: dict = {"updated": profile_id, "fields": list(updates.keys())}
+        # Soft validation — warn about unrecognized tool names
+        if "allowed_tools" in updates:
+            from src.known_tools import validate_tool_names
+            unknown = validate_tool_names(updates["allowed_tools"])
+            if unknown:
+                result["warnings"] = [
+                    f"Unrecognized tools (will still be set): {', '.join(unknown)}"
+                ]
+        return result
+
+    async def _cmd_delete_profile(self, args: dict) -> dict:
+        profile_id = args.get("profile_id", "").strip()
+        if not profile_id:
+            return {"error": "profile_id is required"}
+        profile = await self.db.get_profile(profile_id)
+        if not profile:
+            return {"error": f"Profile '{profile_id}' not found"}
+        await self.db.delete_profile(profile_id)
+        return {"deleted": profile_id, "name": profile.name}
+
+    # --- Discovery commands ------------------------------------------------
+
+    async def _cmd_list_available_tools(self, args: dict) -> dict:
+        from src.known_tools import CLAUDE_CODE_TOOLS, KNOWN_MCP_SERVERS
+        tools = [
+            {"name": name, "description": desc}
+            for name, desc in sorted(CLAUDE_CODE_TOOLS.items())
+        ]
+        mcp_servers = [
+            {
+                "name": name,
+                "description": info["description"],
+                "npm_package": info.get("npm_package", ""),
+            }
+            for name, info in sorted(KNOWN_MCP_SERVERS.items())
+        ]
+        return {"tools": tools, "mcp_servers": mcp_servers}
+
+    # --- Install manifest commands -----------------------------------------
+
+    async def _cmd_check_profile(self, args: dict) -> dict:
+        import shutil
+        from src.known_tools import InstallManifest
+        profile_id = args.get("profile_id", "").strip()
+        if not profile_id:
+            return {"error": "profile_id is required"}
+        profile = await self.db.get_profile(profile_id)
+        if not profile:
+            return {"error": f"Profile '{profile_id}' not found"}
+
+        manifest = InstallManifest.from_dict(profile.install)
+        issues: list[str] = []
+
+        # Check commands via shutil.which
+        for cmd in manifest.commands:
+            if not shutil.which(cmd):
+                issues.append(f"Command not found: {cmd}")
+
+        # Check npm packages
+        for pkg in manifest.npm:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "npm", "list", "-g", pkg, "--depth=0",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.wait()
+                if proc.returncode != 0:
+                    issues.append(f"npm package not installed: {pkg}")
+            except FileNotFoundError:
+                issues.append(f"npm not available — cannot check: {pkg}")
+
+        # Check pip packages
+        for pkg in manifest.pip:
+            try:
+                import importlib.metadata
+                importlib.metadata.version(pkg)
+            except Exception:
+                issues.append(f"pip package not installed: {pkg}")
+
+        return {
+            "profile_id": profile_id,
+            "valid": len(issues) == 0,
+            "issues": issues,
+            "manifest": manifest.to_dict(),
+        }
+
+    async def _cmd_install_profile(self, args: dict) -> dict:
+        profile_id = args.get("profile_id", "").strip()
+        if not profile_id:
+            return {"error": "profile_id is required"}
+
+        # Run check first
+        check = await self._cmd_check_profile({"profile_id": profile_id})
+        if "error" in check:
+            return check
+
+        profile = await self.db.get_profile(profile_id)
+        from src.known_tools import InstallManifest
+        manifest = InstallManifest.from_dict(profile.install)
+
+        if manifest.is_empty:
+            return {
+                "profile_id": profile_id,
+                "installed": [],
+                "already_present": [],
+                "manual": [],
+                "ready": True,
+            }
+
+        return await self._install_manifest(profile_id, manifest)
+
+    async def _install_manifest(
+        self, profile_id: str, manifest: "InstallManifest",
+    ) -> dict:
+        """Shared logic for installing an InstallManifest's dependencies."""
+        import shutil
+        installed: list[str] = []
+        already_present: list[str] = []
+        manual: list[str] = []
+
+        # Install npm packages
+        for pkg in manifest.npm:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "npm", "list", "-g", pkg, "--depth=0",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.wait()
+                if proc.returncode == 0:
+                    already_present.append(f"npm:{pkg}")
+                    continue
+            except FileNotFoundError:
+                manual.append(f"npm not available — install manually: {pkg}")
+                continue
+
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "npm", "install", "-g", pkg,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.wait()
+                if proc.returncode == 0:
+                    installed.append(f"npm:{pkg}")
+                else:
+                    stderr = await proc.stderr.read()
+                    manual.append(
+                        f"npm install failed for {pkg}: {stderr.decode().strip()}"
+                    )
+            except Exception as e:
+                manual.append(f"npm install failed for {pkg}: {e}")
+
+        # Install pip packages
+        for pkg in manifest.pip:
+            try:
+                import importlib.metadata
+                importlib.metadata.version(pkg)
+                already_present.append(f"pip:{pkg}")
+                continue
+            except Exception:
+                pass
+
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "pip", "install", pkg,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.wait()
+                if proc.returncode == 0:
+                    installed.append(f"pip:{pkg}")
+                else:
+                    stderr = await proc.stderr.read()
+                    manual.append(
+                        f"pip install failed for {pkg}: {stderr.decode().strip()}"
+                    )
+            except Exception as e:
+                manual.append(f"pip install failed for {pkg}: {e}")
+
+        # Check commands — can't auto-install system binaries
+        for cmd in manifest.commands:
+            if shutil.which(cmd):
+                already_present.append(f"cmd:{cmd}")
+            else:
+                manual.append(f"Command not found (install manually): {cmd}")
+
+        ready = len(manual) == 0
+        return {
+            "profile_id": profile_id,
+            "installed": installed,
+            "already_present": already_present,
+            "manual": manual,
+            "ready": ready,
+        }
+
+    # --- Export / import commands ------------------------------------------
+
+    async def _cmd_export_profile(self, args: dict) -> dict:
+        import yaml as _yaml
+        profile_id = args.get("profile_id", "").strip()
+        if not profile_id:
+            return {"error": "profile_id is required"}
+        profile = await self.db.get_profile(profile_id)
+        if not profile:
+            return {"error": f"Profile '{profile_id}' not found"}
+
+        data: dict = {
+            "id": profile.id,
+            "name": profile.name,
+        }
+        if profile.description:
+            data["description"] = profile.description
+        if profile.model:
+            data["model"] = profile.model
+        if profile.permission_mode:
+            data["permission_mode"] = profile.permission_mode
+        if profile.allowed_tools:
+            data["allowed_tools"] = profile.allowed_tools
+        if profile.mcp_servers:
+            data["mcp_servers"] = profile.mcp_servers
+        if profile.system_prompt_suffix:
+            data["system_prompt_suffix"] = profile.system_prompt_suffix
+        if profile.install:
+            data["install"] = profile.install
+
+        yaml_text = f"# Agent Profile: {profile.name}\n"
+        yaml_text += _yaml.dump(
+            {"agent_profile": data},
+            default_flow_style=False,
+            sort_keys=False,
+        )
+
+        result: dict = {"yaml": yaml_text}
+
+        # Optionally create a GitHub gist
+        if args.get("create_gist"):
+            import tempfile
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".yaml", delete=False,
+                    prefix=f"agent-profile-{profile_id}-",
+                ) as f:
+                    f.write(yaml_text)
+                    tmp_path = f.name
+
+                env = {**os.environ, "GH_PROMPT_DISABLED": "1"}
+                proc = await asyncio.create_subprocess_exec(
+                    "gh", "gist", "create", "--public",
+                    "--desc", f"Agent Profile: {profile.name}",
+                    tmp_path,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                )
+                stdout, stderr = await proc.communicate()
+                if proc.returncode == 0:
+                    result["gist_url"] = stdout.decode().strip()
+                else:
+                    result["gist_error"] = stderr.decode().strip()
+            except FileNotFoundError:
+                result["gist_error"] = "gh CLI not found — install GitHub CLI"
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+        return result
+
+    async def _cmd_import_profile(self, args: dict) -> dict:
+        import yaml as _yaml
+        from src.known_tools import InstallManifest
+        source = args.get("source", "").strip()
+        if not source:
+            return {"error": "source is required (YAML text or gist URL)"}
+
+        # If source looks like a URL, fetch via gh gist
+        yaml_text = source
+        if source.startswith("http://") or source.startswith("https://"):
+            gist_id = source.rstrip("/").split("/")[-1]
+            try:
+                env = {**os.environ, "GH_PROMPT_DISABLED": "1"}
+                proc = await asyncio.create_subprocess_exec(
+                    "gh", "gist", "view", gist_id, "--raw",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                )
+                stdout, stderr = await proc.communicate()
+                if proc.returncode != 0:
+                    return {"error": f"Failed to fetch gist: {stderr.decode().strip()}"}
+                yaml_text = stdout.decode()
+            except FileNotFoundError:
+                return {"error": "gh CLI not found — install GitHub CLI to import from URLs"}
+
+        try:
+            data = _yaml.safe_load(yaml_text)
+        except Exception as e:
+            return {"error": f"Invalid YAML: {e}"}
+
+        if not isinstance(data, dict) or "agent_profile" not in data:
+            return {"error": "YAML must contain an 'agent_profile' key"}
+
+        pdata = data["agent_profile"]
+        if not isinstance(pdata, dict):
+            return {"error": "agent_profile must be a mapping"}
+
+        profile_id = args.get("id") or pdata.get("id", "")
+        if not profile_id:
+            return {"error": "Profile must have an 'id' field"}
+
+        overwrite = args.get("overwrite", False)
+        existing = await self.db.get_profile(profile_id)
+        if existing and not overwrite:
+            return {"error": f"Profile '{profile_id}' already exists (use overwrite=true to replace)"}
+
+        profile = AgentProfile(
+            id=profile_id,
+            name=args.get("name") or pdata.get("name", profile_id),
+            description=pdata.get("description", ""),
+            model=pdata.get("model", ""),
+            permission_mode=pdata.get("permission_mode", ""),
+            allowed_tools=pdata.get("allowed_tools", []),
+            mcp_servers=pdata.get("mcp_servers", {}),
+            system_prompt_suffix=pdata.get("system_prompt_suffix", ""),
+            install=pdata.get("install", {}),
+        )
+
+        if existing and overwrite:
+            await self.db.update_profile(
+                profile_id,
+                name=profile.name,
+                description=profile.description,
+                model=profile.model,
+                permission_mode=profile.permission_mode,
+                allowed_tools=profile.allowed_tools,
+                mcp_servers=profile.mcp_servers,
+                system_prompt_suffix=profile.system_prompt_suffix,
+                install=profile.install,
+            )
+        else:
+            await self.db.create_profile(profile)
+
+        result: dict = {"imported": True, "name": profile.name, "id": profile_id}
+
+        # Auto-install dependencies if manifest is non-empty
+        manifest = InstallManifest.from_dict(profile.install)
+        if not manifest.is_empty:
+            install_result = await self._install_manifest(profile_id, manifest)
+            result["installed"] = install_result["installed"]
+            result["already_present"] = install_result["already_present"]
+            result["manual"] = install_result["manual"]
+            result["ready"] = install_result["ready"]
+        else:
+            result["ready"] = True
+
+        return result

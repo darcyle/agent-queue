@@ -159,6 +159,25 @@ class LLMLoggingConfig:
 
 
 @dataclass
+class AgentProfileConfig:
+    """Configuration for an agent profile loaded from YAML.
+
+    Profiles from YAML are synced to the database at startup. Profiles can
+    also be created dynamically via Discord commands.
+    """
+
+    id: str = ""
+    name: str = ""
+    description: str = ""
+    model: str = ""
+    permission_mode: str = ""
+    allowed_tools: list[str] = field(default_factory=list)
+    mcp_servers: dict[str, dict] = field(default_factory=dict)
+    system_prompt_suffix: str = ""
+    install: dict = field(default_factory=dict)
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration aggregating all subsystem configs.
 
@@ -182,6 +201,7 @@ class AppConfig:
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
     auto_task: AutoTaskConfig = field(default_factory=AutoTaskConfig)
     llm_logging: LLMLoggingConfig = field(default_factory=LLMLoggingConfig)
+    agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
     rate_limits: dict[str, dict[str, int]] = field(default_factory=dict)
 
@@ -369,6 +389,24 @@ def load_config(path: str) -> AppConfig:
             enabled=ll.get("enabled", False),
             retention_days=ll.get("retention_days", 30),
         )
+
+    if "agent_profiles" in raw:
+        profiles = []
+        for pid, pdata in raw["agent_profiles"].items():
+            if not isinstance(pdata, dict):
+                continue
+            profiles.append(AgentProfileConfig(
+                id=pid,
+                name=pdata.get("name", pid),
+                description=pdata.get("description", ""),
+                model=pdata.get("model", ""),
+                permission_mode=pdata.get("permission_mode", ""),
+                allowed_tools=pdata.get("allowed_tools", []),
+                mcp_servers=pdata.get("mcp_servers", {}),
+                system_prompt_suffix=pdata.get("system_prompt_suffix", ""),
+                install=pdata.get("install", {}),
+            ))
+        config.agent_profiles = profiles
 
     if "rate_limits" in raw:
         config.rate_limits = raw["rate_limits"]

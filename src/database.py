@@ -29,7 +29,7 @@ import uuid
 import aiosqlite
 
 from src.models import (
-    Agent, AgentState, Hook, HookRun, Project, ProjectStatus,
+    Agent, AgentProfile, AgentState, Hook, HookRun, Project, ProjectStatus,
     RepoConfig, RepoSourceType, Task, TaskStatus, TaskType, VerificationType,
     Workspace,
 )
@@ -230,6 +230,20 @@ CREATE TABLE IF NOT EXISTS hook_runs (
     completed_at REAL
 );
 
+CREATE TABLE IF NOT EXISTS agent_profiles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    permission_mode TEXT NOT NULL DEFAULT '',
+    allowed_tools TEXT NOT NULL DEFAULT '[]',
+    mcp_servers TEXT NOT NULL DEFAULT '{}',
+    system_prompt_suffix TEXT NOT NULL DEFAULT '',
+    install TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS archived_tasks (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
@@ -298,6 +312,9 @@ class Database:
             "ALTER TABLE tasks ADD COLUMN task_type TEXT",
             "ALTER TABLE projects ADD COLUMN repo_url TEXT DEFAULT ''",
             "ALTER TABLE projects ADD COLUMN repo_default_branch TEXT DEFAULT 'main'",
+            "ALTER TABLE tasks ADD COLUMN profile_id TEXT REFERENCES agent_profiles(id)",
+            "ALTER TABLE projects ADD COLUMN default_profile_id TEXT REFERENCES agent_profiles(id)",
+            "ALTER TABLE archived_tasks ADD COLUMN profile_id TEXT",
         ]:
             try:
                 await self._db.execute(migration)
@@ -476,13 +493,15 @@ class Database:
         await self._db.execute(
             "INSERT INTO projects (id, name, credit_weight, max_concurrent_agents, "
             "status, total_tokens_used, budget_limit, "
-            "discord_channel_id, repo_url, repo_default_branch, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "discord_channel_id, repo_url, repo_default_branch, "
+            "default_profile_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (project.id, project.name, project.credit_weight,
              project.max_concurrent_agents, project.status.value,
              project.total_tokens_used, project.budget_limit,
              project.discord_channel_id,
              project.repo_url, project.repo_default_branch,
+             project.default_profile_id,
              time.time()),
         )
         await self._db.commit()
@@ -544,6 +563,93 @@ class Database:
                 if "repo_default_branch" in keys and row["repo_default_branch"]
                 else "main"
             ),
+            default_profile_id=(
+                row["default_profile_id"]
+                if "default_profile_id" in keys
+                else None
+            ),
+        )
+
+    # --- Agent Profiles ---
+    # Capability bundles that configure agents with specific tools, MCP servers,
+    # model overrides, and system prompt suffixes.  Resolved at task execution
+    # time via the cascade: task.profile_id → project.default_profile_id → None.
+
+    async def create_profile(self, profile: AgentProfile) -> None:
+        now = time.time()
+        await self._db.execute(
+            "INSERT INTO agent_profiles (id, name, description, model, "
+            "permission_mode, allowed_tools, mcp_servers, "
+            "system_prompt_suffix, install, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (profile.id, profile.name, profile.description, profile.model,
+             profile.permission_mode,
+             json.dumps(profile.allowed_tools),
+             json.dumps(profile.mcp_servers),
+             profile.system_prompt_suffix,
+             json.dumps(profile.install),
+             now, now),
+        )
+        await self._db.commit()
+
+    async def get_profile(self, profile_id: str) -> AgentProfile | None:
+        cursor = await self._db.execute(
+            "SELECT * FROM agent_profiles WHERE id = ?", (profile_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_profile(row)
+
+    async def list_profiles(self) -> list[AgentProfile]:
+        cursor = await self._db.execute(
+            "SELECT * FROM agent_profiles ORDER BY name ASC"
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_profile(r) for r in rows]
+
+    async def update_profile(self, profile_id: str, **kwargs) -> None:
+        sets = []
+        vals = []
+        for key, value in kwargs.items():
+            if key in ("allowed_tools", "mcp_servers", "install"):
+                value = json.dumps(value)
+            sets.append(f"{key} = ?")
+            vals.append(value)
+        sets.append("updated_at = ?")
+        vals.append(time.time())
+        vals.append(profile_id)
+        await self._db.execute(
+            f"UPDATE agent_profiles SET {', '.join(sets)} WHERE id = ?", vals
+        )
+        await self._db.commit()
+
+    async def delete_profile(self, profile_id: str) -> None:
+        # Clear references from tasks and projects before deleting
+        await self._db.execute(
+            "UPDATE tasks SET profile_id = NULL WHERE profile_id = ?",
+            (profile_id,),
+        )
+        await self._db.execute(
+            "UPDATE projects SET default_profile_id = NULL WHERE default_profile_id = ?",
+            (profile_id,),
+        )
+        await self._db.execute(
+            "DELETE FROM agent_profiles WHERE id = ?", (profile_id,)
+        )
+        await self._db.commit()
+
+    def _row_to_profile(self, row) -> AgentProfile:
+        return AgentProfile(
+            id=row["id"],
+            name=row["name"],
+            description=row["description"],
+            model=row["model"],
+            permission_mode=row["permission_mode"],
+            allowed_tools=json.loads(row["allowed_tools"]),
+            mcp_servers=json.loads(row["mcp_servers"]),
+            system_prompt_suffix=row["system_prompt_suffix"],
+            install=json.loads(row["install"]),
         )
 
     # --- Repos ---
@@ -624,8 +730,8 @@ class Database:
             "description, priority, status, verification_type, retry_count, "
             "max_retries, assigned_agent_id, branch_name, resume_after, "
             "requires_approval, pr_url, plan_source, is_plan_subtask, "
-            "task_type, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "task_type, profile_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (task.id, task.project_id, task.parent_task_id, task.repo_id,
              task.title, task.description, task.priority, task.status.value,
              task.verification_type.value, task.retry_count, task.max_retries,
@@ -633,6 +739,7 @@ class Database:
              int(task.requires_approval), task.pr_url, task.plan_source,
              int(task.is_plan_subtask),
              task.task_type.value if task.task_type else None,
+             task.profile_id,
              now, now),
         )
         await self._db.commit()
@@ -934,6 +1041,7 @@ class Database:
             plan_source=row["plan_source"] if "plan_source" in keys else None,
             is_plan_subtask=bool(row["is_plan_subtask"]) if "is_plan_subtask" in keys else False,
             task_type=TaskType(row["task_type"]) if "task_type" in keys and row["task_type"] else None,
+            profile_id=row["profile_id"] if "profile_id" in keys else None,
         )
 
     # --- Dependencies ---
@@ -1739,9 +1847,9 @@ class Database:
             "(id, project_id, parent_task_id, repo_id, title, description, "
             "priority, status, verification_type, retry_count, max_retries, "
             "assigned_agent_id, branch_name, resume_after, requires_approval, "
-            "pr_url, plan_source, is_plan_subtask, task_type, "
+            "pr_url, plan_source, is_plan_subtask, task_type, profile_id, "
             "created_at, updated_at, archived_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (task.id, task.project_id, task.parent_task_id, task.repo_id,
              task.title, task.description, task.priority, task.status.value,
              task.verification_type.value, task.retry_count, task.max_retries,
@@ -1749,6 +1857,7 @@ class Database:
              int(task.requires_approval), task.pr_url, task.plan_source,
              int(task.is_plan_subtask),
              task.task_type.value if task.task_type else None,
+             task.profile_id,
              0.0, 0.0, now),
         )
         # Read original timestamps from the tasks row directly.

@@ -122,8 +122,8 @@ TOOLS = [
         "name": "edit_project",
         "description": (
             "Edit a project's properties: name, credit_weight, max_concurrent_agents, "
-            "budget_limit, or discord_channel_id. Use this to rename projects, adjust "
-            "scheduling weight, set token budgets, or link Discord channels."
+            "budget_limit, discord_channel_id, or default_profile_id. Use this to rename projects, adjust "
+            "scheduling weight, set token budgets, link Discord channels, or set a default agent profile."
         ),
         "input_schema": {
             "type": "object",
@@ -134,6 +134,7 @@ TOOLS = [
                 "max_concurrent_agents": {"type": "integer", "description": "New max concurrent agents (optional)"},
                 "budget_limit": {"type": ["integer", "null"], "description": "Token budget limit (optional, null to clear)"},
                 "discord_channel_id": {"type": ["string", "null"], "description": "Discord channel ID to link (optional, null to unlink)"},
+                "default_profile_id": {"type": ["string", "null"], "description": "Default agent profile ID for tasks in this project (optional, null to clear)"},
             },
             "required": ["project_id"],
         },
@@ -348,6 +349,10 @@ TOOLS = [
                     "enum": ["feature", "bugfix", "refactor", "test", "docs", "chore", "research", "plan"],
                     "description": "Categorize the task type for display and filtering (optional)",
                 },
+                "profile_id": {
+                    "type": "string",
+                    "description": "Agent profile ID to configure the agent with specific tools/capabilities (optional)",
+                },
             },
             "required": ["title"],
         },
@@ -518,8 +523,8 @@ TOOLS = [
         "name": "edit_task",
         "description": (
             "Edit a task's properties: title, description, priority, task_type, "
-            "status, max_retries, or verification_type. Use this to rename tasks, "
-            "change priority, override status (admin), or adjust retry/verification settings."
+            "status, max_retries, verification_type, or profile_id. Use this to rename tasks, "
+            "change priority, override status (admin), assign a profile, or adjust retry/verification settings."
         ),
         "input_schema": {
             "type": "object",
@@ -543,6 +548,10 @@ TOOLS = [
                     "type": "string",
                     "enum": ["auto_test", "qa_agent", "human"],
                     "description": "How to verify task output (optional)",
+                },
+                "profile_id": {
+                    "type": ["string", "null"],
+                    "description": "Agent profile ID (optional, set to null to clear)",
                 },
             },
             "required": ["task_id"],
@@ -1390,6 +1399,191 @@ TOOLS = [
             "required": ["task_id"],
         },
     },
+    # --- Agent Profile tools ---
+    {
+        "name": "list_profiles",
+        "description": "List all agent profiles. Profiles are capability bundles that configure agents with specific tools, MCP servers, and system prompts.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "create_profile",
+        "description": (
+            "Create a new agent profile. Profiles configure agents with specific tools, "
+            "MCP servers, model overrides, and system prompt additions. Assign profiles "
+            "to tasks (profile_id) or set as project defaults (default_profile_id)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Profile slug ID (e.g. 'reviewer', 'web-developer')",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Human-readable display name",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "What this profile is for (optional)",
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Model override (optional, empty = use default)",
+                },
+                "permission_mode": {
+                    "type": "string",
+                    "description": "Permission mode override (optional)",
+                },
+                "allowed_tools": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tool whitelist (e.g. ['Read', 'Glob', 'Grep', 'Bash'])",
+                },
+                "mcp_servers": {
+                    "type": "object",
+                    "description": "MCP server configurations (name -> {command, args})",
+                },
+                "system_prompt_suffix": {
+                    "type": "string",
+                    "description": "Text appended to the agent's system prompt (optional)",
+                },
+            },
+            "required": ["id", "name"],
+        },
+    },
+    {
+        "name": "get_profile",
+        "description": "Get details of a specific agent profile.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "profile_id": {"type": "string", "description": "Profile ID to look up"},
+            },
+            "required": ["profile_id"],
+        },
+    },
+    {
+        "name": "edit_profile",
+        "description": "Edit an existing agent profile's properties.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "profile_id": {"type": "string", "description": "Profile ID to edit"},
+                "name": {"type": "string", "description": "New display name (optional)"},
+                "description": {"type": "string", "description": "New description (optional)"},
+                "model": {"type": "string", "description": "New model override (optional)"},
+                "permission_mode": {"type": "string", "description": "New permission mode (optional)"},
+                "allowed_tools": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "New tool whitelist (optional)",
+                },
+                "mcp_servers": {
+                    "type": "object",
+                    "description": "New MCP server configurations (optional)",
+                },
+                "system_prompt_suffix": {
+                    "type": "string",
+                    "description": "New system prompt suffix (optional)",
+                },
+            },
+            "required": ["profile_id"],
+        },
+    },
+    {
+        "name": "delete_profile",
+        "description": "Delete an agent profile. Any tasks or projects referencing it will have their profile cleared.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "profile_id": {"type": "string", "description": "Profile ID to delete"},
+            },
+            "required": ["profile_id"],
+        },
+    },
+    {
+        "name": "list_available_tools",
+        "description": (
+            "Discover available Claude Code tools and well-known MCP servers "
+            "for use in agent profiles."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "check_profile",
+        "description": (
+            "Validate an agent profile's install dependencies. Checks that "
+            "required commands, npm packages, and pip packages are available."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "profile_id": {"type": "string", "description": "Profile ID to check"},
+            },
+            "required": ["profile_id"],
+        },
+    },
+    {
+        "name": "install_profile",
+        "description": (
+            "Install missing npm/pip dependencies for a profile's install manifest. "
+            "System commands that are missing are reported for manual installation."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "profile_id": {"type": "string", "description": "Profile ID to install deps for"},
+            },
+            "required": ["profile_id"],
+        },
+    },
+    {
+        "name": "export_profile",
+        "description": (
+            "Export an agent profile as YAML. Optionally create a public GitHub gist."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "profile_id": {"type": "string", "description": "Profile ID to export"},
+                "create_gist": {
+                    "type": "boolean",
+                    "description": "If true, create a public GitHub gist and return the URL",
+                },
+            },
+            "required": ["profile_id"],
+        },
+    },
+    {
+        "name": "import_profile",
+        "description": (
+            "Import an agent profile from YAML text or a GitHub gist URL. "
+            "If the profile has an install manifest, dependencies are auto-installed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "YAML text or gist URL to import from",
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Override the profile ID (optional)",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Override the profile name (optional)",
+                },
+                "overwrite": {
+                    "type": "boolean",
+                    "description": "If true, overwrite existing profile with same ID",
+                },
+            },
+            "required": ["source"],
+        },
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -1518,6 +1712,15 @@ and chat for that project are all routed there automatically.
 - Use `get_project_channels` to see which channel is configured for a project.
 - Use `get_project_for_channel` for reverse lookup — given a channel ID, find which project \
 it belongs to.
+
+Agent profiles — capability bundles that configure agents:
+- Use `list_available_tools` to discover tools and MCP servers for profiles
+- Use `create_profile` / `edit_profile` to configure profiles
+- Use `check_profile` to verify a profile's install dependencies
+- Use `install_profile` to install missing npm/pip dependencies for a profile
+- Use `export_profile` to share a profile as a GitHub gist
+- Use `import_profile` to import a shared profile from a gist URL
+- Assign profiles to tasks via `profile_id` or as project defaults via `default_profile_id`
 
 IMPORTANT — You are a dispatcher, not a worker. You CANNOT write code, edit files, \
 run commands, or do technical work yourself. When a user asks you to DO something \

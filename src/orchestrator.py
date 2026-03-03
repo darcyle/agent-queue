@@ -43,7 +43,7 @@ from src.discord.notifications import (
 from src.event_bus import EventBus
 from src.git.manager import GitManager
 from src.models import (
-    AgentOutput, AgentResult, AgentState,
+    AgentOutput, AgentProfile, AgentResult, AgentState,
     RepoSourceType, Task, TaskStatus, TaskContext, Workspace,
 )
 from src.hooks import HookEngine
@@ -157,6 +157,48 @@ class Orchestrator:
     def _get_handler(self) -> Any:
         """Return the command handler or None. Used by interactive views."""
         return self._command_handler
+
+    async def _sync_profiles_from_config(self) -> None:
+        """Sync agent profiles from YAML config into the database.
+
+        For each profile in config.agent_profiles, create or update the
+        corresponding database row.  This is idempotent and runs at startup.
+        """
+        for pc in self.config.agent_profiles:
+            existing = await self.db.get_profile(pc.id)
+            if existing:
+                await self.db.update_profile(
+                    pc.id,
+                    name=pc.name,
+                    description=pc.description,
+                    model=pc.model,
+                    permission_mode=pc.permission_mode,
+                    allowed_tools=pc.allowed_tools,
+                    mcp_servers=pc.mcp_servers,
+                    system_prompt_suffix=pc.system_prompt_suffix,
+                    install=pc.install,
+                )
+            else:
+                await self.db.create_profile(AgentProfile(
+                    id=pc.id,
+                    name=pc.name,
+                    description=pc.description,
+                    model=pc.model,
+                    permission_mode=pc.permission_mode,
+                    allowed_tools=pc.allowed_tools,
+                    mcp_servers=pc.mcp_servers,
+                    system_prompt_suffix=pc.system_prompt_suffix,
+                    install=pc.install,
+                ))
+
+    async def _resolve_profile(self, task: Task) -> AgentProfile | None:
+        """Resolve which profile to use: task → project → None (system default)."""
+        if task.profile_id:
+            return await self.db.get_profile(task.profile_id)
+        project = await self.db.get_project(task.project_id)
+        if project and project.default_profile_id:
+            return await self.db.get_profile(project.default_profile_id)
+        return None
 
     def pause(self) -> None:
         self._paused = True
@@ -421,6 +463,7 @@ class Orchestrator:
 
     async def initialize(self) -> None:
         await self.db.initialize()
+        await self._sync_profiles_from_config()
         await self._recover_stale_state()
         if self.config.hook_engine.enabled:
             self.hooks = HookEngine(self.db, self.bus, self.config)
@@ -1665,7 +1708,16 @@ class Orchestrator:
         else:
             print(f"No thread callback set for task {task.id}")
 
-        adapter = self._adapter_factory.create("claude")
+        profile = await self._resolve_profile(task)
+        if profile:
+            print(
+                f"Task {task.id}: profile='{profile.id}' "
+                f"tools={profile.allowed_tools or '(default)'} "
+                f"mcp={list(profile.mcp_servers.keys()) if profile.mcp_servers else '(none)'}"
+            )
+        else:
+            print(f"Task {task.id}: no profile (using system defaults)")
+        adapter = self._adapter_factory.create("claude", profile=profile)
         self._adapters[action.agent_id] = adapter
 
         # Inject system context so the agent knows where it's working
@@ -1768,6 +1820,12 @@ class Orchestrator:
                     + "\n\n".join(dep_sections)
                 )
 
+        # Inject profile-specific role instructions
+        if profile and profile.system_prompt_suffix:
+            context_lines.append(
+                f"\n## Agent Role Instructions\n{profile.system_prompt_suffix}"
+            )
+
         context_lines.append(f"\n## Task\n{task.description}")
 
         full_description = "\n".join(context_lines)
@@ -1777,6 +1835,10 @@ class Orchestrator:
             description=full_description,
             checkout_path=workspace,
             branch_name=task.branch_name or "",
+            mcp_servers=(
+                dict(profile.mcp_servers)
+                if profile and profile.mcp_servers else {}
+            ),
         )
         await adapter.start(ctx)
 

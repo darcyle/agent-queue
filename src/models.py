@@ -206,6 +206,7 @@ class Project:
     discord_channel_id: str | None = None          # Per-project Discord channel
     repo_url: str = ""
     repo_default_branch: str = "main"
+    default_profile_id: str | None = None  # fallback profile for tasks in this project
 
 
 @dataclass
@@ -239,6 +240,7 @@ class Task:
     plan_source: str | None = None       # path to archived plan file that generated this task
     is_plan_subtask: bool = False         # True if auto-generated from a plan
     task_type: TaskType | None = None     # categorization: feature, bugfix, refactor, etc.
+    profile_id: str | None = None        # which AgentProfile to configure the agent with
 
 
 @dataclass
@@ -281,6 +283,30 @@ class Workspace:
 
 
 @dataclass
+class AgentProfile:
+    """A capability bundle that configures agents for specific task types.
+
+    Profiles define what tools, MCP servers, model overrides, and system prompt
+    additions an agent should receive when executing a task.  They are resolved
+    at task execution time (not during scheduling) to keep the scheduler
+    deterministic and profile-unaware.
+
+    Resolution cascade: task.profile_id → project.default_profile_id → None
+    (system default).  See specs/agent-profiles.md.
+    """
+
+    id: str                              # slug: "reviewer", "web-developer"
+    name: str                            # display name
+    description: str = ""
+    model: str = ""                      # override model (empty = use default)
+    permission_mode: str = ""            # override (empty = use default)
+    allowed_tools: list[str] = field(default_factory=list)  # tool whitelist
+    mcp_servers: dict[str, dict] = field(default_factory=dict)  # name -> server config
+    system_prompt_suffix: str = ""       # appended to agent instructions
+    install: dict = field(default_factory=dict)  # auto-install manifest (future)
+
+
+@dataclass
 class TaskContext:
     """The input bundle passed to an agent adapter when executing a task.
 
@@ -298,8 +324,7 @@ class TaskContext:
     checkout_path: str = ""
     branch_name: str = ""
     attached_context: list[str] = field(default_factory=list)
-    mcp_servers: list[dict] = field(default_factory=list)
-    tools: list[str] = field(default_factory=list)
+    mcp_servers: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass
