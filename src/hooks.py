@@ -263,6 +263,8 @@ class HookEngine:
                     result = await self._step_db_query(step, event_data)
                 elif step_type == "git_diff":
                     result = await self._step_git_diff(step)
+                elif step_type == "memory_search":
+                    result = await self._step_memory_search(step, event_data)
                 else:
                     result = {"error": f"Unknown step type: {step_type}"}
             except Exception as e:
@@ -387,6 +389,75 @@ class HookEngine:
             }
         except Exception as e:
             return {"error": str(e)}
+
+    async def _step_memory_search(
+        self, step: dict, event_data: dict | None = None
+    ) -> dict:
+        """Execute a memory_search context step.
+
+        Performs a semantic search against a project's memory index and
+        returns the matching chunks as a formatted context string.  When the
+        memory subsystem is unavailable (not configured, memsearch not
+        installed, etc.) the step returns an empty ``content`` string rather
+        than an error — hooks should degrade gracefully.
+
+        Step config keys:
+            ``project_id`` – target project (or ``{{event.project_id}}``)
+            ``query``      – semantic search query (template placeholders OK)
+            ``top_k``      – max results to return (default 3)
+        """
+        project_id = step.get("project_id", "")
+        query = step.get("query", "")
+        top_k = step.get("top_k", 3)
+
+        # Resolve template placeholders in project_id and query
+        if event_data:
+            if "{{" in project_id:
+                project_id = self._resolve_placeholder(
+                    project_id, [], event_data
+                )
+            if "{{" in query:
+                query = self._resolve_placeholder(query, [], event_data)
+
+        if not project_id or not query:
+            return {"content": "", "error": "project_id and query are required"}
+
+        orchestrator = getattr(self, "_orchestrator", None)
+        if not orchestrator or not getattr(orchestrator, "memory_manager", None):
+            return {"content": "", "count": 0}
+
+        # Look up workspace path for the project
+        try:
+            workspace = await self.db.get_project_workspace_path(project_id)
+        except Exception:
+            workspace = None
+
+        if not workspace:
+            return {"content": "", "count": 0, "error": f"No workspace for project '{project_id}'"}
+
+        try:
+            results = await orchestrator.memory_manager.search(
+                project_id, workspace, query, top_k=top_k
+            )
+        except Exception as e:
+            logger.warning("memory_search step failed for project %s: %s", project_id, e)
+            return {"content": "", "count": 0, "error": str(e)}
+
+        # Format results as a readable context string
+        if not results:
+            return {"content": "", "count": 0}
+
+        parts = []
+        for i, mem in enumerate(results, 1):
+            source = mem.get("source", "unknown")
+            heading = mem.get("heading", "")
+            content = mem.get("content", "")
+            score = mem.get("score", 0)
+            header = f"[{i}] {heading}" if heading else f"[{i}] (from {source})"
+            parts.append(f"{header}  (score: {score:.3f})\n{content}")
+
+        formatted = "\n\n---\n\n".join(parts)
+        return {"content": formatted, "count": len(results)}
 
     def _should_skip_llm(
         self, steps: list[dict], results: list[dict]

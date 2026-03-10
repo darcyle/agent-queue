@@ -153,4 +153,33 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
+    # --- multi-turn memory usage ---
+    TestCase(
+        id="memory-search-then-stats",
+        description="Search memory then check stats in a multi-turn conversation",
+        category="memory",
+        difficulty=Difficulty.MEDIUM,
+        tags=["memory_search", "memory_stats"],
+        active_project="my-app",
+        turns=[
+            Turn(
+                user_message="search memory for 'deployment pipeline'",
+                expected_tools=[
+                    ExpectedTool(
+                        name="memory_search",
+                        args={"project_id": "my-app", "query": "deployment pipeline"},
+                    ),
+                ],
+            ),
+            Turn(
+                user_message="how many memories are indexed?",
+                expected_tools=[
+                    ExpectedTool(
+                        name="memory_stats",
+                        args={"project_id": "my-app"},
+                    ),
+                ],
+            ),
+        ],
+    ),
 ]

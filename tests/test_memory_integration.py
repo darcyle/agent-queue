@@ -187,3 +187,52 @@ class TestMemoryEndToEnd:
             # the reindex call should not error)
         finally:
             await mgr.close()
+
+    async def test_hook_memory_search_step_roundtrip(self, workspace, memory_config):
+        """Hook engine memory_search step returns real results after indexing."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from src.config import AppConfig, HookEngineConfig
+        from src.event_bus import EventBus
+        from src.hooks import HookEngine
+
+        mgr = MemoryManager(memory_config)
+        try:
+            # Write and index content
+            (workspace / "memory" / "tasks" / "hook-test.md").write_text(
+                "# Kubernetes Deployment\n\n"
+                "Configured horizontal pod autoscaler for the API service.\n"
+                "Set min replicas to 2, max to 10, target CPU 70%.\n"
+            )
+            instance = await mgr.get_instance("hook-proj", str(workspace))
+            await instance.index()
+
+            # Set up a HookEngine with a real MemoryManager
+            db = MagicMock()
+            db.get_project_workspace_path = AsyncMock(return_value=str(workspace))
+            bus = EventBus()
+            cfg = AppConfig()
+            cfg.hook_engine = HookEngineConfig(enabled=True)
+            engine = HookEngine(db, bus, cfg)
+
+            orchestrator = MagicMock()
+            orchestrator.memory_manager = mgr
+            engine._orchestrator = orchestrator
+
+            # Execute a memory_search step
+            step = {
+                "type": "memory_search",
+                "project_id": "hook-proj",
+                "query": "Kubernetes autoscaling",
+                "top_k": 3,
+            }
+            results = await engine._run_context_steps([step])
+
+            assert len(results) == 1
+            result = results[0]
+            assert result["count"] > 0
+            assert "content" in result
+            # The content should reference our indexed document
+            assert len(result["content"]) > 0
+        finally:
+            await mgr.close()
