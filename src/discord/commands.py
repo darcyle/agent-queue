@@ -3731,6 +3731,143 @@ def setup_commands(bot: commands.Bot) -> None:
         )
 
     # ===================================================================
+    # MEMORY COMMANDS
+    # ===================================================================
+
+    @bot.tree.command(name="memory-stats", description="Show memory index statistics for a project")
+    @app_commands.describe(
+        project="Project ID (defaults to the project linked to this channel)",
+    )
+    async def memory_stats_command(
+        interaction: discord.Interaction,
+        project: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+
+        result = await handler.execute("memory_stats", {"project_id": project_id})
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+
+        enabled = result.get("enabled", False)
+        available = result.get("available", False)
+
+        if not enabled:
+            await _send_info(
+                interaction, "Memory Disabled",
+                description=(
+                    f"Memory is **not enabled** for `{project_id}`.\n"
+                    f"memsearch installed: {'Yes' if available else 'No'}\n\n"
+                    "Set `memory.enabled = true` in your config to enable."
+                ),
+            )
+            return
+
+        if not available:
+            await _send_warning(
+                interaction, "Memory Unavailable",
+                description=(
+                    f"Memory is enabled for `{project_id}` but the "
+                    "`memsearch` package is not installed."
+                ),
+            )
+            return
+
+        fields = [
+            ("Collection", f"`{result.get('collection', 'N/A')}`", True),
+            ("Embedding Provider", f"`{result.get('embedding_provider', 'N/A')}`", True),
+            ("Milvus URI", f"`{result.get('milvus_uri', 'N/A')}`", False),
+            ("Auto Recall", "Enabled" if result.get("auto_recall") else "Disabled", True),
+            ("Auto Remember", "Enabled" if result.get("auto_remember") else "Disabled", True),
+            ("Recall Top-K", str(result.get("recall_top_k", "N/A")), True),
+        ]
+
+        await _send_success(
+            interaction, f"Memory Stats — {project_id}",
+            description="Memory subsystem is **active** and operational.",
+            fields=fields,
+        )
+
+    @bot.tree.command(name="memory-search", description="Semantic search across project memory")
+    @app_commands.describe(
+        query="Semantic search query",
+        project="Project ID (defaults to the project linked to this channel)",
+        top_k="Number of results to return (default: 5)",
+    )
+    async def memory_search_command(
+        interaction: discord.Interaction,
+        query: str,
+        project: str | None = None,
+        top_k: int = 5,
+    ):
+        project_id = await _resolve_project_from_context(interaction, project)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+
+        await interaction.response.defer()
+
+        result = await handler.execute("memory_search", {
+            "project_id": project_id,
+            "query": query,
+            "top_k": top_k,
+        })
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        results = result.get("results", [])
+        count = result.get("count", 0)
+
+        if count == 0:
+            await _send_info(
+                interaction, "No Results",
+                description=f"No memories matched your query in `{project_id}`.\n\n**Query:** {query}",
+                followup=True,
+            )
+            return
+
+        # Build result entries for the embed description
+        desc_parts = [f"**Query:** {query}", f"**Project:** `{project_id}`", ""]
+        for r in results:
+            score = r.get("score", 0)
+            source = r.get("source", "unknown")
+            heading = r.get("heading", "")
+            content = r.get("content", "")
+
+            # Truncate content preview
+            preview = content.replace("\n", " ").strip()
+            if len(preview) > 200:
+                preview = preview[:197] + "..."
+
+            # Format source — show just the filename
+            source_short = source.rsplit("/", 1)[-1] if "/" in source else source
+
+            rank = r.get("rank", "?")
+            score_pct = f"{score * 100:.1f}%" if isinstance(score, (int, float)) else "N/A"
+            entry = (
+                f"**{rank}.** `{source_short}` — {score_pct}\n"
+            )
+            if heading:
+                entry += f"> **{heading}**\n"
+            entry += f"> {preview}"
+            desc_parts.append(entry)
+
+        description = "\n\n".join(desc_parts)
+        # Truncate to Discord limit if needed
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+
+        embed = info_embed(
+            f"Memory Search — {count} result{'s' if count != 1 else ''}",
+            description=description,
+        )
+        await interaction.followup.send(embed=embed)
+
+    # ===================================================================
     # SYSTEM CONTROL COMMANDS
     # ===================================================================
 

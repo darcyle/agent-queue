@@ -486,6 +486,35 @@ Lists all notes and opens a thread where you can ask the bot to read, create, or
 
 ---
 
+## Memory
+
+The memory system provides semantic search across project knowledge — task results, notes, and knowledge-base entries indexed by a vector database.
+
+| Command | Description |
+|---------|-------------|
+| `/memory-stats` | Show memory index configuration and status for a project |
+| `/memory-search` | Semantic search across a project's indexed memories |
+
+#### `/memory-stats`
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `project` | No | Project ID (auto-detected from channel) |
+
+Shows whether memory is enabled, the embedding provider, Milvus collection name, and auto-recall/remember settings. If memory is not enabled, shows instructions to enable it.
+
+#### `/memory-search`
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `query` | Yes | Semantic search query |
+| `project` | No | Project ID (auto-detected from channel) |
+| `top_k` | No | Number of results to return (default: 5) |
+
+Returns ranked results with source file, relevance score, heading, and a content preview. Uses the project's configured embedding provider for semantic matching.
+
+---
+
 ## System Control
 
 | Command | Description |
