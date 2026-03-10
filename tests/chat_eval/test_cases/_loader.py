@@ -24,6 +24,7 @@ CATEGORY_MODULES = [
     "multi_step",
     "error_handling",
     "context_dependent",
+    "memory",
 ]
 
 
