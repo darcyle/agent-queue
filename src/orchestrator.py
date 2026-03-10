@@ -141,6 +141,16 @@ class Orchestrator:
         # each task (keyed by task_id) to rate-limit alerts.
         self._stuck_notified_at: dict[str, float] = {}
         self.hooks: HookEngine | None = None
+        # Semantic memory manager — optional integration with memsearch.
+        # Initialized only when config.memory.enabled is True and the
+        # memsearch package is installed.
+        self.memory_manager: "MemoryManager | None" = None
+        if hasattr(config, "memory") and config.memory.enabled:
+            try:
+                from src.memory import MemoryManager
+                self.memory_manager = MemoryManager(config.memory)
+            except Exception as e:
+                print(f"Memory manager initialization failed: {e}")
         # Reference to the command handler, set by the bot after initialization.
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).
@@ -513,6 +523,28 @@ class Orchestrator:
         else:
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    def _format_memory_context(self, memories: list[dict]) -> str:
+        """Format memsearch results as a readable context block for the agent.
+
+        Each memory entry is rendered with its source, heading, and content
+        so the agent can see where the information came from and how relevant
+        it is.  The output is a single string suitable for appending to
+        ``TaskContext.attached_context``.
+        """
+        lines = ["## Relevant Context from Project Memory\n"]
+        for i, mem in enumerate(memories, 1):
+            source = mem.get("source", "unknown")
+            heading = mem.get("heading", "")
+            content = mem.get("content", "")
+            score = mem.get("score", 0)
+            lines.append(f"### Memory {i} (relevance: {score:.2f})")
+            lines.append(f"*Source: {source}*")
+            if heading:
+                lines.append(f"*Section: {heading}*\n")
+            lines.append(content)
+            lines.append("")
+        return "\n".join(lines)
+
     async def shutdown(self) -> None:
         # Wait for any running task executions to finish before closing
         # the database, otherwise they'll hit "Cannot operate on a closed
@@ -520,6 +552,11 @@ class Orchestrator:
         await self.wait_for_running_tasks(timeout=10)
         if self.hooks:
             await self.hooks.shutdown()
+        if self.memory_manager:
+            try:
+                await self.memory_manager.close()
+            except Exception as e:
+                print(f"Memory manager shutdown error: {e}")
         await self.db.close()
 
     async def run_one_cycle(self) -> None:
@@ -1840,6 +1877,20 @@ class Orchestrator:
                 if profile and profile.mcp_servers else {}
             ),
         )
+
+        # Memory recall: inject relevant historical context from memsearch.
+        # Runs before agent launch so the agent sees past task results,
+        # project notes, and knowledge-base entries that are semantically
+        # relevant to the current task.  Failures are non-fatal.
+        if self.memory_manager:
+            try:
+                memories = await self.memory_manager.recall(task, workspace)
+                if memories:
+                    memory_block = self._format_memory_context(memories)
+                    ctx.attached_context.append(memory_block)
+            except Exception as e:
+                print(f"Memory recall failed for task {task.id}: {e}")
+
         await adapter.start(ctx)
 
         # Stream agent messages to the task thread (or fall back to notifications).
@@ -2097,6 +2148,13 @@ class Orchestrator:
                 import traceback
                 traceback.print_exc()
 
+            # Save completed task result as a memory for future recall.
+            if self.memory_manager:
+                try:
+                    await self.memory_manager.remember(task, output, workspace)
+                except Exception as e:
+                    print(f"Memory remember failed for task {task.id}: {e}")
+
         elif output.result == AgentResult.FAILED:
             new_retry = task.retry_count + 1
             if new_retry >= task.max_retries:
@@ -2158,6 +2216,14 @@ class Orchestrator:
             # Check if this blocked task breaks a dependency chain
             if new_retry >= task.max_retries:
                 await self._notify_stuck_chain(task)
+
+            # Save failed task result as a memory — failures are valuable
+            # context for future tasks working in the same area.
+            if self.memory_manager:
+                try:
+                    await self.memory_manager.remember(task, output, workspace)
+                except Exception as e:
+                    print(f"Memory remember failed for task {task.id}: {e}")
 
         elif output.result in (
             AgentResult.PAUSED_TOKENS, AgentResult.PAUSED_RATE_LIMIT
