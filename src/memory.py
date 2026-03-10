@@ -15,8 +15,9 @@ from __future__ import annotations
 import logging
 import os
 import time
-from dataclasses import dataclass, field
 from typing import Any
+
+from src.config import MemoryConfig
 
 logger = logging.getLogger(__name__)
 
@@ -27,32 +28,6 @@ try:
 except ImportError:
     MemSearch = None  # type: ignore[assignment,misc]
     MEMSEARCH_AVAILABLE = False
-
-
-@dataclass
-class MemoryConfig:
-    """Configuration for the memory subsystem.
-
-    All fields have safe defaults — the subsystem is disabled unless
-    ``enabled`` is explicitly set to ``True`` in the YAML config.
-    """
-
-    enabled: bool = False
-    embedding_provider: str = "openai"
-    embedding_model: str = ""
-    embedding_base_url: str = ""
-    embedding_api_key: str = ""  # supports ${ENV_VAR} substitution via config loader
-    milvus_uri: str = "~/.agent-queue/memsearch/milvus.db"
-    milvus_token: str = ""
-    max_chunk_size: int = 1500
-    overlap_lines: int = 2
-    auto_remember: bool = True  # auto-save task results as memories
-    auto_recall: bool = True  # auto-inject memories at task start
-    recall_top_k: int = 5  # number of memories to inject
-    compact_enabled: bool = False  # periodic LLM compaction
-    compact_interval_hours: int = 24
-    index_notes: bool = True  # index project notes/ directory
-    index_sessions: bool = False  # index session transcripts
 
 
 class MemoryManager:

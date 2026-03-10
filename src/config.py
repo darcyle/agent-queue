@@ -135,6 +135,33 @@ class MonitoringConfig:
 
 
 @dataclass
+class MemoryConfig:
+    """Configuration for the semantic memory subsystem (memsearch).
+
+    All fields have safe defaults — the subsystem is disabled unless
+    ``enabled`` is explicitly set to ``True`` in the YAML config.
+    See notes/memsearch-integration.md for full documentation.
+    """
+
+    enabled: bool = False
+    embedding_provider: str = "openai"  # openai, google, voyage, ollama, local
+    embedding_model: str = ""  # empty = provider default
+    embedding_base_url: str = ""  # for Ollama or custom endpoints
+    embedding_api_key: str = ""  # supports ${ENV_VAR} substitution
+    milvus_uri: str = "~/.agent-queue/memsearch/milvus.db"  # file path or server URI
+    milvus_token: str = ""
+    max_chunk_size: int = 1500
+    overlap_lines: int = 2
+    auto_remember: bool = True  # auto-save task results as memories
+    auto_recall: bool = True  # auto-inject memories at task start
+    recall_top_k: int = 5  # number of memories to inject
+    compact_enabled: bool = False  # periodic LLM compaction
+    compact_interval_hours: int = 24
+    index_notes: bool = True  # index project notes/ directory
+    index_sessions: bool = False  # index session transcripts
+
+
+@dataclass
 class HookEngineConfig:
     enabled: bool = True
     max_concurrent_hooks: int = 2
@@ -200,6 +227,7 @@ class AppConfig:
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
     auto_task: AutoTaskConfig = field(default_factory=AutoTaskConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     llm_logging: LLMLoggingConfig = field(default_factory=LLMLoggingConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
@@ -381,6 +409,27 @@ def load_config(path: str) -> AppConfig:
             max_steps_per_plan=at.get("max_steps_per_plan", 5),
             use_llm_parser=at.get("use_llm_parser", False),
             llm_parser_model=at.get("llm_parser_model", ""),
+        )
+
+    if "memory" in raw:
+        mem = raw["memory"]
+        config.memory = MemoryConfig(
+            enabled=mem.get("enabled", False),
+            embedding_provider=mem.get("embedding_provider", "openai"),
+            embedding_model=mem.get("embedding_model", ""),
+            embedding_base_url=mem.get("embedding_base_url", ""),
+            embedding_api_key=mem.get("embedding_api_key", ""),
+            milvus_uri=mem.get("milvus_uri", "~/.agent-queue/memsearch/milvus.db"),
+            milvus_token=mem.get("milvus_token", ""),
+            max_chunk_size=mem.get("max_chunk_size", 1500),
+            overlap_lines=mem.get("overlap_lines", 2),
+            auto_remember=mem.get("auto_remember", True),
+            auto_recall=mem.get("auto_recall", True),
+            recall_top_k=mem.get("recall_top_k", 5),
+            compact_enabled=mem.get("compact_enabled", False),
+            compact_interval_hours=mem.get("compact_interval_hours", 24),
+            index_notes=mem.get("index_notes", True),
+            index_sessions=mem.get("index_sessions", False),
         )
 
     if "llm_logging" in raw:
