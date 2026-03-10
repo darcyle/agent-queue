@@ -3660,6 +3660,120 @@ class CommandHandler:
         return {"deleted": fpath, "title": args["title"]}
 
     # -----------------------------------------------------------------------
+    # Memory commands -- semantic search, stats, and reindex for the
+    # memsearch-powered project memory subsystem.  These delegate to
+    # MemoryManager on the orchestrator.  When memory is not enabled or
+    # memsearch is not installed, commands return informative errors.
+    # -----------------------------------------------------------------------
+
+    async def _cmd_memory_search(self, args: dict) -> dict:
+        """Search project memory by semantic query.
+
+        Returns the top-k most relevant memory chunks from past task
+        results, project notes, and knowledge-base entries.
+        """
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+        query = args.get("query")
+        if not query:
+            return {"error": "query is required"}
+        top_k = args.get("top_k", 10)
+
+        if not self.orchestrator.memory_manager:
+            return {"error": "Memory subsystem is not enabled. Set memory.enabled=true in config."}
+
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"error": f"Project '{project_id}' not found"}
+        workspace = await self.db.get_project_workspace_path(project_id)
+        if not workspace:
+            return {"error": f"Project '{project_id}' has no workspaces. Use /add-workspace to create one."}
+
+        try:
+            results = await self.orchestrator.memory_manager.search(
+                project_id, workspace, query, top_k=top_k
+            )
+        except Exception as e:
+            return {"error": f"Memory search failed: {e}"}
+
+        # Format results for display
+        formatted = []
+        for i, mem in enumerate(results, 1):
+            entry = {
+                "rank": i,
+                "source": mem.get("source", "unknown"),
+                "heading": mem.get("heading", ""),
+                "content": mem.get("content", ""),
+                "score": round(mem.get("score", 0), 4),
+            }
+            formatted.append(entry)
+
+        return {
+            "project_id": project_id,
+            "query": query,
+            "top_k": top_k,
+            "count": len(formatted),
+            "results": formatted,
+        }
+
+    async def _cmd_memory_stats(self, args: dict) -> dict:
+        """Show memory index statistics for a project."""
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+
+        if not self.orchestrator.memory_manager:
+            return {"error": "Memory subsystem is not enabled. Set memory.enabled=true in config."}
+
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"error": f"Project '{project_id}' not found"}
+        workspace = await self.db.get_project_workspace_path(project_id)
+        if not workspace:
+            return {"error": f"Project '{project_id}' has no workspaces. Use /add-workspace to create one."}
+
+        try:
+            stats = await self.orchestrator.memory_manager.stats(project_id, workspace)
+        except Exception as e:
+            return {"error": f"Failed to retrieve memory stats: {e}"}
+
+        return {"project_id": project_id, **stats}
+
+    async def _cmd_memory_reindex(self, args: dict) -> dict:
+        """Force a full reindex of a project's memory.
+
+        Re-scans all markdown files in memory/ and notes/ directories,
+        re-embeds changed content, and updates the vector index.
+        """
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+
+        if not self.orchestrator.memory_manager:
+            return {"error": "Memory subsystem is not enabled. Set memory.enabled=true in config."}
+
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"error": f"Project '{project_id}' not found"}
+        workspace = await self.db.get_project_workspace_path(project_id)
+        if not workspace:
+            return {"error": f"Project '{project_id}' has no workspaces. Use /add-workspace to create one."}
+
+        try:
+            chunks_indexed = await self.orchestrator.memory_manager.reindex(
+                project_id, workspace
+            )
+        except Exception as e:
+            return {"error": f"Memory reindex failed: {e}"}
+
+        return {
+            "project_id": project_id,
+            "status": "reindex_complete",
+            "chunks_indexed": chunks_indexed,
+        }
+
+    # -----------------------------------------------------------------------
     # Prompt template commands -- read-only browsing of prompt templates
     # stored in <workspace>/prompts/.  Templates use YAML frontmatter for
     # metadata and Mustache-style {{variable}} placeholders for context

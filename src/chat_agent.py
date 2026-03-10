@@ -1584,6 +1584,72 @@ TOOLS = [
             "required": ["source"],
         },
     },
+    # --- Memory tools ---
+    {
+        "name": "memory_search",
+        "description": (
+            "Search project memory for relevant context. Returns semantically "
+            "similar past task results, notes, and knowledge-base entries. "
+            "Use this when the user asks about past work, wants to find related "
+            "context, or says 'search memory', 'what do we know about', etc."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to search memory for",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Semantic search query",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Number of results to return (default 10)",
+                    "default": 10,
+                },
+            },
+            "required": ["project_id", "query"],
+        },
+    },
+    {
+        "name": "memory_stats",
+        "description": (
+            "Get memory index statistics for a project. Shows whether memory "
+            "is enabled, the collection name, embedding provider, and "
+            "auto-recall/auto-remember settings."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to get memory stats for",
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "memory_reindex",
+        "description": (
+            "Force a full reindex of a project's memory. Re-scans all markdown "
+            "files in memory/ and notes/ directories, re-embeds changed content, "
+            "and updates the vector index. Use when memory seems stale or after "
+            "bulk file changes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to reindex memory for",
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -1641,6 +1707,9 @@ you do NOT need to specify project_id when an active project is set
 - Override a task's status with `edit_task` (set the `status` field to bypass the state machine)
 - Inspect the last error for a task with `get_agent_error` (shows error classification and suggested fix)
 - Configure per-project Discord channels with `edit_project` (discord_channel_id), `get_project_channels`, and `get_project_for_channel`
+- Search project memory with `memory_search` (semantic search over past task results, notes, knowledge)
+- View memory index stats with `memory_stats`
+- Force a full memory reindex with `memory_reindex`
 
 Workspace management — use `add_workspace` to add workspace directories to projects:
 - **clone**: Auto-clones from the project's `repo_url`. Path is auto-generated under the workspace root.
@@ -1691,6 +1760,15 @@ for an agent to edit the files in `<workspace>/prompts/`
 - Categories: `system` (bot persona), `task` (agent execution), `hooks` (automation), `custom`
 - When creating a task that involves writing a new prompt, tell the agent to write output \
 to `<workspace>/prompts/<name>.md` with proper YAML frontmatter
+
+Memory system — semantic search over project history (requires memsearch integration):
+- Use `memory_search` to find relevant past task results, notes, and knowledge by semantic query
+- Use `memory_stats` to check memory configuration and index status for a project
+- Use `memory_reindex` to force a full rebuild of the memory index (after bulk changes)
+- Memory is automatically populated: completed/failed tasks are saved as memories, \
+and project notes are indexed. Agents receive relevant memories as context at task startup.
+- When a user asks "what do we know about X", "find past work on Y", or "search memory for Z", \
+use `memory_search` with the query.
 
 Hook system — hooks enable automated self-improvement by running context-gathering steps \
 and sending prompts to an LLM that has access to all system tools:
