@@ -130,6 +130,14 @@ class GitManager:
         except GitError:
             return False
 
+    def has_remote(self, checkout_path: str, remote: str = "origin") -> bool:
+        """Check if the given remote exists in the repository."""
+        try:
+            self._run(["remote", "get-url", remote], cwd=checkout_path)
+            return True
+        except GitError:
+            return False
+
     def create_branch(self, checkout_path: str, branch_name: str) -> None:
         try:
             self._run(["checkout", "-b", branch_name], cwd=checkout_path)

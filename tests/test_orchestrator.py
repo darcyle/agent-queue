@@ -1366,6 +1366,7 @@ class TestMergeAndPushSyncWorkflow:
         workspace = setup["workspace"]
 
         mock_git = MagicMock()
+        mock_git.has_remote.return_value = True
         mock_git.sync_and_merge.return_value = (True, "")
         orch.git = mock_git
 
@@ -1384,6 +1385,7 @@ class TestMergeAndPushSyncWorkflow:
         workspace = setup["workspace"]
 
         mock_git = MagicMock()
+        mock_git.has_remote.return_value = True
         mock_git.sync_and_merge.return_value = (True, "")
         orch.git = mock_git
 
@@ -1407,6 +1409,7 @@ class TestMergeAndPushSyncWorkflow:
         orch.set_notify_callback(capture_notify)
 
         mock_git = MagicMock()
+        mock_git.has_remote.return_value = True
         mock_git.sync_and_merge.return_value = (False, "merge_conflict")
         orch.git = mock_git
 
@@ -1433,6 +1436,7 @@ class TestMergeAndPushSyncWorkflow:
         orch.set_notify_callback(capture_notify)
 
         mock_git = MagicMock()
+        mock_git.has_remote.return_value = True
         mock_git.sync_and_merge.return_value = (False, "push_failed: error")
         orch.git = mock_git
 
@@ -1450,6 +1454,7 @@ class TestMergeAndPushSyncWorkflow:
         workspace = setup["workspace"]
 
         mock_git = MagicMock()
+        mock_git.has_remote.return_value = True
         mock_git.sync_and_merge.return_value = (False, "merge_conflict")
         mock_git.recover_workspace.side_effect = Exception("git broken")
         orch.git = mock_git
@@ -1600,6 +1605,7 @@ class TestCompleteWorkspaceMidChainSync:
 
         mock_git = MagicMock()
         mock_git.validate_checkout.return_value = True
+        mock_git.has_remote.return_value = True
         mock_git.commit_all.return_value = True
         mock_git.sync_and_merge.return_value = (True, "")
         orch.git = mock_git
@@ -1631,6 +1637,7 @@ class TestCompleteWorkspaceMidChainSync:
 
         mock_git = MagicMock()
         mock_git.validate_checkout.return_value = True
+        mock_git.has_remote.return_value = True
         mock_git.commit_all.return_value = True
         mock_git.create_pr.return_value = "https://github.com/org/repo/pull/42"
         orch.git = mock_git

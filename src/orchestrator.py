@@ -1153,27 +1153,29 @@ class Orchestrator:
         self, task: Task, repo: RepoConfig, workspace: str,
         *, _max_retries: int = 3,
     ) -> None:
-        """Merge the task branch into default and push (clone repos only).
+        """Merge the task branch into default and push.
 
-        For CLONE repos, delegates to :meth:`GitManager.sync_and_merge` which
-        handles the full fetch → hard-reset → merge → push-with-retry cycle.
+        For repos with a remote origin (CLONE or LINK workspaces backed by a
+        remote), delegates to :meth:`GitManager.sync_and_merge` which handles
+        the full fetch → hard-reset → merge → push-with-retry cycle.
         The *_max_retries* parameter controls total push attempts (including
         the initial one); internally this maps to
         ``max_retries = _max_retries - 1``.
 
-        For LINK / INIT repos (no remote), falls back to a simple local merge
-        via :meth:`GitManager.merge_branch` — no push or retry is needed.
+        For repos without a remote (INIT or truly local repos), falls back to
+        a simple local merge via :meth:`GitManager.merge_branch` — no push or
+        retry is needed.
 
         **Recovery on failure:** If the merge or push fails, the workspace is
-        reset to a clean state so it's ready for the next task.  For CLONE
-        repos this means hard-resetting the default branch to
+        reset to a clean state so it's ready for the next task.  For repos
+        with a remote this means hard-resetting the default branch to
         ``origin/<default_branch>`` (discarding any un-pushed merge commits).
-        For LINK repos this means checking out the default branch.  Recovery
-        is best-effort — failures are silently ignored.
+        For local-only repos this means checking out the default branch.
+        Recovery is best-effort — failures are silently ignored.
         """
-        is_clone = repo.source_type == RepoSourceType.CLONE
+        has_remote = self.git.has_remote(workspace)
 
-        if is_clone:
+        if has_remote:
             # sync_and_merge handles fetch, hard-reset, merge, and push
             # with retry.  max_retries counts *retries* after the first
             # attempt, so subtract 1 from _max_retries (total attempts).
@@ -1257,7 +1259,7 @@ class Orchestrator:
         try:
             self.git.delete_branch(
                 workspace, task.branch_name,
-                delete_remote=is_clone,
+                delete_remote=has_remote,
             )
         except Exception:
             pass  # branch cleanup is best-effort
@@ -1273,8 +1275,8 @@ class Orchestrator:
         safe here because the task branch is owned exclusively by this agent —
         no other user is expected to push to it (resolves **G5**).
         """
-        if repo.source_type == RepoSourceType.LINK:
-            # LINK repos typically have no remote — notify user to review manually
+        if not self.git.has_remote(workspace):
+            # No remote — notify user to review the branch locally
             await self._notify_channel(
                 f"**Approval Required:** Task `{task.id}` — {task.title}\n"
                 f"Branch `{task.branch_name}` is ready for review in `{workspace}`.\n"
