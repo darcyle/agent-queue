@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import re
+import subprocess
 import traceback
 
 import discord
@@ -3904,6 +3905,35 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(name="restart", description="Restart the agent-queue daemon")
     async def restart_command(interaction: discord.Interaction):
-        await _send_warning(interaction, "Restarting", description="Agent-queue daemon is restarting…")
+        # Gather git info for the restart message
+        git_info_parts: list[str] = []
+        try:
+            short_hash = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+            if short_hash:
+                git_info_parts.append(f"commit `{short_hash}`")
+        except Exception:
+            pass
+        try:
+            subprocess.run(
+                ["git", "fetch", "--quiet"],
+                capture_output=True, text=True, timeout=15,
+            )
+            behind = subprocess.run(
+                ["git", "rev-list", "--count", "HEAD..@{u}"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+            if behind and int(behind) > 0:
+                git_info_parts.append(f"**{behind}** commit{'s' if int(behind) != 1 else ''} behind origin")
+        except Exception:
+            pass
+
+        desc = "Agent-queue daemon is restarting…"
+        if git_info_parts:
+            desc += "\n" + " · ".join(git_info_parts)
+
+        await _send_warning(interaction, "Restarting", description=desc)
         bot._restart_requested = True
         await handler.execute("restart_daemon", {})
