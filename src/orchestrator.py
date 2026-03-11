@@ -121,6 +121,7 @@ class Orchestrator:
         )
         self._last_log_cleanup: float = 0.0
         self._last_auto_archive: float = 0.0
+        self._last_config_reload: float = 0.0
         # Chat provider for LLM-based plan parsing
         self._chat_provider = None
         if config.auto_task.use_llm_parser:
@@ -581,8 +582,11 @@ class Orchestrator:
         6. **Launch** — fire off background asyncio tasks for each new
            assignment.  These run concurrently with future cycles.
         7. **Hook engine tick** — run any registered hooks.
-        8. **Auto-archive** — sweep terminal tasks older than the configured
-           threshold into the archive so they no longer clutter active views.
+        8. **Config hot-reload** — periodically re-read non-critical settings
+           from disk (scheduling, archive, monitoring, etc.) without restart.
+        9. **Log cleanup** — prune old LLM interaction logs.
+        10. **Auto-archive** — sweep terminal tasks older than the configured
+            threshold into the archive so they no longer clutter active views.
         """
         try:
             # 0. Check AWAITING_APPROVAL tasks for PR merge status
@@ -619,18 +623,25 @@ class Orchestrator:
             if self.hooks:
                 await self.hooks.tick()
 
-            # 6. Periodic log cleanup (~once per hour)
+            # 6. Hot-reload non-critical config settings (~once per 5 minutes)
             now = time.time()
+            if now - self._last_config_reload >= 300:
+                self._last_config_reload = now
+                self._try_reload_config()
+
+            # 7. Periodic log cleanup and analytics flush (~once per hour)
             if now - self._last_log_cleanup >= 3600:
                 self._last_log_cleanup = now
                 try:
                     removed = self.llm_logger.cleanup_old_logs()
                     if removed:
                         print(f"LLM log cleanup: removed {removed} old directory(ies)")
+                    # Flush prompt analytics to disk for long-term analysis
+                    self.llm_logger.flush_analytics()
                 except Exception as e:
                     print(f"LLM log cleanup error: {e}")
 
-            # 7. Auto-archive stale terminal tasks (~once per hour)
+            # 8. Auto-archive stale terminal tasks (~once per hour)
             await self._auto_archive_tasks()
         except Exception as e:
             print(f"Scheduler cycle error: {e}")
@@ -693,7 +704,37 @@ class Orchestrator:
         finally:
             self._running_tasks.pop(action.task_id, None)
 
+    def _try_reload_config(self) -> None:
+        """Attempt to hot-reload non-critical configuration settings from disk.
+
+        Called periodically (~every 5 minutes) from the main loop. Only
+        reloads settings that are safe to change at runtime without restart:
+        scheduling, pause_retry, auto_task, archive, monitoring, hook_engine,
+        and llm_logging.  Critical settings (discord, database_path,
+        workspace_dir, chat_provider, memory) are NOT reloaded.
+
+        If the reload fails (e.g., YAML parse error), the current config is
+        kept unchanged and the error is logged.
+        """
+        try:
+            updated = self.config.reload_non_critical()
+            if updated is not self.config:
+                self.config = updated
+                # Update hook engine config reference if it exists
+                if self.hooks:
+                    self.hooks.config = updated
+                print("Config hot-reload: non-critical settings refreshed from disk")
+        except Exception as e:
+            print(f"Config hot-reload error: {e}")
+
     async def _resume_paused_tasks(self) -> None:
+        """Check PAUSED tasks whose ``resume_after`` has elapsed and promote to READY.
+
+        Tasks enter PAUSED when the agent hits a rate limit or token
+        exhaustion, with ``resume_after`` set to a future timestamp.
+        This method scans all PAUSED tasks and transitions any whose
+        backoff timer has expired back to READY for re-scheduling.
+        """
         paused = await self.db.list_tasks(status=TaskStatus.PAUSED)
         now = time.time()
         for task in paused:
@@ -704,6 +745,16 @@ class Orchestrator:
                                               resume_after=None)
 
     async def _check_defined_tasks(self) -> None:
+        """Promote DEFINED tasks to READY when all dependencies are satisfied.
+
+        Scans all DEFINED tasks and checks their dependency list:
+        - Tasks with no dependencies are immediately promoted to READY.
+        - Tasks with dependencies are promoted only when every upstream
+          dependency has reached COMPLETED status.
+
+        This runs after ``_check_awaiting_approval`` so that freshly-merged
+        PRs can unblock their dependents in the same cycle.
+        """
         defined = await self.db.list_tasks(status=TaskStatus.DEFINED)
         for task in defined:
             deps = await self.db.get_dependencies(task.id)
@@ -937,6 +988,18 @@ class Orchestrator:
                 self._budget_warned_at[project_id] = threshold
 
     async def _schedule(self) -> list[AssignAction]:
+        """Build scheduler state and compute task-to-agent assignments.
+
+        Gathers the current state of all projects, tasks, agents, token
+        usage within the rolling window, and per-project workspace
+        availability.  Passes this snapshot to the proportional fair-share
+        scheduler (``Scheduler.schedule()``) which returns a list of
+        ``AssignAction`` objects mapping tasks to agents.
+
+        The scheduler runs deterministically with no LLM calls — it uses
+        credit weights, deficit accounting, and workspace availability to
+        decide which project's READY tasks should be assigned next.
+        """
         projects = await self.db.list_projects()
         tasks = await self.db.list_tasks()
         agents = await self.db.list_agents()

@@ -1,16 +1,20 @@
 """Agent Queue daemon entry point — process lifecycle and signal handling.
 
 Startup sequence:
-  1. Load config from YAML (default: ~/.agent-queue/config.yaml)
-  2. Initialize the Orchestrator (database, event bus, scheduler)
-  3. Start the Discord bot (connects to gateway, registers commands)
-  4. Run the scheduler loop (~5s cycle: promote tasks, assign agents, execute)
-  5. Wait for SIGTERM/SIGINT to trigger graceful shutdown
+  1. Configure structured logging (JSON or human-readable, with correlation IDs)
+  2. Load config from YAML (default: ~/.agent-queue/config.yaml)
+     - Validates all settings (fails fast on misconfiguration)
+     - Applies environment-specific overlay (config.{env}.yaml) if present
+  3. Initialize the Orchestrator (database, event bus, scheduler)
+  4. Start the health check HTTP server (if enabled)
+  5. Start the Discord bot (connects to gateway, registers commands)
+  6. Run the scheduler loop (~5s cycle: promote tasks, assign agents, execute)
+  7. Wait for SIGTERM/SIGINT to trigger graceful shutdown
 
-On shutdown, the bot and orchestrator are closed cleanly. If a restart was
-requested (via the /restart Discord command), the process replaces itself
-using os.execv() — this ensures a fresh Python interpreter with updated code
-while the systemd/supervisor unit sees a continuous process.
+On shutdown, the bot, health check server, and orchestrator are closed cleanly.
+If a restart was requested (via the /restart Discord command), the process
+replaces itself using os.execv() — this ensures a fresh Python interpreter
+with updated code while the systemd/supervisor unit sees a continuous process.
 
 See specs/main.md for the full specification.
 """
@@ -18,6 +22,7 @@ See specs/main.md for the full specification.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 import signal
@@ -26,15 +31,30 @@ import sys
 from src.adapters import AdapterFactory
 from src.config import load_config
 from src.discord.bot import AgentQueueBot
+from src.health import HealthCheckServer
+from src.logging_config import setup_logging
+from src.models import AgentState, TaskStatus
 from src.orchestrator import Orchestrator
 
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = os.path.expanduser("~/.agent-queue/config.yaml")
 
 
 async def run(config_path: str) -> bool:
     """Run the daemon. Returns True if a restart was requested."""
+    # Set up structured logging early (before any other import logs)
+    setup_logging(
+        level=os.environ.get("AGENT_QUEUE_LOG_LEVEL", "INFO"),
+        json_output=os.environ.get("AGENT_QUEUE_LOG_FORMAT", "") == "json",
+    )
+
     config = load_config(config_path)
+    logger.info(
+        "Configuration loaded (env=%s, profile=%s)",
+        config.env,
+        config_path,
+    )
 
     # Ensure database directory exists
     os.makedirs(os.path.dirname(config.database_path), exist_ok=True)
@@ -43,6 +63,13 @@ async def run(config_path: str) -> bool:
     adapter_factory = AdapterFactory(llm_logger=orch.llm_logger)
     orch._adapter_factory = adapter_factory
     await orch.initialize()
+
+    # Start health check server (if enabled)
+    health_server = HealthCheckServer(
+        config=config.health_check,
+        health_provider=lambda: _health_checks(orch),
+    )
+    await health_server.start()
 
     # Start Discord bot
     bot = AgentQueueBot(config, orch)
@@ -79,14 +106,64 @@ async def run(config_path: str) -> bool:
         # Wait until shutdown is signaled
         await shutdown_event.wait()
     finally:
-        # Shut down bot and orchestrator
+        # Shut down bot, health server, and orchestrator
         restart = bot._restart_requested
+        await health_server.stop()
         await bot.close()
         bot_task.cancel()
         scheduler_task.cancel()
         await orch.shutdown()
 
     return restart
+
+
+async def _health_checks(orch: Orchestrator) -> dict:
+    """Gather health check results from the orchestrator for the health endpoint.
+
+    Returns a dict of check names to check results, each with at minimum
+    an ``ok`` key indicating whether that subsystem is healthy.
+    """
+    checks = {}
+
+    # Database check
+    try:
+        await orch.db.list_agents()
+        checks["database"] = {"ok": True}
+    except Exception as e:
+        checks["database"] = {"ok": False, "error": str(e)}
+
+    # Orchestrator status
+    checks["orchestrator"] = {
+        "ok": True,
+        "paused": orch._paused,
+        "running_tasks": len(orch._running_tasks),
+    }
+
+    # Agent status
+    try:
+        agents = await orch.db.list_agents()
+        busy = sum(1 for a in agents if a.state == AgentState.BUSY)
+        idle = sum(1 for a in agents if a.state == AgentState.IDLE)
+        checks["agents"] = {"ok": True, "busy": busy, "idle": idle, "total": len(agents)}
+    except Exception as e:
+        checks["agents"] = {"ok": False, "error": str(e)}
+
+    # Task counts
+    try:
+        in_progress = await orch.db.list_tasks(status=TaskStatus.IN_PROGRESS)
+        ready = await orch.db.list_tasks(status=TaskStatus.READY)
+        checks["tasks"] = {
+            "ok": True,
+            "in_progress": len(in_progress),
+            "ready": len(ready),
+        }
+    except Exception as e:
+        checks["tasks"] = {"ok": False, "error": str(e)}
+
+    # Discord check (basic — can we see the notify callback is set)
+    checks["discord"] = {"ok": orch._notify is not None}
+
+    return checks
 
 
 def main():
