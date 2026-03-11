@@ -81,7 +81,7 @@ class MemoryManager:
         """
         paths = [self._project_memory_dir(project_id)]
         if self.config.index_notes:
-            notes_dir = os.path.join(workspace_path, "notes")
+            notes_dir = os.path.join(self._storage_root, "notes", project_id)
             if os.path.isdir(notes_dir):
                 paths.append(notes_dir)
         return paths

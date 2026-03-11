@@ -150,15 +150,15 @@ class TestMemoryManager:
     # -- Memory paths ------------------------------------------------------
 
     def test_memory_paths_includes_notes_when_enabled(self, tmp_path):
-        notes_dir = tmp_path / "notes"
-        notes_dir.mkdir()
+        notes_dir = tmp_path / "notes" / "test-project"
+        notes_dir.mkdir(parents=True)
         mgr = self._make_manager(storage_root=str(tmp_path), index_notes=True)
         paths = mgr._memory_paths("test-project", str(tmp_path))
         assert mgr._project_memory_dir("test-project") in paths
         assert str(notes_dir) in paths
 
     def test_memory_paths_excludes_notes_when_disabled(self, tmp_path):
-        (tmp_path / "notes").mkdir()
+        (tmp_path / "notes" / "test-project").mkdir(parents=True)
         mgr = self._make_manager(storage_root=str(tmp_path), index_notes=False)
         paths = mgr._memory_paths("test-project", str(tmp_path))
         assert len(paths) == 1

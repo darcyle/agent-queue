@@ -3438,8 +3438,16 @@ class CommandHandler:
     # Notes commands -- markdown documents stored in project workspaces.
     # Notes are a lightweight knowledge base: users and hooks can write
     # specs, brainstorms, or analysis, and later turn them into tasks.
-    # Stored as plain .md files under <workspace>/notes/.
+    # Stored as plain .md files under <workspace_dir>/notes/<project_id>/.
     # -----------------------------------------------------------------------
+
+    def _get_notes_dir(self, project_id: str) -> str:
+        """Return the central notes directory for a project.
+
+        Notes are stored under ``{workspace_dir}/notes/{project_id}/`` to
+        avoid polluting linked workspace directories (project repos).
+        """
+        return os.path.join(self.config.workspace_dir, "notes", project_id)
 
     def _resolve_note_path(self, notes_dir: str, title: str) -> str | None:
         """Resolve a note file path from a title, filename, or slug.
@@ -3475,10 +3483,7 @@ class CommandHandler:
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}
-        workspace = await self.db.get_project_workspace_path(args["project_id"])
-        if not workspace:
-            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
-        notes_dir = os.path.join(workspace, "notes")
+        notes_dir = self._get_notes_dir(args["project_id"])
         if not os.path.isdir(notes_dir):
             return {"project_id": args["project_id"], "notes": []}
         notes = []
@@ -3508,10 +3513,7 @@ class CommandHandler:
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}
-        workspace = await self.db.get_project_workspace_path(args["project_id"])
-        if not workspace:
-            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
-        notes_dir = os.path.join(workspace, "notes")
+        notes_dir = self._get_notes_dir(args["project_id"])
         os.makedirs(notes_dir, exist_ok=True)
         # Strip .md extension before slugifying to avoid corrupted names
         # e.g. "feature-requests.md" → slugify("feature-requests") → "feature-requests"
@@ -3540,10 +3542,7 @@ class CommandHandler:
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}
-        workspace = await self.db.get_project_workspace_path(args["project_id"])
-        if not workspace:
-            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
-        notes_dir = os.path.join(workspace, "notes")
+        notes_dir = self._get_notes_dir(args["project_id"])
         fpath = self._resolve_note_path(notes_dir, args["title"])
         if not fpath:
             return {"error": f"Note '{args['title']}' not found"}
@@ -3561,10 +3560,7 @@ class CommandHandler:
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}
-        workspace = await self.db.get_project_workspace_path(args["project_id"])
-        if not workspace:
-            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
-        notes_dir = os.path.join(workspace, "notes")
+        notes_dir = self._get_notes_dir(args["project_id"])
         os.makedirs(notes_dir, exist_ok=True)
         # Try to find an existing note first (handles .md extension, exact names, slugs)
         fpath = self._resolve_note_path(notes_dir, args["title"])
@@ -3623,7 +3619,7 @@ class CommandHandler:
             if not specs_path:
                 specs_path = os.path.join(workspace, "specs")
 
-        notes_path = os.path.join(workspace, "notes")
+        notes_path = self._get_notes_dir(args["project_id"])
 
         def _list_md_files(dirpath: str) -> list[dict]:
             if not os.path.isdir(dirpath):
@@ -3661,10 +3657,7 @@ class CommandHandler:
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}
-        workspace = await self.db.get_project_workspace_path(args["project_id"])
-        if not workspace:
-            return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
-        notes_dir = os.path.join(workspace, "notes")
+        notes_dir = self._get_notes_dir(args["project_id"])
         fpath = self._resolve_note_path(notes_dir, args["title"])
         if not fpath:
             return {"error": f"Note '{args['title']}' not found"}
