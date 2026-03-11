@@ -713,6 +713,39 @@ class CommandHandler:
                 return {"error": str(e)}
 
     # -----------------------------------------------------------------------
+    # System commands — config reload, status, diagnostics
+    # -----------------------------------------------------------------------
+
+    async def _cmd_reload_config(self, args: dict) -> dict:
+        """Manually trigger a config hot-reload from disk.
+
+        Returns a summary of which sections changed, which were applied,
+        and which require a restart.
+        """
+        watcher = self.orchestrator._config_watcher
+        if not watcher:
+            return {"error": "Config watcher is not active (no config file path)"}
+        result = await watcher.reload()
+        if "error" in result:
+            return {"error": f"Config reload failed: {result['error']}"}
+        if not result.get("changed_sections"):
+            return {"message": "No configuration changes detected."}
+        parts = []
+        if result.get("applied"):
+            parts.append(f"Applied: {', '.join(result['applied'])}")
+        if result.get("restart_required"):
+            parts.append(
+                f"Restart required: {', '.join(result['restart_required'])}"
+            )
+        return {
+            "message": "Config reloaded.",
+            "changed_sections": result["changed_sections"],
+            "applied": result.get("applied", []),
+            "restart_required": result.get("restart_required", []),
+            "summary": "; ".join(parts) if parts else "No changes.",
+        }
+
+    # -----------------------------------------------------------------------
     # Project commands -- CRUD, pause/resume, and Discord channel management.
     # Projects are the top-level grouping: each project has its own workspace
     # directory, scheduling weight, and optional dedicated Discord channel.

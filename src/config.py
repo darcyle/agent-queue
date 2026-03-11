@@ -15,7 +15,9 @@ See specs/config.md for the full specification of all configuration fields.
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import dataclasses
 import logging
 import os
 import re
@@ -404,6 +406,178 @@ class AppConfig:
         updated.llm_logging = fresh.llm_logging
 
         return updated
+
+
+# ---------------------------------------------------------------------------
+# Hot-reload classification
+# ---------------------------------------------------------------------------
+
+HOT_RELOADABLE_SECTIONS = {
+    "scheduling", "monitoring", "hook_engine", "archive",
+    "llm_logging", "pause_retry", "agents_config", "auto_task",
+    "logging", "agent_profiles", "rate_limits",
+}
+"""Config sections that can be safely updated at runtime without restart."""
+
+RESTART_REQUIRED_SECTIONS = {
+    "discord", "workspace_dir", "database_path", "chat_provider",
+    "memory", "health_check",
+}
+"""Config sections that require a full restart to take effect."""
+
+# Mapping from AppConfig field names to the section names used in diff output.
+# Most fields map to themselves; these are the exceptions.
+_SECTION_FIELDS = {
+    "workspace_dir", "database_path", "profile", "env",
+    "discord", "agents_config", "scheduling", "pause_retry",
+    "chat_provider", "hook_engine", "health_check", "logging",
+    "monitoring", "archive", "auto_task", "memory", "llm_logging",
+    "agent_profiles", "global_token_budget_daily", "rate_limits",
+}
+
+
+def diff_configs(old: AppConfig, new: AppConfig) -> set[str]:
+    """Compare two AppConfig instances and return the set of changed section names.
+
+    Uses ``dataclasses.asdict()`` for deep comparison of each section.
+    Skips internal fields (prefixed with ``_``).
+    """
+    changed: set[str] = set()
+    old_dict = dataclasses.asdict(old)
+    new_dict = dataclasses.asdict(new)
+    for field_name in _SECTION_FIELDS:
+        old_val = old_dict.get(field_name)
+        new_val = new_dict.get(field_name)
+        if old_val != new_val:
+            changed.add(field_name)
+    return changed
+
+
+class ConfigWatcher:
+    """Watches the config file for changes and emits events on reload.
+
+    Uses mtime-based polling (not filesystem events) for maximum portability.
+    On change detection, loads the new config, validates it, diffs against
+    the current config, and emits ``config.reloaded`` / ``config.restart_needed``
+    events via the EventBus.
+
+    Only hot-reloadable sections are applied; restart-required sections
+    trigger a warning event but are not applied.
+    """
+
+    def __init__(
+        self,
+        config_path: str,
+        event_bus,  # EventBus — imported lazily to avoid circular imports
+        current_config: AppConfig,
+        poll_interval: float = 30.0,
+    ):
+        self._config_path = config_path
+        self._bus = event_bus
+        self._config = current_config
+        self._poll_interval = poll_interval
+        self._last_mtime: float = 0.0
+        self._task: asyncio.Task | None = None
+        # Initialize mtime
+        try:
+            self._last_mtime = os.path.getmtime(config_path)
+        except OSError:
+            pass
+
+    def start(self) -> None:
+        """Start the background polling task."""
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._poll_loop())
+
+    async def stop(self) -> None:
+        """Stop the background polling task."""
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+    async def _poll_loop(self) -> None:
+        """Poll the config file mtime and reload on change."""
+        while True:
+            try:
+                await asyncio.sleep(self._poll_interval)
+                await self._check_for_changes()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("ConfigWatcher poll error: %s", e)
+
+    async def _check_for_changes(self) -> None:
+        """Check if the config file has been modified since last check."""
+        try:
+            current_mtime = os.path.getmtime(self._config_path)
+        except OSError:
+            return
+
+        if current_mtime != self._last_mtime:
+            self._last_mtime = current_mtime
+            await self.reload()
+
+    async def reload(self) -> dict:
+        """Reload configuration from disk, diff, and emit events.
+
+        Returns a summary dict with ``changed_sections``,
+        ``restart_required``, and ``applied`` keys.
+        """
+        try:
+            new_config = load_config(
+                self._config_path,
+                profile=self._config.profile or None,
+            )
+        except Exception as e:
+            logger.warning("Config reload failed (keeping current config): %s", e)
+            return {"error": str(e), "changed_sections": [], "applied": []}
+
+        changed = diff_configs(self._config, new_config)
+        if not changed:
+            return {"changed_sections": [], "restart_required": [], "applied": []}
+
+        # Classify changes
+        hot_reloadable = changed & HOT_RELOADABLE_SECTIONS
+        restart_needed = changed & RESTART_REQUIRED_SECTIONS
+
+        # Apply only hot-reloadable sections
+        if hot_reloadable:
+            for section in hot_reloadable:
+                if hasattr(self._config, section) and hasattr(new_config, section):
+                    setattr(self._config, section, getattr(new_config, section))
+
+            await self._bus.emit("config.reloaded", {
+                "changed_sections": sorted(hot_reloadable),
+                "config": self._config,
+            })
+            logger.info(
+                "Config hot-reload: updated sections: %s",
+                ", ".join(sorted(hot_reloadable)),
+            )
+
+        if restart_needed:
+            await self._bus.emit("config.restart_needed", {
+                "changed_sections": sorted(restart_needed),
+            })
+            logger.warning(
+                "Config reload: sections require restart to take effect: %s",
+                ", ".join(sorted(restart_needed)),
+            )
+
+        return {
+            "changed_sections": sorted(changed),
+            "restart_required": sorted(restart_needed),
+            "applied": sorted(hot_reloadable),
+        }
+
+    @property
+    def config(self) -> AppConfig:
+        """Return the current config (may have been updated by reload)."""
+        return self._config
 
 
 def _substitute_env_vars(value: str) -> str:
