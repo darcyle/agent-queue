@@ -1823,12 +1823,19 @@ class Orchestrator:
                 max_steps=config.max_steps_per_plan,
             )
 
-        # Smart LLM fallback: if the regex parser produced steps but they
-        # look low-quality (many informational headings, few actionable steps),
-        # automatically retry with the LLM parser for better results.
-        # Quality score < 0.4 with > 5 steps typically indicates the regex
-        # parser treated section headings (like "Background", "Architecture")
-        # as implementation steps.  The LLM parser can distinguish these.
+        # Smart LLM fallback: the regex parser is fast but struggles with
+        # plans that mix informational headings (background, architecture
+        # notes) with actionable implementation phases.  When this happens,
+        # _score_parse_quality returns a low score (< 0.4 = more than 60%
+        # of steps look non-actionable).  For plans with many steps (> 5),
+        # this is a strong signal that the regex parser misidentified
+        # section headings as implementation steps.
+        #
+        # In this case, we retry with the LLM parser which can semantically
+        # distinguish "Phase 3: Implement caching" (actionable) from
+        # "Background: System Architecture" (informational).  The LLM
+        # parser result replaces the regex result only if it produces steps;
+        # otherwise we keep the regex result as a best-effort fallback.
         if (
             plan.steps
             and not config.use_llm_parser
@@ -2846,5 +2853,6 @@ class Orchestrator:
                                    state=next_state,
                                    current_task_id=None)
 
-        # Remove the adapter reference so the process handle can be GC'd.
+        # Remove adapter reference — the adapter's subprocess has already
+        # exited by this point (wait() returned), so this is just cleanup.
         self._adapters.pop(action.agent_id, None)
