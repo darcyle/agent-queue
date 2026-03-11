@@ -220,3 +220,80 @@ class TestScheduler:
         )
         actions = Scheduler.schedule(state)
         assert len(actions) == 1
+
+
+class TestWorkspaceAffinity:
+    def test_subtask_scheduled_when_preferred_workspace_free(self):
+        """Task with preferred_workspace_id should be assigned when that workspace is unlocked."""
+        state = SchedulerState(
+            projects=[make_project()],
+            tasks=[make_task(preferred_workspace_id="ws-1")],
+            agents=[make_agent()],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+            workspace_locks={"ws-1": None},  # unlocked
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 1
+        assert actions[0].task_id == "t-1"
+
+    def test_subtask_skipped_when_preferred_workspace_locked(self):
+        """Task with preferred_workspace_id should NOT be assigned when workspace is locked."""
+        state = SchedulerState(
+            projects=[make_project()],
+            tasks=[make_task(preferred_workspace_id="ws-1")],
+            agents=[make_agent()],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+            workspace_locks={"ws-1": "t-other"},  # locked by another task
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 0
+
+    def test_non_affinity_task_still_scheduled(self):
+        """Task without preferred_workspace_id is always eligible."""
+        state = SchedulerState(
+            projects=[make_project()],
+            tasks=[make_task()],  # no preferred_workspace_id
+            agents=[make_agent()],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+            workspace_locks={"ws-1": "t-other"},
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 1
+
+    def test_backward_compat_empty_workspace_locks(self):
+        """Empty workspace_locks dict means no affinity filtering."""
+        state = SchedulerState(
+            projects=[make_project()],
+            tasks=[make_task(preferred_workspace_id="ws-1")],
+            agents=[make_agent()],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+            workspace_locks={},  # empty = no filtering
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 1
+
+    def test_affinity_task_skipped_other_task_selected(self):
+        """When affinity task is blocked, a non-affinity task should be selected instead."""
+        state = SchedulerState(
+            projects=[make_project()],
+            tasks=[
+                make_task(id="t-affinity", priority=10, preferred_workspace_id="ws-1"),
+                make_task(id="t-normal", priority=50),
+            ],
+            agents=[make_agent()],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+            workspace_locks={"ws-1": "t-other"},
+        )
+        actions = Scheduler.schedule(state)
+        assert len(actions) == 1
+        assert actions[0].task_id == "t-normal"

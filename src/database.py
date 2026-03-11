@@ -965,6 +965,28 @@ class Database:
         row = await cursor.fetchone()
         return row["created_at"] if row else None
 
+    async def add_task_context(
+        self, task_id: str, *, type: str, label: str, content: str
+    ) -> str:
+        """Insert a task_context row and return its generated ID."""
+        ctx_id = str(uuid.uuid4())[:12]
+        await self._db.execute(
+            "INSERT INTO task_context (id, task_id, type, label, content) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (ctx_id, task_id, type, label, content),
+        )
+        await self._db.commit()
+        return ctx_id
+
+    async def get_task_contexts(self, task_id: str) -> list[dict]:
+        """Return all task_context rows for *task_id* as dicts."""
+        cursor = await self._db.execute(
+            "SELECT id, task_id, type, label, content FROM task_context WHERE task_id = ?",
+            (task_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
     async def get_subtasks(self, parent_task_id: str) -> list[Task]:
         cursor = await self._db.execute(
             "SELECT * FROM tasks WHERE parent_task_id = ?", (parent_task_id,)

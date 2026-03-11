@@ -66,6 +66,8 @@ class TaskEvent(Enum):
     PR_MERGED = "PR_MERGED"
     RETRY = "RETRY"
     MAX_RETRIES = "MAX_RETRIES"
+    MERGE_FAILED = "MERGE_FAILED"
+    MERGE_SUCCEEDED = "MERGE_SUCCEEDED"
     # Administrative / recovery events
     ADMIN_SKIP = "ADMIN_SKIP"
     ADMIN_STOP = "ADMIN_STOP"
@@ -396,3 +398,32 @@ class HookRun:
     tokens_used: int = 0
     started_at: float = 0.0
     completed_at: float | None = None
+
+
+class PhaseResult(Enum):
+    """Outcome of a single completion pipeline phase."""
+    CONTINUE = "continue"
+    STOP = "stop"
+    ERROR = "error"
+
+
+@dataclass
+class CompletionPhase:
+    """Descriptor for one phase in the completion pipeline."""
+    name: str
+    builtin: bool = True
+    blocking: bool = True
+
+
+@dataclass
+class PipelineContext:
+    """Passed through each phase of the completion pipeline."""
+    task: Task
+    agent: Agent
+    output: AgentOutput
+    workspace_path: str | None
+    workspace_id: str | None
+    repo: RepoConfig | None
+    default_branch: str = "main"
+    project: Project | None = None
+    pr_url: str | None = None

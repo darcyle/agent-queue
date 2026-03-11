@@ -120,10 +120,25 @@ class SchedulerState:
     # the scheduler cannot assign more tasks than physical workspaces.
     # Empty dict = no workspace tracking (e.g., in tests).
     project_available_workspaces: dict[str, int] = field(default_factory=dict)
+    # Maps workspace_id → locked_by_task_id (None if free).
+    # Used to enforce workspace affinity: tasks with a preferred_workspace_id
+    # are only assigned when that workspace is unlocked.
+    workspace_locks: dict[str, str | None] = field(default_factory=dict)
     # Global token budget across all projects (None = unlimited).
     global_budget: int | None = None
     # Total tokens used across all projects in the rolling window.
     global_tokens_used: int = 0
+
+
+def _workspace_available(task: Task, locks: dict[str, str | None]) -> bool:
+    """Check if a task's preferred workspace is available (unlocked).
+
+    Tasks without a preferred_workspace_id are always eligible.
+    When locks is empty (e.g. in tests), no filtering is applied.
+    """
+    if not task.preferred_workspace_id or not locks:
+        return True
+    return locks.get(task.preferred_workspace_id) is None
 
 
 class Scheduler:
@@ -258,9 +273,11 @@ class Scheduler:
                     continue
 
                 # Pick highest priority ready task not yet assigned
+                # Also filter out tasks whose preferred workspace is locked
                 available = [
                     t for t in ready_by_project.get(project.id, [])
                     if t.id not in assigned_tasks
+                    and _workspace_available(t, state.workspace_locks)
                 ]
                 if not available:
                     continue

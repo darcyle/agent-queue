@@ -509,3 +509,92 @@ class TestMaxConcurrent:
 
         # Only 1 should be running
         assert len(engine._running) == 1
+
+
+# --- create_task step ---
+
+
+class TestCreateTaskStep:
+    @pytest.mark.asyncio
+    async def test_create_task_hook_step(self, db, engine):
+        """create_task step should create a task in the DB."""
+        await _create_project(db)
+        step = {
+            "type": "create_task",
+            "title_template": "Fix merge conflict",
+            "description_template": "Resolve conflicts on branch feature-1",
+            "project_id": "test-project",
+            "priority": 25,
+        }
+        results = await engine._run_context_steps([step])
+        assert len(results) == 1
+        assert results[0].get("created") is True
+        task_id = results[0]["task_id"]
+
+        # Verify task exists in DB
+        from src.models import TaskStatus
+        task = await db.get_task(task_id)
+        assert task is not None
+        assert task.title == "Fix merge conflict"
+        assert task.project_id == "test-project"
+        assert task.priority == 25
+        assert task.status == TaskStatus.DEFINED
+
+    @pytest.mark.asyncio
+    async def test_create_task_placeholder_resolution(self, db, engine):
+        """create_task step should resolve {{event.field}} placeholders."""
+        await _create_project(db)
+        step = {
+            "type": "create_task",
+            "title_template": "Fix: {{event.branch_name}}",
+            "description_template": "Resolve for task {{event.task_id}}",
+            "project_id": "test-project",
+            "parent_task_id": "{{event.task_id}}",
+            "context_entries": [
+                {"type": "system", "label": "merge_resolution_for", "content": "{{event.task_id}}"}
+            ],
+        }
+        # Create a parent task first (needed for FK)
+        from src.models import Task, TaskStatus
+        parent = Task(id="t-parent", project_id="test-project", title="Parent",
+                       description="desc", status=TaskStatus.VERIFYING)
+        await db.create_task(parent)
+
+        event_data = {"task_id": "t-parent", "branch_name": "feature-x"}
+        results = await engine._run_context_steps([step], event_data)
+        assert results[0].get("created") is True
+        task_id = results[0]["task_id"]
+
+        task = await db.get_task(task_id)
+        assert "feature-x" in task.title
+        assert task.parent_task_id == "t-parent"
+
+        # Check context entries
+        contexts = await db.get_task_contexts(task_id)
+        assert len(contexts) == 1
+        assert contexts[0]["label"] == "merge_resolution_for"
+        assert contexts[0]["content"] == "t-parent"
+
+
+# --- skip_llm flag ---
+
+
+class TestSkipLlmFlag:
+    @pytest.mark.asyncio
+    async def test_skip_llm_flag(self, db, engine):
+        """Hook with skip_llm=true should complete without calling LLM."""
+        await _create_project(db)
+        hook = await _create_hook(
+            db,
+            trigger='{"type": "event", "event_type": "task.merge_failed", "skip_llm": true}',
+            context_steps='[{"type": "shell", "command": "echo resolved"}]',
+            prompt_template="",
+        )
+
+        with patch.object(engine, '_invoke_llm', new_callable=AsyncMock) as mock_llm:
+            await engine._execute_hook(hook, "manual")
+            mock_llm.assert_not_called()
+
+        runs = await db.list_hook_runs(hook.id)
+        assert len(runs) == 1
+        assert runs[0].status == "completed"

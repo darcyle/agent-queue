@@ -155,16 +155,16 @@ class TestOrchestratorLifecycle:
         await orch.db.add_dependency("t-2", depends_on="t-1")
 
         # t-1 has no deps so it gets promoted to READY and executed.
-        # t-2 depends on t-1 which is not yet COMPLETED at scheduling time,
-        # so it stays DEFINED until the next cycle.
+        # After t-1 completes, the pipeline re-checks DEFINED tasks,
+        # promoting t-2 to READY within the same cycle.
         await _run_cycle_and_wait(orch)
 
         t1 = await orch.db.get_task("t-1")
         t2 = await orch.db.get_task("t-2")
         # t-1 was promoted, scheduled, executed, completed
         assert t1.status == TaskStatus.COMPLETED
-        # t-2 stays DEFINED because t-1 wasn't completed when deps were checked
-        assert t2.status == TaskStatus.DEFINED
+        # t-2 gets promoted to READY in the same cycle (post-completion re-check)
+        assert t2.status == TaskStatus.READY
 
 
 class TestAutoTaskGeneration:
@@ -1649,3 +1649,341 @@ class TestCompleteWorkspaceMidChainSync:
         mock_git.create_pr.assert_called_once()
         mock_git.mid_chain_sync.assert_not_called()
         mock_git.sync_and_merge.assert_not_called()
+
+
+# ── Completion Pipeline Tests ──────────────────────────────────────────
+
+
+class TestCompletionPipeline:
+    """Tests for the completion pipeline infrastructure."""
+
+    @pytest.fixture
+    async def pipeline_orch(self, tmp_path):
+        """Orchestrator with mocked git for pipeline tests."""
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(tmp_path / "workspaces"),
+        )
+        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        await o.initialize()
+
+        # Set up project, workspace, agent
+        await o.db.create_project(Project(id="p-1", name="alpha"))
+        ws_path = str(tmp_path / "workspaces" / "ws1")
+        os.makedirs(ws_path, exist_ok=True)
+        await o.db.create_workspace(Workspace(
+            id="ws-1", project_id="p-1",
+            workspace_path=ws_path,
+            source_type=RepoSourceType.LINK,
+        ))
+        await o.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+
+        # Mock git
+        mock_git = MagicMock()
+        mock_git.validate_checkout.return_value = True
+        mock_git.commit_all.return_value = True
+        mock_git.has_remote.return_value = True
+        mock_git.sync_and_merge.return_value = (True, "")
+        mock_git.delete_branch.return_value = None
+        o.git = mock_git
+
+        yield o
+        await _drain_running_tasks(o)
+        await o.shutdown()
+
+    async def test_pipeline_phases_run_in_order(self, pipeline_orch):
+        """Pipeline should run commit → merge → plan_generate in order."""
+        orch = pipeline_orch
+        from src.models import PipelineContext, PhaseResult
+
+        task = Task(id="t-1", project_id="p-1", title="Test",
+                    description="test", branch_name="feature-1",
+                    status=TaskStatus.VERIFYING)
+        await orch.db.create_task(task)
+        await orch.db.acquire_workspace("p-1", "a-1", "t-1")
+
+        output = AgentOutput(result=AgentResult.COMPLETED, tokens_used=100)
+        ws = await orch.db.get_workspace_for_task("t-1")
+
+        ctx = PipelineContext(
+            task=task, agent=Agent(id="a-1", name="claude-1", agent_type="claude"),
+            output=output,
+            workspace_path=ws.workspace_path, workspace_id=ws.id,
+            repo=RepoConfig(id="r-1", project_id="p-1",
+                            source_type=RepoSourceType.LINK, default_branch="main"),
+            default_branch="main",
+        )
+
+        pr_url, ok = await orch._run_completion_pipeline(ctx)
+        assert ok is True
+        assert pr_url is None
+        # Commit should have been called
+        orch.git.commit_all.assert_called_once()
+        # Merge should have been called
+        orch.git.sync_and_merge.assert_called_once()
+
+    async def test_pipeline_stops_on_phase_failure(self, pipeline_orch):
+        """When merge phase returns STOP, pipeline should stop."""
+        orch = pipeline_orch
+        from src.models import PipelineContext, PhaseResult
+
+        # Make merge fail
+        orch.git.sync_and_merge.return_value = (False, "merge_conflict")
+
+        task = Task(id="t-2", project_id="p-1", title="Test",
+                    description="test", branch_name="feature-2",
+                    status=TaskStatus.VERIFYING)
+        await orch.db.create_task(task)
+        await orch.db.acquire_workspace("p-1", "a-1", "t-2")
+
+        output = AgentOutput(result=AgentResult.COMPLETED, tokens_used=100)
+        ws = await orch.db.get_workspace_for_task("t-2")
+
+        ctx = PipelineContext(
+            task=task, agent=Agent(id="a-1", name="claude-1", agent_type="claude"),
+            output=output,
+            workspace_path=ws.workspace_path, workspace_id=ws.id,
+            repo=RepoConfig(id="r-1", project_id="p-1",
+                            source_type=RepoSourceType.LINK, default_branch="main"),
+            default_branch="main",
+        )
+
+        pr_url, ok = await orch._run_completion_pipeline(ctx)
+        assert ok is False
+
+    async def test_pipeline_error_handling(self, pipeline_orch):
+        """Phase that raises should not crash pipeline."""
+        orch = pipeline_orch
+        from src.models import PipelineContext
+
+        # Make commit_all raise
+        orch.git.commit_all.side_effect = RuntimeError("git broken")
+
+        task = Task(id="t-3", project_id="p-1", title="Test",
+                    description="test", branch_name="feature-3",
+                    status=TaskStatus.VERIFYING)
+        await orch.db.create_task(task)
+        await orch.db.acquire_workspace("p-1", "a-1", "t-3")
+
+        output = AgentOutput(result=AgentResult.COMPLETED, tokens_used=100)
+        ws = await orch.db.get_workspace_for_task("t-3")
+
+        ctx = PipelineContext(
+            task=task, agent=Agent(id="a-1", name="claude-1", agent_type="claude"),
+            output=output,
+            workspace_path=ws.workspace_path, workspace_id=ws.id,
+            repo=RepoConfig(id="r-1", project_id="p-1",
+                            source_type=RepoSourceType.LINK, default_branch="main"),
+            default_branch="main",
+        )
+
+        pr_url, ok = await orch._run_completion_pipeline(ctx)
+        assert ok is False  # should not crash
+
+    async def test_merge_failure_keeps_task_in_verifying(self, pipeline_orch):
+        """Merge failure should leave task in VERIFYING status."""
+        orch = pipeline_orch
+        from src.models import PipelineContext
+
+        orch.git.sync_and_merge.return_value = (False, "merge_conflict")
+
+        task = Task(id="t-4", project_id="p-1", title="Test",
+                    description="test", branch_name="feature-4",
+                    status=TaskStatus.VERIFYING)
+        await orch.db.create_task(task)
+        await orch.db.acquire_workspace("p-1", "a-1", "t-4")
+
+        output = AgentOutput(result=AgentResult.COMPLETED, tokens_used=100)
+        ws = await orch.db.get_workspace_for_task("t-4")
+
+        ctx = PipelineContext(
+            task=task, agent=Agent(id="a-1", name="claude-1", agent_type="claude"),
+            output=output,
+            workspace_path=ws.workspace_path, workspace_id=ws.id,
+            repo=RepoConfig(id="r-1", project_id="p-1",
+                            source_type=RepoSourceType.LINK, default_branch="main"),
+            default_branch="main",
+        )
+
+        pr_url, ok = await orch._run_completion_pipeline(ctx)
+        assert ok is False
+
+        # Task should still be VERIFYING (not COMPLETED)
+        t = await orch.db.get_task("t-4")
+        assert t.status == TaskStatus.VERIFYING
+
+    async def test_merge_success_returns_continue(self, pipeline_orch):
+        """Successful merge should return completed_ok=True."""
+        orch = pipeline_orch
+        from src.models import PipelineContext
+
+        task = Task(id="t-5", project_id="p-1", title="Test",
+                    description="test", branch_name="feature-5",
+                    status=TaskStatus.VERIFYING)
+        await orch.db.create_task(task)
+        await orch.db.acquire_workspace("p-1", "a-1", "t-5")
+
+        output = AgentOutput(result=AgentResult.COMPLETED, tokens_used=100)
+        ws = await orch.db.get_workspace_for_task("t-5")
+
+        ctx = PipelineContext(
+            task=task, agent=Agent(id="a-1", name="claude-1", agent_type="claude"),
+            output=output,
+            workspace_path=ws.workspace_path, workspace_id=ws.id,
+            repo=RepoConfig(id="r-1", project_id="p-1",
+                            source_type=RepoSourceType.LINK, default_branch="main"),
+            default_branch="main",
+        )
+
+        pr_url, ok = await orch._run_completion_pipeline(ctx)
+        assert ok is True
+
+    async def test_merge_failure_sets_preferred_workspace(self, pipeline_orch):
+        """Merge failure should set preferred_workspace_id on the task."""
+        orch = pipeline_orch
+        from src.models import PipelineContext
+
+        orch.git.sync_and_merge.return_value = (False, "merge_conflict")
+
+        task = Task(id="t-6", project_id="p-1", title="Test",
+                    description="test", branch_name="feature-6",
+                    status=TaskStatus.VERIFYING)
+        await orch.db.create_task(task)
+        await orch.db.acquire_workspace("p-1", "a-1", "t-6")
+
+        output = AgentOutput(result=AgentResult.COMPLETED, tokens_used=100)
+        ws = await orch.db.get_workspace_for_task("t-6")
+
+        ctx = PipelineContext(
+            task=task, agent=Agent(id="a-1", name="claude-1", agent_type="claude"),
+            output=output,
+            workspace_path=ws.workspace_path, workspace_id=ws.id,
+            repo=RepoConfig(id="r-1", project_id="p-1",
+                            source_type=RepoSourceType.LINK, default_branch="main"),
+            default_branch="main",
+        )
+
+        await orch._run_completion_pipeline(ctx)
+
+        t = await orch.db.get_task("t-6")
+        assert t.preferred_workspace_id == ws.id
+
+    async def test_merge_failure_emits_event(self, pipeline_orch):
+        """Merge failure should emit task.merge_failed on EventBus."""
+        orch = pipeline_orch
+        from src.models import PipelineContext
+
+        orch.git.sync_and_merge.return_value = (False, "merge_conflict")
+
+        events = []
+        orch.bus.subscribe("task.merge_failed", lambda data: events.append(data))
+
+        task = Task(id="t-7", project_id="p-1", title="Test",
+                    description="test", branch_name="feature-7",
+                    status=TaskStatus.VERIFYING)
+        await orch.db.create_task(task)
+        await orch.db.acquire_workspace("p-1", "a-1", "t-7")
+
+        output = AgentOutput(result=AgentResult.COMPLETED, tokens_used=100)
+        ws = await orch.db.get_workspace_for_task("t-7")
+
+        ctx = PipelineContext(
+            task=task, agent=Agent(id="a-1", name="claude-1", agent_type="claude"),
+            output=output,
+            workspace_path=ws.workspace_path, workspace_id=ws.id,
+            repo=RepoConfig(id="r-1", project_id="p-1",
+                            source_type=RepoSourceType.LINK, default_branch="main"),
+            default_branch="main",
+        )
+
+        await orch._run_completion_pipeline(ctx)
+        await asyncio.sleep(0.1)  # let async event propagate
+
+        assert len(events) >= 1
+        assert events[0]["task_id"] == "t-7"
+        assert events[0]["error"] == "merge_conflict"
+
+
+# ── Workspace Affinity for Plan Subtasks ───────────────────────────────
+
+
+class TestPlanSubtaskWorkspaceAffinity:
+    @pytest.fixture
+    async def plan_orch(self, tmp_path):
+        """Orchestrator configured for plan subtask workspace affinity tests."""
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(tmp_path / "workspaces"),
+        )
+        config.auto_task = AutoTaskConfig(enabled=True, chain_dependencies=True)
+        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        await o.initialize()
+
+        # Set up project + workspace
+        await o.db.create_project(Project(id="p-1", name="alpha"))
+        ws_path = str(tmp_path / "workspaces" / "ws1")
+        os.makedirs(ws_path, exist_ok=True)
+        await o.db.create_workspace(Workspace(
+            id="ws-1", project_id="p-1",
+            workspace_path=ws_path,
+            source_type=RepoSourceType.LINK,
+        ))
+
+        yield o
+        await _drain_running_tasks(o)
+        await o.shutdown()
+
+    async def test_plan_subtasks_get_preferred_workspace_id(self, plan_orch):
+        """Generated subtasks should inherit the parent's workspace ID."""
+        orch = plan_orch
+
+        # Create agent and parent task, then lock workspace
+        await orch.db.create_agent(Agent(id="a-dummy", name="dummy", agent_type="claude"))
+        parent = Task(id="t-parent", project_id="p-1", title="Parent",
+                       description="desc", status=TaskStatus.IN_PROGRESS)
+        await orch.db.create_task(parent)
+        await orch.db.acquire_workspace("p-1", "a-dummy", "t-parent")
+
+        # Create a plan file in the workspace
+        ws = await orch.db.get_workspace_for_task("t-parent")
+        plan_dir = os.path.join(ws.workspace_path, ".claude")
+        os.makedirs(plan_dir, exist_ok=True)
+        with open(os.path.join(plan_dir, "plan.md"), "w") as f:
+            f.write("# Implementation Plan\n\n1. Do thing A\n   Details for A\n\n2. Do thing B\n   Details for B\n")
+
+        generated = await orch._generate_tasks_from_plan(parent, ws.workspace_path)
+        assert len(generated) >= 2, f"Expected >=2 tasks, got {len(generated)}: {[t.title for t in generated]}"
+
+        for subtask in generated:
+            assert subtask.preferred_workspace_id == ws.id
+
+    async def test_downstream_deps_include_final_subtask(self, plan_orch):
+        """Tasks depending on root should also depend on the final subtask."""
+        orch = plan_orch
+
+        # Create agent, parent and downstream tasks
+        await orch.db.create_agent(Agent(id="a-dummy", name="dummy", agent_type="claude"))
+        parent = Task(id="t-parent2", project_id="p-1", title="Parent",
+                       description="desc", status=TaskStatus.IN_PROGRESS)
+        downstream = Task(id="t-downstream", project_id="p-1", title="Downstream",
+                           description="desc", status=TaskStatus.DEFINED)
+        await orch.db.create_task(parent)
+        await orch.db.create_task(downstream)
+        await orch.db.add_dependency("t-downstream", depends_on="t-parent2")
+        await orch.db.acquire_workspace("p-1", "a-dummy", "t-parent2")
+
+        # Create plan file
+        ws = await orch.db.get_workspace_for_task("t-parent2")
+        plan_dir = os.path.join(ws.workspace_path, ".claude")
+        os.makedirs(plan_dir, exist_ok=True)
+        with open(os.path.join(plan_dir, "plan.md"), "w") as f:
+            f.write("# Implementation Plan\n\n1. Do first thing\n   Details for first\n\n2. Do second thing\n   Details for second\n")
+
+        generated = await orch._generate_tasks_from_plan(parent, ws.workspace_path)
+        assert len(generated) >= 2, f"Expected >=2 tasks, got {len(generated)}: {[t.title for t in generated]}"
+
+        # The downstream task should now depend on the final subtask
+        final_id = generated[-1].id
+        deps = await orch.db.get_dependencies("t-downstream")
+        dep_ids = {d for d in deps}
+        assert final_id in dep_ids

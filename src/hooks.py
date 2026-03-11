@@ -71,7 +71,7 @@ from src.config import AppConfig, ChatProviderConfig
 from src.database import Database
 from src.event_bus import EventBus
 from src.logging_config import CorrelationContext
-from src.models import Hook, HookRun
+from src.models import Hook, HookRun, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -349,6 +349,10 @@ class HookEngine:
         await self.db.create_hook_run(run)
 
         try:
+            # Check if this hook skips LLM entirely (only runs context steps)
+            trigger = json.loads(hook.trigger)
+            skip_llm = trigger.get("skip_llm", False)
+
             # 1. Run context steps
             steps = json.loads(hook.context_steps)
             step_results = await self._run_context_steps(steps, event_data)
@@ -356,6 +360,16 @@ class HookEngine:
             await self.db.update_hook_run(
                 run.id, context_results=json.dumps(step_results)
             )
+
+            # 1b. If skip_llm, we're done after context steps
+            if skip_llm:
+                await self.db.update_hook_run(
+                    run.id,
+                    status="completed",
+                    completed_at=time.time(),
+                )
+                logger.info("Hook %s completed (skip_llm)", hook.name)
+                return
 
             # 2. Check short-circuit
             skip_reason = self._should_skip_llm(steps, step_results)
@@ -436,6 +450,8 @@ class HookEngine:
                     result = await self._step_git_diff(step)
                 elif step_type == "memory_search":
                     result = await self._step_memory_search(step, event_data)
+                elif step_type == "create_task":
+                    result = await self._step_create_task(step, event_data)
                 else:
                     result = {"error": f"Unknown step type: {step_type}"}
             except Exception as e:
@@ -639,6 +655,64 @@ class HookEngine:
 
         formatted = "\n\n---\n\n".join(parts)
         return {"content": formatted, "count": len(results)}
+
+    async def _step_create_task(
+        self, step: dict, event_data: dict | None = None
+    ) -> dict:
+        """Create a task from hook step config, resolving {{event.field}} placeholders."""
+        from src.task_names import generate_task_id
+
+        def resolve(template: str) -> str:
+            if not template or not event_data:
+                return template
+            return re.sub(
+                r"\{\{(.+?)\}\}",
+                lambda m: self._resolve_placeholder(
+                    "{{" + m.group(1) + "}}", [], event_data,
+                ),
+                template,
+            )
+
+        try:
+            task_id = await generate_task_id(self.db)
+            title = resolve(step.get("title_template", "Hook-created task"))
+            description = resolve(step.get("description_template", ""))
+            project_id = resolve(step.get("project_id", ""))
+            parent_task_id = resolve(step.get("parent_task_id")) if step.get("parent_task_id") else None
+            profile_id = resolve(step.get("profile_id")) if step.get("profile_id") else None
+            preferred_workspace_id = resolve(step.get("preferred_workspace_id")) if step.get("preferred_workspace_id") else None
+            branch_name = resolve(step.get("branch_name")) if step.get("branch_name") else None
+            priority = step.get("priority", 100)
+
+            task = Task(
+                id=task_id,
+                project_id=project_id,
+                title=title,
+                description=description,
+                priority=priority,
+                status=TaskStatus.DEFINED,
+                parent_task_id=parent_task_id,
+                profile_id=profile_id,
+                preferred_workspace_id=preferred_workspace_id,
+                branch_name=branch_name,
+            )
+            await self.db.create_task(task)
+
+            # Add context entries if specified
+            for ctx_entry in step.get("context_entries", []):
+                resolved = {k: resolve(v) for k, v in ctx_entry.items()}
+                await self.db.add_task_context(
+                    task_id,
+                    type=resolved.get("type", "system"),
+                    label=resolved.get("label", ""),
+                    content=resolved.get("content", ""),
+                )
+
+            logger.info("Hook created task %s: %s", task_id, title)
+            return {"task_id": task_id, "created": True}
+        except Exception as e:
+            logger.error("create_task step failed: %s", e)
+            return {"error": str(e)}
 
     def _should_skip_llm(
         self, steps: list[dict], results: list[dict]

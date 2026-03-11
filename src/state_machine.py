@@ -50,6 +50,8 @@ VALID_TASK_TRANSITIONS: dict[tuple[TaskStatus, TaskEvent], TaskStatus] = {
     (TaskStatus.VERIFYING, TaskEvent.VERIFY_PASSED): TaskStatus.COMPLETED,
     (TaskStatus.VERIFYING, TaskEvent.VERIFY_FAILED): TaskStatus.FAILED,
     (TaskStatus.VERIFYING, TaskEvent.PR_CREATED): TaskStatus.AWAITING_APPROVAL,
+    (TaskStatus.VERIFYING, TaskEvent.MERGE_FAILED): TaskStatus.VERIFYING,
+    (TaskStatus.VERIFYING, TaskEvent.MERGE_SUCCEEDED): TaskStatus.COMPLETED,
     (TaskStatus.AWAITING_APPROVAL, TaskEvent.PR_MERGED): TaskStatus.COMPLETED,
     (TaskStatus.FAILED, TaskEvent.RETRY): TaskStatus.READY,
     (TaskStatus.FAILED, TaskEvent.MAX_RETRIES): TaskStatus.BLOCKED,

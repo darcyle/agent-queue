@@ -99,7 +99,8 @@ from src.event_bus import EventBus
 from src.git.manager import GitManager
 from src.models import (
     AgentOutput, AgentProfile, AgentResult, AgentState,
-    RepoSourceType, Task, TaskStatus, TaskContext, Workspace,
+    PhaseResult, PipelineContext, RepoConfig, RepoSourceType,
+    Task, TaskStatus, TaskContext, Workspace,
 )
 from src.hooks import HookEngine
 from src.plan_parser import (
@@ -1352,6 +1353,13 @@ class Orchestrator:
         # from a DB query like:
         #   SELECT project_id, COUNT(*) FROM task_results
         #   WHERE created_at >= :window_start GROUP BY project_id
+
+        # Build workspace lock map for workspace affinity enforcement.
+        # Tasks with preferred_workspace_id are only assignable when that
+        # workspace is unlocked.
+        all_workspaces = await self.db.list_workspaces()
+        workspace_locks = {ws.id: ws.locked_by_task_id for ws in all_workspaces}
+
         state = SchedulerState(
             projects=projects,
             tasks=tasks,
@@ -1360,6 +1368,7 @@ class Orchestrator:
             project_active_agent_counts=active_counts,
             tasks_completed_in_window={},
             project_available_workspaces=workspace_counts,
+            workspace_locks=workspace_locks,
             global_budget=self.config.global_token_budget_daily,
             global_tokens_used=total_used,
         )
@@ -1894,6 +1903,11 @@ class Orchestrator:
                     r"^#\s+.+$\n?", "", plan_context, count=1, flags=re.MULTILINE
                 ).strip()
 
+        # Look up the workspace the parent task used — subtasks should run
+        # on the same workspace to avoid merge conflicts between siblings.
+        ws = await self.db.get_workspace_for_task(task.id)
+        workspace_id = ws.id if ws else None
+
         created_tasks: list[Task] = []
         prev_task_id: str | None = None
         total_steps = len(plan.steps)
@@ -1928,6 +1942,7 @@ class Orchestrator:
                 requires_approval=step_requires_approval,
                 plan_source=archived_path,
                 is_plan_subtask=True,
+                preferred_workspace_id=workspace_id,
             )
 
             await self.db.create_task(new_task)
@@ -1939,7 +1954,292 @@ class Orchestrator:
             created_tasks.append(new_task)
             prev_task_id = new_id
 
+        # Auto-add downstream dependencies: any task that depends on the root
+        # (parent) task should also depend on the final subtask, so it waits
+        # for the entire subtask chain (including merge) to complete.
+        if created_tasks and config.chain_dependencies:
+            final_subtask_id = created_tasks[-1].id
+            dependents = await self.db.get_dependents(task.id)
+            for dep_task_id in dependents:
+                try:
+                    await self.db.add_dependency(dep_task_id, depends_on=final_subtask_id)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to add downstream dep %s→%s: %s",
+                        dep_task_id, final_subtask_id, e,
+                    )
+
         return created_tasks
+
+    # ── Completion pipeline ────────────────────────────────────────────────
+    #
+    # The completion pipeline replaces the inline post-completion logic with
+    # an ordered sequence of phases: commit → merge → plan_generate.
+    # Each phase receives a PipelineContext and returns a PhaseResult.
+
+    async def _run_completion_pipeline(
+        self, ctx: PipelineContext
+    ) -> tuple[str | None, bool]:
+        """Run the post-completion pipeline. Returns (pr_url, completed_ok)."""
+        phases = [
+            ("commit", self._phase_commit),
+            ("merge", self._phase_merge),
+            ("plan_generate", self._phase_plan_generate),
+        ]
+
+        for name, handler in phases:
+            try:
+                result = await handler(ctx)
+            except Exception as e:
+                logger.error(
+                    "Pipeline phase '%s' failed for task %s: %s",
+                    name, ctx.task.id, e, exc_info=True,
+                )
+                return (ctx.pr_url, False)
+            if result == PhaseResult.STOP:
+                return (ctx.pr_url, False)
+            if result == PhaseResult.ERROR:
+                return (ctx.pr_url, False)
+
+        return (ctx.pr_url, True)
+
+    async def _phase_commit(self, ctx: PipelineContext) -> PhaseResult:
+        """Pipeline phase: commit any uncommitted work."""
+        if not ctx.workspace_path or not ctx.task.branch_name:
+            return PhaseResult.CONTINUE
+        if not self.git.validate_checkout(ctx.workspace_path):
+            return PhaseResult.CONTINUE
+
+        committed = self.git.commit_all(
+            ctx.workspace_path,
+            f"agent: {ctx.task.title}\n\nTask-Id: {ctx.task.id}",
+        )
+        if not committed:
+            logger.info(
+                "Task %s: no changes to commit on branch %s",
+                ctx.task.id, ctx.task.branch_name,
+            )
+        return PhaseResult.CONTINUE
+
+    async def _phase_merge(self, ctx: PipelineContext) -> PhaseResult:
+        """Pipeline phase: merge task branch or create PR."""
+        if not ctx.workspace_path or not ctx.task.branch_name:
+            return PhaseResult.CONTINUE
+        if not self.git.validate_checkout(ctx.workspace_path):
+            return PhaseResult.CONTINUE
+        if not ctx.repo:
+            return PhaseResult.CONTINUE
+
+        task = ctx.task
+
+        # Plan subtask branch strategy: only the final subtask triggers
+        # merge/PR. Intermediate subtasks just commit (handled by _phase_commit).
+        if task.is_plan_subtask:
+            is_last = await self._is_last_subtask(task)
+            if is_last:
+                parent = await self.db.get_task(task.parent_task_id)
+                if parent and parent.requires_approval:
+                    ctx.pr_url = await self._create_pr_for_task(
+                        task, ctx.repo, ctx.workspace_path,
+                    )
+                    return PhaseResult.CONTINUE
+                else:
+                    return await self._pipeline_merge_and_push(ctx)
+            else:
+                # Mid-chain: optional rebase
+                if ctx.repo and self.config.auto_task.rebase_between_subtasks:
+                    try:
+                        synced = self.git.mid_chain_sync(
+                            ctx.workspace_path, task.branch_name,
+                            ctx.default_branch,
+                        )
+                        if synced:
+                            logger.info(
+                                "Task %s: mid-chain sync OK", task.id,
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            "Task %s: mid-chain sync failed: %s", task.id, e,
+                        )
+                return PhaseResult.CONTINUE
+
+        # Non-subtask path
+        if task.requires_approval:
+            ctx.pr_url = await self._create_pr_for_task(
+                task, ctx.repo, ctx.workspace_path,
+            )
+            return PhaseResult.CONTINUE
+        else:
+            return await self._pipeline_merge_and_push(ctx)
+
+    async def _pipeline_merge_and_push(self, ctx: PipelineContext) -> PhaseResult:
+        """Core merge+push with failure handling. Returns STOP on failure."""
+        task = ctx.task
+        repo = ctx.repo
+        workspace = ctx.workspace_path
+
+        has_remote = self.git.has_remote(workspace)
+
+        if has_remote:
+            success, error = self.git.sync_and_merge(
+                workspace, task.branch_name, repo.default_branch,
+                max_retries=2,
+            )
+            if not success:
+                logger.warning(
+                    "Task %s: merge failed (%s) for branch %s",
+                    task.id, error, task.branch_name,
+                )
+                # Emit event for hook engine to react
+                await self.bus.emit("task.merge_failed", {
+                    "task_id": task.id,
+                    "project_id": task.project_id,
+                    "branch_name": task.branch_name,
+                    "workspace_id": ctx.workspace_id,
+                    "workspace_path": workspace,
+                    "default_branch": ctx.default_branch,
+                    "error": error,
+                })
+                # Set preferred_workspace_id so resolution subtask uses same ws
+                await self.db.update_task(
+                    task.id, preferred_workspace_id=ctx.workspace_id,
+                )
+                # Recovery
+                try:
+                    self.git.recover_workspace(workspace, repo.default_branch)
+                except Exception:
+                    pass
+                return PhaseResult.STOP
+        else:
+            merged = self.git.merge_branch(
+                workspace, task.branch_name, repo.default_branch,
+            )
+            if not merged:
+                rebased = self.git.rebase_onto(
+                    workspace, task.branch_name, repo.default_branch,
+                )
+                if rebased:
+                    merged = self.git.merge_branch(
+                        workspace, task.branch_name, repo.default_branch,
+                    )
+            if not merged:
+                logger.warning(
+                    "Task %s: local merge failed for branch %s",
+                    task.id, task.branch_name,
+                )
+                await self.bus.emit("task.merge_failed", {
+                    "task_id": task.id,
+                    "project_id": task.project_id,
+                    "branch_name": task.branch_name,
+                    "workspace_id": ctx.workspace_id,
+                    "workspace_path": workspace,
+                    "default_branch": ctx.default_branch,
+                    "error": "merge_conflict",
+                })
+                await self.db.update_task(
+                    task.id, preferred_workspace_id=ctx.workspace_id,
+                )
+                try:
+                    self.git._run(
+                        ["checkout", repo.default_branch], cwd=workspace,
+                    )
+                except Exception:
+                    pass
+                return PhaseResult.STOP
+
+            # Clean up branch after successful local merge
+            try:
+                self.git.delete_branch(
+                    workspace, task.branch_name, delete_remote=False,
+                )
+            except Exception:
+                pass
+            logger.info("Task %s: local merge succeeded", task.id)
+            return PhaseResult.CONTINUE
+
+        # Clean up branch after successful remote merge
+        try:
+            self.git.delete_branch(
+                workspace, task.branch_name, delete_remote=has_remote,
+            )
+        except Exception:
+            pass
+        logger.info("Task %s: merge+push succeeded", task.id)
+        return PhaseResult.CONTINUE
+
+    async def _phase_plan_generate(self, ctx: PipelineContext) -> PhaseResult:
+        """Pipeline phase: generate subtasks from plan files."""
+        if not ctx.workspace_path:
+            return PhaseResult.CONTINUE
+        await self._generate_tasks_from_plan(ctx.task, ctx.workspace_path)
+        return PhaseResult.CONTINUE
+
+    async def _retry_merge_for_task(self, original_task_id: str) -> None:
+        """Retry merge for a task whose previous merge failed.
+
+        Called when a merge-resolution subtask completes successfully.
+        """
+        task = await self.db.get_task(original_task_id)
+        if not task or task.status != TaskStatus.VERIFYING:
+            logger.info(
+                "Skipping merge retry for %s (status=%s)",
+                original_task_id, task.status if task else "None",
+            )
+            return
+
+        ws = await self.db.get_workspace_for_task(task.id)
+        if not ws:
+            # Try preferred_workspace_id
+            if task.preferred_workspace_id:
+                all_ws = await self.db.list_workspaces()
+                ws = next(
+                    (w for w in all_ws if w.id == task.preferred_workspace_id),
+                    None,
+                )
+        if not ws:
+            logger.warning(
+                "Cannot retry merge for %s: no workspace found",
+                original_task_id,
+            )
+            return
+
+        project = await self.db.get_project(task.project_id)
+        default_branch = project.repo_default_branch if project else "main"
+        has_repo = bool(project and project.repo_url)
+        if not has_repo:
+            return
+
+        repo = RepoConfig(
+            id=f"project-{task.project_id}",
+            project_id=task.project_id,
+            source_type=ws.source_type,
+            url=project.repo_url if project else "",
+            default_branch=default_branch,
+        )
+
+        ctx = PipelineContext(
+            task=task,
+            agent=None,  # no agent for retry
+            output=None,
+            workspace_path=ws.workspace_path,
+            workspace_id=ws.id,
+            repo=repo,
+            default_branch=default_branch,
+            project=project,
+        )
+
+        result = await self._pipeline_merge_and_push(ctx)
+        if result == PhaseResult.CONTINUE:
+            await self.db.transition_task(
+                task.id, TaskStatus.COMPLETED, context="merge_retry_succeeded",
+            )
+            await self.bus.emit("task.completed", {
+                "task_id": task.id,
+                "project_id": task.project_id,
+            })
+            logger.info("Task %s: merge retry succeeded", task.id)
+        else:
+            logger.warning("Task %s: merge retry failed again", task.id)
 
     # ── Approval polling constants ─────────────────────────────────────────
     #
@@ -2581,14 +2881,33 @@ class Orchestrator:
             await self.db.transition_task(action.task_id, TaskStatus.VERIFYING,
                                           context="agent_completed")
 
-            # Post-completion: commit, merge or create PR
-            pr_url = None
-            try:
-                pr_url = await self._complete_workspace(task, agent)
-            except Exception as e:
-                await _post(
-                    f"**Post-completion git error** for task `{task.id}`: {e}"
-                )
+            # Build pipeline context
+            ws = await self.db.get_workspace_for_task(task.id)
+            project = await self.db.get_project(task.project_id)
+            default_branch = project.repo_default_branch if project else "main"
+            has_repo = bool(project and project.repo_url)
+
+            repo = RepoConfig(
+                id=f"project-{task.project_id}",
+                project_id=task.project_id,
+                source_type=ws.source_type if ws else RepoSourceType.LINK,
+                url=project.repo_url if project else "",
+                default_branch=default_branch,
+            ) if (has_repo or ws) and ws else None
+
+            ctx = PipelineContext(
+                task=task,
+                agent=agent,
+                output=output,
+                workspace_path=ws.workspace_path if ws else workspace,
+                workspace_id=ws.id if ws else None,
+                repo=repo,
+                default_branch=default_branch,
+                project=project,
+            )
+
+            # Run completion pipeline (commit → merge → plan_generate)
+            pr_url, completed_ok = await self._run_completion_pipeline(ctx)
 
             if pr_url:
                 # PR-based approval workflow
@@ -2603,9 +2922,6 @@ class Orchestrator:
                                         task_id=action.task_id,
                                         agent_id=action.agent_id,
                                         payload=pr_url)
-                # Attach approval buttons when not in a thread (thread_send
-                # doesn't support views/embeds; the main channel notification
-                # already includes the embed).
                 approval_view = TaskApprovalView(
                     task.id, handler=self._get_handler()
                 )
@@ -2620,8 +2936,8 @@ class Orchestrator:
                     )
                 brief = f"🔍 PR created for review: {task.title} (`{task.id}`)\n{pr_url}"
                 await _notify_brief(brief)
-            elif task.requires_approval and not pr_url:
-                # Approval required but no PR (e.g. LINK repo) — wait for manual approval
+            elif task.requires_approval and not pr_url and completed_ok:
+                # Approval required but no PR (e.g. LINK repo)
                 await self.db.transition_task(
                     action.task_id,
                     TaskStatus.AWAITING_APPROVAL,
@@ -2629,7 +2945,7 @@ class Orchestrator:
                 )
                 brief = f"🔍 Awaiting manual approval: {task.title} (`{task.id}`)"
                 await _notify_brief(brief)
-            else:
+            elif completed_ok:
                 # No approval needed — mark completed
                 await self.db.transition_task(action.task_id, TaskStatus.COMPLETED,
                                               context="completed_no_approval")
@@ -2637,7 +2953,6 @@ class Orchestrator:
                                         project_id=action.project_id,
                                         task_id=action.task_id,
                                         agent_id=action.agent_id)
-                # Full summary → last message in the task thread.
                 if thread_send:
                     summary_lines = [
                         f"**Task Completed:** `{task.id}` — {task.title}",
@@ -2663,41 +2978,34 @@ class Orchestrator:
                 brief_embed = format_task_completed_embed(task, agent, output)
                 brief_embed.set_footer(text=f"Log: {log_path}")
                 await _notify_brief(brief, embed=brief_embed)
+                await self.bus.emit("task.completed", {
+                    "task_id": task.id,
+                    "project_id": task.project_id,
+                })
+            else:
+                # Pipeline stopped (merge failed) — task stays in VERIFYING
+                await _post(
+                    f"**Merge failed** for `{task.id}` — awaiting resolution."
+                )
 
-            # --- Auto-task generation from implementation plans ---
-            # After any successful completion path, check for plan files
-            # in the workspace and generate follow-up tasks.
+            # Re-check DEFINED tasks so newly created subtasks get promoted
+            await self._check_defined_tasks()
+
+            # Check if this task is a merge-resolution subtask
             try:
-                generated = await self._generate_tasks_from_plan(task, workspace)
-                if generated:
-                    # Re-check DEFINED tasks so newly created subtasks whose
-                    # dependencies are already met get promoted to READY in
-                    # this same cycle rather than waiting for the next one.
-                    await self._check_defined_tasks()
-
-                    from src.discord.notifications import (
-                        format_plan_generated,
-                        format_plan_generated_embed,
-                    )
-                    is_chained = self.config.auto_task.chain_dependencies
-                    plan_msg = format_plan_generated(
-                        task, generated,
-                        workspace_path=workspace,
-                        chained=is_chained,
-                    )
-                    plan_embed = format_plan_generated_embed(
-                        task, generated,
-                        workspace_path=workspace,
-                        chained=is_chained,
-                    )
-                    if thread_send:
-                        await thread_send(plan_msg)
-                    await _notify_brief(plan_msg, embed=plan_embed)
+                contexts = await self.db.get_task_contexts(task.id)
+                resolution_target = next(
+                    (c for c in contexts if c.get("label") == "merge_resolution_for"),
+                    None,
+                )
+                if resolution_target and completed_ok:
+                    original_task_id = resolution_target["content"]
+                    await self._retry_merge_for_task(original_task_id)
             except Exception as e:
-                logger.error("Auto-task generation error for task %s", task.id, exc_info=True)
+                logger.warning("Resolution check failed for %s: %s", task.id, e)
 
             # Save completed task result as a memory for future recall.
-            if self.memory_manager:
+            if self.memory_manager and completed_ok:
                 try:
                     await self.memory_manager.remember(task, output, workspace)
                 except Exception as e:
