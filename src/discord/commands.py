@@ -137,11 +137,74 @@ class _NoteDeleteButton(discord.ui.Button):
             pass
 
 
+class _NotePlanButton(discord.ui.Button):
+    """Button that creates a task to plan/implement what's described in the note."""
+
+    def __init__(self, project_id: str, note_slug: str, handler, bot) -> None:
+        super().__init__(
+            style=discord.ButtonStyle.primary,
+            label="Plan Implementation",
+            custom_id=f"notes:{project_id}:plan:{note_slug}",
+        )
+        self._project_id = project_id
+        self._slug = note_slug
+        self._handler = handler
+        self._bot = bot
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        handler = self._handler
+        if not handler:
+            await interaction.response.send_message("Not available.", ephemeral=True)
+            return
+
+        title = self._slug.replace("-", " ").title()
+        await interaction.response.defer(ephemeral=True)
+
+        # Read the note content
+        result = await handler.execute("read_note", {
+            "project_id": self._project_id,
+            "title": title,
+        })
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        note_content = result["content"]
+        note_title = result.get("title", title)
+
+        # Create a task to plan/implement what's described in the note
+        task_title = f"Plan implementation: {note_title}"
+        task_description = (
+            f"Plan and implement what is described in the following note.\n\n"
+            f"## Note: {note_title}\n\n{note_content}"
+        )
+
+        task_result = await handler.execute("create_task", {
+            "project_id": self._project_id,
+            "title": task_title,
+            "description": task_description,
+        })
+        if "error" in task_result:
+            await _send_error(interaction, task_result["error"], followup=True)
+            return
+
+        task_id = task_result["created"]
+        await _send_success(
+            interaction, "Task Created",
+            description=(
+                f"Created task **{task_id}** to plan implementation "
+                f"of note **{note_title}**."
+            ),
+            followup=True, ephemeral=True,
+        )
+
+
 class NoteContentView(discord.ui.View):
-    """View attached to a note content message with Dismiss and Delete buttons."""
+    """View attached to a note content message with Dismiss, Delete, and Plan buttons."""
 
     def __init__(self, project_id: str, note_slug: str, handler=None, bot=None) -> None:
         super().__init__(timeout=None)
+        self.add_item(_NotePlanButton(project_id, note_slug, handler, bot))
         self.add_item(_NoteDismissButton(project_id, note_slug, bot))
         self.add_item(_NoteDeleteButton(project_id, note_slug, handler, bot))
 
