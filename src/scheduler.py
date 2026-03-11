@@ -66,6 +66,31 @@ class SchedulerState:
     design makes the algorithm easy to test and reason about -- the
     orchestrator builds this snapshot each tick, and the scheduler never
     touches the database or any external resource.
+
+    Fields:
+
+    * ``projects`` — all registered projects (active and inactive).
+      Only ``ACTIVE`` projects are considered for scheduling.
+    * ``tasks`` — all tasks in the system.  Only ``READY`` tasks are
+      eligible for assignment.
+    * ``agents`` — all registered agents.  Only ``IDLE`` agents receive
+      work.
+    * ``project_token_usage`` — tokens consumed by each project within
+      the rolling window.  Used to compute actual vs. target usage ratios
+      for deficit-based scheduling.
+    * ``project_active_agent_counts`` — how many agents are currently
+      BUSY on each project.  Used to enforce ``max_concurrent_agents``.
+    * ``tasks_completed_in_window`` — tasks completed per project in the
+      window.  Projects with zero completions get min-task guarantee
+      priority.  (Currently passed as empty dict by the orchestrator,
+      making all projects eligible for the guarantee phase.)
+    * ``project_available_workspaces`` — unlocked workspace count per
+      project.  Acts as a hard physical constraint: even if the deficit
+      algorithm wants to assign work to a project, it cannot if all
+      workspaces are locked.
+    * ``global_budget`` / ``global_tokens_used`` — system-wide token cap.
+      When ``global_tokens_used >= global_budget``, no assignments are
+      made at all.
     """
 
     projects: list[Project]
@@ -94,9 +119,25 @@ class Scheduler:
               usage is furthest below its ``credit_weight`` share sorts
               first (phase 2).
         4. Walk the ranked project list; skip any project that has hit its
-           budget cap or concurrency limit.  Pick the highest-priority
-           READY task from the first eligible project.
+           budget cap, concurrency limit, or has no available workspaces.
+           Pick the highest-priority READY task from the first eligible
+           project.
         5. Record the assignment and move to the next idle agent.
+
+        **How ``rolling_window_hours`` affects fairness:**
+        The rolling window determines how quickly the scheduler "forgets"
+        past token usage.  A shorter window (e.g., 4h) means a project
+        that was heavily served in the morning will be eligible for more
+        work by afternoon.  A longer window (e.g., 24h) enforces fairness
+        over a full day.  The window slides continuously — there is no
+        hard reset at midnight.
+
+        **How ``credit_weight`` maps to share:**
+        Each project's target share = ``credit_weight / sum(all weights)``.
+        A project with weight 2.0 among three projects with weights
+        [2.0, 1.0, 1.0] targets 50% of total tokens.  The deficit score
+        (actual_ratio - target_ratio) drives the sort: negative deficit
+        means under-served, so it sorts first.
 
         Returns a list of :class:`AssignAction` -- one per agent that was
         matched with a task.  May be empty if no work can be assigned.

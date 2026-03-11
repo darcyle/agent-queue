@@ -208,7 +208,20 @@ class HookEngine:
             )
 
     def _check_cooldown(self, hook: Hook, now: float) -> bool:
-        """Return True if enough time has passed since last run."""
+        """Return True if enough time has passed since the hook's last execution.
+
+        Cooldown is distinct from periodic interval:
+        - **Interval** (periodic hooks only) — minimum time between scheduled
+          firings.  Controls how often the hook *should* run.
+        - **Cooldown** (all hooks) — minimum time between any two executions,
+          regardless of trigger source.  Prevents event storms from causing
+          rapid re-execution (e.g., 10 tasks completing in quick succession
+          should not trigger the same hook 10 times).
+
+        The cooldown timestamp is set in ``_launch_hook()`` at launch time
+        (not completion time), so a long-running hook's cooldown starts from
+        when it was triggered, not when it finished.
+        """
         last = self._last_run_time.get(hook.id, 0)
         return (now - last) >= hook.cooldown_seconds
 
@@ -681,20 +694,33 @@ class HookEngine:
     ) -> tuple[str, int]:
         """Invoke the LLM with the rendered prompt using ChatAgent's full tool set.
 
-        Creates a temporary ChatAgent instance so the hook's LLM call has
+        Creates a temporary ``ChatAgent`` instance so the hook's LLM call has
         access to all the same tools a human user would (create tasks, check
-        status, etc.).  The hook can optionally override the LLM provider/model
-        via its ``llm_config`` JSON field, allowing hooks to use cheaper/faster
-        models for simple checks while reserving expensive models for complex
-        reasoning.
+        status, send notifications, etc.).  This means hooks can take real
+        actions — not just read data — which is what makes them powerful for
+        automation (e.g., a hook that creates follow-up tasks when a CI check
+        fails).
 
-        Integration details:
-        - The ChatAgent instance is created fresh for each invocation (stateless).
-        - If an LLM logger is configured, the provider is wrapped with
-          ``LoggedChatProvider`` so hook token usage appears in analytics.
-        - The ``user_name`` is set to ``"hook:<hook_name>"`` for audit trails.
-        - Token counts are *estimated* from string length (÷4) since the
-          ChatAgent's ``chat()`` method doesn't return exact usage.
+        **Tool registration:** The ``ChatAgent`` constructor registers all
+        available tools (task management, project queries, agent control)
+        based on the orchestrator reference.  By passing ``self._orchestrator``
+        to the ChatAgent, the hook gets the same tool set as Discord commands.
+
+        **Provider override:** Hooks can specify a custom LLM provider/model
+        via the ``llm_config`` JSON field.  This allows lightweight hooks to
+        use cheaper/faster models while critical hooks use the best available.
+        If no override is set, the system-wide ``chat_provider`` config is
+        used.
+
+        **LLM logging:** When the orchestrator has an ``LLMLogger`` enabled,
+        the provider is automatically wrapped with ``LoggedChatProvider`` so
+        hook LLM calls appear in the JSONL interaction logs under the
+        ``hook_engine`` caller tag.
+
+        **Token estimation:** Since ``ChatAgent.chat()`` doesn't return
+        exact token counts, we estimate based on prompt + response length
+        (chars / 4 ≈ tokens).  This is approximate but sufficient for
+        budgeting and analytics.
 
         Returns ``(response_text, estimated_tokens_used)``.
         """
@@ -782,15 +808,16 @@ class HookEngine:
         self._running.clear()
 
     def set_orchestrator(self, orchestrator) -> None:
-        """Store reference to the orchestrator (for LLM invocation).
+        """Store a back-reference to the orchestrator instance.
 
-        The HookEngine needs access to the Orchestrator for two reasons:
-        1. ``_invoke_llm`` creates a ChatAgent which requires an orchestrator
-           reference to register its tools (task management, status queries).
-        2. ``_step_memory_search`` accesses ``orchestrator.memory_manager``
-           for semantic search in context steps.
+        This creates a circular reference (orchestrator → hooks → orchestrator)
+        which is necessary because hook LLM invocations need access to the
+        orchestrator's full tool set (via ChatAgent) and the memory manager.
+        The reference is set once during ``Orchestrator.initialize()`` and is
+        never changed afterwards.
 
-        This is a circular reference (orchestrator owns hooks, hooks reference
-        orchestrator) that is broken at shutdown via ``hooks.shutdown()``.
+        Components that use ``_orchestrator``:
+        - ``_invoke_llm()`` — passes it to ``ChatAgent`` for tool registration
+        - ``_step_memory_search()`` — accesses ``orchestrator.memory_manager``
         """
         self._orchestrator = orchestrator

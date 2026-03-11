@@ -1093,6 +1093,9 @@ class Orchestrator:
         # Token usage within the rolling window — this is the "actual usage"
         # that the deficit-based scheduler compares against each project's
         # credit_weight target ratio to achieve proportional fairness.
+        # The window slides forward continuously: a project's usage decays
+        # as old completions fall outside the window, naturally allowing
+        # previously over-served projects to receive work again.
         window_start = time.time() - (
             self.config.scheduling.rolling_window_hours * 3600
         )
@@ -1105,7 +1108,8 @@ class Orchestrator:
         # Active (BUSY) agent count per project — used to enforce each
         # project's max_concurrent_agents limit.  We look up the project
         # from the agent's current task rather than storing it on the agent
-        # directly, because agent-project affinity is transient.
+        # directly, because agent-project affinity is transient (an agent
+        # may work on project A in one cycle and project B in the next).
         active_counts: dict[str, int] = {}
         for a in agents:
             if a.state == AgentState.BUSY and a.current_task_id:
@@ -1125,6 +1129,14 @@ class Orchestrator:
         for p in projects:
             workspace_counts[p.id] = await self.db.count_available_workspaces(p.id)
 
+        # NOTE: tasks_completed_in_window is currently passed as an empty
+        # dict.  The scheduler's min-task guarantee phase uses this to
+        # detect projects with zero completions in the window.  With an
+        # empty dict, *all* projects appear to have zero completions, so
+        # the min-task guarantee always triggers and projects are sorted
+        # purely by deficit.  This is intentional for now — the guarantee
+        # phase is a secondary tiebreaker and the deficit-based allocation
+        # provides sufficient fairness in practice.
         state = SchedulerState(
             projects=projects,
             tasks=tasks,
@@ -1140,17 +1152,33 @@ class Orchestrator:
         return Scheduler.schedule(state)
 
     async def _prepare_workspace(self, task: Task, agent) -> str | None:
-        """Acquire a workspace lock and prepare it for the task.
+        """Acquire a workspace lock and prepare the git checkout for a task.
 
-        1. Acquire an unlocked workspace for the project via
-           ``db.acquire_workspace()``.
-        2. If no workspace is available, return ``None`` (caller must handle).
-        3. Perform git operations based on ``workspace.source_type``
-           (clone/link) using ``project.repo_url`` / ``project.repo_default_branch``.
-        4. Return the workspace path.
+        Steps:
+        1. **Acquire lock** — ``db.acquire_workspace()`` atomically finds an
+           unlocked workspace for the project and locks it to this agent/task.
+           Returns ``None`` if all workspaces are in use (caller handles this
+           by returning the task to READY).
+        2. **Clone/link** — for CLONE workspaces, creates the git checkout if
+           it doesn't exist yet (first-time use).  For LINK workspaces, just
+           verifies the directory exists.
+        3. **Branch setup** — creates or switches to the task's feature branch.
+           Two modes:
+           - **Root tasks:** ``prepare_for_task()`` — fetch, checkout default
+             branch, pull, create new feature branch.  Ensures a clean start.
+           - **Plan subtasks:** ``switch_to_branch()`` — switch to the parent
+             task's existing branch (creating it if needed).  All subtasks in a
+             chain accumulate commits on a shared branch, building on each
+             other's work.  When ``rebase_between_subtasks`` is enabled, the
+             switch includes a rebase onto the default branch to reduce drift.
+        4. **Update DB** — save the branch name on the task record so post-
+           completion knows which branch to merge/PR.
 
-        For plan subtasks, reuses the parent task's branch name so all steps
-        accumulate commits on a single branch.
+        Git failures are non-fatal: the workspace path is returned regardless,
+        and the agent works without branch management.  This ensures tasks
+        can still execute even when the git remote is temporarily unreachable.
+
+        Returns the workspace path, or ``None`` if no workspace is available.
         """
         project = await self.db.get_project(task.project_id)
         ws = await self.db.acquire_workspace(task.project_id, agent.id, task.id)
@@ -1235,12 +1263,32 @@ class Orchestrator:
         return workspace
 
     async def _complete_workspace(self, task: Task, agent) -> str | None:
-        """Post-completion git workflow: commit changes, then merge or open a PR.
+        """Post-completion git workflow: commit any remaining changes, then merge or PR.
 
-        Finds the workspace locked by this task, performs git operations using
-        the project's repo config, and releases the workspace lock.
+        This method orchestrates the git side of task completion.  The flow
+        depends on three factors: whether the task is a plan subtask (and
+        whether it's the last in its chain), whether the project requires
+        approval, and whether the workspace has a remote.
 
-        Returns a PR URL if one was created, otherwise None.
+        Decision tree:
+
+        1. **Commit** — always runs first.  Captures any uncommitted changes
+           the agent left behind (agents are instructed to commit, but this
+           is a safety net).
+
+        2. **Plan subtask?**
+           - **Last subtask + approval** → create PR (all chain commits).
+           - **Last subtask + no approval** → merge + push to default branch.
+           - **Intermediate subtask** → commit only; optionally mid-chain
+             rebase to reduce drift (see ``_complete_workspace`` subtask block).
+
+        3. **Root task?**
+           - **Approval required** → create PR.
+           - **No approval** → merge + push to default branch.
+
+        Returns a PR URL if one was created, otherwise ``None``.  The caller
+        uses the return value to decide the next task state (AWAITING_APPROVAL
+        vs. COMPLETED).
         """
         # Find workspace locked by this task
         ws = await self.db.get_workspace_for_task(task.id)
@@ -1273,20 +1321,21 @@ class Orchestrator:
             default_branch=default_branch,
         ) if has_repo or ws else None
 
-        # ------------------------------------------------------------------ #
-        # Plan subtask branch strategy:
+        # Plan subtask completion has three possible outcomes:
         #
-        # Subtasks share a single git branch with their siblings.  Intermediate
-        # subtasks only commit (the commit happened above via commit_all) and
-        # optionally rebase onto the default branch to keep the shared branch
-        # up-to-date (mid-chain sync).  Only the *final* subtask triggers the
-        # merge/PR workflow, because that's when the full plan is complete and
-        # the accumulated work is ready for review.
+        # A) **Last subtask + approval required** → create a PR covering the
+        #    entire plan chain's work (all commits from all subtasks are on
+        #    the shared branch).
         #
-        # This design minimizes human intervention: a 10-step plan produces
-        # 10 commits on one branch with one PR at the end, rather than 10
-        # separate branches and PRs that would require 10 reviews.
-        # ------------------------------------------------------------------ #
+        # B) **Last subtask + no approval** → merge directly into the default
+        #    branch and push.  The chain is complete.
+        #
+        # C) **Intermediate subtask** → just commit (already done above).
+        #    Optionally perform a mid-chain rebase to keep the branch up to
+        #    date with the default branch, reducing merge conflicts for the
+        #    final subtask.  The rebase is best-effort: if it fails due to
+        #    conflicts, the branch is left as-is and the next subtask will
+        #    work on top of whatever state exists.
         if task.is_plan_subtask:
             is_last = await self._is_last_subtask(task)
             if is_last and repo:
@@ -1572,9 +1621,19 @@ class Orchestrator:
                 max_steps=config.max_steps_per_plan,
             )
 
-        # Smart LLM fallback: if the regex parser produced steps but they
-        # look low-quality (many informational headings, few actionable),
-        # automatically retry with the LLM parser for better results.
+        # Smart LLM fallback: the regex parser is fast but struggles with
+        # plans that mix informational headings (background, architecture
+        # notes) with actionable implementation phases.  When this happens,
+        # _score_parse_quality returns a low score (< 0.4 = more than 60%
+        # of steps look non-actionable).  For plans with many steps (> 5),
+        # this is a strong signal that the regex parser misidentified
+        # section headings as implementation steps.
+        #
+        # In this case, we retry with the LLM parser which can semantically
+        # distinguish "Phase 3: Implement caching" (actionable) from
+        # "Background: System Architecture" (informational).  The LLM
+        # parser result replaces the regex result only if it produces steps;
+        # otherwise we keep the regex result as a best-effort fallback.
         if (
             plan.steps
             and not config.use_llm_parser
@@ -1613,7 +1672,13 @@ class Orchestrator:
         except OSError:
             pass
 
-        # Extract any preamble text before the first step as shared context
+        # Extract the preamble (text before the first step) as shared context.
+        # Many plans start with background information, architecture notes,
+        # or constraints that apply to ALL steps.  Rather than duplicating
+        # this into every subtask description, we extract it once and pass
+        # it to ``build_task_description()`` which prepends it to each
+        # subtask.  The document title heading (``# Plan Title``) is
+        # stripped since it's not useful context for the agent.
         plan_context = ""
         if plan.steps and plan.raw_content:
             first_step_title = plan.steps[0].title
@@ -1686,15 +1751,34 @@ class Orchestrator:
     async def _check_awaiting_approval(self) -> None:
         """Poll PR merge status for tasks in AWAITING_APPROVAL. Throttled to once per 60s.
 
+        This is the orchestrator's interface to the human review process.
+        Tasks enter AWAITING_APPROVAL when an agent creates a PR or when
+        ``requires_approval`` is set and the agent finishes.  This method
+        checks whether the human has acted (merged/closed the PR) and
+        advances the task lifecycle accordingly.
+
         Two paths:
 
-        * **Tasks with a PR URL** — check whether the PR has been merged
-          (complete the task) or closed without merge (block the task and
-          alert about orphaned downstream dependents).
-        * **Tasks without a PR URL** — either auto-complete them after a
-          grace period (if they don't actually require approval, which can
-          happen for intermediate plan subtasks), or send periodic reminders
-          so they don't rot silently in the queue.
+        * **Tasks with a PR URL** — calls ``_check_pr_status()`` which
+          uses ``gh pr view`` to check merge state.  Three outcomes:
+          - PR merged → task transitions to COMPLETED, branch cleaned up.
+          - PR closed without merge → task transitions to BLOCKED, downstream
+            dependency chain is checked for orphaned tasks.
+          - PR still open → no action (checked again next cycle).
+
+        * **Tasks without a PR URL** — handled by ``_handle_awaiting_no_pr()``.
+          Two sub-paths:
+          - Task doesn't require approval (common for intermediate plan
+            subtasks that only need approval on the final step) → auto-
+            complete after a 2-minute grace period to avoid racing with
+            slow PR creation.
+          - Task requires approval (e.g., LINK workspace where PRs can't
+            be created automatically) → send periodic reminders (hourly)
+            and escalate after 24 hours to prevent tasks from rotting.
+
+        The 60-second throttle prevents excessive GitHub API calls while
+        keeping approval latency reasonable (tasks complete within ~60s of
+        PR merge).
         """
         now = time.time()
         if now - self._last_approval_check < 60:
@@ -1776,18 +1860,16 @@ class Orchestrator:
     async def _check_pr_status(self, task: Task) -> None:
         """Check whether a PR-backed AWAITING_APPROVAL task has been merged.
 
-        Uses ``GitManager.check_pr_merged()`` (which shells out to ``gh``)
-        to determine the PR's current state.  Three outcomes:
+        Uses ``GitManager.check_pr_merged()`` which shells out to ``gh pr view``
+        to inspect the PR state.  The return value is tri-state:
+        - ``True``  → PR was merged (task → COMPLETED)
+        - ``None``  → PR was closed without merge (task → BLOCKED)
+        - ``False`` → PR is still open (no state change)
 
-        - **True** — PR was merged → task transitions to COMPLETED, and the
-          remote task branch is cleaned up.
-        - **None** — PR was closed *without* merge → task transitions to
-          BLOCKED, and downstream dependents are checked for orphaning.
-        - **False** — PR is still open → no action (check again next cycle).
-
-        Requires a valid git checkout path to run ``gh pr view``.  Falls back
-        to any workspace associated with the project if the task's own
-        workspace has already been released.
+        Requires a git checkout path to run ``gh`` commands.  Tries the
+        workspace locked by this task first, then falls back to any workspace
+        belonging to the same project.  If no checkout is available (e.g.,
+        all workspaces were deleted), silently skips the check.
         """
         # Need a checkout path to run gh commands
         checkout_path = None
@@ -2103,15 +2185,20 @@ class Orchestrator:
         # ------------------------------------------------------------------ #
         # Agent message streaming and question detection.
         #
-        # The adapter's ``wait(on_message=...)`` callback fires for each
-        # chunk of agent output.  We forward these to the Discord thread
-        # (created above) so humans can watch agent progress in real time.
+        # The adapter delivers real-time output via a MessageCallback.
+        # ``forward_agent_message`` serves as the bridge between the adapter
+        # and Discord:
+        #   - Primary path: stream to the per-task Discord thread.
+        #   - Fallback path: post to the notifications channel (when thread
+        #     creation failed or is unavailable).
         #
-        # We also watch for the AskUserQuestion tool marker in the stream.
-        # When detected, a dedicated rich notification is sent to the
-        # project's notifications channel with an interactive view, because
-        # thread messages alone are easy to miss.  The ``_question_notified``
-        # flag deduplicates: at most one question notification per task run.
+        # Question detection: The Claude adapter formats ``AskUserQuestion``
+        # tool usage as a ``**[AskUserQuestion...]**`` marker in the message
+        # text.  When detected, we send a separate rich embed notification
+        # with interactive buttons so humans are alerted in the main channel
+        # (not buried in the thread).  The ``_question_notified`` flag
+        # ensures we only send one question notification per task execution
+        # even if the agent asks multiple questions.
         # ------------------------------------------------------------------ #
         _question_notified = False
 
@@ -2507,11 +2594,19 @@ class Orchestrator:
 
         # ------------------------------------------------------------------ #
         # Cleanup — runs regardless of which result branch was taken above.
+        #
+        # The ordering here is important for correctness:
+        #   1. Release workspace lock FIRST — the scheduler checks workspace
+        #      availability before assigning new work, so releasing early
+        #      maximizes parallelism.
+        #   2. Free the agent SECOND — the agent shouldn't appear IDLE while
+        #      its workspace is still locked, or the scheduler might assign
+        #      it a new task that can't acquire a workspace.
+        #   3. Clean up adapter reference — prevents stale adapter objects
+        #      from accumulating in ``_adapters`` across task executions.
         # ------------------------------------------------------------------ #
 
         # Release the workspace lock so other tasks can use this workspace.
-        # This must happen before freeing the agent, because the scheduler
-        # checks workspace availability before assigning new work.
         await self.db.release_workspaces_for_task(action.task_id)
 
         # Free the agent for new work.  We re-read the agent's current state
@@ -2525,3 +2620,7 @@ class Orchestrator:
         await self.db.update_agent(action.agent_id,
                                    state=next_state,
                                    current_task_id=None)
+
+        # Remove adapter reference — the adapter's subprocess has already
+        # exited by this point (wait() returned), so this is just cleanup.
+        self._adapters.pop(action.agent_id, None)
