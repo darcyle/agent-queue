@@ -271,6 +271,7 @@ class AppConfig:
     database_path: str = field(
         default_factory=lambda: os.path.expanduser("~/.agent-queue/agent-queue.db")
     )
+    profile: str = ""
     env: str = "production"
     discord: DiscordConfig = field(default_factory=DiscordConfig)
     agents_config: AgentsDefaultConfig = field(default_factory=AgentsDefaultConfig)
@@ -387,7 +388,7 @@ class AppConfig:
             return self
 
         try:
-            fresh = load_config(self._config_path)
+            fresh = load_config(self._config_path, profile=self.profile or None)
         except Exception as e:
             logger.warning("Config hot-reload failed, keeping current config: %s", e)
             return self
@@ -430,12 +431,20 @@ def _process_values(obj):
 def _deep_merge(base: dict, override: dict) -> dict:
     """Recursively merge *override* into *base* (override wins on conflict).
 
-    Used for environment-specific config overlays: values in the overlay
-    file take precedence, but keys only present in the base are preserved.
+    Used for environment-specific config overlays and profile overlays:
+    values in the overlay take precedence, but keys only present in the
+    base are preserved.
+
+    Special handling:
+    - Dicts are merged recursively
+    - Lists are replaced (not appended) to keep behavior predictable
+    - ``None`` values in the overlay remove the key from the result
     """
     result = dict(base)
     for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+        if value is None:
+            result.pop(key, None)
+        elif key in result and isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = _deep_merge(result[key], value)
         else:
             result[key] = value
@@ -458,7 +467,7 @@ def _load_env_file(config_path: str) -> None:
                     os.environ[key] = value
 
 
-def load_config(path: str) -> AppConfig:
+def load_config(path: str, profile: str | None = None) -> AppConfig:
     """Load and validate application configuration from a YAML file.
 
     Processing order:
@@ -469,9 +478,19 @@ def load_config(path: str) -> AppConfig:
          or ``env`` field in config, default ``"production"``)
       4. If an overlay file ``config.{env}.yaml`` exists in the same
          directory, deep-merge it over the base config
-      5. Recursively substitute ``${ENV_VAR}`` references in all strings
-      6. Map sections into typed dataclass instances
-      7. Run ``validate()`` to catch misconfiguration early
+      5. If a *profile* is specified (via ``--profile`` CLI arg or
+         ``AGENT_QUEUE_PROFILE`` env var), load the profile overlay from
+         ``profiles/{profile}.yaml`` relative to the config directory and
+         deep-merge it over the config
+      6. Recursively substitute ``${ENV_VAR}`` references in all strings
+      7. Map sections into typed dataclass instances
+      8. Run ``validate()`` to catch misconfiguration early
+
+    Args:
+        path: Path to the base YAML config file.
+        profile: Optional profile name. Falls back to ``AGENT_QUEUE_PROFILE``
+            env var if not provided. When set, the corresponding file
+            ``{config_dir}/profiles/{profile}.yaml`` must exist.
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Config file not found: {path}")
@@ -485,7 +504,7 @@ def load_config(path: str) -> AppConfig:
     env = os.environ.get("AGENT_QUEUE_ENV", raw.get("env", "production"))
 
     # Load environment-specific overlay (e.g. config.dev.yaml)
-    config_dir = os.path.dirname(path)
+    config_dir = os.path.dirname(path) or "."
     base_name = os.path.basename(path)
     name_part, ext = os.path.splitext(base_name)
     overlay_path = os.path.join(config_dir, f"{name_part}.{env}{ext}")
@@ -494,10 +513,36 @@ def load_config(path: str) -> AppConfig:
             overlay = yaml.safe_load(f) or {}
         raw = _deep_merge(raw, overlay)
 
+    # Resolve profile: CLI arg > env var > none
+    resolved_profile = profile or os.environ.get("AGENT_QUEUE_PROFILE", "") or ""
+
+    if resolved_profile:
+        profiles_dir = os.path.join(config_dir, "profiles")
+        profile_path = os.path.join(profiles_dir, f"{resolved_profile}.yaml")
+        if not os.path.exists(profile_path):
+            # List available profiles for a helpful error message
+            available: list[str] = []
+            if os.path.isdir(profiles_dir):
+                available = sorted(
+                    os.path.splitext(f)[0]
+                    for f in os.listdir(profiles_dir)
+                    if f.endswith((".yaml", ".yml"))
+                )
+            msg = f"Profile '{resolved_profile}' not found: {profile_path}"
+            if available:
+                msg += f"\nAvailable profiles: {', '.join(available)}"
+            else:
+                msg += f"\nNo profiles found in {profiles_dir}"
+            raise FileNotFoundError(msg)
+        with open(profile_path) as f:
+            profile_raw = yaml.safe_load(f) or {}
+        raw = _deep_merge(raw, profile_raw)
+
     raw = _process_values(raw)
 
     config = AppConfig()
     config._config_path = path
+    config.profile = resolved_profile
     config.env = env
 
     if "workspace_dir" in raw:

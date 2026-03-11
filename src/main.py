@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG_PATH = os.path.expanduser("~/.agent-queue/config.yaml")
 
 
-async def run(config_path: str) -> bool:
+async def run(config_path: str, profile: str | None = None) -> bool:
     """Run the daemon. Returns True if a restart was requested."""
     # Set up structured logging early (before any other import logs)
     setup_logging(
@@ -49,11 +49,11 @@ async def run(config_path: str) -> bool:
         format="json" if os.environ.get("AGENT_QUEUE_LOG_FORMAT") == "json" else "text",
     )
 
-    config = load_config(config_path)
+    config = load_config(config_path, profile=profile)
     logger.info(
-        "Configuration loaded (env=%s, profile=%s)",
+        "Starting with env=%s, profile=%s",
         config.env,
-        config_path,
+        config.profile or "no profile",
     )
 
     # Configure structured logging before anything else
@@ -173,9 +173,35 @@ async def _health_checks(orch: Orchestrator) -> dict:
     return checks
 
 
+def _parse_args(argv: list[str]) -> tuple[str, str | None]:
+    """Parse CLI arguments for config path and --profile flag.
+
+    Returns (config_path, profile). Profile is None if not specified.
+    Precedence: --profile CLI > AGENT_QUEUE_PROFILE env var > none.
+    """
+    profile: str | None = None
+    remaining: list[str] = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--profile" and i + 1 < len(argv):
+            profile = argv[i + 1]
+            i += 2
+        elif argv[i].startswith("--profile="):
+            profile = argv[i].split("=", 1)[1]
+            i += 1
+        elif argv[i] == "--validate-config":
+            remaining.append(argv[i])
+            i += 1
+        else:
+            remaining.append(argv[i])
+            i += 1
+    config_path = remaining[0] if remaining else DEFAULT_CONFIG_PATH
+    return config_path, profile
+
+
 def main():
-    config_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_CONFIG_PATH
-    restart = asyncio.run(run(config_path))
+    config_path, profile = _parse_args(sys.argv[1:])
+    restart = asyncio.run(run(config_path, profile=profile))
     if restart:
         print("Restart requested — exec'ing new process...")
         # Resolve the entry point to an absolute path for execv
