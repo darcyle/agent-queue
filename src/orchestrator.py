@@ -2054,6 +2054,19 @@ class Orchestrator:
                         dep_task_id, final_subtask_id, e,
                     )
 
+        # Notify about auto-created subtasks so operators have visibility,
+        # especially when the project is paused and tasks won't be assigned yet.
+        if created_tasks:
+            task_lines = "\n".join(
+                f"  {i+1}. `{t.id}` — {t.title}"
+                for i, t in enumerate(created_tasks)
+            )
+            await self._notify_channel(
+                f"**Auto-task:** Created {len(created_tasks)} subtask(s) from "
+                f"`{task.id}` plan:\n{task_lines}",
+                project_id=task.project_id,
+            )
+
         return created_tasks
 
     # ── Completion pipeline ────────────────────────────────────────────────
