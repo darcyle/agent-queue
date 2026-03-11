@@ -877,7 +877,7 @@ class MenuView(discord.ui.View):
     async def hooks_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        """Show all configured hooks across all projects."""
+        """Show all configured hooks across all projects with inline edit buttons."""
         await interaction.response.defer(ephemeral=True)
         result = await self._handler.execute("list_hooks", {})
         hooks = result.get("hooks", [])
@@ -885,30 +885,11 @@ class MenuView(discord.ui.View):
             await interaction.followup.send("No hooks configured.", ephemeral=True)
             return
 
-        lines = [f"**Hooks ({len(hooks)}):**"]
-        for h in hooks[:20]:
-            status = "✅" if h.get("enabled") else "❌"
-            trigger = h.get("trigger", {})
-            trigger_type = trigger.get("type", "?")
-            if trigger_type == "periodic":
-                interval = trigger.get("interval_seconds", "?")
-                trigger_desc = f"every {interval}s"
-            elif trigger_type == "event":
-                event = trigger.get("event", "?")
-                trigger_desc = f"on `{event}`"
-            else:
-                trigger_desc = trigger_type
-            lines.append(
-                f"{status} **{h['name']}** (`{h['id']}`) — {trigger_desc} "
-                f"• project: `{h.get('project_id', '?')}`"
-            )
-        if len(hooks) > 20:
-            lines.append(f"_...and {len(hooks) - 20} more_")
-
-        msg = "\n".join(lines)
+        view = HooksListView(hooks, self._handler)
+        msg = view.build_content()
         if len(msg) > 2000:
             msg = msg[:1997] + "…"
-        await interaction.followup.send(msg, ephemeral=True)
+        await interaction.followup.send(msg, view=view, ephemeral=True)
 
     @discord.ui.button(
         label="Toggle Orchestrator",
@@ -938,6 +919,227 @@ class MenuView(discord.ui.View):
                 "▶ Orchestrator **resumed** — task scheduling is active.",
                 ephemeral=True,
             )
+
+
+# ---------------------------------------------------------------------------
+# Hooks list view with inline Edit buttons
+# ---------------------------------------------------------------------------
+
+_HOOKS_PER_PAGE = 10  # max hooks per page (Discord allows 5 rows × 5 items)
+
+
+class _HookInlineEditModal(discord.ui.Modal, title="Edit Hook"):
+    """Modal for editing a hook's properties inline from the hooks list."""
+
+    name_input = discord.ui.TextInput(
+        label="Name",
+        placeholder="Hook name",
+        required=False,
+        max_length=100,
+    )
+    enabled_input = discord.ui.TextInput(
+        label="Enabled (true / false)",
+        placeholder="true",
+        required=False,
+        max_length=5,
+    )
+    prompt_input = discord.ui.TextInput(
+        label="Prompt template",
+        style=discord.TextStyle.long,
+        placeholder="Use {{step_0}}, {{event}} placeholders…",
+        required=False,
+        max_length=2000,
+    )
+    cooldown_input = discord.ui.TextInput(
+        label="Cooldown (seconds)",
+        placeholder="3600",
+        required=False,
+        max_length=10,
+    )
+
+    def __init__(self, hook: dict, handler, *, refresh_callback=None) -> None:
+        super().__init__()
+        self._hook_id = hook["id"]
+        self._handler = handler
+        self._refresh_callback = refresh_callback
+        # Pre-fill with current values
+        self.name_input.default = hook.get("name", "")
+        self.enabled_input.default = str(hook.get("enabled", True)).lower()
+        if hook.get("prompt_template"):
+            self.prompt_input.default = hook["prompt_template"]
+        if hook.get("cooldown_seconds") is not None:
+            self.cooldown_input.default = str(hook["cooldown_seconds"])
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        args: dict = {"hook_id": self._hook_id}
+        if self.name_input.value:
+            args["name"] = self.name_input.value
+        enabled_val = self.enabled_input.value.strip().lower()
+        if enabled_val in ("true", "false"):
+            args["enabled"] = enabled_val == "true"
+        if self.prompt_input.value:
+            args["prompt_template"] = self.prompt_input.value
+        if self.cooldown_input.value:
+            try:
+                cd = int(self.cooldown_input.value)
+                if cd >= 0:
+                    args["cooldown_seconds"] = cd
+            except ValueError:
+                pass
+
+        if len(args) <= 1:
+            await interaction.response.send_message(
+                "No changes provided.", ephemeral=True,
+            )
+            return
+
+        result = await self._handler.execute("edit_hook", args)
+        if "error" in result:
+            await interaction.response.send_message(
+                f"❌ {result['error']}", ephemeral=True,
+            )
+            return
+
+        fields = ", ".join(result.get("fields", []))
+        await interaction.response.send_message(
+            f"✅ Hook `{self._hook_id}` updated: {fields}", ephemeral=True,
+        )
+        # Refresh the hooks list if a callback is provided
+        if self._refresh_callback:
+            await self._refresh_callback(interaction)
+
+
+class _HookEditButton(discord.ui.Button):
+    """Per-hook ✏️ Edit button shown in the hooks list view."""
+
+    def __init__(self, hook: dict, handler, *, row: int = 0, refresh_callback=None) -> None:
+        label = hook.get("name", hook["id"])
+        if len(label) > 60:
+            label = label[:57] + "..."
+        super().__init__(
+            style=discord.ButtonStyle.secondary,
+            label=f"✏️ {label}",
+            custom_id=f"hooks:edit:{hook['id']}",
+            row=row,
+        )
+        self._hook = hook
+        self._handler = handler
+        self._refresh_callback = refresh_callback
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        modal = _HookInlineEditModal(
+            self._hook, self._handler, refresh_callback=self._refresh_callback,
+        )
+        await interaction.response.send_modal(modal)
+
+
+class HooksListView(discord.ui.View):
+    """Interactive hooks list with per-hook Edit buttons."""
+
+    def __init__(self, hooks: list[dict], handler, *, page: int = 0) -> None:
+        super().__init__(timeout=300)
+        self._hooks = hooks
+        self._handler = handler
+        self.page = page
+        self.total_pages = max(1, (len(hooks) + _HOOKS_PER_PAGE - 1) // _HOOKS_PER_PAGE)
+        self._rebuild_components()
+
+    def _rebuild_components(self) -> None:
+        self.clear_items()
+        start = self.page * _HOOKS_PER_PAGE
+        page_hooks = self._hooks[start : start + _HOOKS_PER_PAGE]
+
+        # Add edit buttons — 2 per row, up to 4 rows for hooks
+        for i, h in enumerate(page_hooks):
+            row = i // 3  # 3 buttons per row, up to ~4 rows
+            if row > 3:
+                break  # Reserve row 4 for nav buttons
+            self.add_item(
+                _HookEditButton(
+                    h, self._handler, row=row,
+                    refresh_callback=self._refresh_list,
+                )
+            )
+
+        # Navigation row (row 4)
+        if self.total_pages > 1:
+            prev_btn = discord.ui.Button(
+                style=discord.ButtonStyle.secondary,
+                label="◀ Prev",
+                custom_id="hooks:page:prev",
+                disabled=(self.page == 0),
+                row=4,
+            )
+            prev_btn.callback = self._prev_page
+            self.add_item(prev_btn)
+
+            next_btn = discord.ui.Button(
+                style=discord.ButtonStyle.secondary,
+                label="Next ▶",
+                custom_id="hooks:page:next",
+                disabled=(self.page >= self.total_pages - 1),
+                row=4,
+            )
+            next_btn.callback = self._next_page
+            self.add_item(next_btn)
+
+    def build_content(self) -> str:
+        """Build the text content for the hooks list message."""
+        if not self._hooks:
+            return "**No hooks configured.**"
+        lines = [f"**🪝 Hooks ({len(self._hooks)}):**"]
+        start = self.page * _HOOKS_PER_PAGE
+        page_hooks = self._hooks[start : start + _HOOKS_PER_PAGE]
+        for h in page_hooks:
+            status = "✅" if h.get("enabled") else "❌"
+            trigger = h.get("trigger", {})
+            trigger_type = trigger.get("type", "?") if isinstance(trigger, dict) else "?"
+            if trigger_type == "periodic":
+                interval = trigger.get("interval_seconds", "?") if isinstance(trigger, dict) else "?"
+                trigger_desc = f"every {interval}s"
+            elif trigger_type == "event":
+                event = (
+                    trigger.get("event_type") or trigger.get("event", "?")
+                ) if isinstance(trigger, dict) else "?"
+                trigger_desc = f"on `{event}`"
+            else:
+                trigger_desc = trigger_type
+            lines.append(
+                f"{status} **{h['name']}** (`{h['id']}`) — {trigger_desc} "
+                f"• project: `{h.get('project_id', '?')}`"
+            )
+        if self.total_pages > 1:
+            lines.append(f"\n_Page {self.page + 1}/{self.total_pages}_")
+        return "\n".join(lines)
+
+    async def _refresh_list(self, interaction: discord.Interaction) -> None:
+        """Refresh the hooks list after an edit."""
+        result = await self._handler.execute("list_hooks", {})
+        self._hooks = result.get("hooks", [])
+        self.total_pages = max(1, (len(self._hooks) + _HOOKS_PER_PAGE - 1) // _HOOKS_PER_PAGE)
+        if self.page >= self.total_pages:
+            self.page = max(0, self.total_pages - 1)
+        self._rebuild_components()
+        try:
+            msg = interaction.message
+            if msg:
+                await msg.edit(content=self.build_content(), view=self)
+        except Exception:
+            pass
+
+    async def _prev_page(self, interaction: discord.Interaction) -> None:
+        self.page = max(0, self.page - 1)
+        self._rebuild_components()
+        await interaction.response.edit_message(
+            content=self.build_content(), view=self,
+        )
+
+    async def _next_page(self, interaction: discord.Interaction) -> None:
+        self.page = min(self.total_pages - 1, self.page + 1)
+        self._rebuild_components()
+        await interaction.response.edit_message(
+            content=self.build_content(), view=self,
+        )
 
 
 def setup_commands(bot: commands.Bot) -> None:
@@ -3962,25 +4164,11 @@ def setup_commands(bot: commands.Bot) -> None:
         if not hooks:
             await _send_info(interaction, "No Hooks", description="No hooks configured.")
             return
-        lines = ["## Hooks"]
-        for h in hooks:
-            status = "✅ enabled" if h.get("enabled") else "❌ disabled"
-            trigger = h.get("trigger", {})
-            trigger_desc = trigger.get("type", "unknown") if isinstance(trigger, dict) else "unknown"
-            if trigger_desc == "periodic":
-                interval = trigger.get("interval_seconds", 0) if isinstance(trigger, dict) else 0
-                trigger_desc = f"periodic ({interval}s)"
-            elif trigger_desc == "event":
-                evt_type = trigger.get("event_type", "?") if isinstance(trigger, dict) else "?"
-                trigger_desc = f"event: {evt_type}"
-            lines.append(
-                f"• **{h['name']}** (`{h['id']}`) — {status}, trigger: {trigger_desc}, "
-                f"project: `{h['project_id']}`"
-            )
-        msg = "\n".join(lines)
+        view = HooksListView(hooks, handler)
+        msg = view.build_content()
         if len(msg) > 2000:
             msg = msg[:1997] + "..."
-        await interaction.response.send_message(msg)
+        await interaction.response.send_message(msg, view=view)
 
     # --- Hook wizard state management ---
     # In-memory store keyed by Discord user ID.

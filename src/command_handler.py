@@ -3576,6 +3576,7 @@ class CommandHandler:
                     "enabled": h.enabled,
                     "trigger": json.loads(h.trigger),
                     "cooldown_seconds": h.cooldown_seconds,
+                    "prompt_template": h.prompt_template,
                 }
                 for h in hooks
             ]
