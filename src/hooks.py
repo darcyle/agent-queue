@@ -11,12 +11,39 @@ can create tasks, check status, send notifications, etc. -- anything a human
 user can do via Discord chat, a hook can do autonomously.
 
 Two trigger types are supported:
-- **Periodic**: fires on a timer (``interval_seconds``), checked every
-  orchestrator tick.
-- **Event**: fires when a matching EventBus event arrives (e.g. task.completed).
 
-A cooldown mechanism prevents hooks from firing too frequently, and a
-configurable concurrency limit caps how many hooks can run simultaneously.
+- **Periodic**: fires on a timer (``interval_seconds``), checked every
+  orchestrator tick (~5s).  Actual firing granularity is bounded by the
+  tick interval — a 10s periodic hook will fire every 10-15s, not exactly
+  every 10s.
+- **Event**: fires when a matching EventBus event arrives (e.g.
+  ``task.completed``).  Events are delivered asynchronously via
+  ``_on_event``, which re-queries all enabled hooks for matches.
+
+Concurrency and cooldown interaction::
+
+    Hook fires → _last_run_time[hook_id] = now, task added to _running
+    ↓
+    Subsequent triggers check THREE gates before firing:
+      1. Concurrency: len(_running) < max_concurrent_hooks   (global cap)
+      2. In-flight:   hook_id not in _running                 (per-hook cap)
+      3. Cooldown:    now - _last_run_time[hook_id] >= cooldown_seconds
+    ↓
+    All three must pass → hook fires again
+    ↓
+    When task finishes: tick() reaps it from _running,
+    freeing the per-hook and global concurrency slots
+
+Tool access in hook LLM calls:
+
+    Each hook invocation creates a fresh ChatAgent instance with the same
+    tool set that human users have via Discord chat.  This means hooks can:
+    - Create tasks (``/add-task``)
+    - Query task status
+    - Send notifications
+    - Use any registered MCP tools
+    The ChatAgent is stateless — no conversation history carries between
+    hook invocations.  The rendered prompt is the entire context.
 
 See specs/hooks.md for the full specification.
 """
@@ -260,7 +287,38 @@ class HookEngine:
         trigger_reason: str,
         event_data: dict | None = None,
     ) -> None:
-        """Inner implementation with correlation context already set."""
+        """Inner implementation of the hook execution pipeline.
+
+        Runs with the correlation context already set (by ``_execute_hook``).
+        The pipeline has 4 phases, each of which updates the HookRun record
+        in the DB for observability:
+
+        Phase 1 — Context gathering:
+            Run each context step sequentially (shell, file, http, db, git,
+            memory_search).  Results are persisted so operators can inspect
+            what data the hook saw.
+
+        Phase 2 — Short-circuit check:
+            Evaluate skip conditions (e.g., "skip if shell exit 0").  If a
+            skip condition matches, the LLM is never called — this is the
+            primary cost-saving mechanism for periodic hooks that usually
+            have nothing to report.
+
+        Phase 3 — Prompt rendering:
+            Substitute ``{{step_N}}``, ``{{event.field}}`` placeholders in
+            the prompt template with actual context step results and event
+            data.
+
+        Phase 4 — LLM invocation:
+            Create a ChatAgent and send the rendered prompt.  The LLM can
+            use tools (create tasks, send notifications, etc.) as part of
+            its response.
+
+        Error handling: any exception in phases 1-4 is caught, logged, and
+        recorded as a "failed" HookRun.  The exception does NOT propagate
+        to the caller (tick/event handler) — individual hook failures must
+        not disrupt the rest of the system.
+        """
         run = HookRun(
             id=str(uuid.uuid4())[:12],
             hook_id=hook.id,
@@ -689,12 +747,25 @@ class HookEngine:
         reasoning.
 
         Integration details:
-        - The ChatAgent instance is created fresh for each invocation (stateless).
-        - If an LLM logger is configured, the provider is wrapped with
-          ``LoggedChatProvider`` so hook token usage appears in analytics.
-        - The ``user_name`` is set to ``"hook:<hook_name>"`` for audit trails.
-        - Token counts are *estimated* from string length (÷4) since the
-          ChatAgent's ``chat()`` method doesn't return exact usage.
+
+        - **Stateless**: the ChatAgent is created fresh for each invocation.
+          No conversation history carries between hook runs — the rendered
+          prompt is the entire context.
+        - **Tool registration**: ChatAgent's ``__init__`` registers all standard
+          tools (task management, status queries, MCP servers).  The hook's LLM
+          can call any of these tools during its turn, enabling autonomous
+          actions like creating follow-up tasks or sending notifications.
+        - **Provider override**: if ``hook.llm_config`` is set, it overrides
+          the global chat provider config.  This lets a monitoring hook use
+          Haiku for cheap status checks while a planning hook uses Opus.
+        - **Logging**: if an LLM logger is configured, the provider is wrapped
+          with ``LoggedChatProvider`` so hook token usage appears in analytics
+          under the ``hook_engine`` caller tag.
+        - **User identity**: ``user_name`` is set to ``"hook:<hook_name>"``
+          for audit trails in the event log and Discord notifications.
+        - **Token estimation**: token counts are *estimated* from string
+          length (÷4) since ChatAgent's ``chat()`` doesn't return exact usage.
+          For accurate cost tracking, rely on the LLM logger's per-call data.
 
         Returns ``(response_text, estimated_tokens_used)``.
         """

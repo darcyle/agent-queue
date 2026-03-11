@@ -14,6 +14,38 @@ Heavy operations (agent execution, git clones) run as background asyncio
 tasks so the main loop stays responsive and can continue checking heartbeats,
 promoting tasks, and handling approvals while agents work.
 
+Key method call hierarchy (read these to understand the full lifecycle)::
+
+    run_one_cycle()                       # Main loop entry (~5s interval)
+    ├── _check_awaiting_approval()        # Poll PR merge status
+    │   ├── _handle_awaiting_no_pr()      # Auto-complete or remind
+    │   └── _check_pr_status()            # Merged/closed/open detection
+    ├── _resume_paused_tasks()            # Backoff timer expiry
+    ├── _check_defined_tasks()            # Dependency promotion
+    ├── _check_stuck_defined_tasks()      # Monitoring alerts
+    ├── _schedule()                       # Proportional fair-share assignment
+    └── _execute_task_safe(action)        # Background asyncio.Task per assignment
+        └── _execute_task_safe_inner()    # Timeout + crash recovery wrapper
+            └── _execute_task()           # Full pipeline:
+                ├── _prepare_workspace()  #   Git branch/clone setup
+                ├── adapter.start(ctx)    #   Launch agent process
+                ├── adapter.wait()        #   Stream output + rate-limit retries
+                ├── _complete_workspace() #   Commit/merge/PR post-completion
+                │   ├── _merge_and_push() #     Direct merge path
+                │   └── _create_pr_for_task() # PR-based approval path
+                ├── _generate_tasks_from_plan()  # Auto-task from plan files
+                └── cleanup               #   Release workspace + free agent
+
+Workspace locking lifecycle::
+
+    _schedule() assigns task → _prepare_workspace() acquires lock
+    → agent runs with exclusive workspace access
+    → _complete_workspace() performs git operations
+    → cleanup section releases lock via db.release_workspaces_for_task()
+
+    If the task times out, crashes, or is admin-stopped, the lock is
+    released in the error/timeout handler so the workspace isn't stuck.
+
 See ``specs/orchestrator.md`` for the full behavioral specification.
 """
 
@@ -618,7 +650,12 @@ class Orchestrator:
     async def run_one_cycle(self) -> None:
         """Run one iteration of the orchestrator's main loop.
 
-        The ordering of checks is intentional and matters:
+        Called every ~5 seconds by ``main.py``'s scheduler loop.  Each cycle
+        is designed to complete quickly (typically <1s of DB queries and
+        state checks) — heavy work (agent execution, git operations) is
+        delegated to background asyncio tasks that run concurrently.
+
+        The ordering of checks is intentional and encodes key invariants:
 
         1. **Approvals first** — complete tasks whose PRs were merged so
            their dependents can be promoted in the same cycle.
@@ -634,12 +671,23 @@ class Orchestrator:
            the orchestrator is paused).
         6. **Launch** — fire off background asyncio tasks for each new
            assignment.  These run concurrently with future cycles.
-        7. **Hook engine tick** — run any registered hooks.
+        7. **Hook engine tick** — process periodic hooks; event-driven hooks
+           fire asynchronously via the EventBus.
         8. **Config hot-reload** — periodically re-read non-critical settings
            from disk (scheduling, archive, monitoring, etc.) without restart.
-        9. **Log cleanup** — prune old LLM interaction logs.
+        9. **Log cleanup** — prune old LLM interaction logs and flush
+           prompt analytics for long-term cost analysis.
         10. **Auto-archive** — sweep terminal tasks older than the configured
             threshold into the archive so they no longer clutter active views.
+
+        Ordering invariant: steps 1-3 form a "promotion cascade" where
+        completing an approval can immediately unblock a DEFINED task in
+        the same cycle.  Breaking this order would add a 5s delay to
+        dependency chain progression.
+
+        Error handling: the entire cycle is wrapped in a try/except so
+        that a failure in one step (e.g., a DB query error) doesn't crash
+        the daemon — it logs the error and retries on the next cycle.
         """
         try:
             # 0. Check AWAITING_APPROVAL tasks for PR merge status
@@ -705,12 +753,22 @@ class Orchestrator:
             logger.error("Scheduler cycle error", exc_info=True)
 
     async def _execute_task_safe(self, action: AssignAction) -> None:
-        """Top-level wrapper for background task execution.
+        """Top-level wrapper for background task execution (layer 1 of 3).
 
-        Establishes a structured-logging correlation context (task_id,
-        project_id) so every log line emitted during this task's execution
-        can be traced back to it.  Delegates to ``_execute_task_safe_inner``
-        for timeout enforcement and error recovery.
+        The task execution pipeline is wrapped in three layers, each adding
+        a specific concern:
+
+        Layer 1 (this method): **Correlation context** — sets task_id and
+            project_id on the logging contextvar so every log line emitted
+            during this task's execution can be filtered and traced.
+
+        Layer 2 (_execute_task_safe_inner): **Timeout + crash recovery** —
+            enforces ``stuck_timeout_seconds`` via ``asyncio.wait_for``
+            and catches unexpected exceptions to reset state cleanly.
+
+        Layer 3 (_execute_task): **Business logic** — the actual pipeline:
+            workspace setup → agent launch → output streaming → result
+            handling → cleanup.
 
         This is the coroutine stored in ``_running_tasks[task_id]``.
         """
@@ -722,7 +780,7 @@ class Orchestrator:
             await self._execute_task_safe_inner(action)
 
     async def _execute_task_safe_inner(self, action: AssignAction) -> None:
-        """Timeout enforcement and crash recovery around ``_execute_task``.
+        """Timeout enforcement and crash recovery around ``_execute_task`` (layer 2 of 3).
 
         Wraps the real execution pipeline with ``asyncio.wait_for`` so that
         stuck agents are forcibly stopped after ``stuck_timeout_seconds``.
@@ -730,11 +788,18 @@ class Orchestrator:
         On timeout:
           - The adapter is stopped, workspace lock released, task → BLOCKED,
             agent → IDLE, and a downstream-chain-stuck check is performed.
+          - The task goes to BLOCKED (not READY) because a timeout usually
+            indicates a systemic issue that won't resolve on auto-retry.
 
-        On unexpected exception:
+        On unexpected exception (orchestrator bug, DB error, etc.):
           - Task → READY (so it can be retried), agent → IDLE, workspace
             released.  The task is *not* counted as a retry because the
             failure was in orchestrator logic, not agent logic.
+          - Task goes to READY (not BLOCKED) because the agent never ran,
+            so the issue may be transient.
+
+        The ``finally`` block always removes the task from ``_running_tasks``
+        to prevent stale entries from blocking future scheduling rounds.
         """
         timeout = self.config.agents_config.stuck_timeout_seconds
         try:
@@ -1070,7 +1135,7 @@ class Orchestrator:
                 self._budget_warned_at[project_id] = threshold
 
     async def _schedule(self) -> list[AssignAction]:
-        """Build scheduler state and compute task-to-agent assignments.
+        """Build scheduler state snapshot and compute task-to-agent assignments.
 
         Gathers the current state of all projects, tasks, agents, token
         usage within the rolling window, and per-project workspace
@@ -1078,9 +1143,19 @@ class Orchestrator:
         scheduler (``Scheduler.schedule()``) which returns a list of
         ``AssignAction`` objects mapping tasks to agents.
 
-        The scheduler runs deterministically with no LLM calls — it uses
-        credit weights, deficit accounting, and workspace availability to
-        decide which project's READY tasks should be assigned next.
+        The scheduler is a **pure function** — it takes a ``SchedulerState``
+        snapshot and returns actions with zero side effects.  This method's
+        job is to build that snapshot from the database.
+
+        Snapshot consistency: each DB query runs independently (no
+        transaction wrapping the whole snapshot).  This is acceptable
+        because the ~5s cycle frequency means inter-query drift is minimal,
+        and the scheduler is self-correcting — any imbalance caused by a
+        slightly stale snapshot will be corrected in the next cycle.
+
+        The scheduler never makes LLM calls — it uses credit weights,
+        deficit accounting, and workspace availability to decide which
+        project's READY tasks should be assigned next.
         """
         # Build a consistent point-in-time snapshot of all system state the
         # scheduler needs.  Each query reads from the DB independently (no
@@ -1142,15 +1217,27 @@ class Orchestrator:
     async def _prepare_workspace(self, task: Task, agent) -> str | None:
         """Acquire a workspace lock and prepare it for the task.
 
+        Steps:
         1. Acquire an unlocked workspace for the project via
-           ``db.acquire_workspace()``.
-        2. If no workspace is available, return ``None`` (caller must handle).
-        3. Perform git operations based on ``workspace.source_type``
-           (clone/link) using ``project.repo_url`` / ``project.repo_default_branch``.
-        4. Return the workspace path.
+           ``db.acquire_workspace()``.  This is an atomic DB operation that
+           sets ``locked_by_agent_id`` — only one agent can hold a workspace.
+        2. If no workspace is available, return ``None`` (caller returns
+           the task to READY and frees the agent).
+        3. Determine the branch name:
+           - Root tasks: generate a fresh branch from task ID + title.
+           - Plan subtasks: reuse the parent task's branch name so all
+             steps accumulate commits on a single shared branch.
+        4. Perform git operations based on ``workspace.source_type``:
+           - CLONE: orchestrator manages the full clone lifecycle (clone on
+             first use, fetch + branch on subsequent uses).
+           - LINK: workspace points to a pre-existing local checkout;
+             orchestrator only manages branch operations, never clones.
+        5. Return the workspace path.
 
-        For plan subtasks, reuses the parent task's branch name so all steps
-        accumulate commits on a single branch.
+        Error resilience: git failures (network issues, auth errors) are
+        caught and reported via Discord but do NOT prevent the workspace
+        from being returned.  The agent can still work in the directory —
+        it just won't have proper branch management.
         """
         project = await self.db.get_project(task.project_id)
         ws = await self.db.acquire_workspace(task.project_id, agent.id, task.id)
@@ -1237,8 +1324,20 @@ class Orchestrator:
     async def _complete_workspace(self, task: Task, agent) -> str | None:
         """Post-completion git workflow: commit changes, then merge or open a PR.
 
-        Finds the workspace locked by this task, performs git operations using
-        the project's repo config, and releases the workspace lock.
+        Finds the workspace locked by this task, commits any uncommitted work,
+        then decides the appropriate post-completion path:
+
+        Decision tree::
+
+            Is this a plan subtask?
+            ├── Yes → Is it the LAST subtask in the chain?
+            │   ├── Yes → requires_approval? → Create PR / merge+push
+            │   └── No  → Commit only (+ optional mid-chain rebase)
+            └── No  → requires_approval? → Create PR / merge+push
+
+        For plan subtask chains, all subtasks share a single git branch.
+        Only the final subtask triggers the merge/PR, accumulating all
+        intermediate commits into one reviewable unit of work.
 
         Returns a PR URL if one was created, otherwise None.
         """
@@ -1841,26 +1940,46 @@ class Orchestrator:
             await self._notify_stuck_chain(task)
 
     async def _execute_task(self, action: AssignAction) -> None:
-        """The full task execution pipeline, run as a background asyncio task.
+        """The full task execution pipeline (layer 3 of 3), run as a background asyncio task.
+
+        This is the core method that drives a single task from assignment to
+        completion.  It runs as an ``asyncio.Task`` concurrently with the main
+        loop, so multiple tasks can execute in parallel (one per agent).
 
         Steps:
         1. **Assign** — mark task IN_PROGRESS and agent BUSY in the DB.
         2. **Workspace setup** — clone/link/init the repo, create or switch
-           to the task branch (see ``_prepare_workspace``).
-        3. **Agent launch** — create an adapter, inject system context and
-           the task description, and start the agent process.
-        4. **Stream + wait** — forward agent messages to the Discord thread
-           while waiting for completion.  If the agent hits a rate limit,
-           an exponential-backoff retry loop re-initializes and retries
-           (up to ``rate_limit_max_retries`` times) before giving up.
-        5. **Result handling** — branch on the agent result:
+           to the task branch (see ``_prepare_workspace``).  If no workspace
+           is available, the task is returned to READY for retry next cycle.
+        3. **Agent context assembly** — build a structured markdown prompt
+           containing: system metadata (workspace, project, branch), execution
+           rules (subtask vs. root behavior, commit/rebase instructions),
+           upstream dependency results (for chain continuity), optional agent
+           profile role instructions, and the task description itself.  This
+           prompt is what the agent "sees" as its assignment.
+        4. **Memory recall** — if the memory subsystem is enabled, inject
+           semantically relevant historical context (past task results,
+           project notes) into the agent's context.  Non-fatal on failure.
+        5. **Agent launch** — create an adapter (e.g. ClaudeAdapter), pass
+           the assembled ``TaskContext``, and start the agent process.
+        6. **Stream + wait** — forward agent output messages to the Discord
+           thread in real time.  Detect ``AskUserQuestion`` tool use in the
+           stream and send dedicated rich notifications.  If the agent hits
+           a rate limit, an exponential-backoff retry loop re-initializes
+           and retries (up to ``rate_limit_max_retries``) before giving up.
+        7. **Token accounting** — record tokens used, check budget warnings.
+        8. **Result handling** — branch on the ``AgentResult`` enum:
            - COMPLETED: run ``_complete_workspace`` (commit/merge/PR), then
-             ``_generate_tasks_from_plan`` to create follow-up subtasks.
+             ``_generate_tasks_from_plan`` to create follow-up subtasks,
+             then save to memory for future task context.
            - FAILED: increment retry count; if exhausted, mark BLOCKED and
              notify about orphaned downstream tasks.
            - PAUSED (rate limit or tokens): set a ``resume_after`` timestamp
              so the task is automatically retried after the backoff.
-        6. **Free agent** — reset agent to IDLE regardless of outcome.
+           - WAITING_INPUT: transition to WAITING_INPUT and send a question
+             notification with interactive response buttons.
+        9. **Cleanup** — release workspace lock, free agent (IDLE or PAUSED
+           if admin-paused mid-execution), remove adapter reference.
         """
         if not self._adapter_factory:
             logger.error("Cannot execute task %s: no adapter factory configured", action.task_id)
@@ -2507,11 +2626,21 @@ class Orchestrator:
 
         # ------------------------------------------------------------------ #
         # Cleanup — runs regardless of which result branch was taken above.
+        #
+        # Order matters here:
+        #   1. Release workspace lock FIRST — the scheduler (which runs in
+        #      the main loop, potentially concurrently with this background
+        #      task's completion) checks workspace availability before
+        #      assigning new work.  Releasing before freeing the agent
+        #      ensures the workspace count is accurate when the scheduler
+        #      next evaluates this project.
+        #   2. Free agent SECOND — transitions the agent from BUSY back to
+        #      IDLE (or PAUSED if an admin paused it mid-execution).
+        #   3. Remove adapter reference — allows garbage collection of the
+        #      adapter process handle.
         # ------------------------------------------------------------------ #
 
         # Release the workspace lock so other tasks can use this workspace.
-        # This must happen before freeing the agent, because the scheduler
-        # checks workspace availability before assigning new work.
         await self.db.release_workspaces_for_task(action.task_id)
 
         # Free the agent for new work.  We re-read the agent's current state
@@ -2525,3 +2654,6 @@ class Orchestrator:
         await self.db.update_agent(action.agent_id,
                                    state=next_state,
                                    current_task_id=None)
+
+        # Remove the adapter reference so the process handle can be GC'd.
+        self._adapters.pop(action.agent_id, None)

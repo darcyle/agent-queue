@@ -31,6 +31,26 @@ Key design properties:
   each project toward its fair share; short-term imbalances self-correct
   over multiple scheduling rounds.
 
+Concrete example of deficit-based scheduling::
+
+    Projects: A (weight=3), B (weight=1)
+    Total weight = 4 → target ratios: A=75%, B=25%
+    Current window usage: A=1000 tokens, B=500 tokens
+    Total tokens = 1500 → actual ratios: A=66.7%, B=33.3%
+
+    Deficits:  A = 66.7% - 75% = -8.3%  (under-served)
+               B = 33.3% - 25% = +8.3%  (over-served)
+
+    → Project A sorts first because its deficit is more negative.
+    → The scheduler assigns A's highest-priority READY task next.
+
+    Over multiple rounds, this converges: A will keep getting priority
+    until its actual usage ratio approaches 75%.
+
+Time complexity: O(A × P × log P) per cycle, where A = idle agents and
+P = active projects.  Both are typically small (<10), so scheduling is
+effectively instant.
+
 See specs/scheduler-and-budget.md for the full specification.
 """
 
@@ -66,16 +86,35 @@ class SchedulerState:
     design makes the algorithm easy to test and reason about -- the
     orchestrator builds this snapshot each tick, and the scheduler never
     touches the database or any external resource.
+
+    All "window" fields (token usage, completed counts) are scoped to the
+    ``rolling_window_hours`` configured in the scheduling config.  The
+    rolling window creates a "forgetting" mechanism: old usage ages out,
+    so a project that was over-served yesterday can still receive fair
+    allocation today.  The orchestrator computes these from DB queries
+    filtered by ``time.time() - window_hours * 3600``.
     """
 
     projects: list[Project]
     tasks: list[Task]
     agents: list[Agent]
-    project_token_usage: dict[str, int]  # project_id -> tokens in window
-    project_active_agent_counts: dict[str, int]  # project_id -> count
-    tasks_completed_in_window: dict[str, int]  # project_id -> count
+    # Token usage within the rolling window, keyed by project_id.
+    # This is the numerator for computing each project's "actual ratio"
+    # in the deficit calculation (actual_ratio = usage / total_usage).
+    project_token_usage: dict[str, int]
+    # Number of agents currently executing tasks for each project.
+    # Used to enforce ``project.max_concurrent_agents`` limits.
+    project_active_agent_counts: dict[str, int]
+    # Number of tasks completed per project within the rolling window.
+    # Projects with zero completions get priority via min_task_guarantee.
+    tasks_completed_in_window: dict[str, int]
+    # Available (unlocked) workspaces per project.  A hard constraint:
+    # the scheduler cannot assign more tasks than physical workspaces.
+    # Empty dict = no workspace tracking (e.g., in tests).
     project_available_workspaces: dict[str, int] = field(default_factory=dict)
+    # Global token budget across all projects (None = unlimited).
     global_budget: int | None = None
+    # Total tokens used across all projects in the rolling window.
     global_tokens_used: int = 0
 
 
