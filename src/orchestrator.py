@@ -687,13 +687,18 @@ class Orchestrator:
                 logger.info("Recovery: resetting agent '%s' from %s to IDLE", a.name, a.state.value)
                 await self.db.update_agent(a.id, state=AgentState.IDLE, current_task_id=None)
 
-        # Release all workspace locks (no agents are running after restart)
+        # Release all workspace locks and clean orphaned sentinels.
+        # After a restart no agents are running, so all DB locks are stale.
+        # Also remove sentinel files from ALL workspaces — they may exist
+        # even when the DB lock was already released (e.g. _prepare_workspace
+        # acquired + detected sentinel + released lock, but never deleted file).
         all_workspaces = await self.db.list_workspaces()
         for ws in all_workspaces:
             if ws.locked_by_agent_id:
                 logger.info("Recovery: releasing workspace lock '%s' (was locked by %s)", ws.id, ws.locked_by_agent_id)
-                self._remove_sentinel(ws.workspace_path)
                 await self.db.release_workspace(ws.id)
+            # Always clean sentinel files on startup — no agents are running
+            self._remove_sentinel(ws.workspace_path)
 
         # Reset IN_PROGRESS tasks back to READY so they get re-scheduled
         tasks = await self.db.list_tasks(status=TaskStatus.IN_PROGRESS)
@@ -1441,6 +1446,8 @@ class Orchestrator:
 
         # Layer 2: Filesystem sentinel — detect concurrent access that slipped
         # past the DB-level path lock (e.g. race condition, stale lock).
+        # If the sentinel's owner task is no longer IN_PROGRESS, the sentinel
+        # is stale (left behind by a crash) and safe to remove.
         sentinel = os.path.join(workspace, ".agent-queue-lock")
         if os.path.exists(sentinel):
             try:
@@ -1448,12 +1455,32 @@ class Orchestrator:
                     owner_info = f.read().strip()
             except OSError:
                 owner_info = "(unreadable)"
-            logger.warning(
-                "Workspace %s has active sentinel (owner: %s) — releasing lock",
-                workspace, owner_info,
-            )
-            await self.db.release_workspace(ws.id)
-            return None
+
+            # Check if the sentinel owner is still actively running.
+            # Sentinel format: "task_id\nagent_id\n"
+            owner_task_id = owner_info.split("\n")[0] if owner_info else ""
+            owner_active = False
+            if owner_task_id:
+                owner_task = await self.db.get_task(owner_task_id)
+                owner_active = (
+                    owner_task is not None
+                    and owner_task.status == TaskStatus.IN_PROGRESS
+                )
+
+            if owner_active:
+                logger.warning(
+                    "Workspace %s has active sentinel (owner: %s) — releasing lock",
+                    workspace, owner_info,
+                )
+                await self.db.release_workspace(ws.id)
+                return None
+            else:
+                # Stale sentinel from a crashed/completed task — clean it up
+                logger.info(
+                    "Workspace %s has stale sentinel (owner: %s) — removing",
+                    workspace, owner_info,
+                )
+                self._remove_sentinel(workspace)
         # Write our sentinel
         try:
             os.makedirs(workspace, exist_ok=True)
@@ -2550,15 +2577,22 @@ class Orchestrator:
             workspace = None
 
         if not workspace:
-            # No workspace available — return task to READY and free the agent
+            # No workspace available — PAUSE the task with a backoff timer
+            # instead of returning to READY.  Returning to READY causes an
+            # infinite assign→fail→READY→assign loop that spams Discord every
+            # orchestrator cycle (~5s).  PAUSED + resume_after lets
+            # _resume_paused_tasks() promote it back to READY after a delay,
+            # giving time for workspaces to free up.
+            no_ws_backoff = 60  # seconds before retrying workspace acquisition
             await self.db.transition_task(
-                action.task_id, TaskStatus.READY,
-                context="no_workspace_available")
+                action.task_id, TaskStatus.PAUSED,
+                context="no_workspace_available",
+                resume_after=time.time() + no_ws_backoff)
             await self.db.update_agent(action.agent_id, state=AgentState.IDLE)
             await self._notify_channel(
-                f"**No Workspace:** Task `{task.id}` returned to READY — "
-                f"project `{action.project_id}` has no available workspaces. "
-                f"Use `/add-workspace` to create one.",
+                f"**No Workspace:** Task `{task.id}` paused for "
+                f"{no_ws_backoff}s — project `{action.project_id}` has no "
+                f"available workspaces. Use `/add-workspace` to create one.",
                 project_id=action.project_id,
             )
             return
