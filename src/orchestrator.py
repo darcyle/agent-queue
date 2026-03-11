@@ -1280,7 +1280,10 @@ class Orchestrator:
         it just won't have proper branch management.
         """
         project = await self.db.get_project(task.project_id)
-        ws = await self.db.acquire_workspace(task.project_id, agent.id, task.id)
+        ws = await self.db.acquire_workspace(
+            task.project_id, agent.id, task.id,
+            preferred_workspace_id=task.preferred_workspace_id,
+        )
 
         if not ws:
             return None
