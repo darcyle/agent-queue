@@ -1420,6 +1420,22 @@ class Database:
         if not row:
             return None
 
+        # Layer 1: Path-level lock check — prevent two workspace rows
+        # pointing at the same filesystem path from being locked simultaneously,
+        # even across different projects (e.g. two LINK workspaces at the same dir).
+        cursor = await self._db.execute(
+            "SELECT id FROM workspaces "
+            "WHERE workspace_path = ? AND locked_by_agent_id IS NOT NULL AND id != ?",
+            (row["workspace_path"], row["id"]),
+        )
+        conflict = await cursor.fetchone()
+        if conflict:
+            logger.warning(
+                "Workspace path %s already locked by workspace %s — skipping %s",
+                row["workspace_path"], conflict["id"], row["id"],
+            )
+            return None  # Path already in use by another workspace/task
+
         now = time.time()
         await self._db.execute(
             "UPDATE workspaces SET locked_by_agent_id = ?, "

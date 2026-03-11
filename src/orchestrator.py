@@ -439,7 +439,17 @@ class Orchestrator:
             except Exception as e:
                 logger.error("Error stopping adapter for agent %s: %s", agent_id, e)
 
-        # Release workspace lock and reset task/agent state
+        # Cancel the background asyncio Task so the finally block in
+        # _resilient_query fires even if the transport close didn't
+        # immediately take effect.
+        bg_task = self._running_tasks.get(task_id)
+        if bg_task and not bg_task.done():
+            bg_task.cancel()
+
+        # Clean up sentinel and release workspace lock
+        ws = await self.db.get_workspace_for_task(task_id)
+        if ws:
+            self._remove_sentinel(ws.workspace_path)
         await self.db.release_workspaces_for_task(task_id)
         await self.db.transition_task(task_id, TaskStatus.BLOCKED,
                                       context="stop_task",
@@ -682,6 +692,7 @@ class Orchestrator:
         for ws in all_workspaces:
             if ws.locked_by_agent_id:
                 logger.info("Recovery: releasing workspace lock '%s' (was locked by %s)", ws.id, ws.locked_by_agent_id)
+                self._remove_sentinel(ws.workspace_path)
                 await self.db.release_workspace(ws.id)
 
         # Reset IN_PROGRESS tasks back to READY so they get re-scheduled
@@ -946,6 +957,10 @@ class Orchestrator:
                     await self._adapters[action.agent_id].stop()
                 except Exception:
                     pass
+            # Clean up sentinel before releasing workspace lock
+            ws = await self.db.get_workspace_for_task(action.task_id)
+            if ws:
+                self._remove_sentinel(ws.workspace_path)
             await self.db.release_workspaces_for_task(action.task_id)
             await self.db.transition_task(
                 action.task_id, TaskStatus.BLOCKED,
@@ -967,6 +982,10 @@ class Orchestrator:
         except Exception as e:
             logger.error("Error executing task %s", action.task_id, exc_info=True)
             try:
+                # Clean up sentinel before releasing workspace lock
+                ws = await self.db.get_workspace_for_task(action.task_id)
+                if ws:
+                    self._remove_sentinel(ws.workspace_path)
                 await self.db.release_workspaces_for_task(action.task_id)
                 await self.db.transition_task(
                     action.task_id, TaskStatus.READY,
@@ -1375,6 +1394,15 @@ class Orchestrator:
 
         return Scheduler.schedule(state)
 
+    @staticmethod
+    def _remove_sentinel(workspace: str) -> None:
+        """Remove the .agent-queue-lock sentinel file from a workspace."""
+        sentinel = os.path.join(workspace, ".agent-queue-lock")
+        try:
+            os.remove(sentinel)
+        except OSError:
+            pass
+
     async def _prepare_workspace(self, task: Task, agent) -> str | None:
         """Acquire a workspace lock and prepare it for the task.
 
@@ -1410,6 +1438,30 @@ class Orchestrator:
             return None
 
         workspace = ws.workspace_path
+
+        # Layer 2: Filesystem sentinel — detect concurrent access that slipped
+        # past the DB-level path lock (e.g. race condition, stale lock).
+        sentinel = os.path.join(workspace, ".agent-queue-lock")
+        if os.path.exists(sentinel):
+            try:
+                with open(sentinel) as f:
+                    owner_info = f.read().strip()
+            except OSError:
+                owner_info = "(unreadable)"
+            logger.warning(
+                "Workspace %s has active sentinel (owner: %s) — releasing lock",
+                workspace, owner_info,
+            )
+            await self.db.release_workspace(ws.id)
+            return None
+        # Write our sentinel
+        try:
+            os.makedirs(workspace, exist_ok=True)
+            with open(sentinel, "w") as f:
+                f.write(f"{task.id}\n{agent.id}\n")
+        except OSError as e:
+            logger.warning("Failed to write sentinel to %s: %s", workspace, e)
+
         repo_url = project.repo_url if project else ""
         default_branch = project.repo_default_branch if project else "main"
 
@@ -1477,11 +1529,17 @@ class Orchestrator:
             # Update task branch in DB
             await self.db.update_task(task.id, branch_name=branch_name)
         except Exception as e:
+            # Layer 3: Git failure means no launch — release workspace and
+            # clean up the sentinel so another task can use this workspace.
+            logger.error("Git setup failed for task %s in %s: %s", task.id, workspace, e)
             await self._notify_channel(
-                f"**Git Warning:** Task `{task.id}` — branch setup failed: {e}\n"
-                f"Agent will work in `{workspace}` without branch management.",
+                f"**Git Error:** Task `{task.id}` — branch setup failed: {e}\n"
+                f"Workspace released. Task will retry when a workspace is available.",
                 project_id=task.project_id,
             )
+            self._remove_sentinel(workspace)
+            await self.db.release_workspace(ws.id)
+            return None
 
         return workspace
 
@@ -3152,6 +3210,11 @@ class Orchestrator:
         #   3. Remove adapter reference — allows garbage collection of the
         #      adapter process handle.
         # ------------------------------------------------------------------ #
+
+        # Clean up the sentinel file before releasing the workspace lock.
+        # The workspace variable is from earlier in _execute_task (the local).
+        if workspace:
+            self._remove_sentinel(workspace)
 
         # Release the workspace lock so other tasks can use this workspace.
         await self.db.release_workspaces_for_task(action.task_id)

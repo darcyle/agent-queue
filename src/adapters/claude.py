@@ -51,7 +51,7 @@ _ToolUseBlock = None
 _ToolResultBlock = None
 
 
-async def _resilient_query(prompt, options):
+async def _resilient_query(prompt, options, adapter=None):
     """Wrap claude_agent_sdk.query() to survive MessageParseError.
 
     Why this exists: The SDK's ``query()`` function yields parsed messages from
@@ -65,6 +65,9 @@ async def _resilient_query(prompt, options):
     dicts ourselves, calling ``parse_message`` in a try/except so we can skip
     unrecognised types and keep the session alive.  It's fragile (depends on
     SDK internals) but necessary until the SDK handles unknown types gracefully.
+
+    If *adapter* is provided, the transport and query objects are stored on it
+    so that ``adapter.stop()`` can force-close the subprocess.
     """
     from claude_agent_sdk._internal.client import InternalClient
     from claude_agent_sdk._internal.message_parser import parse_message
@@ -119,6 +122,11 @@ async def _resilient_query(prompt, options):
         agents=agents_dict,
     )
 
+    # Store references on the adapter so stop() can force-close the subprocess.
+    if adapter is not None:
+        adapter._active_transport = transport
+        adapter._active_query = query_obj
+
     try:
         await query_obj.start()
         await query_obj.initialize()
@@ -144,6 +152,9 @@ async def _resilient_query(prompt, options):
                 print(f"Claude adapter: skipping unrecognised message type '{msg_type}': {e}")
                 continue
     finally:
+        if adapter is not None:
+            adapter._active_transport = None
+            adapter._active_query = None
         await query_obj.close()
 
 
@@ -183,6 +194,10 @@ class ClaudeAdapter(AgentAdapter):
         self._cancel_event = asyncio.Event()
         self._session_id: str | None = None
         self._llm_logger = llm_logger
+        # References to the active SDK transport/query so stop() can force-kill
+        # the subprocess instead of just setting a flag.
+        self._active_transport = None
+        self._active_query = None
 
     async def start(self, task: TaskContext) -> None:
         self._task = task
@@ -243,7 +258,7 @@ class ClaudeAdapter(AgentAdapter):
                   f"prompt={len(current_prompt)} chars)")
             cli_error: str | None = None
             try:
-                async for message in _resilient_query(prompt=current_prompt, options=options):
+                async for message in _resilient_query(prompt=current_prompt, options=options, adapter=self):
                     # Log only messages with meaningful subtypes to reduce noise
                     msg_subtype = getattr(message, "subtype", "")
                     if msg_subtype and msg_subtype not in ("", None):
@@ -388,6 +403,18 @@ class ClaudeAdapter(AgentAdapter):
 
     async def stop(self) -> None:
         self._cancel_event.set()
+        # Force-close the subprocess transport so the CLI actually terminates,
+        # rather than just hoping the cancel flag is checked between messages.
+        if self._active_query:
+            try:
+                await self._active_query.close()
+            except Exception:
+                pass
+        if self._active_transport:
+            try:
+                await self._active_transport.close()
+            except Exception:
+                pass
 
     async def is_alive(self) -> bool:
         return self._task is not None and not self._cancel_event.is_set()
