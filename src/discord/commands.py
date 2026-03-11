@@ -669,6 +669,66 @@ class MenuView(discord.ui.View):
         await interaction.followup.send(msg, ephemeral=True)
 
     @discord.ui.button(
+        label="All Tasks",
+        style=discord.ButtonStyle.primary,
+        emoji="🌳",
+        row=0,
+    )
+    async def all_tasks_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        """Show all tasks across all projects in tree view format."""
+        await interaction.response.defer(ephemeral=True)
+
+        # Get all projects so we can fetch tree views per project.
+        proj_result = await self._handler.execute("list_projects", {})
+        projects = proj_result.get("projects", [])
+        if not projects:
+            await interaction.followup.send(
+                "No projects configured.", ephemeral=True
+            )
+            return
+
+        lines: list[str] = []
+        grand_total = 0
+
+        for proj in projects:
+            pid = proj["id"]
+            result = await self._handler.execute(
+                "list_tasks",
+                {
+                    "project_id": pid,
+                    "display_mode": "tree",
+                    "include_completed": False,
+                },
+            )
+
+            trees = result.get("trees", [])
+            total_tasks = result.get("total_tasks", 0)
+            if not trees:
+                continue
+
+            grand_total += total_tasks
+            lines.append(f"\n**📁 {proj.get('name', pid)}** (`{pid}`) — {total_tasks} tasks")
+
+            for tree in trees:
+                formatted = tree.get("formatted", "")
+                if formatted:
+                    lines.append(formatted)
+
+        if not lines:
+            await interaction.followup.send(
+                "No active tasks across any project.", ephemeral=True
+            )
+            return
+
+        header = f"## 🌳 All Tasks — Tree View ({grand_total} total)"
+        msg = header + "\n" + "\n".join(lines)
+        if len(msg) > 2000:
+            msg = msg[:1997] + "…"
+        await interaction.followup.send(msg, ephemeral=True)
+
+    @discord.ui.button(
         label="Projects",
         style=discord.ButtonStyle.secondary,
         emoji="📁",
@@ -807,6 +867,48 @@ class MenuView(discord.ui.View):
         if len(restartable) > 15:
             lines.append(f"_...and {len(restartable) - 15} more_")
         await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+    @discord.ui.button(
+        label="Hooks",
+        style=discord.ButtonStyle.secondary,
+        emoji="🪝",
+        row=1,
+    )
+    async def hooks_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        """Show all configured hooks across all projects."""
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute("list_hooks", {})
+        hooks = result.get("hooks", [])
+        if not hooks:
+            await interaction.followup.send("No hooks configured.", ephemeral=True)
+            return
+
+        lines = [f"**Hooks ({len(hooks)}):**"]
+        for h in hooks[:20]:
+            status = "✅" if h.get("enabled") else "❌"
+            trigger = h.get("trigger", {})
+            trigger_type = trigger.get("type", "?")
+            if trigger_type == "periodic":
+                interval = trigger.get("interval_seconds", "?")
+                trigger_desc = f"every {interval}s"
+            elif trigger_type == "event":
+                event = trigger.get("event", "?")
+                trigger_desc = f"on `{event}`"
+            else:
+                trigger_desc = trigger_type
+            lines.append(
+                f"{status} **{h['name']}** (`{h['id']}`) — {trigger_desc} "
+                f"• project: `{h.get('project_id', '?')}`"
+            )
+        if len(hooks) > 20:
+            lines.append(f"_...and {len(hooks) - 20} more_")
+
+        msg = "\n".join(lines)
+        if len(msg) > 2000:
+            msg = msg[:1997] + "…"
+        await interaction.followup.send(msg, ephemeral=True)
 
     @discord.ui.button(
         label="Toggle Orchestrator",
