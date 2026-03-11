@@ -1889,7 +1889,7 @@ class Database:
 
         now = time.time()
         await self._db.execute(
-            "INSERT INTO archived_tasks "
+            "INSERT OR IGNORE INTO archived_tasks "
             "(id, project_id, parent_task_id, repo_id, title, description, "
             "priority, status, verification_type, retry_count, max_retries, "
             "assigned_agent_id, branch_name, resume_after, requires_approval, "

@@ -2053,6 +2053,8 @@ def setup_commands(bot: commands.Bot) -> None:
                     {**args, "display_mode": "flat", "include_completed": True},
                 )
                 all_tasks = all_result.get("tasks", [])
+                if not isinstance(all_tasks, list):
+                    all_tasks = []
             else:
                 all_tasks = tasks
             view_widget = TaskReportView(tasks_by_status, total, all_tasks=all_tasks)
@@ -4398,7 +4400,7 @@ def setup_commands(bot: commands.Bot) -> None:
         def __init__(self) -> None:
             super().__init__(timeout=300)
             options = [
-                discord.SelectOption(label=label, value=stype, description=desc)
+                discord.SelectOption(label=stype, value=stype, description=desc)
                 for stype, desc in _HOOK_STEP_TYPES
             ]
             select = discord.ui.Select(
