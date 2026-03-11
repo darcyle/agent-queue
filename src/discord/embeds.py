@@ -772,6 +772,33 @@ def tree_view_embed(
             f"{agg_completed}/{agg_subtotal} subtasks complete ({pct:.0f}%)"
         )
 
+    # Aggregate subtask status breakdown across all trees for non-completed stats
+    agg_by_status: dict[str, int] = {}
+    for entry in trees:
+        for st, cnt in entry.get("subtask_by_status", {}).items():
+            agg_by_status[st] = agg_by_status.get(st, 0) + cnt
+    # Build a concise status breakdown line for non-completed subtask statuses
+    _SUBTASK_STAT_ORDER: list[tuple[str, str]] = [
+        ("IN_PROGRESS", "in progress"),
+        ("VERIFYING", "verifying"),
+        ("ASSIGNED", "assigned"),
+        ("AWAITING_APPROVAL", "awaiting approval"),
+        ("WAITING_INPUT", "waiting input"),
+        ("PAUSED", "paused"),
+        ("FAILED", "failed"),
+        ("BLOCKED", "blocked"),
+        ("READY", "ready"),
+        ("DEFINED", "defined"),
+    ]
+    subtask_stat_parts: list[str] = []
+    for st_val, label in _SUBTASK_STAT_ORDER:
+        cnt = agg_by_status.get(st_val, 0)
+        if cnt > 0:
+            emoji = STATUS_EMOJIS.get(st_val, "\u26AA")
+            subtask_stat_parts.append(f"{emoji} {cnt} {label}")
+    if subtask_stat_parts:
+        summary_parts.append(" \u00b7 ".join(subtask_stat_parts))
+
     summary_value = " \u00b7 ".join(summary_parts)
 
     # ── Build metadata field (status breakdown) ──────────────────────
