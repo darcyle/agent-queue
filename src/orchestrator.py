@@ -20,11 +20,13 @@ See ``specs/orchestrator.md`` for the full behavioral specification.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from typing import Any, Callable, Awaitable
 
 from src.adapters.base import MessageCallback
+from src.logging_config import TaskLogAdapter, correlation_context
 from src.config import AppConfig
 from src.llm_logger import LLMLogger
 from src.database import Database
@@ -54,6 +56,8 @@ from src.plan_parser_llm import parse_plan_with_llm
 from src.scheduler import AssignAction, Scheduler, SchedulerState
 from src.task_names import generate_task_id
 from src.tokens.budget import BudgetManager
+
+logger = logging.getLogger(__name__)
 
 # Sends a formatted message to a Discord channel.  The optional project_id
 # lets the callback route to per-project channels instead of the global one.
@@ -153,7 +157,7 @@ class Orchestrator:
                     config.memory, storage_root=config.workspace_dir
                 )
             except Exception as e:
-                print(f"Memory manager initialization failed: {e}")
+                logger.warning("Memory manager initialization failed: %s", e)
         # Reference to the command handler, set by the bot after initialization.
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).
@@ -306,7 +310,7 @@ class Orchestrator:
             try:
                 await adapter.stop()
             except Exception as e:
-                print(f"Error stopping adapter for agent {agent_id}: {e}")
+                logger.error("Error stopping adapter for agent %s: %s", agent_id, e)
 
         # Release workspace lock and reset task/agent state
         await self.db.release_workspaces_for_task(task_id)
@@ -360,7 +364,7 @@ class Orchestrator:
                 else:
                     await self._notify(message, project_id)
             except Exception as e:
-                print(f"Notification error: {e}")
+                logger.error("Notification error: %s", e)
 
     async def _notify_agent_question(
         self,
@@ -469,10 +473,7 @@ class Orchestrator:
             project_id=project_id,
             payload=f"usage={usage:,}/{limit:,} ({pct:.0f}%), threshold={crossed}%",
         )
-        print(
-            f"Budget warning: project {project_id} at {pct:.0f}% "
-            f"({usage:,}/{limit:,} tokens, threshold={crossed}%)"
-        )
+        logger.info("Budget warning: project %s at %.0f%% (%s/%s tokens, threshold=%d%%)", project_id, pct, usage, limit, crossed)
 
     async def initialize(self) -> None:
         await self.db.initialize()
@@ -493,20 +494,20 @@ class Orchestrator:
         agents = await self.db.list_agents()
         for a in agents:
             if a.state == AgentState.BUSY:
-                print(f"Recovery: resetting agent '{a.name}' from {a.state.value} to IDLE")
+                logger.info("Recovery: resetting agent '%s' from %s to IDLE", a.name, a.state.value)
                 await self.db.update_agent(a.id, state=AgentState.IDLE, current_task_id=None)
 
         # Release all workspace locks (no agents are running after restart)
         all_workspaces = await self.db.list_workspaces()
         for ws in all_workspaces:
             if ws.locked_by_agent_id:
-                print(f"Recovery: releasing workspace lock '{ws.id}' (was locked by {ws.locked_by_agent_id})")
+                logger.info("Recovery: releasing workspace lock '%s' (was locked by %s)", ws.id, ws.locked_by_agent_id)
                 await self.db.release_workspace(ws.id)
 
         # Reset IN_PROGRESS tasks back to READY so they get re-scheduled
         tasks = await self.db.list_tasks(status=TaskStatus.IN_PROGRESS)
         for t in tasks:
-            print(f"Recovery: resetting task '{t.id}' ({t.title}) from IN_PROGRESS to READY")
+            logger.info("Recovery: resetting task '%s' (%s) from IN_PROGRESS to READY", t.id, t.title)
             await self.db.transition_task(t.id, TaskStatus.READY,
                                           context="recovery",
                                           assigned_agent_id=None)
@@ -559,7 +560,7 @@ class Orchestrator:
             try:
                 await self.memory_manager.close()
             except Exception as e:
-                print(f"Memory manager shutdown error: {e}")
+                logger.warning("Memory manager shutdown error: %s", e)
         await self.db.close()
 
     async def run_one_cycle(self) -> None:
@@ -635,18 +636,16 @@ class Orchestrator:
                 try:
                     removed = self.llm_logger.cleanup_old_logs()
                     if removed:
-                        print(f"LLM log cleanup: removed {removed} old directory(ies)")
+                        logger.info("LLM log cleanup: removed %d old directory(ies)", removed)
                     # Flush prompt analytics to disk for long-term analysis
                     self.llm_logger.flush_analytics()
                 except Exception as e:
-                    print(f"LLM log cleanup error: {e}")
+                    logger.error("LLM log cleanup error: %s", e)
 
             # 8. Auto-archive stale terminal tasks (~once per hour)
             await self._auto_archive_tasks()
         except Exception as e:
-            print(f"Scheduler cycle error: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error("Scheduler cycle error", exc_info=True)
 
     async def _execute_task_safe(self, action: AssignAction) -> None:
         """Wrapper around _execute_task that catches exceptions and enforces timeout."""
@@ -657,7 +656,7 @@ class Orchestrator:
             else:
                 await self._execute_task(action)
         except asyncio.TimeoutError:
-            print(f"Task {action.task_id} timed out after {timeout}s")
+            logger.warning("Task %s timed out after %ds", action.task_id, timeout)
             # Stop the adapter if it's still running
             if action.agent_id in self._adapters:
                 try:
@@ -683,9 +682,7 @@ class Orchestrator:
                 await self._notify_stuck_chain(task)
             return
         except Exception as e:
-            print(f"Error executing task {action.task_id}: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error("Error executing task %s", action.task_id, exc_info=True)
             try:
                 await self.db.release_workspaces_for_task(action.task_id)
                 await self.db.transition_task(
@@ -723,9 +720,9 @@ class Orchestrator:
                 # Update hook engine config reference if it exists
                 if self.hooks:
                     self.hooks.config = updated
-                print("Config hot-reload: non-critical settings refreshed from disk")
+                logger.info("Config hot-reload: non-critical settings refreshed from disk")
         except Exception as e:
-            print(f"Config hot-reload error: {e}")
+            logger.warning("Config hot-reload error: %s", e)
 
     async def _resume_paused_tasks(self) -> None:
         """Check PAUSED tasks whose ``resume_after`` has elapsed and promote to READY.
@@ -829,11 +826,7 @@ class Orchestrator:
                 payload=f"stuck_hours={stuck_hours:.1f}, "
                         f"blocking=[{blocking_info}]",
             )
-            print(
-                f"Stuck task detected: {task.id} — {task.title} "
-                f"(DEFINED for {stuck_hours:.1f}h, "
-                f"blocked by {len(blocking)} deps)"
-            )
+            logger.info("Stuck task detected: %s — %s (DEFINED for %.1fh, blocked by %d deps)", task.id, task.title, stuck_hours, len(blocking))
 
             self._stuck_notified_at[task.id] = now
 
@@ -866,16 +859,11 @@ class Orchestrator:
                 older_than_seconds=older_than_seconds,
             )
         except Exception as e:
-            print(f"Auto-archive error: {e}")
+            logger.error("Auto-archive error: %s", e)
             return
 
         if archived_ids:
-            print(
-                f"Auto-archived {len(archived_ids)} terminal task(s) "
-                f"older than {archive_cfg.after_hours}h: "
-                f"{', '.join(archived_ids[:10])}"
-                f"{'...' if len(archived_ids) > 10 else ''}"
-            )
+            logger.info("Auto-archived %d terminal task(s) older than %.1fh: %s%s", len(archived_ids), archive_cfg.after_hours, ', '.join(archived_ids[:10]), '...' if len(archived_ids) > 10 else '')
             for tid in archived_ids:
                 try:
                     await self.db.log_event(
@@ -1148,7 +1136,7 @@ class Orchestrator:
             workspace, f"agent: {task.title}\n\nTask-Id: {task.id}"
         )
         if not committed:
-            print(f"Task {task.id}: no changes to commit on branch {task.branch_name}")
+            logger.info("Task %s: no changes to commit on branch %s", task.id, task.branch_name)
 
         # Build a lightweight repo-like object for _merge_and_push / _create_pr_for_task
         # that still expects RepoConfig. Use a minimal compat wrapper.
@@ -1177,21 +1165,11 @@ class Orchestrator:
                         workspace, task.branch_name, default_branch,
                     )
                     if synced:
-                        print(
-                            f"Task {task.id}: mid-chain sync OK — "
-                            f"branch {task.branch_name} rebased onto "
-                            f"origin/{default_branch}"
-                        )
+                        logger.info("Task %s: mid-chain sync OK — branch %s rebased onto origin/%s", task.id, task.branch_name, default_branch)
                     else:
-                        print(
-                            f"Task {task.id}: mid-chain rebase skipped "
-                            f"(conflict) — branch left as-is"
-                        )
+                        logger.info("Task %s: mid-chain rebase skipped (conflict) — branch left as-is", task.id)
                 except Exception as e:
-                    print(
-                        f"Task {task.id}: mid-chain sync failed "
-                        f"(non-fatal): {e}"
-                    )
+                    logger.warning("Task %s: mid-chain sync failed (non-fatal): %s", task.id, e)
             return None
 
         if repo and task.requires_approval:
@@ -1420,17 +1398,13 @@ class Orchestrator:
 
         plan_path = find_plan_file(workspace, config.plan_file_patterns)
         if not plan_path:
-            print(
-                f"Auto-task: no plan file found for task {task.id} "
-                f"in workspace {workspace} "
-                f"(searched patterns: {config.plan_file_patterns})"
-            )
+            logger.debug("Auto-task: no plan file found for task %s in workspace %s (searched patterns: %s)", task.id, workspace, config.plan_file_patterns)
             return []
 
         try:
             raw = read_plan_file(plan_path)
         except Exception as e:
-            print(f"Auto-task: failed to read plan file {plan_path}: {e}")
+            logger.warning("Auto-task: failed to read plan file %s: %s", plan_path, e)
             return []
 
         if config.use_llm_parser and self._chat_provider:
@@ -1441,7 +1415,7 @@ class Orchestrator:
                     max_steps=config.max_steps_per_plan,
                 )
             except Exception as e:
-                print(f"LLM plan parser failed, falling back to regex: {e}")
+                logger.warning("LLM plan parser failed, falling back to regex: %s", e)
                 plan = parse_plan(
                     raw, source_file=plan_path,
                     max_steps=config.max_steps_per_plan,
@@ -1463,10 +1437,7 @@ class Orchestrator:
             from src.plan_parser import _score_parse_quality
             quality = _score_parse_quality(plan.steps)
             if quality < 0.4 and len(plan.steps) > 5:
-                print(
-                    f"Auto-task: regex parse quality low ({quality:.2f}) for "
-                    f"{plan_path}, retrying with LLM parser"
-                )
+                logger.info("Auto-task: regex parse quality low (%.2f) for %s, retrying with LLM parser", quality, plan_path)
                 try:
                     llm_plan = await parse_plan_with_llm(
                         raw, self._chat_provider,
@@ -1475,21 +1446,15 @@ class Orchestrator:
                     )
                     if llm_plan.steps:
                         plan = llm_plan
-                        print(
-                            f"Auto-task: LLM parser produced {len(plan.steps)} "
-                            f"steps (replacing regex result)"
-                        )
+                        logger.info("Auto-task: LLM parser produced %d steps (replacing regex result)", len(plan.steps))
                 except Exception as e:
-                    print(f"Auto-task: LLM fallback failed, keeping regex result: {e}")
+                    logger.warning("Auto-task: LLM fallback failed, keeping regex result: %s", e)
 
         if not plan.steps:
-            print(f"Auto-task: plan file {plan_path} parsed but contained no steps")
+            logger.info("Auto-task: plan file %s parsed but contained no steps", plan_path)
             return []
 
-        print(
-            f"Auto-task: found {len(plan.steps)} steps in plan file "
-            f"{plan_path} for task {task.id}"
-        )
+        logger.info("Auto-task: found %d steps in plan file %s for task %s", len(plan.steps), plan_path, task.id)
 
         # Archive the plan file for traceability (so it won't be re-processed
         # if the workspace is reused for another task).
@@ -1681,7 +1646,7 @@ class Orchestrator:
         try:
             merged = self.git.check_pr_merged(checkout_path, task.pr_url)
         except Exception as e:
-            print(f"Error checking PR for task {task.id}: {e}")
+            logger.warning("Error checking PR for task %s: %s", task.id, e)
             return
 
         if merged is True:
@@ -1738,7 +1703,7 @@ class Orchestrator:
         6. **Free agent** — reset agent to IDLE regardless of outcome.
         """
         if not self._adapter_factory:
-            print(f"Cannot execute task {action.task_id}: no adapter factory configured")
+            logger.error("Cannot execute task %s: no adapter factory configured", action.task_id)
             await self._notify_channel(
                 f"**Error:** Cannot execute task `{action.task_id}` — no agent adapter configured.",
                 project_id=action.project_id,
@@ -1804,25 +1769,19 @@ class Orchestrator:
                 thread_result = await self._create_thread(thread_name, start_msg, action.project_id)
                 if thread_result:
                     thread_send, thread_main_notify = thread_result
-                    print(f"Created thread for task {task.id}")
+                    logger.debug("Created thread for task %s", task.id)
                 else:
-                    print(f"Thread creation returned None for task {task.id}")
+                    logger.warning("Thread creation returned None for task %s", task.id)
             except Exception as e:
-                import traceback
-                print(f"Failed to create thread for task {task.id}: {e}")
-                traceback.print_exc()
+                logger.error("Failed to create thread for task %s", task.id, exc_info=True)
         else:
-            print(f"No thread callback set for task {task.id}")
+            logger.debug("No thread callback set for task %s", task.id)
 
         profile = await self._resolve_profile(task)
         if profile:
-            print(
-                f"Task {task.id}: profile='{profile.id}' "
-                f"tools={profile.allowed_tools or '(default)'} "
-                f"mcp={list(profile.mcp_servers.keys()) if profile.mcp_servers else '(none)'}"
-            )
+            logger.info("Task %s: profile='%s' tools=%s mcp=%s", task.id, profile.id, profile.allowed_tools or '(default)', list(profile.mcp_servers.keys()) if profile.mcp_servers else '(none)')
         else:
-            print(f"Task {task.id}: no profile (using system defaults)")
+            logger.info("Task %s: no profile (using system defaults)", task.id)
         adapter = self._adapter_factory.create("claude", profile=profile)
         self._adapters[action.agent_id] = adapter
 
@@ -1958,7 +1917,7 @@ class Orchestrator:
                     memory_block = self._format_memory_context(memories)
                     ctx.attached_context.append(memory_block)
             except Exception as e:
-                print(f"Memory recall failed for task {task.id}: {e}")
+                logger.warning("Memory recall failed for task %s: %s", task.id, e)
 
         await adapter.start(ctx)
 
@@ -1992,7 +1951,7 @@ class Orchestrator:
                         project_id=action.project_id,
                     )
                 except Exception as e:
-                    print(f"Agent question notification failed: {e}")
+                    logger.warning("Agent question notification failed: %s", e)
 
         # ------------------------------------------------------------------ #
         # Exponential-backoff retry loop for Claude API rate limits.
@@ -2027,18 +1986,11 @@ class Orchestrator:
             _rl_attempt += 1
             if _rl_attempt > _rl_max_retries:
                 # Auto-retries exhausted; let the normal PAUSED handling take over.
-                print(
-                    f"Task {task.id}: rate-limit retries exhausted "
-                    f"({_rl_max_retries}), pausing task."
-                )
+                logger.info("Task %s: rate-limit retries exhausted (%d), pausing task.", task.id, _rl_max_retries)
                 break
 
             _backoff = min(_rl_base * (2 ** (_rl_attempt - 1)), _rl_max_backoff)
-            print(
-                f"Task {task.id}: rate limited "
-                f"(attempt {_rl_attempt}/{_rl_max_retries}), "
-                f"waiting {_backoff}s before retry."
-            )
+            logger.info("Task %s: rate limited (attempt %d/%d), waiting %ds before retry.", task.id, _rl_attempt, _rl_max_retries, _backoff)
 
             await self._notify_channel(
                 "⏳ Claude is currently rate-limited. We will try again in a moment.",
@@ -2064,13 +2016,13 @@ class Orchestrator:
                     action.project_id, output.tokens_used,
                 )
             except Exception as e:
-                print(f"Budget warning check failed: {e}")
+                logger.warning("Budget warning check failed: %s", e)
 
         # Persist task result
         try:
             await self.db.save_task_result(action.task_id, action.agent_id, output)
         except Exception as e:
-            print(f"Failed to save task result: {e}")
+            logger.error("Failed to save task result: %s", e)
 
         # Re-fetch task in case retry_count changed
         task = await self.db.get_task(action.task_id)
@@ -2213,16 +2165,14 @@ class Orchestrator:
                         await thread_send(plan_msg)
                     await _notify_brief(plan_msg, embed=plan_embed)
             except Exception as e:
-                print(f"Auto-task generation error for task {task.id}: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.error("Auto-task generation error for task %s", task.id, exc_info=True)
 
             # Save completed task result as a memory for future recall.
             if self.memory_manager:
                 try:
                     await self.memory_manager.remember(task, output, workspace)
                 except Exception as e:
-                    print(f"Memory remember failed for task {task.id}: {e}")
+                    logger.warning("Memory remember failed for task %s: %s", task.id, e)
 
         elif output.result == AgentResult.FAILED:
             new_retry = task.retry_count + 1
@@ -2292,7 +2242,7 @@ class Orchestrator:
                 try:
                     await self.memory_manager.remember(task, output, workspace)
                 except Exception as e:
-                    print(f"Memory remember failed for task {task.id}: {e}")
+                    logger.warning("Memory remember failed for task %s: %s", task.id, e)
 
         elif output.result in (
             AgentResult.PAUSED_TOKENS, AgentResult.PAUSED_RATE_LIMIT

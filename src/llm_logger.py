@@ -27,12 +27,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class PromptAnalytics:
@@ -318,7 +321,7 @@ class LLMLogger:
                     shutil.rmtree(dir_path)
                     removed += 1
                 except OSError as e:
-                    print(f"LLMLogger: failed to remove {dir_path}: {e}")
+                    logger.warning("LLMLogger: failed to remove %s: %s", dir_path, e)
 
         return removed
 

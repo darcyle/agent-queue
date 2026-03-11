@@ -1,5 +1,9 @@
 # Adapter Development Guide
 
+> **Consolidated:** See [adapter-development.md](adapter-development.md) for the
+> full step-by-step guide with code examples, interface documentation, and testing
+> instructions.
+
 How to add a new agent adapter to the Agent Queue system.
 
 ## Architecture Overview
