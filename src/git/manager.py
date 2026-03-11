@@ -707,6 +707,70 @@ class GitManager:
         except GitError:
             return ""
 
+    def check_gh_auth(self) -> bool:
+        """Check if the ``gh`` CLI is authenticated.
+
+        Returns ``True`` if ``gh auth status`` exits successfully, ``False``
+        otherwise.  Used to pre-validate before attempting repo creation so
+        callers can surface a helpful error message.
+        """
+        try:
+            result = subprocess.run(
+                ["gh", "auth", "status"],
+                capture_output=True,
+                text=True,
+                env=self._SUBPROCESS_ENV,
+                timeout=30,
+            )
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+
+    def create_github_repo(
+        self, name: str, *, private: bool = True,
+        org: str | None = None, description: str = "",
+    ) -> str:
+        """Create a GitHub repository via the ``gh`` CLI.
+
+        Returns the HTTPS URL of the newly created repository.
+
+        Parameters:
+            name:        Repository name (e.g. ``"my-app"``).
+            private:     Create a private repo (default ``True``).
+            org:         GitHub organization.  ``None`` for a personal repo.
+            description: Optional repo description.
+
+        Raises:
+            GitError: If ``gh repo create`` fails (auth issues, name conflict,
+                      network errors, etc.).
+        """
+        full_name = f"{org}/{name}" if org else name
+        cmd = ["gh", "repo", "create", full_name]
+        cmd.append("--private" if private else "--public")
+        if description:
+            cmd.extend(["--description", description])
+        cmd.append("--confirm")
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                env=self._SUBPROCESS_ENV,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            raise GitError(
+                f"gh repo create timed out after 60s (possible auth prompt)"
+            )
+        if result.returncode != 0:
+            raise GitError(f"gh repo create failed: {result.stderr.strip()}")
+        # gh repo create prints the repo URL to stdout
+        url = result.stdout.strip()
+        if not url:
+            # Some gh versions print URL to stderr instead
+            url = result.stderr.strip().split("\n")[-1]
+        return url
+
     @staticmethod
     def slugify(text: str) -> str:
         text = text.lower().strip()

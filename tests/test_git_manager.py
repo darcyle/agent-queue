@@ -2542,3 +2542,162 @@ class TestRetryBranchRebaseComprehensive:
 
         remote_branches = _git(["branch", "-r"], cwd=clone)
         assert "origin/pr/idempotent" in remote_branches
+
+
+# ---------------------------------------------------------------------------
+# GitHub repo creation (mocked subprocess — no real gh CLI needed)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckGhAuth:
+    """Tests for GitManager.check_gh_auth() with mocked subprocess."""
+
+    def test_authenticated(self, monkeypatch):
+        mgr = GitManager()
+        mock_result = subprocess.CompletedProcess(
+            args=["gh", "auth", "status"], returncode=0, stdout="", stderr="",
+        )
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
+        assert mgr.check_gh_auth() is True
+
+    def test_not_authenticated(self, monkeypatch):
+        mgr = GitManager()
+        mock_result = subprocess.CompletedProcess(
+            args=["gh", "auth", "status"], returncode=1,
+            stdout="", stderr="not logged in",
+        )
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
+        assert mgr.check_gh_auth() is False
+
+    def test_timeout(self, monkeypatch):
+        mgr = GitManager()
+
+        def _raise_timeout(*a, **kw):
+            raise subprocess.TimeoutExpired(cmd="gh", timeout=30)
+
+        monkeypatch.setattr(subprocess, "run", _raise_timeout)
+        assert mgr.check_gh_auth() is False
+
+    def test_gh_not_installed(self, monkeypatch):
+        mgr = GitManager()
+
+        def _raise_fnf(*a, **kw):
+            raise FileNotFoundError("gh not found")
+
+        monkeypatch.setattr(subprocess, "run", _raise_fnf)
+        assert mgr.check_gh_auth() is False
+
+
+class TestCreateGithubRepo:
+    """Tests for GitManager.create_github_repo() with mocked subprocess."""
+
+    def test_creates_private_repo(self, monkeypatch):
+        mgr = GitManager()
+        captured_args = {}
+
+        def mock_run(cmd, **kwargs):
+            captured_args["cmd"] = cmd
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0,
+                stdout="https://github.com/user/my-app\n", stderr="",
+            )
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        url = mgr.create_github_repo("my-app")
+        assert url == "https://github.com/user/my-app"
+        assert "--private" in captured_args["cmd"]
+        assert "my-app" in captured_args["cmd"]
+
+    def test_creates_public_repo(self, monkeypatch):
+        mgr = GitManager()
+        captured_args = {}
+
+        def mock_run(cmd, **kwargs):
+            captured_args["cmd"] = cmd
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0,
+                stdout="https://github.com/user/my-app\n", stderr="",
+            )
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        url = mgr.create_github_repo("my-app", private=False)
+        assert url == "https://github.com/user/my-app"
+        assert "--public" in captured_args["cmd"]
+        assert "--private" not in captured_args["cmd"]
+
+    def test_creates_repo_with_org(self, monkeypatch):
+        mgr = GitManager()
+        captured_args = {}
+
+        def mock_run(cmd, **kwargs):
+            captured_args["cmd"] = cmd
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0,
+                stdout="https://github.com/my-org/my-app\n", stderr="",
+            )
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        url = mgr.create_github_repo("my-app", org="my-org")
+        assert url == "https://github.com/my-org/my-app"
+        assert "my-org/my-app" in captured_args["cmd"]
+
+    def test_creates_repo_with_description(self, monkeypatch):
+        mgr = GitManager()
+        captured_args = {}
+
+        def mock_run(cmd, **kwargs):
+            captured_args["cmd"] = cmd
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0,
+                stdout="https://github.com/user/my-app\n", stderr="",
+            )
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        url = mgr.create_github_repo("my-app", description="A cool app")
+        assert url == "https://github.com/user/my-app"
+        assert "--description" in captured_args["cmd"]
+        assert "A cool app" in captured_args["cmd"]
+
+    def test_failure_raises_git_error(self, monkeypatch):
+        mgr = GitManager()
+
+        def mock_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=1,
+                stdout="", stderr="Name already exists on this account",
+            )
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        with pytest.raises(GitError, match="Name already exists"):
+            mgr.create_github_repo("my-app")
+
+    def test_timeout_raises_git_error(self, monkeypatch):
+        mgr = GitManager()
+
+        def mock_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="gh", timeout=60)
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        with pytest.raises(GitError, match="timed out"):
+            mgr.create_github_repo("my-app")
+
+    def test_url_from_stderr_fallback(self, monkeypatch):
+        """Some gh versions print the URL to stderr instead of stdout."""
+        mgr = GitManager()
+
+        def mock_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0,
+                stdout="", stderr="https://github.com/user/my-app",
+            )
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        url = mgr.create_github_repo("my-app")
+        assert url == "https://github.com/user/my-app"

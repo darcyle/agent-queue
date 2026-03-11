@@ -951,3 +951,75 @@ class TestActiveProjectFallback:
         assert "error" not in result
         assert result["project_id"] == project_id
         assert result["status"] == "committed"
+
+
+# ---------------------------------------------------------------------------
+# test_create_github_repo
+# ---------------------------------------------------------------------------
+
+
+class TestCreateGithubRepo:
+    """Tests for _cmd_create_github_repo."""
+
+    async def test_success(self, handler, mock_git):
+        mock_git.check_gh_auth.return_value = True
+        mock_git.create_github_repo.return_value = "https://github.com/user/my-app"
+
+        result = await handler.execute("create_github_repo", {
+            "name": "my-app",
+        })
+
+        assert "error" not in result
+        assert result["created"] is True
+        assert result["repo_url"] == "https://github.com/user/my-app"
+        assert result["name"] == "my-app"
+        mock_git.create_github_repo.assert_called_once_with(
+            "my-app", private=True, org=None, description="",
+        )
+
+    async def test_success_with_options(self, handler, mock_git):
+        mock_git.check_gh_auth.return_value = True
+        mock_git.create_github_repo.return_value = "https://github.com/my-org/my-app"
+
+        result = await handler.execute("create_github_repo", {
+            "name": "my-app",
+            "private": False,
+            "org": "my-org",
+            "description": "A cool app",
+        })
+
+        assert "error" not in result
+        assert result["created"] is True
+        assert result["repo_url"] == "https://github.com/my-org/my-app"
+        mock_git.create_github_repo.assert_called_once_with(
+            "my-app", private=False, org="my-org", description="A cool app",
+        )
+
+    async def test_missing_name(self, handler, mock_git):
+        result = await handler.execute("create_github_repo", {})
+
+        assert result == {"error": "name is required"}
+
+    async def test_gh_not_authenticated(self, handler, mock_git):
+        mock_git.check_gh_auth.return_value = False
+
+        result = await handler.execute("create_github_repo", {
+            "name": "my-app",
+        })
+
+        assert "error" in result
+        assert "not authenticated" in result["error"].lower()
+        mock_git.create_github_repo.assert_not_called()
+
+    async def test_git_error(self, handler, mock_git):
+        mock_git.check_gh_auth.return_value = True
+        mock_git.create_github_repo.side_effect = GitError(
+            "gh repo create failed: Name already exists"
+        )
+
+        result = await handler.execute("create_github_repo", {
+            "name": "my-app",
+        })
+
+        assert "error" in result
+        assert "Name already exists" in result["error"]

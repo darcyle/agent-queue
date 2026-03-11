@@ -3253,6 +3253,45 @@ class CommandHandler:
             return {"error": str(e)}
         return {"repo_id": repo_id, "pr_url": pr_url, "branch": branch, "base": base}
 
+    async def _cmd_create_github_repo(self, args: dict) -> dict:
+        """Create a new GitHub repository via the ``gh`` CLI.
+
+        Args (in *args* dict):
+            name (str):        Repository name (required).
+            private (bool):    Create private repo (default ``True``).
+            org (str|None):    GitHub org — omit or ``None`` for personal repo.
+            description (str): Optional repo description.
+
+        Returns a dict with ``created``, ``repo_url``, and ``name`` on
+        success, or ``error`` on failure.
+        """
+        name = args.get("name")
+        if not name:
+            return {"error": "name is required"}
+        private = args.get("private", True)
+        org = args.get("org")
+        description = args.get("description", "")
+
+        git = self.orchestrator.git
+
+        # Pre-check: is gh CLI authenticated?
+        if not git.check_gh_auth():
+            return {
+                "error": (
+                    "GitHub CLI is not authenticated. "
+                    "Run `gh auth login` on the host to configure credentials."
+                ),
+            }
+
+        try:
+            url = git.create_github_repo(
+                name, private=private, org=org, description=description,
+            )
+        except GitError as e:
+            return {"error": str(e)}
+
+        return {"created": True, "repo_url": url, "name": name}
+
     async def _cmd_git_changed_files(self, args: dict) -> dict:
         """List files changed compared to a base branch."""
         checkout_path, project, err = await self._resolve_repo_path(args)
