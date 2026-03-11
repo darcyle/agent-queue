@@ -3292,6 +3292,91 @@ class CommandHandler:
 
         return {"created": True, "repo_url": url, "name": name}
 
+    async def _cmd_generate_readme(self, args: dict) -> dict:
+        """Generate a README.md from project metadata and commit it.
+
+        Args (in *args* dict):
+            project_id (str):   Project identifier (required).
+            name (str):         Human-readable project name (required).
+            description (str):  Project description (optional).
+            tech_stack (str):   Comma-separated technologies (optional).
+
+        The generated README is written to the first workspace's path,
+        staged, committed, and pushed to the remote.
+        """
+        project_name = args.get("name")
+        if not project_name:
+            return {"error": "name is required"}
+
+        checkout_path, project, err = await self._resolve_repo_path(args)
+        if err:
+            return err
+
+        description = args.get("description", "").strip()
+        tech_stack = args.get("tech_stack", "").strip()
+
+        # Build README content from template
+        lines: list[str] = [f"# {project_name}", ""]
+        if description:
+            lines += [description, ""]
+        if tech_stack:
+            lines += ["## Tech Stack", ""]
+            for tech in (t.strip() for t in tech_stack.split(",") if t.strip()):
+                lines.append(f"- {tech}")
+            lines.append("")
+        lines += [
+            "## Getting Started",
+            "",
+            "TODO: Add setup instructions.",
+            "",
+            "## License",
+            "",
+            "TODO: Add license information.",
+            "",
+        ]
+
+        readme_content = "\n".join(lines)
+        readme_path = os.path.join(checkout_path, "README.md")
+
+        try:
+            with open(readme_path, "w", encoding="utf-8") as f:
+                f.write(readme_content)
+        except OSError as e:
+            return {"error": f"Failed to write README.md: {e}"}
+
+        git = self.orchestrator.git
+        try:
+            committed = git.commit_all(checkout_path, "Add generated README.md")
+        except GitError as e:
+            return {"error": f"Failed to commit README.md: {e}"}
+
+        if not committed:
+            return {
+                "project_id": args.get("project_id", ""),
+                "readme_path": readme_path,
+                "committed": False,
+                "pushed": False,
+                "message": "README.md written but nothing new to commit",
+            }
+
+        # Push to remote
+        pushed = False
+        try:
+            branch = git.get_current_branch(checkout_path) or "main"
+            git.push_branch(checkout_path, branch)
+            pushed = True
+        except GitError:
+            # Push failure is non-fatal — the commit is still local
+            pass
+
+        return {
+            "project_id": args.get("project_id", ""),
+            "readme_path": readme_path,
+            "committed": True,
+            "pushed": pushed,
+            "status": "generated",
+        }
+
     async def _cmd_git_changed_files(self, args: dict) -> dict:
         """List files changed compared to a base branch."""
         checkout_path, project, err = await self._resolve_repo_path(args)

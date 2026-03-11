@@ -1023,3 +1023,124 @@ class TestCreateGithubRepo:
 
         assert "error" in result
         assert "Name already exists" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# test_generate_readme
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateReadme:
+    """Tests for _cmd_generate_readme."""
+
+    async def test_success_full(self, handler, mock_git, project_with_repo, tmp_path):
+        """README generated with description and tech stack, committed and pushed."""
+        project_id, repo_id, checkout_path = project_with_repo
+
+        result = await handler.execute("generate_readme", {
+            "project_id": project_id,
+            "name": "My Awesome App",
+            "description": "A web application for managing tasks.",
+            "tech_stack": "Python, FastAPI, PostgreSQL",
+        })
+
+        assert "error" not in result
+        assert result["committed"] is True
+        assert result["pushed"] is True
+        assert result["status"] == "generated"
+
+        import os
+        readme_path = os.path.join(checkout_path, "README.md")
+        assert os.path.isfile(readme_path)
+        with open(readme_path) as f:
+            content = f.read()
+        assert "# My Awesome App" in content
+        assert "A web application for managing tasks." in content
+        assert "- Python" in content
+        assert "- FastAPI" in content
+        assert "- PostgreSQL" in content
+
+        mock_git.commit_all.assert_called_once_with(
+            checkout_path, "Add generated README.md",
+        )
+        mock_git.push_branch.assert_called_once()
+
+    async def test_success_minimal(self, handler, mock_git, project_with_repo):
+        """README generated with only name, no description or tech stack."""
+        project_id, repo_id, checkout_path = project_with_repo
+
+        result = await handler.execute("generate_readme", {
+            "project_id": project_id,
+            "name": "Minimal Project",
+        })
+
+        assert "error" not in result
+        assert result["committed"] is True
+
+        import os
+        readme_path = os.path.join(checkout_path, "README.md")
+        with open(readme_path) as f:
+            content = f.read()
+        assert "# Minimal Project" in content
+        assert "## Tech Stack" not in content
+
+    async def test_missing_name(self, handler, project_with_repo):
+        """Error returned when name is missing."""
+        project_id, _, _ = project_with_repo
+
+        result = await handler.execute("generate_readme", {
+            "project_id": project_id,
+        })
+
+        assert result == {"error": "name is required"}
+
+    async def test_invalid_project(self, handler):
+        """Error returned for nonexistent project."""
+        result = await handler.execute("generate_readme", {
+            "project_id": "nonexistent",
+            "name": "Test",
+        })
+
+        assert "error" in result
+        assert "not found" in result["error"]
+
+    async def test_commit_failure(self, handler, mock_git, project_with_repo):
+        """Error returned when git commit fails."""
+        project_id, _, checkout_path = project_with_repo
+        mock_git.commit_all.side_effect = GitError("commit failed")
+
+        result = await handler.execute("generate_readme", {
+            "project_id": project_id,
+            "name": "Test",
+        })
+
+        assert "error" in result
+        assert "commit failed" in result["error"]
+
+    async def test_push_failure_non_fatal(self, handler, mock_git, project_with_repo):
+        """Push failure is non-fatal — commit succeeds but pushed is False."""
+        project_id, _, checkout_path = project_with_repo
+        mock_git.push_branch.side_effect = GitError("push failed")
+
+        result = await handler.execute("generate_readme", {
+            "project_id": project_id,
+            "name": "Test",
+        })
+
+        assert "error" not in result
+        assert result["committed"] is True
+        assert result["pushed"] is False
+
+    async def test_nothing_to_commit(self, handler, mock_git, project_with_repo):
+        """When commit_all returns False, result reflects nothing committed."""
+        project_id, _, checkout_path = project_with_repo
+        mock_git.commit_all.return_value = False
+
+        result = await handler.execute("generate_readme", {
+            "project_id": project_id,
+            "name": "Test",
+        })
+
+        assert "error" not in result
+        assert result["committed"] is False
+        assert result["pushed"] is False
