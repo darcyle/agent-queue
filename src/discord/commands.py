@@ -509,6 +509,335 @@ def _split_display_text(text: str, limit: int) -> list[str]:
     return chunks or [text]
 
 
+# ---------------------------------------------------------------------------
+# Interactive menu view — persistent control panel
+# ---------------------------------------------------------------------------
+
+
+class _AddTaskMenuModal(discord.ui.Modal, title="Add New Task"):
+    """Modal dialog for adding a task via the interactive menu."""
+
+    task_description = discord.ui.TextInput(
+        label="Task description",
+        style=discord.TextStyle.long,
+        placeholder="Describe what the task should do…",
+        required=True,
+        max_length=2000,
+    )
+
+    def __init__(self, project_id: str, handler) -> None:
+        super().__init__()
+        self._project_id = project_id
+        self._handler = handler
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        description = self.task_description.value
+        title = description[:100]
+        result = await self._handler.execute("create_task", {
+            "project_id": self._project_id,
+            "title": title,
+            "description": description,
+        })
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not create task: {result['error']}", ephemeral=True
+            )
+        else:
+            task_id = result.get("created") or result.get("task_id", "?")
+            await interaction.followup.send(
+                f"✅ Task `{task_id}` created in project `{self._project_id}`.",
+                ephemeral=True,
+            )
+
+
+class MenuView(discord.ui.View):
+    """Persistent interactive control panel for agent-queue.
+
+    Provides clickable buttons for common actions — useful for mobile usage
+    and remote control without typing slash commands.  The view never times
+    out so the message stays interactive as long as the bot is running.
+    """
+
+    def __init__(self, handler, bot) -> None:
+        super().__init__(timeout=None)
+        self._handler = handler
+        self._bot = bot
+
+    # --- Row 1: Status & Task Info ---
+
+    @discord.ui.button(
+        label="Status",
+        style=discord.ButtonStyle.primary,
+        emoji="📊",
+        row=0,
+    )
+    async def status_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute("get_status", {})
+        tasks = result.get("tasks", {})
+        by_status = tasks.get("by_status", {})
+        total = tasks.get("total", 0)
+        completed = by_status.get("COMPLETED", 0)
+        in_progress = by_status.get("IN_PROGRESS", 0)
+        failed = by_status.get("FAILED", 0)
+        assigned = by_status.get("ASSIGNED", 0)
+        active = in_progress + assigned
+        ready = by_status.get("READY", 0)
+        pending = by_status.get("DEFINED", 0)
+        blocked = by_status.get("BLOCKED", 0)
+
+        lines = []
+        if result.get("orchestrator_paused"):
+            lines.append("⏸ **Orchestrator is PAUSED**")
+        lines.append("## System Status")
+
+        if total > 0:
+            bar = progress_bar(completed, total, width=12)
+            lines.append(f"**Progress:** {bar}")
+
+        parts = []
+        if active:
+            parts.append(f"{active} active")
+        if ready:
+            parts.append(f"{ready} ready")
+        if pending:
+            parts.append(f"{pending} pending")
+        if completed:
+            parts.append(f"{completed} completed")
+        if failed:
+            parts.append(f"{failed} failed")
+        if blocked:
+            parts.append(f"{blocked} blocked")
+        lines.append(f"**Tasks:** {total} total — " + ", ".join(parts))
+
+        agents = result.get("agents", [])
+        if agents:
+            lines.append("\n**Agents:**")
+            for a in agents:
+                working_on = a.get("working_on")
+                if working_on:
+                    lines.append(
+                        f"• **{a['name']}** ({a['state']}) → "
+                        f"`{working_on['task_id']}`"
+                    )
+                else:
+                    lines.append(f"• **{a['name']}** ({a['state']})")
+
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+    @discord.ui.button(
+        label="Active Tasks",
+        style=discord.ButtonStyle.primary,
+        emoji="📋",
+        row=0,
+    )
+    async def active_tasks_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute(
+            "list_active_tasks_all_projects",
+            {"include_completed": False},
+        )
+        by_project = result.get("by_project", {})
+        total = result.get("total", 0)
+
+        if total == 0:
+            await interaction.followup.send(
+                "No active tasks across any project.", ephemeral=True
+            )
+            return
+
+        lines = [f"**{total} active tasks:**"]
+        for project_id in sorted(by_project.keys()):
+            project_tasks = by_project[project_id]
+            lines.append(f"\n`{project_id}` ({len(project_tasks)}):")
+            for t in project_tasks[:8]:
+                emoji = STATUS_EMOJIS.get(t["status"], "⚪")
+                title = t["title"][:55] + "…" if len(t["title"]) > 55 else t["title"]
+                agent = f" ← `{t['assigned_agent']}`" if t.get("assigned_agent") else ""
+                lines.append(f"{emoji} **{title}** `{t['id']}`{agent}")
+            if len(project_tasks) > 8:
+                lines.append(f"_...and {len(project_tasks) - 8} more_")
+
+        msg = "\n".join(lines)
+        if len(msg) > 2000:
+            msg = msg[:1997] + "…"
+        await interaction.followup.send(msg, ephemeral=True)
+
+    @discord.ui.button(
+        label="Projects",
+        style=discord.ButtonStyle.secondary,
+        emoji="📁",
+        row=0,
+    )
+    async def projects_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute("list_projects", {})
+        projects = result.get("projects", [])
+        if not projects:
+            await interaction.followup.send("No projects configured.", ephemeral=True)
+            return
+        lines = ["**Projects:**"]
+        for p in projects:
+            status = p.get("status", "?")
+            lines.append(f"• **{p['name']}** (`{p['id']}`) — {status}")
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+    @discord.ui.button(
+        label="Agents",
+        style=discord.ButtonStyle.secondary,
+        emoji="🤖",
+        row=0,
+    )
+    async def agents_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute("list_agents", {})
+        agents = result.get("agents", [])
+        if not agents:
+            await interaction.followup.send("No agents configured.", ephemeral=True)
+            return
+        lines = ["**Agents:**"]
+        for a in agents:
+            task_info = f" → `{a['current_task']}`" if a.get("current_task") else ""
+            lines.append(f"• **{a['name']}** (`{a['id']}`) — {a['state']}{task_info}")
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+    # --- Row 2: Actions ---
+
+    @discord.ui.button(
+        label="Notes",
+        style=discord.ButtonStyle.secondary,
+        emoji="📝",
+        row=1,
+    )
+    async def notes_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        project_id = self._bot.get_project_for_channel(interaction.channel_id)
+        if not project_id:
+            project_id = getattr(self._handler, "_active_project_id", None)
+        if not project_id:
+            await interaction.response.send_message(
+                "No project context — use this from a project channel.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute("list_notes", {"project_id": project_id})
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not list notes: {result['error']}", ephemeral=True
+            )
+            return
+        notes = result.get("notes", [])
+        if not notes:
+            await interaction.followup.send(
+                f"No notes in project `{project_id}`.", ephemeral=True
+            )
+            return
+        lines = [f"**Notes for `{project_id}`:**"]
+        for n in notes[:20]:
+            lines.append(f"• {n.get('title', n.get('filename', '?'))}")
+        if len(notes) > 20:
+            lines.append(f"_...and {len(notes) - 20} more_")
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+    @discord.ui.button(
+        label="Add Task",
+        style=discord.ButtonStyle.success,
+        emoji="➕",
+        row=1,
+    )
+    async def add_task_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        project_id = (
+            self._bot.get_project_for_channel(interaction.channel_id)
+            or getattr(self._handler, "_active_project_id", None)
+        )
+        if not project_id:
+            await interaction.response.send_message(
+                "No project context — use this from a project channel.",
+                ephemeral=True,
+            )
+            return
+        modal = _AddTaskMenuModal(project_id, self._handler)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(
+        label="Restart Task",
+        style=discord.ButtonStyle.secondary,
+        emoji="🔄",
+        row=1,
+    )
+    async def restart_task_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        """Show failed/blocked tasks and let user pick one to restart."""
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute(
+            "list_active_tasks_all_projects",
+            {"include_completed": False},
+        )
+        by_project = result.get("by_project", {})
+        restartable = []
+        for tasks in by_project.values():
+            for t in tasks:
+                if t["status"] in ("FAILED", "BLOCKED", "PAUSED"):
+                    restartable.append(t)
+
+        if not restartable:
+            await interaction.followup.send(
+                "No failed/blocked/paused tasks to restart.", ephemeral=True
+            )
+            return
+
+        lines = ["**Restartable tasks** (use `/restart-task <id>`):"]
+        for t in restartable[:15]:
+            emoji = STATUS_EMOJIS.get(t["status"], "⚪")
+            lines.append(f"{emoji} `{t['id']}` — {t['title'][:60]}")
+        if len(restartable) > 15:
+            lines.append(f"_...and {len(restartable) - 15} more_")
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+    @discord.ui.button(
+        label="Toggle Orchestrator",
+        style=discord.ButtonStyle.secondary,
+        emoji="⏯️",
+        row=1,
+    )
+    async def toggle_orchestrator_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        # Check current state
+        status_result = await self._handler.execute(
+            "orchestrator_control", {"action": "status"}
+        )
+        is_paused = status_result.get("status") == "paused"
+        # Toggle
+        action = "resume" if is_paused else "pause"
+        await self._handler.execute("orchestrator_control", {"action": action})
+        if action == "pause":
+            await interaction.followup.send(
+                "⏸ Orchestrator **paused** — no new tasks will be scheduled.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                "▶ Orchestrator **resumed** — task scheduling is active.",
+                ephemeral=True,
+            )
+
+
 def setup_commands(bot: commands.Bot) -> None:
     """Register all slash commands on the bot."""
 
@@ -4000,3 +4329,52 @@ def setup_commands(bot: commands.Bot) -> None:
         await _send_warning(interaction, "Restarting", description=desc)
         bot._restart_requested = True
         await handler.execute("restart_daemon", {})
+
+    # ===================================================================
+    # INTERACTIVE MENU
+    # ===================================================================
+
+    @bot.tree.command(
+        name="menu",
+        description="Show an interactive control panel with clickable buttons",
+    )
+    async def menu_command(interaction: discord.Interaction):
+        # Build a quick status summary for the menu message
+        result = await handler.execute("get_status", {})
+        tasks = result.get("tasks", {})
+        by_status = tasks.get("by_status", {})
+        total = tasks.get("total", 0)
+        completed = by_status.get("COMPLETED", 0)
+        in_progress = (
+            by_status.get("IN_PROGRESS", 0) + by_status.get("ASSIGNED", 0)
+        )
+        failed = by_status.get("FAILED", 0)
+        blocked = by_status.get("BLOCKED", 0)
+        ready = by_status.get("READY", 0)
+
+        agents = result.get("agents", [])
+        busy_count = sum(1 for a in agents if a.get("state") == "BUSY")
+
+        lines = ["## 🎛️ Agent Queue — Control Panel"]
+        if result.get("orchestrator_paused"):
+            lines.append("⏸ **Orchestrator is PAUSED**")
+        else:
+            lines.append("▶ Orchestrator running")
+
+        bar = progress_bar(completed, total, width=12) if total > 0 else "—"
+        lines.append(f"**Progress:** {bar}")
+        lines.append(
+            f"📊 {total} tasks — {in_progress} active, {ready} ready, "
+            f"{failed} failed, {blocked} blocked"
+        )
+        lines.append(
+            f"🤖 {len(agents)} agents — {busy_count} busy"
+        )
+        lines.append(
+            "\n_Use the buttons below to view details and take actions._"
+        )
+
+        view = MenuView(handler=handler, bot=bot)
+        await interaction.response.send_message(
+            "\n".join(lines), view=view
+        )

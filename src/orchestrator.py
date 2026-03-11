@@ -38,7 +38,7 @@ from src.discord.notifications import (
     format_pr_created_embed, format_agent_question_embed,
     format_chain_stuck_embed, format_stuck_defined_task_embed,
     format_budget_warning_embed,
-    TaskFailedView, TaskApprovalView, TaskBlockedView, AgentQuestionView,
+    TaskStartedView, TaskFailedView, TaskApprovalView, TaskBlockedView, AgentQuestionView,
 )
 from src.event_bus import EventBus
 from src.git.manager import GitManager
@@ -1724,10 +1724,12 @@ class Orchestrator:
 
         # Notify that work is starting
         start_msg = format_task_started(task, agent)
+        handler_ref = self._get_handler()
         await self._notify_channel(
             start_msg,
             project_id=action.project_id,
             embed=format_task_started_embed(task, agent),
+            view=TaskStartedView(task.id, handler=handler_ref),
         )
 
         # Create a thread for streaming agent output

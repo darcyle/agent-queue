@@ -714,6 +714,51 @@ def format_push_failed_embed(
 # ---------------------------------------------------------------------------
 
 
+class TaskStartedView(discord.ui.View):
+    """Action button attached to task-started notifications.
+
+    Provides a one-click "Stop Task" button so the user can cancel a running
+    task directly from the notification message without needing to find the
+    task ID or type a slash command — especially useful on mobile.
+    """
+
+    def __init__(self, task_id: str, handler=None) -> None:
+        super().__init__(timeout=86400)  # 24 hours
+        self.task_id = task_id
+        self._handler = handler
+
+    @discord.ui.button(
+        label="Stop Task",
+        style=discord.ButtonStyle.danger,
+        emoji="⏹️",
+    )
+    async def stop_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not self._handler:
+            await interaction.response.send_message(
+                "Handler not available.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute(
+            "stop_task", {"task_id": self.task_id}
+        )
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not stop: {result['error']}", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"⏹️ Task `{self.task_id}` stopped.",
+                ephemeral=True,
+            )
+            # Disable button after action
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+
+
 class TaskFailedView(discord.ui.View):
     """Action buttons attached to failed task notifications.
 
