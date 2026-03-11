@@ -157,7 +157,9 @@ class Scheduler:
             if task.status == TaskStatus.READY:
                 ready_by_project.setdefault(task.project_id, []).append(task)
 
-        # Sort tasks within each project by priority then creation order (id as proxy)
+        # Sort tasks within each project by priority (lower = higher priority),
+        # then by creation order (id as a proxy for FIFO within same priority).
+        # This determines which task the scheduler picks when a project is selected.
         for tasks in ready_by_project.values():
             tasks.sort(key=lambda t: (t.priority, t.id))
 

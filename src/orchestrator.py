@@ -655,9 +655,11 @@ class Orchestrator:
         state checks) — heavy work (agent execution, git operations) is
         delegated to background asyncio tasks that run concurrently.
 
-        The ordering of checks is intentional and encodes key invariants:
+        The cycle is organized into three phases with numbered steps:
 
-        1. **Approvals first** — complete tasks whose PRs were merged so
+        **Phase 1 — Promotion cascade** (steps 1-4):
+
+        1. **Approvals** — complete tasks whose PRs were merged so
            their dependents can be promoted in the same cycle.
         2. **Resume paused** — bring back rate-limited/token-exhausted tasks
            whose backoff timers have expired.
@@ -667,10 +669,16 @@ class Orchestrator:
         4. **Stuck monitoring** — rate-limited alerts for DEFINED tasks that
            have been waiting too long (runs after promotion so we don't
            false-alarm on tasks that just got promoted).
+
+        **Phase 2 — Scheduling & launch** (steps 5-6):
+
         5. **Schedule** — assign READY tasks to idle agents (skipped when
            the orchestrator is paused).
         6. **Launch** — fire off background asyncio tasks for each new
            assignment.  These run concurrently with future cycles.
+
+        **Phase 3 — Housekeeping** (steps 7-10):
+
         7. **Hook engine tick** — process periodic hooks; event-driven hooks
            fire asynchronously via the EventBus.
         8. **Config hot-reload** — periodically re-read non-critical settings
@@ -690,25 +698,37 @@ class Orchestrator:
         the daemon — it logs the error and retries on the next cycle.
         """
         try:
-            # 0. Check AWAITING_APPROVAL tasks for PR merge status
+            # ── Phase 1: Promotion cascade ──────────────────────────────────
+            # Steps 1-3 form a "promotion cascade": completing an approval can
+            # immediately unblock a DEFINED task in the same cycle.  Breaking
+            # this order would add a ~5s delay to dependency chain progression.
+
+            # 1. Poll PR merge/close status for AWAITING_APPROVAL tasks.
+            #    Merged PRs → COMPLETED, which may satisfy downstream deps.
             await self._check_awaiting_approval()
 
-            # 1. Check for PAUSED tasks that should resume
+            # 2. Promote PAUSED tasks whose backoff timer has expired → READY.
             await self._resume_paused_tasks()
 
-            # 2. Check DEFINED tasks for dependency resolution
+            # 3. Promote DEFINED tasks whose dependencies are all met → READY.
+            #    Runs after step 1 so freshly-completed approvals can unblock
+            #    dependents within the same cycle.
             await self._check_defined_tasks()
 
-            # 2b. Check for tasks stuck in DEFINED status beyond threshold
+            # 4. Monitoring: detect DEFINED tasks stuck beyond threshold.
+            #    Runs after promotion so we don't false-alarm on tasks that
+            #    were just promoted in step 3.
             await self._check_stuck_defined_tasks()
 
-            # 3. Schedule (skipped when orchestrator is paused)
+            # ── Phase 2: Scheduling & launch ────────────────────────────────
+
+            # 5. Schedule READY tasks onto idle agents (skipped when paused).
             if not self._paused:
                 actions = await self._schedule()
             else:
                 actions = []
 
-            # 4. Launch assigned tasks as background coroutines.
+            # 6. Launch assigned tasks as background asyncio coroutines.
             #
             # First, reap completed background tasks from _running_tasks.
             # We must do this BEFORE launching new tasks to free up task IDs
@@ -721,21 +741,23 @@ class Orchestrator:
 
             for action in actions:
                 if action.task_id in self._running_tasks:
-                    continue  # Already running
+                    continue  # Already running — skip double-launch
                 bg = asyncio.create_task(self._execute_task_safe(action))
                 self._running_tasks[action.task_id] = bg
 
-            # 5. Run hook engine tick
+            # ── Phase 3: Housekeeping ───────────────────────────────────────
+
+            # 7. Run hook engine tick (periodic hooks; event hooks fire async).
             if self.hooks:
                 await self.hooks.tick()
 
-            # 6. Hot-reload non-critical config settings (~once per 5 minutes)
+            # 8. Hot-reload non-critical config settings (~once per 5 minutes).
             now = time.time()
             if now - self._last_config_reload >= 300:
                 self._last_config_reload = now
                 self._try_reload_config()
 
-            # 7. Periodic log cleanup and analytics flush (~once per hour)
+            # 9. Periodic log cleanup and analytics flush (~once per hour).
             if now - self._last_log_cleanup >= 3600:
                 self._last_log_cleanup = now
                 try:
@@ -747,7 +769,7 @@ class Orchestrator:
                 except Exception as e:
                     logger.error("LLM log cleanup error: %s", e)
 
-            # 8. Auto-archive stale terminal tasks (~once per hour)
+            # 10. Auto-archive stale terminal tasks (~once per hour).
             await self._auto_archive_tasks()
         except Exception as e:
             logger.error("Scheduler cycle error", exc_info=True)
@@ -1094,6 +1116,10 @@ class Orchestrator:
         )
 
     # Budget warning thresholds — notify once per threshold crossing.
+    # NOTE: This second definition of _check_budget_warning intentionally
+    # shadows the first (defined earlier with rolling-window logic).  This
+    # version uses a simpler approach without windowed usage queries.
+    # TODO: consolidate the two implementations into one.
     _BUDGET_THRESHOLDS: list[int] = [80, 95]
 
     async def _check_budget_warning(
@@ -1101,9 +1127,15 @@ class Orchestrator:
     ) -> None:
         """Send a budget warning if a project crosses a spending threshold.
 
-        Called after recording token usage.  Each threshold (80%, 95%) fires
-        at most once per project; the ``_budget_warned_at`` dict tracks the
-        highest threshold already notified to avoid duplicate alerts.
+        Called after recording token usage for a completed task.  Queries
+        the project's cumulative token usage and ``budget_limit``, then
+        checks whether usage has crossed any of the ``_BUDGET_THRESHOLDS``
+        percentage levels.  Each threshold (80%, 95%) fires at most once
+        per project; the ``_budget_warned_at`` dict tracks the highest
+        threshold already notified to avoid duplicate alerts.
+
+        Note: this method shadows an earlier definition that uses rolling-
+        window scoped usage.  The shadowed version is unreachable at runtime.
         """
         project = await self.db.get_project(project_id)
         if not project or project.budget_limit is None or project.budget_limit <= 0:
@@ -1200,6 +1232,14 @@ class Orchestrator:
         for p in projects:
             workspace_counts[p.id] = await self.db.count_available_workspaces(p.id)
 
+        # NOTE: tasks_completed_in_window is empty here, which effectively
+        # disables the min_task_guarantee phase of the scheduler.  All projects
+        # are treated as having >0 completions, so scheduling falls through
+        # directly to deficit-based proportional allocation.  This is a known
+        # simplification — to enable min_task_guarantee, populate this dict
+        # from a DB query like:
+        #   SELECT project_id, COUNT(*) FROM task_results
+        #   WHERE created_at >= :window_start GROUP BY project_id
         state = SchedulerState(
             projects=projects,
             tasks=tasks,
@@ -2156,7 +2196,19 @@ class Orchestrator:
                 "phases will produce low-quality task splits."
             )
 
-        # Inject results from direct upstream dependencies
+        # ------------------------------------------------------------------ #
+        # Inject results from direct upstream dependencies.
+        #
+        # When a task has upstream dependencies (e.g. a plan subtask that
+        # depends on a previous step), we include the summary and file list
+        # from each completed dependency.  This gives the agent continuity
+        # across a multi-step plan: it knows what was already done, what
+        # files were changed, and can build on that work rather than
+        # starting from scratch.
+        #
+        # Summaries are truncated to 2000 chars to prevent context window
+        # bloat when dependency chains are long.
+        # ------------------------------------------------------------------ #
         dep_ids = await self.db.get_dependencies(task.id)
         if dep_ids:
             dep_sections = []
@@ -2312,7 +2364,14 @@ class Orchestrator:
             # Re-initialise the adapter so the next call starts a fresh query.
             await adapter.start(ctx)
 
-        # Record tokens and check budget warnings
+        # ------------------------------------------------------------------ #
+        # Token accounting and result persistence.
+        #
+        # Token usage is recorded regardless of result (COMPLETED, FAILED,
+        # etc.) because even failed runs consume API tokens.  Budget warnings
+        # are checked after recording so the threshold calculation includes
+        # the tokens just used.
+        # ------------------------------------------------------------------ #
         if output.tokens_used > 0:
             await self.db.record_token_usage(
                 action.project_id, action.agent_id,
