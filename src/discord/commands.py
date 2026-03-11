@@ -3878,54 +3878,722 @@ def setup_commands(bot: commands.Bot) -> None:
             msg = msg[:1997] + "..."
         await interaction.response.send_message(msg)
 
+    # --- Hook wizard state management ---
+    # In-memory store keyed by Discord user ID.
+    _hook_wizard_states: dict[int, dict] = {}
+
+    # Common event types for the event hook selection menu.
+    _HOOK_EVENT_CATEGORIES: list[tuple[str, list[str]]] = [
+        ("Task", [
+            "task.created", "task.started", "task.completed", "task.failed",
+            "task.blocked", "task.paused", "task.resumed", "task.retried",
+        ]),
+        ("Agent", [
+            "agent.registered", "agent.idle", "agent.error",
+            "agent.heartbeat_lost",
+        ]),
+        ("Project", [
+            "project.created", "project.paused", "project.resumed",
+            "project.budget_warning", "project.budget_exhausted",
+        ]),
+        ("Git", [
+            "git.commit_created", "git.pr_created", "git.pr_merged",
+        ]),
+        ("Error", [
+            "error.agent_crash", "error.adapter_failure",
+            "error.dependency_cycle",
+        ]),
+    ]
+
+    # Context step types available in the wizard.
+    _HOOK_STEP_TYPES: list[tuple[str, str]] = [
+        ("shell", "Run a shell command"),
+        ("read_file", "Read a file"),
+        ("http", "HTTP request"),
+        ("db_query", "Database query"),
+        ("git_diff", "Git diff"),
+        ("memory_search", "Search memory"),
+    ]
+
+    def _wizard_state(user_id: int) -> dict:
+        """Get or create wizard state for a user."""
+        if user_id not in _hook_wizard_states:
+            _hook_wizard_states[user_id] = {
+                "name": None,
+                "project_id": None,
+                "trigger": None,
+                "context_steps": [],
+                "prompt_template": None,
+                "cooldown_seconds": 3600,
+                "llm_config": None,
+            }
+        return _hook_wizard_states[user_id]
+
+    def _wizard_summary(state: dict) -> str:
+        """Build a summary string for the current wizard state."""
+        lines = ["## 🪝 Hook Wizard"]
+        if state.get("name"):
+            lines.append(f"**Name:** {state['name']}")
+        if state.get("project_id"):
+            lines.append(f"**Project:** `{state['project_id']}`")
+        if state.get("trigger"):
+            t = state["trigger"]
+            if t["type"] == "periodic":
+                secs = t["interval_seconds"]
+                if secs >= 86400:
+                    lines.append(f"**Trigger:** every {secs // 86400}d")
+                elif secs >= 3600:
+                    lines.append(f"**Trigger:** every {secs // 3600}h")
+                elif secs >= 60:
+                    lines.append(f"**Trigger:** every {secs // 60}m")
+                else:
+                    lines.append(f"**Trigger:** every {secs}s")
+            else:
+                lines.append(f"**Trigger:** event `{t.get('event_type', '?')}`")
+        if state.get("context_steps"):
+            step_list = ", ".join(
+                s.get("type", "?") for s in state["context_steps"]
+            )
+            lines.append(f"**Context steps:** {step_list}")
+        if state.get("prompt_template"):
+            tmpl = state["prompt_template"]
+            preview = tmpl[:80] + ("…" if len(tmpl) > 80 else "")
+            lines.append(f"**Prompt:** {preview}")
+        lines.append(f"**Cooldown:** {state.get('cooldown_seconds', 3600)}s")
+        if state.get("llm_config"):
+            lines.append(f"**LLM config:** custom override set")
+        return "\n".join(lines)
+
+    # ---- Wizard views & components ----
+
+    class _HookWizardStartView(discord.ui.View):
+        """Step 1: Choose hook type (periodic vs event)."""
+
+        def __init__(self) -> None:
+            super().__init__(timeout=300)
+
+        def build_content(self, state: dict) -> str:
+            return _wizard_summary(state) + "\n\n**Choose the hook type:**"
+
+        @discord.ui.button(label="⏱️ Periodic", style=discord.ButtonStyle.primary, row=0)
+        async def periodic_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            state = _wizard_state(interaction.user.id)
+            view = _HookPeriodicUnitView()
+            await interaction.response.edit_message(
+                content=view.build_content(state), view=view,
+            )
+
+        @discord.ui.button(label="📡 Event", style=discord.ButtonStyle.primary, row=0)
+        async def event_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            state = _wizard_state(interaction.user.id)
+            view = _HookEventCategoryView()
+            await interaction.response.edit_message(
+                content=view.build_content(state), view=view,
+            )
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=1)
+        async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            _hook_wizard_states.pop(interaction.user.id, None)
+            await interaction.response.edit_message(
+                content="🪝 Hook wizard cancelled.", view=None,
+            )
+
+    class _HookPeriodicUnitView(discord.ui.View):
+        """Step 2a: Choose interval unit for periodic hooks."""
+
+        def __init__(self) -> None:
+            super().__init__(timeout=300)
+
+        def build_content(self, state: dict) -> str:
+            return _wizard_summary(state) + "\n\n**Choose interval unit:**"
+
+        @discord.ui.button(label="Minutes", style=discord.ButtonStyle.secondary, row=0)
+        async def minutes_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            state = _wizard_state(interaction.user.id)
+            state["_interval_unit"] = "minutes"
+            view = _HookPeriodicValueView("minutes")
+            await interaction.response.edit_message(
+                content=view.build_content(state), view=view,
+            )
+
+        @discord.ui.button(label="Hours", style=discord.ButtonStyle.secondary, row=0)
+        async def hours_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            state = _wizard_state(interaction.user.id)
+            state["_interval_unit"] = "hours"
+            view = _HookPeriodicValueView("hours")
+            await interaction.response.edit_message(
+                content=view.build_content(state), view=view,
+            )
+
+        @discord.ui.button(label="Days", style=discord.ButtonStyle.secondary, row=0)
+        async def days_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            state = _wizard_state(interaction.user.id)
+            state["_interval_unit"] = "days"
+            view = _HookPeriodicValueView("days")
+            await interaction.response.edit_message(
+                content=view.build_content(state), view=view,
+            )
+
+        @discord.ui.button(label="◀ Back", style=discord.ButtonStyle.secondary, row=1)
+        async def back_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            state = _wizard_state(interaction.user.id)
+            view = _HookWizardStartView()
+            await interaction.response.edit_message(
+                content=view.build_content(state), view=view,
+            )
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=1)
+        async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            _hook_wizard_states.pop(interaction.user.id, None)
+            await interaction.response.edit_message(
+                content="🪝 Hook wizard cancelled.", view=None,
+            )
+
+    class _HookPeriodicValueView(discord.ui.View):
+        """Step 2b: Choose interval value with preset buttons + custom."""
+
+        def __init__(self, unit: str) -> None:
+            super().__init__(timeout=300)
+            self._unit = unit
+            multiplier = {"minutes": 60, "hours": 3600, "days": 86400}[unit]
+            presets = {"minutes": [5, 10, 15, 30], "hours": [1, 2, 4, 12], "days": [1, 2, 7]}[unit]
+            for val in presets:
+                btn = discord.ui.Button(
+                    label=f"{val} {unit}",
+                    style=discord.ButtonStyle.primary,
+                    row=0,
+                )
+                secs = val * multiplier
+                btn.callback = self._make_preset_callback(secs)
+                self.add_item(btn)
+            # Custom button
+            custom_btn = discord.ui.Button(
+                label="Custom…",
+                style=discord.ButtonStyle.secondary,
+                row=0,
+            )
+            custom_btn.callback = self._custom_callback
+            self.add_item(custom_btn)
+
+        def build_content(self, state: dict) -> str:
+            return _wizard_summary(state) + f"\n\n**Choose interval ({self._unit}):**"
+
+        def _make_preset_callback(self, seconds: int):
+            async def callback(interaction: discord.Interaction) -> None:
+                state = _wizard_state(interaction.user.id)
+                state["trigger"] = {"type": "periodic", "interval_seconds": seconds}
+                view = _HookConfigView()
+                await interaction.response.edit_message(
+                    content=view.build_content(state), view=view,
+                )
+            return callback
+
+        async def _custom_callback(self, interaction: discord.Interaction) -> None:
+            await interaction.response.send_modal(_HookCustomIntervalModal(self._unit))
+
+    class _HookCustomIntervalModal(discord.ui.Modal, title="Custom Interval"):
+        """Modal for entering a custom periodic interval value."""
+
+        interval_value = discord.ui.TextInput(
+            label="Interval value (number)",
+            placeholder="e.g. 45",
+            required=True,
+            max_length=10,
+        )
+
+        def __init__(self, unit: str) -> None:
+            super().__init__()
+            self._unit = unit
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:
+            try:
+                val = int(self.interval_value.value)
+                if val <= 0:
+                    raise ValueError
+            except ValueError:
+                await interaction.response.send_message(
+                    "Please enter a positive integer.", ephemeral=True,
+                )
+                return
+            multiplier = {"minutes": 60, "hours": 3600, "days": 86400}[self._unit]
+            state = _wizard_state(interaction.user.id)
+            state["trigger"] = {"type": "periodic", "interval_seconds": val * multiplier}
+            view = _HookConfigView()
+            await interaction.response.edit_message(
+                content=view.build_content(state), view=view,
+            )
+
+    class _HookEventCategoryView(discord.ui.View):
+        """Step 2c: Choose event category, then event type."""
+
+        def __init__(self, page: int = 0) -> None:
+            super().__init__(timeout=300)
+            self.page = page
+            self._rebuild()
+
+        def _rebuild(self) -> None:
+            self.clear_items()
+            # Build a flat list of all events grouped for select menu
+            options = []
+            for cat, events in _HOOK_EVENT_CATEGORIES:
+                for evt in events:
+                    label = evt
+                    desc = f"{cat} event"
+                    options.append(discord.SelectOption(label=label, value=evt, description=desc))
+            # Discord select menus support up to 25 options — we're well under.
+            select = discord.ui.Select(
+                placeholder="Select an event type…",
+                options=options,
+                row=0,
+            )
+            select.callback = self._select_callback
+            self.add_item(select)
+            # Custom event type
+            custom_btn = discord.ui.Button(
+                label="Custom event type…",
+                style=discord.ButtonStyle.secondary,
+                row=1,
+            )
+            custom_btn.callback = self._custom_callback
+            self.add_item(custom_btn)
+            # Back
+            back_btn = discord.ui.Button(
+                label="◀ Back",
+                style=discord.ButtonStyle.secondary,
+                row=2,
+            )
+            back_btn.callback = self._back_callback
+            self.add_item(back_btn)
+            # Cancel
+            cancel_btn = discord.ui.Button(
+                label="Cancel",
+                style=discord.ButtonStyle.danger,
+                row=2,
+            )
+            cancel_btn.callback = self._cancel_callback
+            self.add_item(cancel_btn)
+
+        def build_content(self, state: dict) -> str:
+            return _wizard_summary(state) + "\n\n**Select the event type to trigger on:**"
+
+        async def _select_callback(self, interaction: discord.Interaction) -> None:
+            event_type = interaction.data.get("values", [None])[0]
+            if not event_type:
+                return
+            state = _wizard_state(interaction.user.id)
+            state["trigger"] = {"type": "event", "event_type": event_type}
+            view = _HookConfigView()
+            await interaction.response.edit_message(
+                content=view.build_content(state), view=view,
+            )
+
+        async def _custom_callback(self, interaction: discord.Interaction) -> None:
+            await interaction.response.send_modal(_HookCustomEventModal())
+
+        async def _back_callback(self, interaction: discord.Interaction) -> None:
+            state = _wizard_state(interaction.user.id)
+            view = _HookWizardStartView()
+            await interaction.response.edit_message(
+                content=view.build_content(state), view=view,
+            )
+
+        async def _cancel_callback(self, interaction: discord.Interaction) -> None:
+            _hook_wizard_states.pop(interaction.user.id, None)
+            await interaction.response.edit_message(
+                content="🪝 Hook wizard cancelled.", view=None,
+            )
+
+    class _HookCustomEventModal(discord.ui.Modal, title="Custom Event Type"):
+        """Modal for entering a custom event type string."""
+
+        event_type = discord.ui.TextInput(
+            label="Event type",
+            placeholder="e.g. task.completed or custom.my_event",
+            required=True,
+            max_length=100,
+        )
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:
+            state = _wizard_state(interaction.user.id)
+            state["trigger"] = {"type": "event", "event_type": self.event_type.value.strip()}
+            view = _HookConfigView()
+            await interaction.response.edit_message(
+                content=view.build_content(state), view=view,
+            )
+
+    class _HookConfigView(discord.ui.View):
+        """Step 3: Main configuration hub — add steps, set prompt, options."""
+
+        def __init__(self) -> None:
+            super().__init__(timeout=300)
+
+        def build_content(self, state: dict) -> str:
+            return _wizard_summary(state) + "\n\n**Configure your hook:**"
+
+        @discord.ui.button(label="📝 Set Prompt", style=discord.ButtonStyle.primary, row=0)
+        async def prompt_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            await interaction.response.send_modal(_HookPromptModal())
+
+        @discord.ui.button(label="➕ Add Context Step", style=discord.ButtonStyle.secondary, row=0)
+        async def add_step_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            state = _wizard_state(interaction.user.id)
+            view = _HookStepTypeView()
+            await interaction.response.edit_message(
+                content=view.build_content(state), view=view,
+            )
+
+        @discord.ui.button(label="⏱️ Set Cooldown", style=discord.ButtonStyle.secondary, row=1)
+        async def cooldown_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            await interaction.response.send_modal(_HookCooldownModal())
+
+        @discord.ui.button(label="🤖 LLM Config", style=discord.ButtonStyle.secondary, row=1)
+        async def llm_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            await interaction.response.send_modal(_HookLLMConfigModal())
+
+        @discord.ui.button(label="✅ Create Hook", style=discord.ButtonStyle.success, row=2)
+        async def create_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            state = _wizard_state(interaction.user.id)
+            # Validate required fields
+            missing = []
+            if not state.get("name"):
+                missing.append("name")
+            if not state.get("trigger"):
+                missing.append("trigger")
+            if not state.get("prompt_template"):
+                missing.append("prompt template")
+            if missing:
+                await interaction.response.send_message(
+                    f"Missing required fields: {', '.join(missing)}. "
+                    "Please complete them before creating.",
+                    ephemeral=True,
+                )
+                return
+            # Build the hook
+            import json as _json
+            args = {
+                "project_id": state["project_id"],
+                "name": state["name"],
+                "trigger": state["trigger"],
+                "prompt_template": state["prompt_template"],
+                "cooldown_seconds": state.get("cooldown_seconds", 3600),
+            }
+            if state.get("context_steps"):
+                args["context_steps"] = state["context_steps"]
+            if state.get("llm_config"):
+                args["llm_config"] = state["llm_config"]
+            result = await handler.execute("create_hook", args)
+            _hook_wizard_states.pop(interaction.user.id, None)
+            if "error" in result:
+                await interaction.response.edit_message(
+                    content=f"❌ Error creating hook: {result['error']}", view=None,
+                )
+                return
+            await interaction.response.edit_message(
+                content=(
+                    f"✅ Hook **{state['name']}** (`{result['created']}`) "
+                    f"created in `{state['project_id']}`!"
+                ),
+                view=None,
+            )
+
+        @discord.ui.button(label="◀ Back", style=discord.ButtonStyle.secondary, row=2)
+        async def back_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            state = _wizard_state(interaction.user.id)
+            view = _HookWizardStartView()
+            await interaction.response.edit_message(
+                content=view.build_content(state), view=view,
+            )
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=2)
+        async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            _hook_wizard_states.pop(interaction.user.id, None)
+            await interaction.response.edit_message(
+                content="🪝 Hook wizard cancelled.", view=None,
+            )
+
+    class _HookPromptModal(discord.ui.Modal, title="Hook Prompt Template"):
+        """Modal for setting the prompt template."""
+
+        prompt = discord.ui.TextInput(
+            label="Prompt template",
+            style=discord.TextStyle.long,
+            placeholder="Use {{step_0}}, {{event}}, {{event.field}} placeholders…",
+            required=True,
+            max_length=2000,
+        )
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:
+            state = _wizard_state(interaction.user.id)
+            state["prompt_template"] = self.prompt.value
+            view = _HookConfigView()
+            await interaction.response.edit_message(
+                content=view.build_content(state), view=view,
+            )
+
+    class _HookCooldownModal(discord.ui.Modal, title="Set Cooldown"):
+        """Modal for setting cooldown seconds."""
+
+        cooldown = discord.ui.TextInput(
+            label="Cooldown (seconds)",
+            placeholder="3600",
+            required=True,
+            max_length=10,
+            default="3600",
+        )
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:
+            try:
+                val = int(self.cooldown.value)
+                if val < 0:
+                    raise ValueError
+            except ValueError:
+                await interaction.response.send_message(
+                    "Cooldown must be a non-negative integer.", ephemeral=True,
+                )
+                return
+            state = _wizard_state(interaction.user.id)
+            state["cooldown_seconds"] = val
+            view = _HookConfigView()
+            await interaction.response.edit_message(
+                content=view.build_content(state), view=view,
+            )
+
+    class _HookLLMConfigModal(discord.ui.Modal, title="LLM Config Override"):
+        """Modal for optional LLM config override."""
+
+        provider = discord.ui.TextInput(
+            label="Provider",
+            placeholder="anthropic",
+            required=False,
+            max_length=50,
+        )
+        model = discord.ui.TextInput(
+            label="Model",
+            placeholder="claude-sonnet-4-20250514",
+            required=False,
+            max_length=100,
+        )
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:
+            state = _wizard_state(interaction.user.id)
+            prov = self.provider.value.strip()
+            mdl = self.model.value.strip()
+            if prov or mdl:
+                config = {}
+                if prov:
+                    config["provider"] = prov
+                if mdl:
+                    config["model"] = mdl
+                state["llm_config"] = config
+            else:
+                state["llm_config"] = None
+            view = _HookConfigView()
+            await interaction.response.edit_message(
+                content=view.build_content(state), view=view,
+            )
+
+    class _HookStepTypeView(discord.ui.View):
+        """Choose context step type to add."""
+
+        def __init__(self) -> None:
+            super().__init__(timeout=300)
+            options = [
+                discord.SelectOption(label=label, value=stype, description=desc)
+                for stype, desc in _HOOK_STEP_TYPES
+            ]
+            select = discord.ui.Select(
+                placeholder="Choose step type…",
+                options=options,
+                row=0,
+            )
+            select.callback = self._select_callback
+            self.add_item(select)
+            back_btn = discord.ui.Button(
+                label="◀ Back",
+                style=discord.ButtonStyle.secondary,
+                row=1,
+            )
+            back_btn.callback = self._back_callback
+            self.add_item(back_btn)
+
+        def build_content(self, state: dict) -> str:
+            return _wizard_summary(state) + "\n\n**Choose context step type to add:**"
+
+        async def _select_callback(self, interaction: discord.Interaction) -> None:
+            step_type = interaction.data.get("values", [None])[0]
+            if not step_type:
+                return
+            await interaction.response.send_modal(_HookStepConfigModal(step_type))
+
+        async def _back_callback(self, interaction: discord.Interaction) -> None:
+            state = _wizard_state(interaction.user.id)
+            view = _HookConfigView()
+            await interaction.response.edit_message(
+                content=view.build_content(state), view=view,
+            )
+
+    class _HookStepConfigModal(discord.ui.Modal, title="Configure Context Step"):
+        """Modal to configure a context step based on its type."""
+
+        param1 = discord.ui.TextInput(
+            label="Primary parameter",
+            style=discord.TextStyle.short,
+            required=True,
+            max_length=500,
+        )
+        param2 = discord.ui.TextInput(
+            label="Secondary parameter (optional)",
+            style=discord.TextStyle.short,
+            required=False,
+            max_length=500,
+        )
+        skip_condition = discord.ui.TextInput(
+            label="Short-circuit condition (optional)",
+            placeholder="skip_llm_if_exit_zero / skip_llm_if_empty / skip_llm_if_status_ok",
+            required=False,
+            max_length=100,
+        )
+
+        _PARAM_LABELS = {
+            "shell": ("Command (e.g. npm test)", "Timeout seconds (default 60)"),
+            "read_file": ("File path", "Max lines (default 500)"),
+            "http": ("URL", "Timeout seconds (default 30)"),
+            "db_query": ("Query name (recent_task_results / task_detail / ...)", "Params JSON (optional)"),
+            "git_diff": ("Workspace path (default .)", "Base branch (default main)"),
+            "memory_search": ("Search query", "Top K results (default 3)"),
+        }
+
+        def __init__(self, step_type: str) -> None:
+            super().__init__()
+            self._step_type = step_type
+            labels = self._PARAM_LABELS.get(step_type, ("Value", "Extra (optional)"))
+            self.param1.label = labels[0]
+            self.param2.label = labels[1]
+            # Set useful placeholders per type
+            placeholders = {
+                "shell": ("npm test", "60"),
+                "read_file": ("./README.md", "500"),
+                "http": ("https://api.example.com/status", "30"),
+                "db_query": ("recent_task_results", '{"task_id": "{{event.task_id}}"}'),
+                "git_diff": (".", "main"),
+                "memory_search": ("API endpoints", "3"),
+            }
+            ph = placeholders.get(step_type, ("", ""))
+            self.param1.placeholder = ph[0]
+            self.param2.placeholder = ph[1]
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:
+            import json as _json
+            step: dict = {"type": self._step_type}
+            p1 = self.param1.value.strip()
+            p2 = self.param2.value.strip()
+            skip = self.skip_condition.value.strip()
+
+            if self._step_type == "shell":
+                step["command"] = p1
+                if p2:
+                    try:
+                        step["timeout"] = int(p2)
+                    except ValueError:
+                        pass
+            elif self._step_type == "read_file":
+                step["path"] = p1
+                if p2:
+                    try:
+                        step["max_lines"] = int(p2)
+                    except ValueError:
+                        pass
+            elif self._step_type == "http":
+                step["url"] = p1
+                if p2:
+                    try:
+                        step["timeout"] = int(p2)
+                    except ValueError:
+                        pass
+            elif self._step_type == "db_query":
+                step["query"] = p1
+                if p2:
+                    try:
+                        step["params"] = _json.loads(p2)
+                    except _json.JSONDecodeError:
+                        pass
+            elif self._step_type == "git_diff":
+                step["workspace"] = p1 or "."
+                step["base_branch"] = p2 or "main"
+            elif self._step_type == "memory_search":
+                step["query"] = p1
+                if p2:
+                    try:
+                        step["top_k"] = int(p2)
+                    except ValueError:
+                        pass
+
+            if skip:
+                step[skip] = True
+
+            state = _wizard_state(interaction.user.id)
+            state["context_steps"].append(step)
+            view = _HookConfigView()
+            await interaction.response.edit_message(
+                content=view.build_content(state), view=view,
+            )
+
+    # ---- Wizard entry point (slash command) ----
+
     @bot.tree.command(name="create-hook", description="Create an automation hook")
-    @app_commands.describe(
-        name="Hook name",
-        trigger_type="Trigger type",
-        trigger_value="Interval seconds (periodic) or event type (event)",
-        prompt_template="Prompt template with {{step_N}} and {{event}} placeholders",
-        cooldown_seconds="Min seconds between runs (default 3600)",
-    )
-    @app_commands.choices(trigger_type=[
-        app_commands.Choice(name="periodic", value="periodic"),
-        app_commands.Choice(name="event",    value="event"),
-    ])
-    async def create_hook_command(
-        interaction: discord.Interaction,
-        name: str,
-        trigger_type: app_commands.Choice[str],
-        trigger_value: str,
-        prompt_template: str,
-        cooldown_seconds: int = 3600,
-    ):
+    async def create_hook_command(interaction: discord.Interaction):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await _send_error(interaction, _NO_PROJECT_MSG)
             return
-        if trigger_type.value == "periodic":
-            try:
-                interval = int(trigger_value)
-            except ValueError:
-                await _send_error(interaction, "trigger_value must be an integer (seconds) for periodic hooks.")
-                return
-            trigger = {"type": "periodic", "interval_seconds": interval}
-        else:
-            trigger = {"type": "event", "event_type": trigger_value}
+        # Initialize wizard state
+        state = _wizard_state(interaction.user.id)
+        state["project_id"] = project_id
+        state["name"] = None
+        state["trigger"] = None
+        state["context_steps"] = []
+        state["prompt_template"] = None
+        state["cooldown_seconds"] = 3600
+        state["llm_config"] = None
+        # Show name modal first
+        await interaction.response.send_modal(_HookNameModal())
 
-        result = await handler.execute("create_hook", {
-            "project_id": project_id,
-            "name": name,
-            "trigger": trigger,
-            "prompt_template": prompt_template,
-            "cooldown_seconds": cooldown_seconds,
-        })
-        if "error" in result:
-            await _send_error(interaction, result['error'])
+    @bot.tree.command(name="add-hook", description="Create an automation hook (interactive wizard)")
+    async def add_hook_command(interaction: discord.Interaction):
+        project_id = await _resolve_project_from_context(interaction, None)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
             return
-        await _send_success(
-            interaction, "Hook Created",
-            description=f"Hook **{name}** (`{result['created']}`) created in `{project_id}`",
+        # Initialize wizard state
+        state = _wizard_state(interaction.user.id)
+        state["project_id"] = project_id
+        state["name"] = None
+        state["trigger"] = None
+        state["context_steps"] = []
+        state["prompt_template"] = None
+        state["cooldown_seconds"] = 3600
+        state["llm_config"] = None
+        # Show name modal first
+        await interaction.response.send_modal(_HookNameModal())
+
+    class _HookNameModal(discord.ui.Modal, title="Name Your Hook"):
+        """First modal: enter the hook name."""
+
+        hook_name = discord.ui.TextInput(
+            label="Hook name",
+            placeholder="e.g. post-failure-analysis",
+            required=True,
+            max_length=100,
         )
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:
+            state = _wizard_state(interaction.user.id)
+            state["name"] = self.hook_name.value.strip()
+            view = _HookWizardStartView()
+            await interaction.response.send_message(
+                content=view.build_content(state), view=view,
+                ephemeral=True,
+            )
 
     @bot.tree.command(name="edit-hook", description="Edit an automation hook")
     @app_commands.describe(
