@@ -234,6 +234,83 @@ def _count_subtree(children: list[dict]) -> tuple[int, int]:
     return completed, total
 
 
+def _count_subtree_by_status(children: list[dict]) -> dict[str, int]:
+    """Recursively count tasks by status across a subtree.
+
+    Parameters
+    ----------
+    children:
+        A list of ``{"task": Task, "children": [...]}`` dicts, matching the
+        shape returned by ``Database.get_task_tree()``.
+
+    Returns
+    -------
+    dict[str, int]
+        Mapping of ``TaskStatus.value`` → count for every status present
+        in the subtree (excluding the root that *owns* these children).
+    """
+    counts: dict[str, int] = {}
+    for node in children:
+        task: Task = node["task"]
+        status_val = task.status.value
+        counts[status_val] = counts.get(status_val, 0) + 1
+        child_counts = _count_subtree_by_status(node.get("children", []))
+        for s, c in child_counts.items():
+            counts[s] = counts.get(s, 0) + c
+    return counts
+
+
+def _format_status_summary(status_counts: dict[str, int], total: int) -> str:
+    """Build a concise one-line summary of non-completed task status counts.
+
+    Given a full status breakdown and total, produces a string like::
+
+        2/5 subtasks complete · 1 in progress · 1 failed · 1 blocked
+
+    Only non-zero, non-completed statuses are included in the suffix.
+
+    Parameters
+    ----------
+    status_counts:
+        Mapping of ``TaskStatus.value`` → count.
+    total:
+        Total number of subtasks.
+
+    Returns
+    -------
+    str
+        A formatted summary line (without leading indent).
+    """
+    completed = status_counts.get("COMPLETED", 0)
+    base = f"{completed}/{total} subtasks complete"
+
+    # Ordered list of (status_value, display_label) for non-completed statuses.
+    # Order mirrors the visual priority: active work first, then needs-attention,
+    # then queued/pending states.
+    _NON_COMPLETED_LABELS: list[tuple[str, str]] = [
+        ("IN_PROGRESS", "in progress"),
+        ("VERIFYING", "verifying"),
+        ("ASSIGNED", "assigned"),
+        ("AWAITING_APPROVAL", "awaiting approval"),
+        ("WAITING_INPUT", "waiting input"),
+        ("PAUSED", "paused"),
+        ("FAILED", "failed"),
+        ("BLOCKED", "blocked"),
+        ("READY", "ready"),
+        ("DEFINED", "defined"),
+    ]
+
+    parts: list[str] = []
+    for status_val, label in _NON_COMPLETED_LABELS:
+        count = status_counts.get(status_val, 0)
+        if count > 0:
+            parts.append(f"{count} {label}")
+
+    if parts:
+        return base + " · " + " · ".join(parts)
+    return base
+
+
 def _render_tree_node(
     task: Task,
     children: list[dict],
@@ -401,9 +478,11 @@ def _format_task_tree(
     # -- Compute subtree statistics once (shared by all modes) ---------------
     if children:
         completed, total = _count_subtree(children)
-        summary_line = f"  {completed}/{total} subtasks complete"
+        status_counts = _count_subtree_by_status(children)
+        summary_line = f"  {_format_status_summary(status_counts, total)}"
     else:
         completed, total = 0, 0
+        status_counts = {}
         summary_line = None
 
     # -- Compact mode: root + summary only -----------------------------------
@@ -1410,6 +1489,7 @@ class CommandHandler:
 
             children = tree_data.get("children", [])
             completed, subtask_total = _count_subtree(children)
+            status_counts = _count_subtree_by_status(children)
 
             formatted = _format_task_tree(
                 root, children, compact=compact,
@@ -1420,6 +1500,7 @@ class CommandHandler:
                 "formatted": formatted,
                 "subtask_completed": completed,
                 "subtask_total": subtask_total,
+                "subtask_by_status": status_counts,
             }
 
             # In compact mode, also include a text progress bar for
@@ -1638,6 +1719,7 @@ class CommandHandler:
         children: list[dict] = tree_data.get("children", [])
 
         completed, subtask_total = _count_subtree(children)
+        status_counts = _count_subtree_by_status(children)
 
         # Build dependency map for tree annotations when requested.
         dep_map: dict[str, dict] | None = None
@@ -1658,6 +1740,7 @@ class CommandHandler:
             "formatted": formatted,
             "subtask_completed": completed,
             "subtask_total": subtask_total,
+            "subtask_by_status": status_counts,
         }
 
         # In compact mode, include a text progress bar for inline display.

@@ -1438,16 +1438,31 @@ def setup_commands(bot: commands.Bot) -> None:
             else:
                 all_count = sum(len(v) for v in self.tasks_by_status.values())
                 completed_count = len(self.tasks_by_status.get("COMPLETED", []))
-            active_statuses = {"IN_PROGRESS", "ASSIGNED", "VERIFYING"}
-            active_count = sum(
-                len(self.tasks_by_status.get(s, []))
-                for s in active_statuses
-            )
             if all_count > 0:
                 bar = progress_bar(completed_count, all_count, width=10)
                 lines.append(f"**Progress:** {bar}")
-                if active_count:
-                    lines.append(f"**Active:** {active_count} task(s) running")
+                # Show counts for all non-completed statuses that have tasks.
+                # Ordered by visual priority: active work → needs attention → queued.
+                _STAT_LABELS: list[tuple[str, str]] = [
+                    ("IN_PROGRESS", "In Progress"),
+                    ("VERIFYING", "Verifying"),
+                    ("ASSIGNED", "Assigned"),
+                    ("AWAITING_APPROVAL", "Awaiting Approval"),
+                    ("WAITING_INPUT", "Waiting Input"),
+                    ("PAUSED", "Paused"),
+                    ("FAILED", "Failed"),
+                    ("BLOCKED", "Blocked"),
+                    ("READY", "Ready"),
+                    ("DEFINED", "Defined"),
+                ]
+                stat_parts: list[str] = []
+                for status_val, label in _STAT_LABELS:
+                    cnt = len(self.tasks_by_status.get(status_val, []))
+                    if cnt > 0:
+                        emoji = _STATUS_EMOJIS.get(status_val, "⚪")
+                        stat_parts.append(f"{emoji} {cnt} {label}")
+                if stat_parts:
+                    lines.append(" · ".join(stat_parts))
                 lines.append("")
 
             for status in _STATUS_ORDER:
@@ -2406,8 +2421,35 @@ def setup_commands(bot: commands.Bot) -> None:
 
         mode_label = "Tree View" if display_mode == "tree" else "Compact View"
 
-        # Build header line
+        # Build header line with aggregated status breakdown
         header = f"**{mode_label}** — {total_root} root task(s), {total_tasks} total"
+
+        # Aggregate subtask status counts across all trees for an overview line
+        agg_by_status: dict[str, int] = {}
+        for entry in trees:
+            for st, cnt in entry.get("subtask_by_status", {}).items():
+                agg_by_status[st] = agg_by_status.get(st, 0) + cnt
+        if agg_by_status:
+            _STAT_ORDER: list[tuple[str, str]] = [
+                ("COMPLETED", "done"),
+                ("IN_PROGRESS", "in progress"),
+                ("VERIFYING", "verifying"),
+                ("ASSIGNED", "assigned"),
+                ("AWAITING_APPROVAL", "awaiting approval"),
+                ("WAITING_INPUT", "waiting input"),
+                ("PAUSED", "paused"),
+                ("FAILED", "failed"),
+                ("BLOCKED", "blocked"),
+                ("READY", "ready"),
+                ("DEFINED", "defined"),
+            ]
+            stat_parts: list[str] = []
+            for st_val, label in _STAT_ORDER:
+                cnt = agg_by_status.get(st_val, 0)
+                if cnt > 0:
+                    stat_parts.append(f"{cnt} {label}")
+            if stat_parts:
+                header += "\n" + " · ".join(stat_parts)
 
         # Assemble all formatted tree blocks
         blocks: list[str] = []
