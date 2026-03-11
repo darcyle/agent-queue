@@ -1363,6 +1363,19 @@ class Database:
             return None
         return self._row_to_workspace(row)
 
+    async def get_workspace_by_name(
+        self, project_id: str, name: str,
+    ) -> Workspace | None:
+        """Find a workspace by name within a project."""
+        cursor = await self._db.execute(
+            "SELECT * FROM workspaces WHERE project_id = ? AND name = ?",
+            (project_id, name),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_workspace(row)
+
     async def list_workspaces(
         self, project_id: str | None = None,
     ) -> list[Workspace]:

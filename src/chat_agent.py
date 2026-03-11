@@ -1279,13 +1279,15 @@ TOOLS = [
         "name": "git_commit",
         "description": (
             "Stage all changes and create a commit in a repository. "
-            "Operates on the active project's repository."
+            "Operates on the active project's repository. "
+            "Use the workspace parameter to target a specific workspace."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "message": {"type": "string", "description": "Commit message"},
                 "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
+                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
             },
             "required": ["message"],
         },
@@ -1294,13 +1296,15 @@ TOOLS = [
         "name": "git_push",
         "description": (
             "Push a branch to the remote origin. Defaults to the current branch if not specified. "
-            "Operates on the active project's repository."
+            "Operates on the active project's repository. "
+            "Use the workspace parameter to target a specific workspace."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
                 "branch": {"type": "string", "description": "Branch name to push (defaults to current branch)"},
+                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
             },
         },
     },
@@ -1308,13 +1312,15 @@ TOOLS = [
         "name": "git_create_branch",
         "description": (
             "Create and switch to a new git branch in a repository. "
-            "Operates on the active project's repository."
+            "Operates on the active project's repository. "
+            "Use the workspace parameter to target a specific workspace."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "branch_name": {"type": "string", "description": "Name for the new branch"},
                 "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
+                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
             },
             "required": ["branch_name"],
         },
@@ -1324,7 +1330,8 @@ TOOLS = [
         "description": (
             "Merge a branch into the default branch. Returns whether the merge "
             "succeeded or had conflicts (conflicts are automatically aborted). "
-            "Operates on the active project's repository."
+            "Operates on the active project's repository. "
+            "Use the workspace parameter to target a specific workspace."
         ),
         "input_schema": {
             "type": "object",
@@ -1335,6 +1342,7 @@ TOOLS = [
                     "type": "string",
                     "description": "Target branch to merge into (defaults to repo's default branch)",
                 },
+                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
             },
             "required": ["branch_name"],
         },
@@ -1343,7 +1351,8 @@ TOOLS = [
         "name": "git_create_pr",
         "description": (
             "Create a GitHub pull request using the gh CLI. Requires gh to be authenticated. "
-            "Operates on the active project's repository."
+            "Operates on the active project's repository. "
+            "Use the workspace parameter to target a specific workspace."
         ),
         "input_schema": {
             "type": "object",
@@ -1353,6 +1362,7 @@ TOOLS = [
                 "branch": {"type": "string", "description": "Head branch (defaults to current branch)"},
                 "base": {"type": "string", "description": "Base branch (defaults to repo's default branch)"},
                 "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
+                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
             },
             "required": ["title"],
         },
@@ -1361,7 +1371,8 @@ TOOLS = [
         "name": "git_changed_files",
         "description": (
             "List files changed compared to a base branch. Lighter than a full diff. "
-            "Operates on the active project's repository."
+            "Operates on the active project's repository. "
+            "Use the workspace parameter to target a specific workspace."
         ),
         "input_schema": {
             "type": "object",
@@ -1371,6 +1382,7 @@ TOOLS = [
                     "type": "string",
                     "description": "Branch to compare against (defaults to repo's default branch)",
                 },
+                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
             },
         },
     },
@@ -1378,13 +1390,15 @@ TOOLS = [
         "name": "git_log",
         "description": (
             "Show recent git commits for a project's repository. "
-            "Operates on the active project's repository."
+            "Operates on the active project's repository. "
+            "Use the workspace parameter to target a specific workspace."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
                 "count": {"type": "integer", "description": "Number of commits to show (default 10)", "default": 10},
+                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
             },
         },
     },
@@ -1393,13 +1407,15 @@ TOOLS = [
         "description": (
             "Show the git diff for a project's repository. Without base_branch shows working tree changes; "
             "with base_branch shows diff against that branch. "
-            "Operates on the active project's repository."
+            "Operates on the active project's repository. "
+            "Use the workspace parameter to target a specific workspace."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
                 "base_branch": {"type": "string", "description": "Base branch to diff against (optional — shows working tree diff if omitted)"},
+                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
             },
         },
     },
@@ -1407,13 +1423,15 @@ TOOLS = [
         "name": "checkout_branch",
         "description": (
             "Switch to an existing git branch in a project's repository. "
-            "Operates on the active project's repository."
+            "Operates on the active project's repository. "
+            "Use the workspace parameter to target a specific workspace."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
                 "branch_name": {"type": "string", "description": "Branch name to check out"},
+                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
             },
             "required": ["branch_name"],
         },
