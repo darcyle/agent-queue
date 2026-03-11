@@ -337,6 +337,79 @@ adapters:
 
 Then wire it through `AppConfig` → `Orchestrator` → `AdapterFactory`.
 
+### Step 3b: Support agent profiles (optional)
+
+The orchestrator supports **agent profiles** (`AgentProfile` in `src/models.py`)
+that allow per-task overrides for model, permission mode, tools, and MCP servers.
+If your adapter accepts configuration that should be profile-overridable, add a
+`_config_for_profile()` method to `AdapterFactory`:
+
+```python
+def _config_for_your_agent_profile(
+    self, profile: AgentProfile | None,
+) -> YourAgentConfig:
+    """Merge profile overrides into the base YourAgentConfig."""
+    if profile is None:
+        return self._your_agent_config
+    return YourAgentConfig(
+        model=profile.model or self._your_agent_config.model,
+        timeout_seconds=self._your_agent_config.timeout_seconds,
+        # ... merge other profile-overridable fields
+    )
+```
+
+`AgentProfile` fields available for merging:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `id` | `str` | Profile slug (e.g. `"reviewer"`, `"web-developer"`) |
+| `model` | `str` | Model override (empty = use adapter default) |
+| `permission_mode` | `str` | Permission mode override (empty = use default) |
+| `allowed_tools` | `list[str]` | Tool whitelist override (empty = use default) |
+| `mcp_servers` | `dict` | Additional MCP server configs |
+| `system_prompt_suffix` | `str` | Text appended to agent instructions |
+
+The factory's `create()` method receives the profile from the orchestrator and
+passes it through to the config merger. See `AdapterFactory._config_for_profile()`
+in `src/adapters/__init__.py` for the Claude implementation.
+
+### Step 3c: Integrate LLM session logging (recommended)
+
+The orchestrator passes an optional `llm_logger` (an `LLMLogger` instance from
+`src/llm_logger.py`) to `AdapterFactory`, which forwards it to each adapter.
+Logging agent sessions enables cost tracking, token analytics, and the
+`/llm-stats` Discord command.
+
+Accept the logger in your constructor and call it after each execution:
+
+```python
+def __init__(self, config=None, llm_logger=None):
+    self._config = config or YourAgentConfig()
+    self._llm_logger = llm_logger  # May be None
+
+# At the end of wait(), after determining the AgentOutput:
+def _log_session(self, prompt: str, output: AgentOutput,
+                  start: float, time_mod) -> None:
+    if not self._llm_logger:
+        return
+    duration_ms = int((time_mod.monotonic() - start) * 1000)
+    self._llm_logger.log_agent_session(
+        task_id=self._task.task_id if self._task else "",
+        session_id=self._session_id,
+        model=self._config.model or "(default)",
+        prompt=prompt,
+        config_summary={
+            "timeout_seconds": self._config.timeout_seconds,
+            # ... other relevant config fields
+        },
+        output=output,
+        duration_ms=duration_ms,
+    )
+```
+
+Call `_log_session()` on **every** exit path from `wait()` — success, failure,
+cancellation, and token exhaustion — so analytics are complete.
+
 ### Step 4: Write tests
 
 Create `tests/test_your_agent_adapter.py`. See the testing section below.
@@ -581,4 +654,6 @@ Before submitting your adapter:
 - [ ] Cleans up resources on cancellation, error, and completion
 - [ ] Does not block the asyncio event loop
 - [ ] Has unit tests covering lifecycle, cancellation, and error mapping
+- [ ] Supports `AgentProfile` overrides if applicable (model, tools, etc.)
+- [ ] Integrates with `LLMLogger` for session tracking (recommended)
 - [ ] Has a spec document in `docs/specs/adapters/`
