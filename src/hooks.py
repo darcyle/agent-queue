@@ -34,6 +34,7 @@ from src.chat_providers import ChatProvider, LoggedChatProvider, create_chat_pro
 from src.config import AppConfig, ChatProviderConfig
 from src.database import Database
 from src.event_bus import EventBus
+from src.logging_config import CorrelationContext
 from src.models import Hook, HookRun
 
 logger = logging.getLogger(__name__)
@@ -182,6 +183,20 @@ class HookEngine:
         4. Invoke the LLM via a ChatAgent instance with full tool access
         5. Record the run outcome (completed/failed/skipped) in the database
         """
+        with CorrelationContext(
+            hook_id=hook.id,
+            project_id=hook.project_id,
+            component="hooks",
+        ):
+            await self._execute_hook_inner(hook, trigger_reason, event_data)
+
+    async def _execute_hook_inner(
+        self,
+        hook: Hook,
+        trigger_reason: str,
+        event_data: dict | None = None,
+    ) -> None:
+        """Inner implementation with correlation context already set."""
         run = HookRun(
             id=str(uuid.uuid4())[:12],
             hook_id=hook.id,

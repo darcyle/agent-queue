@@ -51,6 +51,15 @@ _correlation_cycle_id: ContextVar[str | None] = ContextVar(
 _correlation_component: ContextVar[str | None] = ContextVar(
     "correlation_component", default=None
 )
+_correlation_hook_id: ContextVar[str | None] = ContextVar(
+    "correlation_hook_id", default=None
+)
+_correlation_agent_id: ContextVar[str | None] = ContextVar(
+    "correlation_agent_id", default=None
+)
+_correlation_command: ContextVar[str | None] = ContextVar(
+    "correlation_command", default=None
+)
 
 
 class CorrelationContext:
@@ -66,6 +75,9 @@ class CorrelationContext:
             logger.info("Processing")  # includes task_id, project_id
     """
 
+    # Map of field names to their context variables, used for set/reset
+    _FIELDS: dict[str, ContextVar[str | None]] = {}  # populated after class body
+
     def __init__(
         self,
         *,
@@ -73,59 +85,58 @@ class CorrelationContext:
         project_id: str | None = None,
         cycle_id: str | None = None,
         component: str | None = None,
+        hook_id: str | None = None,
+        agent_id: str | None = None,
+        command: str | None = None,
     ):
-        self._task_id = task_id
-        self._project_id = project_id
-        self._cycle_id = cycle_id
-        self._component = component
+        self._values: dict[str, str] = {}
+        if task_id is not None:
+            self._values["task_id"] = task_id
+        if project_id is not None:
+            self._values["project_id"] = project_id
+        if cycle_id is not None:
+            self._values["cycle_id"] = cycle_id
+        if component is not None:
+            self._values["component"] = component
+        if hook_id is not None:
+            self._values["hook_id"] = hook_id
+        if agent_id is not None:
+            self._values["agent_id"] = agent_id
+        if command is not None:
+            self._values["command"] = command
         self._tokens: list = []
 
     def __enter__(self) -> CorrelationContext:
-        if self._task_id is not None:
-            self._tokens.append(
-                ("task_id", _correlation_task_id.set(self._task_id))
-            )
-        if self._project_id is not None:
-            self._tokens.append(
-                ("project_id", _correlation_project_id.set(self._project_id))
-            )
-        if self._cycle_id is not None:
-            self._tokens.append(
-                ("cycle_id", _correlation_cycle_id.set(self._cycle_id))
-            )
-        if self._component is not None:
-            self._tokens.append(
-                ("component", _correlation_component.set(self._component))
-            )
+        for name, value in self._values.items():
+            var = self._FIELDS[name]
+            self._tokens.append((name, var.set(value)))
         return self
 
     def __exit__(self, *exc: Any) -> None:
         for name, token in reversed(self._tokens):
-            var = {
-                "task_id": _correlation_task_id,
-                "project_id": _correlation_project_id,
-                "cycle_id": _correlation_cycle_id,
-                "component": _correlation_component,
-            }[name]
-            var.reset(token)
+            self._FIELDS[name].reset(token)
         self._tokens.clear()
+
+
+# Populate the field→contextvar mapping after the class is defined
+CorrelationContext._FIELDS = {
+    "task_id": _correlation_task_id,
+    "project_id": _correlation_project_id,
+    "cycle_id": _correlation_cycle_id,
+    "component": _correlation_component,
+    "hook_id": _correlation_hook_id,
+    "agent_id": _correlation_agent_id,
+    "command": _correlation_command,
+}
 
 
 def get_correlation_context() -> dict[str, str]:
     """Return current correlation fields as a dict (non-None values only)."""
     ctx: dict[str, str] = {}
-    task_id = _correlation_task_id.get()
-    if task_id is not None:
-        ctx["task_id"] = task_id
-    project_id = _correlation_project_id.get()
-    if project_id is not None:
-        ctx["project_id"] = project_id
-    cycle_id = _correlation_cycle_id.get()
-    if cycle_id is not None:
-        ctx["cycle_id"] = cycle_id
-    component = _correlation_component.get()
-    if component is not None:
-        ctx["component"] = component
+    for name, var in CorrelationContext._FIELDS.items():
+        val = var.get()
+        if val is not None:
+            ctx[name] = val
     return ctx
 
 
@@ -139,8 +150,9 @@ class StructuredFormatter(logging.Formatter):
     - ``level`` — log level name (INFO, WARNING, etc.)
     - ``logger`` — logger name (usually module path)
     - ``message`` — the formatted log message
-    - ``task_id``, ``project_id``, ``cycle_id``, ``component`` — from
-      ``CorrelationContext`` (omitted when not set)
+    - ``task_id``, ``project_id``, ``cycle_id``, ``component``,
+      ``hook_id``, ``agent_id``, ``command`` — from ``CorrelationContext``
+      (omitted when not set)
     - Any extra fields passed via ``logger.info("msg", extra={...})``
 
     When ``include_source`` is True (default for DEBUG level configs),

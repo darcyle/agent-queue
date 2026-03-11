@@ -64,6 +64,53 @@ class TestCorrelationContext:
                 assert ctx["task_id"] == "t1"
                 assert ctx["project_id"] == "p2"
 
+    def test_hook_id_field(self):
+        with CorrelationContext(hook_id="hook-123", project_id="proj"):
+            ctx = get_correlation_context()
+            assert ctx["hook_id"] == "hook-123"
+            assert ctx["project_id"] == "proj"
+        assert "hook_id" not in get_correlation_context()
+
+    def test_agent_id_field(self):
+        with CorrelationContext(agent_id="agent-1", task_id="task-1"):
+            ctx = get_correlation_context()
+            assert ctx["agent_id"] == "agent-1"
+            assert ctx["task_id"] == "task-1"
+        assert "agent_id" not in get_correlation_context()
+
+    def test_command_field(self):
+        with CorrelationContext(command="get_status", component="command_handler"):
+            ctx = get_correlation_context()
+            assert ctx["command"] == "get_status"
+            assert ctx["component"] == "command_handler"
+        assert "command" not in get_correlation_context()
+
+    def test_all_fields_together(self):
+        with CorrelationContext(
+            task_id="t1", project_id="p1", cycle_id="c1",
+            component="orch", hook_id="h1", agent_id="a1", command="cmd",
+        ):
+            ctx = get_correlation_context()
+            assert len(ctx) == 7
+            assert ctx["task_id"] == "t1"
+            assert ctx["hook_id"] == "h1"
+            assert ctx["agent_id"] == "a1"
+            assert ctx["command"] == "cmd"
+
+    def test_nested_hook_and_task_context(self):
+        """Hook context nested inside task context preserves task fields."""
+        with CorrelationContext(task_id="t1", project_id="p1"):
+            with CorrelationContext(hook_id="h1", component="hooks"):
+                ctx = get_correlation_context()
+                assert ctx["task_id"] == "t1"
+                assert ctx["project_id"] == "p1"
+                assert ctx["hook_id"] == "h1"
+                assert ctx["component"] == "hooks"
+            # hook_id cleared, component restored
+            ctx = get_correlation_context()
+            assert "hook_id" not in ctx
+            assert "component" not in ctx
+
 
 class TestStructuredFormatter:
     """Tests for JSON-lines output formatter."""
@@ -124,6 +171,16 @@ class TestStructuredFormatter:
         parsed = json.loads(output)
         assert "filename" not in parsed
         assert "lineno" not in parsed
+
+    def test_new_correlation_fields_in_output(self):
+        fmt = StructuredFormatter()
+        with CorrelationContext(hook_id="h1", agent_id="a1", command="deploy"):
+            record = self._make_record("Hook running")
+            output = fmt.format(record)
+        parsed = json.loads(output)
+        assert parsed["hook_id"] == "h1"
+        assert parsed["agent_id"] == "a1"
+        assert parsed["command"] == "deploy"
 
     def test_exception_info(self):
         fmt = StructuredFormatter()

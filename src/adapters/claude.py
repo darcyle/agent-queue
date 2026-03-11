@@ -31,10 +31,14 @@ See specs/adapters/claude.md for the full behavioral specification.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 
 from src.adapters.base import AgentAdapter, MessageCallback
+from src.logging_config import get_correlation_context
 from src.models import AgentOutput, AgentResult, TaskContext
+
+logger = logging.getLogger(__name__)
 
 # Import SDK types for isinstance checks (lazy, set in wait())
 _sdk_types_loaded = False
@@ -183,6 +187,11 @@ class ClaudeAdapter(AgentAdapter):
     async def start(self, task: TaskContext) -> None:
         self._task = task
         self._cancel_event.clear()
+        ctx = get_correlation_context()
+        logger.info(
+            "Claude adapter starting for task %s",
+            ctx.get("task_id", task.task_id if hasattr(task, "task_id") else "unknown"),
+        )
 
     async def wait(self, on_message: MessageCallback | None = None) -> AgentOutput:
         import time as _time
@@ -355,10 +364,14 @@ class ClaudeAdapter(AgentAdapter):
     def _log_session(self, prompt: str, output: AgentOutput,
                       start: float, time_mod) -> None:
         """Log agent session to LLMLogger if available."""
-        if not self._llm_logger:
-            return
         duration_ms = int((time_mod.monotonic() - start) * 1000)
         task_id = self._task.task_id if self._task else ""
+        logger.info(
+            "Claude session completed: task=%s result=%s tokens=%d duration=%dms",
+            task_id, output.result.value, output.tokens_used, duration_ms,
+        )
+        if not self._llm_logger:
+            return
         self._llm_logger.log_agent_session(
             task_id=task_id,
             session_id=self._session_id,

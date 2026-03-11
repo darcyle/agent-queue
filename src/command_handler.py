@@ -26,6 +26,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+import logging
+
 from src.config import AppConfig
 from src.discord.embeds import STATUS_EMOJIS, progress_bar
 from src.discord.notifications import classify_error
@@ -35,8 +37,11 @@ from src.models import (
     Task, TaskStatus, TaskType, VerificationType, TASK_TYPE_VALUES, Workspace,
 )
 from src.orchestrator import Orchestrator
+from src.logging_config import CorrelationContext
 from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge
 from src.task_names import generate_task_id
+
+logger = logging.getLogger(__name__)
 
 
 def _count_by(items, key_fn) -> dict[str, int]:
@@ -696,13 +701,16 @@ class CommandHandler:
         This is the single code path for all operational commands in the system.
         Both Discord slash commands and chat agent LLM tools call this method.
         """
-        try:
-            handler = getattr(self, f"_cmd_{name}", None)
-            if handler:
-                return await handler(args)
-            return {"error": f"Unknown command: {name}"}
-        except Exception as e:
-            return {"error": str(e)}
+        with CorrelationContext(command=name, component="command_handler"):
+            try:
+                handler = getattr(self, f"_cmd_{name}", None)
+                if handler:
+                    return await handler(args)
+                logger.warning("Unknown command requested: %s", name)
+                return {"error": f"Unknown command: {name}"}
+            except Exception as e:
+                logger.error("Command %s failed: %s", name, e, exc_info=True)
+                return {"error": str(e)}
 
     # -----------------------------------------------------------------------
     # Project commands -- CRUD, pause/resume, and Discord channel management.
