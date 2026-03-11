@@ -6,6 +6,9 @@ The adapter subsystem provides a pluggable interface between the orchestrator an
 
 Currently one concrete implementation exists: `ClaudeAdapter`, which runs Claude Code via the `claude_agent_sdk` Python package. The `AdapterFactory` class handles instantiation by agent-type string.
 
+> **Building a new adapter?** See the [Adapter Development Guide](development-guide.md)
+> for the step-by-step process, skeleton code, testing strategy, and common pitfalls.
+
 ---
 
 ## Source Files
