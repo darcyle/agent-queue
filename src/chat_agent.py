@@ -441,6 +441,29 @@ TOOLS = [
         },
     },
     {
+        "name": "sync_workspaces",
+        "description": (
+            "Synchronize all project workspaces to the latest main branch. "
+            "Fetches latest changes, pushes any unpushed local commits, and rebases "
+            "feature branches onto the updated main. Locked workspaces (in use by agents) "
+            "are skipped. Workspaces with unresolvable conflicts are reported for manual "
+            "intervention. Returns a per-workspace status report."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to sync workspaces for (optional if active project is set)",
+                },
+                "skip_locked": {
+                    "type": "boolean",
+                    "description": "Skip workspaces locked by an agent (default: true). Set to false to sync all workspaces.",
+                },
+            },
+        },
+    },
+    {
         "name": "list_agents",
         "description": "List all configured agents and their current state.",
         "input_schema": {"type": "object", "properties": {}},
@@ -1748,6 +1771,9 @@ the user says to "link", "connect", "use", or "point to" an existing directory/r
 - Agents dynamically acquire a workspace lock when assigned a task and release it on completion.
 - Use `list_workspaces` to see workspace status and lock information.
 - Use `release_workspace` to force-release a stuck lock (e.g., dead agent, stale task).
+- Use `sync_workspaces` to pull and push all workspaces to the latest main branch. This fetches \
+latest changes, pushes unpushed local commits, and rebases feature branches onto main. Locked \
+workspaces are skipped. Conflicts are reported for manual intervention.
 - Set the project's `repo_url` and `default_branch` when creating the project with `create_project`.
 
 Merge conflict resolution workflow:

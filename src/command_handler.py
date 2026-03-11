@@ -2965,6 +2965,243 @@ class CommandHandler:
             "conflicts": results,
         }
 
+    async def _cmd_sync_workspaces(self, args: dict) -> dict:
+        """Synchronize all project workspaces to the latest main branch.
+
+        For each workspace:
+        1. Fetch latest from origin.
+        2. If the workspace is on the default branch, hard-reset to origin.
+        3. If on a feature branch with unpushed commits, push them first.
+        4. Rebase/merge divergent branches to bring everything up to date.
+
+        Workspaces that are locked (in use by an agent) are skipped.
+        Workspaces with unresolvable merge conflicts are reported for
+        manual intervention.
+
+        Returns a per-workspace status report.
+        """
+        project_id = args.get("project_id") or self._active_project_id
+        if not project_id:
+            return {"error": "project_id is required (no active project set)"}
+
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"error": f"Project '{project_id}' not found"}
+
+        workspaces = await self.db.list_workspaces(project_id=project_id)
+        if not workspaces:
+            return {"error": f"No workspaces found for project '{project_id}'"}
+
+        default_branch = project.repo_default_branch or "main"
+        results: list[dict] = []
+
+        for ws in workspaces:
+            ws_result = await self._sync_single_workspace(
+                ws, default_branch, skip_locked=args.get("skip_locked", True),
+            )
+            results.append(ws_result)
+
+        synced = sum(1 for r in results if r["status"] == "synced")
+        skipped = sum(1 for r in results if r["status"] == "skipped")
+        errors = sum(1 for r in results if r["status"] in ("error", "conflict"))
+
+        return {
+            "project_id": project_id,
+            "default_branch": default_branch,
+            "total_workspaces": len(workspaces),
+            "synced": synced,
+            "skipped": skipped,
+            "errors": errors,
+            "workspaces": results,
+        }
+
+    async def _sync_single_workspace(
+        self, ws, default_branch: str, *, skip_locked: bool = True,
+    ) -> dict:
+        """Sync a single workspace to the latest main branch.
+
+        Steps:
+        1. Validate the workspace is a valid git repo.
+        2. Skip if locked by an agent (unless skip_locked=False).
+        3. Fetch latest from origin.
+        4. Determine current branch state.
+        5. If on default branch: hard-reset to origin/default.
+        6. If on a feature branch:
+           a. Commit any uncommitted changes.
+           b. Push the branch to origin (save work).
+           c. Switch to default branch, hard-reset to origin.
+           d. Switch back to the feature branch (leave it as-is).
+        7. Handle conflicts gracefully.
+        """
+        ws_path = ws.workspace_path
+        ws_info = {
+            "workspace_id": ws.id,
+            "workspace_name": ws.name,
+            "workspace_path": ws_path,
+        }
+
+        # Check workspace exists
+        if not os.path.isdir(ws_path):
+            return {**ws_info, "status": "skipped", "reason": "directory not found"}
+
+        # Check if valid git repo
+        git_dir = os.path.join(ws_path, ".git")
+        if not os.path.exists(git_dir):
+            return {**ws_info, "status": "skipped", "reason": "not a git repository"}
+
+        # Skip locked workspaces (in use by an agent)
+        if skip_locked and ws.locked_by_agent_id:
+            return {
+                **ws_info,
+                "status": "skipped",
+                "reason": f"locked by agent '{ws.locked_by_agent_id}' "
+                          f"(task: {ws.locked_by_task_id})",
+            }
+
+        git = self.orchestrator.git
+
+        try:
+            # Step 1: Fetch latest remote state
+            try:
+                git._run(["fetch", "origin", "--prune"], cwd=ws_path)
+            except GitError as e:
+                return {**ws_info, "status": "error", "reason": f"fetch failed: {e}"}
+
+            # Step 2: Determine current branch
+            current_branch = git.get_current_branch(ws_path)
+            ws_info["current_branch"] = current_branch
+
+            # Step 3: Check for uncommitted changes
+            has_uncommitted = False
+            try:
+                result = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=ws_path, capture_output=True, text=True, timeout=10,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    has_uncommitted = True
+                    ws_info["had_uncommitted_changes"] = True
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
+            # Step 4: Check for active merge/rebase conflicts
+            try:
+                status_result = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=ws_path, capture_output=True, text=True, timeout=10,
+                )
+                if status_result.returncode == 0:
+                    for line in status_result.stdout.splitlines():
+                        if line.startswith(("UU ", "AA ", "DD ")):
+                            return {
+                                **ws_info,
+                                "status": "conflict",
+                                "reason": "active merge conflict in working tree — "
+                                          "needs manual resolution",
+                            }
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
+            if current_branch == default_branch:
+                # On the default branch — just hard-reset to origin
+                try:
+                    if has_uncommitted:
+                        # Stash uncommitted changes to avoid losing them
+                        git._run(["stash"], cwd=ws_path)
+                        ws_info["stashed_changes"] = True
+                    git._run(
+                        ["reset", "--hard", f"origin/{default_branch}"],
+                        cwd=ws_path,
+                    )
+                    return {**ws_info, "status": "synced", "action": "reset_to_origin"}
+                except GitError as e:
+                    return {**ws_info, "status": "error", "reason": f"reset failed: {e}"}
+            else:
+                # On a feature branch — save work and update default branch
+                actions: list[str] = []
+
+                # Auto-commit uncommitted changes if any
+                if has_uncommitted:
+                    try:
+                        committed = git.commit_all(
+                            ws_path, "[sync-workspaces] auto-commit uncommitted changes",
+                        )
+                        if committed:
+                            actions.append("auto_committed")
+                    except GitError:
+                        # Can't commit — might have conflict markers, skip
+                        pass
+
+                # Push the current feature branch to origin (save work)
+                try:
+                    git.push_branch(ws_path, current_branch, force_with_lease=True)
+                    actions.append("pushed_branch")
+                except GitError:
+                    # Push failed — might not have remote tracking, that's OK
+                    actions.append("push_skipped")
+
+                # Now update the local default branch to match origin
+                # We need to be careful: if this is a worktree we can't
+                # checkout the default branch. Use update-ref instead.
+                is_worktree = git._is_worktree(ws_path)
+
+                if is_worktree:
+                    # In a worktree, update the local ref without checkout
+                    try:
+                        origin_sha = git._run(
+                            ["rev-parse", f"origin/{default_branch}"], cwd=ws_path,
+                        )
+                        git._run(
+                            ["update-ref", f"refs/heads/{default_branch}", origin_sha],
+                            cwd=ws_path,
+                        )
+                        actions.append("updated_default_ref")
+                    except GitError:
+                        pass  # Non-critical — default branch update is best-effort
+                else:
+                    # Normal repo: checkout default, reset, then go back
+                    try:
+                        git._run(["checkout", default_branch], cwd=ws_path)
+                        git._run(
+                            ["reset", "--hard", f"origin/{default_branch}"],
+                            cwd=ws_path,
+                        )
+                        actions.append("updated_default_branch")
+                        # Switch back to the feature branch
+                        git._run(["checkout", current_branch], cwd=ws_path)
+                    except GitError:
+                        # Try to get back to the feature branch
+                        try:
+                            git._run(["checkout", current_branch], cwd=ws_path)
+                        except GitError:
+                            pass
+
+                # Optionally rebase the feature branch onto latest main
+                try:
+                    git._run(
+                        ["rebase", f"origin/{default_branch}"], cwd=ws_path,
+                    )
+                    actions.append("rebased_onto_main")
+                except GitError:
+                    # Rebase failed — abort and leave branch as-is
+                    try:
+                        git._run(["rebase", "--abort"], cwd=ws_path)
+                    except GitError:
+                        pass
+                    actions.append("rebase_skipped_conflicts")
+
+                return {
+                    **ws_info,
+                    "status": "synced",
+                    "action": ", ".join(actions) if actions else "no_changes",
+                }
+
+        except Exception as e:
+            logger.warning(
+                "Error syncing workspace %s: %s", ws_path, e, exc_info=True,
+            )
+            return {**ws_info, "status": "error", "reason": str(e)}
+
     async def _cmd_pause_agent(self, args: dict) -> dict:
         """Pause an agent so it stops receiving new tasks.
 

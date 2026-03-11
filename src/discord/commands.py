@@ -3409,6 +3409,54 @@ def setup_commands(bot: commands.Bot) -> None:
             description=f"Workspace `{workspace_id}` lock has been released.",
         )
 
+    @bot.tree.command(
+        name="sync-workspaces",
+        description="Sync all project workspaces to the latest main branch",
+    )
+    async def sync_workspaces_command(interaction: discord.Interaction):
+        project_id = await _resolve_project_from_context(interaction, None)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        await interaction.response.defer()
+        result = await handler.execute("sync_workspaces", {"project_id": project_id})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        total = result.get("total_workspaces", 0)
+        synced = result.get("synced", 0)
+        skipped = result.get("skipped", 0)
+        errors = result.get("errors", 0)
+
+        lines = [
+            f"## Workspace Sync — `{project_id}`",
+            f"**{synced}** synced · **{skipped}** skipped · **{errors}** errors "
+            f"(of {total} total)",
+            "",
+        ]
+        for ws in result.get("workspaces", []):
+            status = ws.get("status", "unknown")
+            name = ws.get("workspace_name") or ws.get("workspace_id", "?")
+            if status == "synced":
+                emoji = "✅"
+            elif status == "skipped":
+                emoji = "⏭️"
+            elif status == "conflict":
+                emoji = "⚠️"
+            else:
+                emoji = "❌"
+
+            detail = ws.get("action") or ws.get("reason") or ""
+            branch = ws.get("current_branch", "")
+            branch_str = f" (`{branch}`)" if branch else ""
+            lines.append(f"{emoji} **{name}**{branch_str}: {detail}")
+
+        msg = "\n".join(lines)
+        if len(msg) > 2000:
+            msg = msg[:1997] + "..."
+        await interaction.followup.send(msg)
+
     # ===================================================================
     # GIT COMMANDS
     # ===================================================================
