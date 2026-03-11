@@ -51,7 +51,15 @@ Time complexity: O(A × P × log P) per cycle, where A = idle agents and
 P = active projects.  Both are typically small (<10), so scheduling is
 effectively instant.
 
-See specs/scheduler-and-budget.md for the full specification.
+Integration with the orchestrator:
+
+    The orchestrator's ``_schedule()`` method builds a ``SchedulerState``
+    snapshot from DB queries each cycle, passes it to ``Scheduler.schedule()``,
+    and receives back a list of ``AssignAction`` objects.  The orchestrator
+    then launches background asyncio tasks for each assignment.
+
+    See ``src/orchestrator.py::_schedule()`` for snapshot construction.
+    See ``specs/scheduler-and-budget.md`` for the full specification.
 """
 
 from __future__ import annotations

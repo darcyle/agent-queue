@@ -45,7 +45,16 @@ Tool access in hook LLM calls:
     The ChatAgent is stateless — no conversation history carries between
     hook invocations.  The rendered prompt is the entire context.
 
-See specs/hooks.md for the full specification.
+Integration with the orchestrator:
+
+    The orchestrator creates the HookEngine at ``initialize()`` and calls
+    ``hooks.tick()`` every cycle (step 7 of ``run_one_cycle``).  The engine
+    holds a back-reference to the orchestrator (via ``set_orchestrator``)
+    for LLM invocation (ChatAgent creation) and memory search access.
+
+    See ``src/orchestrator.py::initialize()`` and ``run_one_cycle()`` for
+    the integration points.
+    See ``specs/hooks.md`` for the full specification.
 """
 from __future__ import annotations
 

@@ -46,6 +46,27 @@ Workspace locking lifecycle::
     If the task times out, crashes, or is admin-stopped, the lock is
     released in the error/timeout handler so the workspace isn't stuck.
 
+Related modules:
+
+- ``src/scheduler.py`` — Pure-function proportional fair-share scheduler.
+  Called by ``_schedule()`` with a ``SchedulerState`` snapshot; returns
+  ``AssignAction`` objects with zero side effects.  See that module's
+  docstring for the deficit-based algorithm and min-task guarantee.
+
+- ``src/hooks.py`` — Event-driven and periodic hook engine.  Ticked each
+  cycle by ``run_one_cycle`` step 7; event hooks fire asynchronously via
+  ``EventBus``.  See that module's docstring for the context pipeline,
+  short-circuit checks, and LLM invocation with tool access.
+
+- ``src/state_machine.py`` — ``VALID_TASK_TRANSITIONS`` dict defining the
+  legal (status, event) → status transitions.  The orchestrator calls
+  ``db.transition_task()`` which enforces these transitions.
+
+- ``src/adapters/base.py`` / ``src/adapters/claude.py`` — Agent adapter
+  interface (start/wait/stop/is_alive).  The orchestrator delegates all
+  LLM interaction to adapters and only processes the resulting
+  ``AgentOutput``.
+
 See ``specs/orchestrator.md`` for the full behavioral specification.
 """
 
@@ -168,7 +189,9 @@ class Orchestrator:
         self._paused: bool = False
         # Throttle: approval polling runs at most once per 60s.
         self._last_approval_check: float = 0.0
-        # LLM interaction logger
+        # LLM interaction logger — records all LLM API calls (both direct
+        # chat provider calls and agent sessions) to JSONL files for cost
+        # analysis and prompt optimization.  See ``src/llm_logger.py``.
         self.llm_logger = LLMLogger(
             enabled=config.llm_logging.enabled,
             retention_days=config.llm_logging.retention_days,
@@ -176,7 +199,11 @@ class Orchestrator:
         self._last_log_cleanup: float = 0.0
         self._last_auto_archive: float = 0.0
         self._last_config_reload: float = 0.0
-        # Chat provider for LLM-based plan parsing
+        # Chat provider for LLM-based plan parsing.  Optionally used by
+        # ``_generate_tasks_from_plan`` to parse agent-written plan files
+        # with an LLM instead of the regex parser, producing higher-quality
+        # task splits.  Wrapped with ``LoggedChatProvider`` so plan-parsing
+        # token usage appears in analytics under the ``plan_parser`` caller.
         self._chat_provider = None
         if config.auto_task.use_llm_parser:
             try:
@@ -226,10 +253,17 @@ class Orchestrator:
         return self._command_handler
 
     async def _sync_profiles_from_config(self) -> None:
-        """Sync agent profiles from YAML config into the database.
+        """Sync agent profiles from YAML config into the database (idempotent upsert).
 
-        For each profile in config.agent_profiles, create or update the
-        corresponding database row.  This is idempotent and runs at startup.
+        Runs at startup during ``initialize()``.  For each profile defined in
+        ``config.agent_profiles``, either creates a new DB row or updates the
+        existing one with the latest YAML values.  This ensures the DB always
+        reflects the config file as the source of truth for profile definitions.
+
+        Profiles are referenced by ID from tasks and projects (see
+        ``_resolve_profile``), so they must exist in the DB before the first
+        scheduling cycle.  The upsert pattern means operators can freely edit
+        profile settings in YAML and restart the daemon to apply changes.
         """
         for pc in self.config.agent_profiles:
             existing = await self.db.get_profile(pc.id)
@@ -259,7 +293,22 @@ class Orchestrator:
                 ))
 
     async def _resolve_profile(self, task: Task) -> AgentProfile | None:
-        """Resolve which profile to use: task → project → None (system default)."""
+        """Resolve the agent profile for a task using a three-level fallback chain.
+
+        Resolution order (first non-None wins):
+        1. **Task-level** — ``task.profile_id`` (explicit override per task)
+        2. **Project-level** — ``project.default_profile_id`` (project default)
+        3. **System default** — returns None, meaning the adapter uses its
+           built-in defaults (no tool restrictions, no custom system prompt,
+           default model).
+
+        Profiles control: model selection, permission mode (e.g. plan-only),
+        allowed tools allowlist, MCP server configuration, and a system prompt
+        suffix that sets the agent's "role" for the task.
+
+        See ``_execute_task`` where the resolved profile is passed to the
+        adapter factory and injected into the agent's system context prompt.
+        """
         if task.profile_id:
             return await self.db.get_profile(task.profile_id)
         project = await self.db.get_project(task.project_id)
@@ -282,11 +331,30 @@ class Orchestrator:
         self._paused = False
 
     def set_notify_callback(self, callback: NotifyCallback) -> None:
-        """Set a callback for sending notifications (e.g. to Discord)."""
+        """Inject the notification transport (e.g. Discord channel posting).
+
+        All orchestrator notifications flow through ``_notify_channel`` which
+        delegates to this callback.  The callback signature is::
+
+            async def callback(message: str, project_id: str | None,
+                               *, embed=None, view=None) -> None
+
+        This injection pattern keeps the orchestrator testable without a live
+        Discord connection.  In production, ``main.py`` wires this to the
+        Discord bot's ``send_notification`` method.
+        """
         self._notify = callback
 
     def set_create_thread_callback(self, callback: CreateThreadCallback) -> None:
-        """Set a callback for creating per-task threads."""
+        """Inject the thread-creation transport for per-task output streaming.
+
+        Each task execution creates a Discord thread for streaming agent output
+        in real time.  The callback returns two send functions: one for the
+        thread itself and one for posting brief summaries to the parent channel.
+
+        Set by ``main.py`` during bot initialization.  When None, agent output
+        is posted directly to the notifications channel (noisier but functional).
+        """
         self._create_thread = callback
 
     async def skip_task(self, task_id: str) -> tuple[str | None, list[Task]]:
@@ -396,7 +464,12 @@ class Orchestrator:
         embed: Any = None,
         view: Any = None,
     ) -> None:
-        """Send a notification if a callback is set.
+        """Send a notification via the injected callback (typically Discord).
+
+        This is the orchestrator's single notification gateway — all outbound
+        messages (task started/completed/failed, PR created, errors, etc.) flow
+        through this method.  The actual transport is injected via
+        ``set_notify_callback``, keeping the orchestrator decoupled from Discord.
 
         When *project_id* is given the callback can route the message to a
         per-project Discord channel (falling back to the global notifications
@@ -464,6 +537,11 @@ class Orchestrator:
     # crosses each percentage level (ascending).  Only the highest crossed
     # threshold triggers a notification; lower thresholds that were already
     # notified are not re-sent.
+    #
+    # NOTE: This attribute and the _check_budget_warning method below are
+    # SHADOWED by a later redefinition in this class.  See
+    # ``_BUDGET_THRESHOLDS`` and the second ``_check_budget_warning`` below.
+    # The later definition wins at runtime; this code is currently dead.
     _BUDGET_WARNING_THRESHOLDS: list[int] = [75, 90, 95]
 
     async def _check_budget_warning(
@@ -536,20 +614,24 @@ class Orchestrator:
     async def initialize(self) -> None:
         """Bootstrap the orchestrator and all subsystems.
 
-        Initialization order matters:
+        Initialization order matters — later steps depend on earlier ones:
 
-        1. **Database** — create tables if needed, run migrations.
+        1. **Database** — create tables if needed, run migrations.  Must be
+           first because every other step queries the DB.
         2. **Agent profiles** — sync YAML-defined profiles into DB rows so
-           tasks can reference them by ID.
+           tasks can reference them by ID.  Depends on DB being initialized.
         3. **Stale state recovery** — after a daemon restart, no adapter
            processes are actually running, so any IN_PROGRESS tasks and BUSY
            agents left over from the previous run are reset to a schedulable
-           state (see ``_recover_stale_state``).
+           state.  Must run before the first scheduling cycle to avoid
+           ghost assignments.  See ``_recover_stale_state``.
         4. **Hook engine** — subscribe to EventBus events and pre-populate
-           last-run timestamps so periodic hooks don't fire immediately on
-           startup.
+           last-run timestamps so periodic hooks don't all fire simultaneously
+           on startup.  Depends on DB for reading last-run times.
 
         This method must be called (and awaited) before ``run_one_cycle``.
+        Called by ``main.py`` during startup, after ``load_config()`` but
+        before the Discord bot connects.
         """
         await self.db.initialize()
         await self._sync_profiles_from_config()
@@ -562,8 +644,20 @@ class Orchestrator:
     async def _recover_stale_state(self) -> None:
         """Reset any in-flight work from a previous daemon run.
 
-        After a restart, no adapters are actually running, so any tasks
-        marked IN_PROGRESS or agents marked BUSY are stale.
+        After a restart, no adapter processes are actually running, so any
+        tasks marked IN_PROGRESS or agents marked BUSY are stale artifacts
+        from the previous run.  This method performs three recovery actions:
+
+        1. **Reset BUSY agents → IDLE** — so they're available for scheduling.
+        2. **Release all workspace locks** — no agents hold them after restart.
+        3. **Reset IN_PROGRESS tasks → READY** — so they get re-scheduled.
+           Note: tasks go to READY (not BLOCKED) because the agent may have
+           been interrupted at any point; a fresh retry is appropriate.
+
+        This is intentionally aggressive: it resets *all* stale state rather
+        than trying to resume interrupted work.  Agent work is designed to be
+        idempotent (the agent sees the workspace as the previous agent left
+        it, including any partial commits).
         """
         # Reset BUSY agents to IDLE
         agents = await self.db.list_agents()
@@ -605,10 +699,15 @@ class Orchestrator:
     def _format_memory_context(self, memories: list[dict]) -> str:
         """Format memsearch results as a readable context block for the agent.
 
-        Each memory entry is rendered with its source, heading, and content
-        so the agent can see where the information came from and how relevant
-        it is.  The output is a single string suitable for appending to
-        ``TaskContext.attached_context``.
+        Each memory entry is rendered with its source file, section heading,
+        content text, and relevance score so the agent can see where the
+        information came from and how relevant it is.  The output is a single
+        markdown string suitable for appending to ``TaskContext.attached_context``.
+
+        Memory entries come from the ``MemoryManager.recall()`` call in
+        ``_execute_task`` (step 4) and typically include past task results,
+        project documentation, and knowledge-base entries that are
+        semantically similar to the current task's description.
         """
         lines = ["## Relevant Context from Project Memory\n"]
         for i, mem in enumerate(memories, 1):
@@ -1116,10 +1215,16 @@ class Orchestrator:
         )
 
     # Budget warning thresholds — notify once per threshold crossing.
-    # NOTE: This second definition of _check_budget_warning intentionally
-    # shadows the first (defined earlier with rolling-window logic).  This
-    # version uses a simpler approach without windowed usage queries.
-    # TODO: consolidate the two implementations into one.
+    #
+    # IMPORTANT: This class attribute and the ``_check_budget_warning`` method
+    # below intentionally SHADOW the earlier definitions (``_BUDGET_WARNING_THRESHOLDS``
+    # and the first ``_check_budget_warning`` at line ~469).  Python resolves
+    # method lookups top-down within the class body, so the LAST definition
+    # wins at runtime.  This version uses cumulative token usage (simpler)
+    # instead of rolling-window-scoped usage.
+    #
+    # TODO: consolidate the two implementations into one.  The shadowed version
+    # (earlier in this file) is dead code at runtime.
     _BUDGET_THRESHOLDS: list[int] = [80, 95]
 
     async def _check_budget_warning(
@@ -1397,7 +1502,11 @@ class Orchestrator:
         default_branch = project.repo_default_branch if project else "main"
         has_repo = bool(project and project.repo_url)
 
-        # Commit any uncommitted work on the task branch
+        # Commit any uncommitted work the agent left behind.  The agent is
+        # instructed to commit its own work (see system context prompt in
+        # _execute_task), but this catch-all ensures nothing is lost if the
+        # agent forgot or was killed before committing.  The commit message
+        # includes the task ID for traceability in git log.
         committed = self.git.commit_all(
             workspace, f"agent: {task.title}\n\nTask-Id: {task.id}"
         )
@@ -1715,8 +1824,11 @@ class Orchestrator:
             )
 
         # Smart LLM fallback: if the regex parser produced steps but they
-        # look low-quality (many informational headings, few actionable),
+        # look low-quality (many informational headings, few actionable steps),
         # automatically retry with the LLM parser for better results.
+        # Quality score < 0.4 with > 5 steps typically indicates the regex
+        # parser treated section headings (like "Background", "Architecture")
+        # as implementation steps.  The LLM parser can distinguish these.
         if (
             plan.steps
             and not config.use_llm_parser
@@ -1815,14 +1927,25 @@ class Orchestrator:
 
         return created_tasks
 
+    # ── Approval polling constants ─────────────────────────────────────────
+    #
+    # These control the behavior of _check_awaiting_approval and its helpers
+    # (_handle_awaiting_no_pr, _check_pr_status).  The approval check itself
+    # is throttled to once per 60s (see _last_approval_check in __init__).
+    #
     # How often (seconds) to re-send reminders for tasks awaiting manual
-    # approval (no PR URL).
+    # approval (no PR URL).  Prevents notification spam for tasks that
+    # legitimately need manual review.
     _NO_PR_REMINDER_INTERVAL: int = 3600      # 1 hour
-    # After this many seconds without approval, escalate the notification.
+    # After this many seconds without approval, escalate the notification
+    # tone from "awaiting review" to "stuck task" with stronger language.
     _NO_PR_ESCALATION_THRESHOLD: int = 86400  # 24 hours
     # Tasks that don't require approval and have no PR URL are auto-completed
-    # after this grace period (seconds) to avoid races with the PR-creation
-    # path.  Set to 0 for immediate completion.
+    # after this grace period (seconds).  The grace period avoids a race
+    # condition: _complete_workspace transitions the task to AWAITING_APPROVAL
+    # before the PR URL is set, and _create_pr_for_task sets the URL shortly
+    # after.  Without the grace period, we might auto-complete a task that
+    # was about to get a PR URL.
     _NO_PR_AUTO_COMPLETE_GRACE: int = 120     # 2 minutes
 
     async def _check_awaiting_approval(self) -> None:
@@ -2102,12 +2225,18 @@ class Orchestrator:
         else:
             logger.debug("No thread callback set for task %s", task.id)
 
+        # Resolve the agent profile (task-level → project-level → system default)
+        # and create an adapter instance.  The profile controls model selection,
+        # tool allowlists, MCP servers, and system prompt augmentation.
+        # See ``_resolve_profile`` for the fallback chain.
         profile = await self._resolve_profile(task)
         if profile:
             logger.info("Task %s: profile='%s' tools=%s mcp=%s", task.id, profile.id, profile.allowed_tools or '(default)', list(profile.mcp_servers.keys()) if profile.mcp_servers else '(none)')
         else:
             logger.info("Task %s: no profile (using system defaults)", task.id)
         adapter = self._adapter_factory.create("claude", profile=profile)
+        # Store adapter reference so admin commands (stop_task, timeout handler)
+        # can call adapter.stop() to terminate the agent process.
         self._adapters[action.agent_id] = adapter
 
         # ------------------------------------------------------------------ #
