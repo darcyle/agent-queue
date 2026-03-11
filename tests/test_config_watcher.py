@@ -123,6 +123,10 @@ class TestConfigWatcher:
         config_data = {
             "workspace_dir": str(tmp_path / "workspaces"),
             "database_path": str(tmp_path / "test.db"),
+            "discord": {
+                "bot_token": "test-token-for-validation",
+                "guild_id": "123456789",
+            },
             "scheduling": {"rolling_window_hours": 24},
             "archive": {"after_hours": 24.0},
         }
