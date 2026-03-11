@@ -315,6 +315,8 @@ class Database:
             "ALTER TABLE tasks ADD COLUMN profile_id TEXT REFERENCES agent_profiles(id)",
             "ALTER TABLE projects ADD COLUMN default_profile_id TEXT REFERENCES agent_profiles(id)",
             "ALTER TABLE archived_tasks ADD COLUMN profile_id TEXT",
+            "ALTER TABLE tasks ADD COLUMN preferred_workspace_id TEXT REFERENCES workspaces(id)",
+            "ALTER TABLE archived_tasks ADD COLUMN preferred_workspace_id TEXT",
         ]:
             try:
                 await self._db.execute(migration)
@@ -730,8 +732,8 @@ class Database:
             "description, priority, status, verification_type, retry_count, "
             "max_retries, assigned_agent_id, branch_name, resume_after, "
             "requires_approval, pr_url, plan_source, is_plan_subtask, "
-            "task_type, profile_id, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "task_type, profile_id, preferred_workspace_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (task.id, task.project_id, task.parent_task_id, task.repo_id,
              task.title, task.description, task.priority, task.status.value,
              task.verification_type.value, task.retry_count, task.max_retries,
@@ -740,6 +742,7 @@ class Database:
              int(task.is_plan_subtask),
              task.task_type.value if task.task_type else None,
              task.profile_id,
+             task.preferred_workspace_id,
              now, now),
         )
         await self._db.commit()
@@ -1042,6 +1045,7 @@ class Database:
             is_plan_subtask=bool(row["is_plan_subtask"]) if "is_plan_subtask" in keys else False,
             task_type=TaskType(row["task_type"]) if "task_type" in keys and row["task_type"] else None,
             profile_id=row["profile_id"] if "profile_id" in keys else None,
+            preferred_workspace_id=row["preferred_workspace_id"] if "preferred_workspace_id" in keys else None,
         )
 
     # --- Dependencies ---
@@ -1359,18 +1363,38 @@ class Database:
 
     async def acquire_workspace(
         self, project_id: str, agent_id: str, task_id: str,
+        preferred_workspace_id: str | None = None,
     ) -> Workspace | None:
         """Atomically find an unlocked workspace for a project and lock it.
 
+        If *preferred_workspace_id* is given (e.g. a workspace known to contain
+        a merge conflict), attempt to lock that specific workspace first.  Falls
+        back to any unlocked workspace if the preferred one is unavailable.
+
         Returns the locked workspace, or None if all workspaces are locked.
         """
-        cursor = await self._db.execute(
-            "SELECT * FROM workspaces "
-            "WHERE project_id = ? AND locked_by_agent_id IS NULL "
-            "LIMIT 1",
-            (project_id,),
-        )
-        row = await cursor.fetchone()
+        row = None
+
+        # Try preferred workspace first (e.g. the one with a merge conflict).
+        if preferred_workspace_id:
+            cursor = await self._db.execute(
+                "SELECT * FROM workspaces "
+                "WHERE id = ? AND project_id = ? AND locked_by_agent_id IS NULL "
+                "LIMIT 1",
+                (preferred_workspace_id, project_id),
+            )
+            row = await cursor.fetchone()
+
+        # Fallback: any unlocked workspace for the project.
+        if not row:
+            cursor = await self._db.execute(
+                "SELECT * FROM workspaces "
+                "WHERE project_id = ? AND locked_by_agent_id IS NULL "
+                "LIMIT 1",
+                (project_id,),
+            )
+            row = await cursor.fetchone()
+
         if not row:
             return None
 
@@ -1848,8 +1872,8 @@ class Database:
             "priority, status, verification_type, retry_count, max_retries, "
             "assigned_agent_id, branch_name, resume_after, requires_approval, "
             "pr_url, plan_source, is_plan_subtask, task_type, profile_id, "
-            "created_at, updated_at, archived_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "preferred_workspace_id, created_at, updated_at, archived_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (task.id, task.project_id, task.parent_task_id, task.repo_id,
              task.title, task.description, task.priority, task.status.value,
              task.verification_type.value, task.retry_count, task.max_retries,
@@ -1858,6 +1882,7 @@ class Database:
              int(task.is_plan_subtask),
              task.task_type.value if task.task_type else None,
              task.profile_id,
+             task.preferred_workspace_id,
              0.0, 0.0, now),
         )
         # Read original timestamps from the tasks row directly.

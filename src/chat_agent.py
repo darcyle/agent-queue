@@ -353,6 +353,15 @@ TOOLS = [
                     "type": "string",
                     "description": "Agent profile ID to configure the agent with specific tools/capabilities (optional)",
                 },
+                "preferred_workspace_id": {
+                    "type": "string",
+                    "description": (
+                        "Workspace ID to prefer when assigning this task to an agent. "
+                        "Use this when the task must run in a specific workspace (e.g. "
+                        "one that contains a merge conflict). Get the ID from "
+                        "find_merge_conflict_workspaces or list_workspaces."
+                    ),
+                },
             },
             "required": ["title"],
         },
@@ -397,6 +406,25 @@ TOOLS = [
                 "project_id": {
                     "type": "string",
                     "description": "Filter by project ID (optional)",
+                },
+            },
+        },
+    },
+    {
+        "name": "find_merge_conflict_workspaces",
+        "description": (
+            "Scan project workspaces to find which ones have branches with merge conflicts "
+            "against the default branch (main). Returns workspace IDs, conflicting branches, "
+            "and file details. Use this BEFORE creating a merge-conflict resolution task so you "
+            "can pass the correct preferred_workspace_id to create_task — ensuring the agent "
+            "gets assigned the workspace that actually contains the conflict."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to scan workspaces for (optional if active project is set)",
                 },
             },
         },
@@ -1721,6 +1749,16 @@ the user says to "link", "connect", "use", or "point to" an existing directory/r
 - Use `list_workspaces` to see workspace status and lock information.
 - Use `release_workspace` to force-release a stuck lock (e.g., dead agent, stale task).
 - Set the project's `repo_url` and `default_branch` when creating the project with `create_project`.
+
+Merge conflict resolution workflow:
+- When a user asks to fix merge conflicts, FIRST call `find_merge_conflict_workspaces` to \
+identify which workspace(s) actually have conflicts.
+- Then create the resolution task with `preferred_workspace_id` set to the conflicting \
+workspace's ID — this ensures the agent is assigned to the correct workspace instead of a random one.
+- If multiple workspaces have conflicts, inform the user and create separate tasks for each, \
+each targeting the appropriate workspace.
+- The `find_merge_conflict_workspaces` tool checks all remote branches against the default branch \
+and also detects active working-tree conflicts (unresolved merges in progress).
 
 Agent management — agents are simple and stateless:
 - **Agents start in IDLE state** and immediately begin receiving tasks.

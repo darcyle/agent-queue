@@ -1655,6 +1655,15 @@ class CommandHandler:
             profile = await self.db.get_profile(profile_id)
             if not profile:
                 return {"error": f"Profile '{profile_id}' not found"}
+        # Validate optional preferred_workspace_id
+        preferred_workspace_id = args.get("preferred_workspace_id")
+        if preferred_workspace_id:
+            ws = await self.db.get_workspace(preferred_workspace_id)
+            if not ws:
+                return {"error": f"Workspace '{preferred_workspace_id}' not found"}
+            if ws.project_id != project_id:
+                return {"error": f"Workspace '{preferred_workspace_id}' belongs to "
+                        f"project '{ws.project_id}', not '{project_id}'"}
         task = Task(
             id=task_id,
             project_id=project_id,
@@ -1666,6 +1675,7 @@ class CommandHandler:
             requires_approval=requires_approval,
             task_type=task_type,
             profile_id=profile_id,
+            preferred_workspace_id=preferred_workspace_id,
         )
         await self.db.create_task(task)
         result = {
@@ -1681,6 +1691,8 @@ class CommandHandler:
             result["task_type"] = task_type.value
         if profile_id:
             result["profile_id"] = profile_id
+        if preferred_workspace_id:
+            result["preferred_workspace_id"] = preferred_workspace_id
         return result
 
     async def _cmd_get_task(self, args: dict) -> dict:
@@ -2671,6 +2683,170 @@ class CommandHandler:
             "workspace_id": workspace_id,
             "released_from_agent": ws.locked_by_agent_id,
             "released_from_task": ws.locked_by_task_id,
+        }
+
+    async def _cmd_find_merge_conflict_workspaces(self, args: dict) -> dict:
+        """Scan project workspaces for branches with merge conflicts against main.
+
+        For each workspace, runs ``git merge-tree`` checks on all remote
+        branches to detect conflicts without touching the worktree.  Returns a
+        list of workspaces that contain conflicting branches, along with
+        conflict details (branch name, conflicting files, commits behind).
+
+        This enables the chat agent to create a task with
+        ``preferred_workspace_id`` so the orchestrator assigns the exact
+        workspace that needs conflict resolution instead of a random one.
+        """
+        project_id = args.get("project_id") or self._active_project_id
+        if not project_id:
+            return {"error": "project_id is required (no active project set)"}
+
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"error": f"Project '{project_id}' not found"}
+
+        workspaces = await self.db.list_workspaces(project_id=project_id)
+        if not workspaces:
+            return {"error": f"No workspaces found for project '{project_id}'"}
+
+        default_branch = project.repo_default_branch or "main"
+        results: list[dict] = []
+
+        for ws in workspaces:
+            ws_path = ws.workspace_path
+            if not os.path.isdir(ws_path):
+                continue
+
+            # Check if this is a valid git repository
+            git_dir = os.path.join(ws_path, ".git")
+            if not os.path.exists(git_dir):
+                continue
+
+            try:
+                # Fetch latest remote state
+                subprocess.run(
+                    ["git", "fetch", "origin", "--prune", "--quiet"],
+                    cwd=ws_path, capture_output=True, timeout=30,
+                )
+
+                main_ref = f"origin/{default_branch}"
+
+                # Verify main exists
+                check = subprocess.run(
+                    ["git", "rev-parse", main_ref],
+                    cwd=ws_path, capture_output=True, timeout=10,
+                )
+                if check.returncode != 0:
+                    continue
+
+                # Get current branch
+                current_branch_result = subprocess.run(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    cwd=ws_path, capture_output=True, text=True, timeout=10,
+                )
+                current_branch = current_branch_result.stdout.strip() if current_branch_result.returncode == 0 else "unknown"
+
+                # Check for uncommitted merge conflict markers in working tree
+                has_working_tree_conflict = False
+                status_result = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=ws_path, capture_output=True, text=True, timeout=10,
+                )
+                if status_result.returncode == 0:
+                    for line in status_result.stdout.splitlines():
+                        if line.startswith("UU ") or line.startswith("AA ") or line.startswith("DD "):
+                            has_working_tree_conflict = True
+                            break
+
+                # List remote branches and check each for merge conflicts
+                branch_result = subprocess.run(
+                    ["git", "branch", "-r", "--list", "origin/*"],
+                    cwd=ws_path, capture_output=True, text=True, timeout=10,
+                )
+                if branch_result.returncode != 0:
+                    continue
+
+                branch_conflicts: list[dict] = []
+
+                for line in branch_result.stdout.splitlines():
+                    branch_ref = line.strip()
+                    if not branch_ref:
+                        continue
+
+                    branch_name = branch_ref.removeprefix("origin/")
+
+                    # Skip main, HEAD, and dependabot branches
+                    if branch_name in (default_branch, "HEAD") or branch_name.startswith("dependabot/"):
+                        continue
+                    if " -> " in branch_ref:
+                        continue
+
+                    # Find merge base
+                    mb_result = subprocess.run(
+                        ["git", "merge-base", main_ref, branch_ref],
+                        cwd=ws_path, capture_output=True, text=True, timeout=10,
+                    )
+                    if mb_result.returncode != 0:
+                        continue
+                    merge_base = mb_result.stdout.strip()
+
+                    # Use merge-tree to check for conflicts
+                    mt_result = subprocess.run(
+                        ["git", "merge-tree", merge_base, main_ref, branch_ref],
+                        cwd=ws_path, capture_output=True, text=True, timeout=10,
+                    )
+                    merge_output = mt_result.stdout
+
+                    if "+<<<<<<< " in merge_output:
+                        # Extract conflicting files
+                        conflicting_files = []
+                        for mline in merge_output.splitlines():
+                            if mline.startswith("changed in both"):
+                                conflicting_files.append(mline.replace("changed in both", "").strip())
+
+                        # Extract task ID from branch name
+                        if "/" in branch_name:
+                            task_id_part = branch_name.split("/")[0]
+                        else:
+                            task_id_part = branch_name
+
+                        # Commits behind main
+                        behind_result = subprocess.run(
+                            ["git", "rev-list", "--count", f"{branch_ref}..{main_ref}"],
+                            cwd=ws_path, capture_output=True, text=True, timeout=10,
+                        )
+                        behind_count = behind_result.stdout.strip() if behind_result.returncode == 0 else "?"
+
+                        branch_conflicts.append({
+                            "branch": branch_name,
+                            "task_id": task_id_part,
+                            "conflicting_files": conflicting_files or ["unknown"],
+                            "commits_behind_main": behind_count,
+                        })
+
+                if branch_conflicts or has_working_tree_conflict:
+                    results.append({
+                        "workspace_id": ws.id,
+                        "workspace_name": ws.name,
+                        "workspace_path": ws_path,
+                        "current_branch": current_branch,
+                        "locked_by_task_id": ws.locked_by_task_id,
+                        "locked_by_agent_id": ws.locked_by_agent_id,
+                        "has_working_tree_conflict": has_working_tree_conflict,
+                        "branch_conflicts": branch_conflicts,
+                    })
+
+            except (subprocess.TimeoutExpired, OSError) as e:
+                logging.getLogger(__name__).warning(
+                    "Error scanning workspace %s for conflicts: %s", ws_path, e,
+                )
+                continue
+
+        return {
+            "project_id": project_id,
+            "workspaces_scanned": len(workspaces),
+            "workspaces_with_conflicts": len(results),
+            "conflicts": results,
         }
 
     async def _cmd_pause_agent(self, args: dict) -> dict:
