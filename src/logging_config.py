@@ -1,156 +1,167 @@
-"""Structured logging with correlation IDs for per-task tracing.
+"""Structured logging with correlation IDs for the agent queue system.
 
-Provides a ``CorrelationContext`` (backed by Python's ``contextvars``) that
-carries task_id, project_id, and agent_id through the call stack.  A
-``StructuredFormatter`` automatically injects these IDs into every log
-record, enabling easy filtering of log output by task.
+Provides JSON-lines structured logging via a custom ``StructuredFormatter``
+and task-level correlation context using ``contextvars``.  When configured,
+all log output is emitted as single-line JSON objects with consistent fields
+(timestamp, level, logger, message, plus any extra context).
+
+The ``CorrelationContext`` class manages per-task context that is automatically
+attached to every log record within that task's execution scope.  This enables
+filtering and tracing logs for a specific task_id, project_id, or cycle across
+all components without manual threading of IDs.
 
 Usage::
 
-    from src.logging_config import setup_logging, correlation_context
+    from src.logging_config import setup_logging, CorrelationContext
 
-    setup_logging(level="INFO", json_output=False)
+    # At startup
+    setup_logging(config.logging)
 
-    async with correlation_context(task_id="swift-river", project_id="my-proj"):
+    # In task execution
+    with CorrelationContext(task_id="swift-dawn", project_id="my-project"):
         logger.info("Starting task execution")
-        # All log lines inside this block include the correlation IDs
+        # All log records within this block include task_id and project_id
 
-For code that processes a specific task over a long period (e.g. the
-orchestrator's ``_execute_task``), use ``TaskLogAdapter`` to automatically
-tag every log call::
-
-    from src.logging_config import TaskLogAdapter
-
-    task_logger = TaskLogAdapter(logger, task_id="swift-river", project_id="my-proj")
-    task_logger.info("Agent started")  # automatically includes task_id
+See ``LoggingConfig`` in ``src/config.py`` for available configuration options.
 """
 
 from __future__ import annotations
 
-import contextlib
-import contextvars
 import json
 import logging
 import sys
+import time
+from contextvars import ContextVar
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
 
-# ---------------------------------------------------------------------------
-# Correlation context — stored per-asyncio-task via contextvars
-# ---------------------------------------------------------------------------
+# ── Correlation context (contextvars-based) ──────────────────────────────
 
-_ctx_task_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+_correlation_task_id: ContextVar[str | None] = ContextVar(
     "correlation_task_id", default=None
 )
-_ctx_project_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+_correlation_project_id: ContextVar[str | None] = ContextVar(
     "correlation_project_id", default=None
 )
-_ctx_agent_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "correlation_agent_id", default=None
+_correlation_cycle_id: ContextVar[str | None] = ContextVar(
+    "correlation_cycle_id", default=None
+)
+_correlation_component: ContextVar[str | None] = ContextVar(
+    "correlation_component", default=None
 )
 
 
 class CorrelationContext:
-    """Read-only accessor for the current correlation IDs.
+    """Context manager that sets correlation fields on log records.
 
-    Use ``correlation_context()`` (the context manager) to set values.
-    This class is used by the formatter to read them.
-    """
-
-    @staticmethod
-    def task_id() -> str | None:
-        return _ctx_task_id.get()
-
-    @staticmethod
-    def project_id() -> str | None:
-        return _ctx_project_id.get()
-
-    @staticmethod
-    def agent_id() -> str | None:
-        return _ctx_agent_id.get()
-
-    @staticmethod
-    def as_dict() -> dict[str, str]:
-        """Return non-None correlation IDs as a dict."""
-        result: dict[str, str] = {}
-        task_id = _ctx_task_id.get()
-        if task_id:
-            result["task_id"] = task_id
-        project_id = _ctx_project_id.get()
-        if project_id:
-            result["project_id"] = project_id
-        agent_id = _ctx_agent_id.get()
-        if agent_id:
-            result["agent_id"] = agent_id
-        return result
-
-
-@contextlib.asynccontextmanager
-async def correlation_context(
-    task_id: str | None = None,
-    project_id: str | None = None,
-    agent_id: str | None = None,
-):
-    """Async context manager that sets correlation IDs for the current task.
-
-    IDs are automatically cleared when the context exits. Nesting is safe —
-    inner contexts override outer ones and restore the previous values on exit.
+    Fields are stored in ``contextvars`` so they automatically propagate
+    through ``await`` chains within the same task.  On exit the previous
+    values are restored (supports nesting).
 
     Example::
 
-        async with correlation_context(task_id="swift-river"):
-            logger.info("Processing task")  # log includes task_id
+        with CorrelationContext(task_id="swift-dawn", project_id="acme"):
+            logger.info("Processing")  # includes task_id, project_id
     """
-    old_task = _ctx_task_id.get()
-    old_project = _ctx_project_id.get()
-    old_agent = _ctx_agent_id.get()
 
+    def __init__(
+        self,
+        *,
+        task_id: str | None = None,
+        project_id: str | None = None,
+        cycle_id: str | None = None,
+        component: str | None = None,
+    ):
+        self._task_id = task_id
+        self._project_id = project_id
+        self._cycle_id = cycle_id
+        self._component = component
+        self._tokens: list = []
+
+    def __enter__(self) -> CorrelationContext:
+        if self._task_id is not None:
+            self._tokens.append(
+                ("task_id", _correlation_task_id.set(self._task_id))
+            )
+        if self._project_id is not None:
+            self._tokens.append(
+                ("project_id", _correlation_project_id.set(self._project_id))
+            )
+        if self._cycle_id is not None:
+            self._tokens.append(
+                ("cycle_id", _correlation_cycle_id.set(self._cycle_id))
+            )
+        if self._component is not None:
+            self._tokens.append(
+                ("component", _correlation_component.set(self._component))
+            )
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        for name, token in reversed(self._tokens):
+            var = {
+                "task_id": _correlation_task_id,
+                "project_id": _correlation_project_id,
+                "cycle_id": _correlation_cycle_id,
+                "component": _correlation_component,
+            }[name]
+            var.reset(token)
+        self._tokens.clear()
+
+
+def get_correlation_context() -> dict[str, str]:
+    """Return current correlation fields as a dict (non-None values only)."""
+    ctx: dict[str, str] = {}
+    task_id = _correlation_task_id.get()
     if task_id is not None:
-        _ctx_task_id.set(task_id)
+        ctx["task_id"] = task_id
+    project_id = _correlation_project_id.get()
     if project_id is not None:
-        _ctx_project_id.set(project_id)
-    if agent_id is not None:
-        _ctx_agent_id.set(agent_id)
-
-    try:
-        yield
-    finally:
-        _ctx_task_id.set(old_task)
-        _ctx_project_id.set(old_project)
-        _ctx_agent_id.set(old_agent)
+        ctx["project_id"] = project_id
+    cycle_id = _correlation_cycle_id.get()
+    if cycle_id is not None:
+        ctx["cycle_id"] = cycle_id
+    component = _correlation_component.get()
+    if component is not None:
+        ctx["component"] = component
+    return ctx
 
 
-# ---------------------------------------------------------------------------
-# Structured formatter — JSON lines or human-readable
-# ---------------------------------------------------------------------------
+# ── Structured JSON formatter ────────────────────────────────────────────
 
 class StructuredFormatter(logging.Formatter):
-    """Log formatter that outputs either JSON lines or human-readable text.
+    """Formats log records as single-line JSON objects.
 
-    In JSON mode, each log line is a self-contained JSON object with:
-    - ``timestamp``: ISO 8601 UTC
-    - ``level``: log level name
-    - ``logger``: logger name
-    - ``message``: formatted message
-    - ``task_id``, ``project_id``, ``agent_id``: correlation IDs (if set)
-    - Any extra fields passed via ``extra={}``
+    Output fields:
+    - ``timestamp`` — ISO 8601 UTC
+    - ``level`` — log level name (INFO, WARNING, etc.)
+    - ``logger`` — logger name (usually module path)
+    - ``message`` — the formatted log message
+    - ``task_id``, ``project_id``, ``cycle_id``, ``component`` — from
+      ``CorrelationContext`` (omitted when not set)
+    - Any extra fields passed via ``logger.info("msg", extra={...})``
 
-    In human-readable mode (the default), the format is::
-
-        2024-01-15T12:34:56Z INFO  [task:swift-river] orchestrator: Starting execution
+    When ``include_source`` is True (default for DEBUG level configs),
+    ``filename`` and ``lineno`` are included.
     """
 
-    def __init__(self, json_output: bool = False):
+    # Fields from LogRecord that we handle explicitly or want to exclude
+    _SKIP_FIELDS = frozenset({
+        "name", "msg", "args", "created", "relativeCreated",
+        "exc_info", "exc_text", "stack_info", "lineno", "funcName",
+        "filename", "module", "pathname", "levelname", "levelno",
+        "msecs", "thread", "threadName", "process", "processName",
+        "taskName", "message",
+    })
+
+    def __init__(self, include_source: bool = False):
         super().__init__()
-        self._json_output = json_output
+        self._include_source = include_source
 
     def format(self, record: logging.LogRecord) -> str:
-        if self._json_output:
-            return self._format_json(record)
-        return self._format_human(record)
-
-    def _format_json(self, record: logging.LogRecord) -> str:
+        # Build the base entry
         entry: dict[str, Any] = {
             "timestamp": datetime.fromtimestamp(
                 record.created, tz=timezone.utc
@@ -160,139 +171,93 @@ class StructuredFormatter(logging.Formatter):
             "message": record.getMessage(),
         }
 
-        # Add correlation IDs
-        correlation = CorrelationContext.as_dict()
-        if correlation:
-            entry.update(correlation)
+        # Add correlation context
+        entry.update(get_correlation_context())
 
-        # Add extra fields (skip internal LogRecord attributes)
-        _internal = {
-            "name", "msg", "args", "created", "relativeCreated",
-            "exc_info", "exc_text", "stack_info", "lineno", "funcName",
-            "filename", "module", "pathname", "levelno", "levelname",
-            "thread", "threadName", "process", "processName",
-            "msecs", "message", "taskName",
-        }
-        for key, value in record.__dict__.items():
-            if key not in _internal and not key.startswith("_"):
-                entry[key] = value
+        # Add source location if configured
+        if self._include_source:
+            entry["filename"] = record.filename
+            entry["lineno"] = record.lineno
 
         # Add exception info if present
-        if record.exc_info and record.exc_info[1]:
+        if record.exc_info and record.exc_info[1] is not None:
             entry["exception"] = self.formatException(record.exc_info)
+
+        if record.stack_info:
+            entry["stack_info"] = record.stack_info
+
+        # Add any extra fields that aren't standard LogRecord attributes
+        for key, value in record.__dict__.items():
+            if key not in self._SKIP_FIELDS and not key.startswith("_"):
+                entry[key] = value
 
         return json.dumps(entry, default=str, ensure_ascii=False)
 
-    def _format_human(self, record: logging.LogRecord) -> str:
+
+class HumanReadableFormatter(logging.Formatter):
+    """Human-readable formatter that includes correlation context.
+
+    Format: ``TIMESTAMP LEVEL [logger] [task_id=X project_id=Y] message``
+
+    Used when ``structured_logging.format`` is set to ``"text"`` (the default)
+    for easier local development and debugging.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
         ts = datetime.fromtimestamp(
             record.created, tz=timezone.utc
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        level = record.levelname.ljust(5)
+        ).strftime("%Y-%m-%d %H:%M:%S")
 
         # Build correlation tag
-        parts: list[str] = []
-        task_id = CorrelationContext.task_id()
-        if task_id:
-            parts.append(f"task:{task_id}")
-        project_id = CorrelationContext.project_id()
-        if project_id:
-            parts.append(f"proj:{project_id}")
-        agent_id = CorrelationContext.agent_id()
-        if agent_id:
-            parts.append(f"agent:{agent_id}")
+        ctx = get_correlation_context()
+        ctx_parts = [f"{k}={v}" for k, v in ctx.items()]
+        ctx_str = f" [{' '.join(ctx_parts)}]" if ctx_parts else ""
 
-        # Also check record's extra fields
-        if not task_id and hasattr(record, "task_id") and record.task_id:
-            parts.append(f"task:{record.task_id}")
-        if not project_id and hasattr(record, "project_id") and record.project_id:
-            parts.append(f"proj:{record.project_id}")
+        msg = record.getMessage()
+        base = f"{ts} {record.levelname:<8} [{record.name}]{ctx_str} {msg}"
 
-        tag = f" [{','.join(parts)}]" if parts else ""
+        if record.exc_info and record.exc_info[1] is not None:
+            base += "\n" + self.formatException(record.exc_info)
 
-        message = record.getMessage()
-
-        line = f"{ts} {level}{tag} {record.name}: {message}"
-
-        if record.exc_info and record.exc_info[1]:
-            line += "\n" + self.formatException(record.exc_info)
-
-        return line
+        return base
 
 
-# ---------------------------------------------------------------------------
-# Task-specific log adapter
-# ---------------------------------------------------------------------------
-
-class TaskLogAdapter(logging.LoggerAdapter):
-    """Logger adapter that automatically includes task correlation IDs.
-
-    Use this in code that handles a specific task over multiple log calls::
-
-        task_logger = TaskLogAdapter(logger, task_id="swift-river", project_id="my-proj")
-        task_logger.info("Agent started")
-        task_logger.info("Files changed: %d", len(files))
-    """
-
-    def __init__(
-        self,
-        logger: logging.Logger,
-        task_id: str = "",
-        project_id: str = "",
-        agent_id: str = "",
-    ):
-        extra = {}
-        if task_id:
-            extra["task_id"] = task_id
-        if project_id:
-            extra["project_id"] = project_id
-        if agent_id:
-            extra["agent_id"] = agent_id
-        super().__init__(logger, extra)
-
-    def process(
-        self, msg: str, kwargs: dict[str, Any]
-    ) -> tuple[str, dict[str, Any]]:
-        # Merge our extra fields into the log record's extra
-        extra = kwargs.get("extra", {})
-        extra.update(self.extra)
-        kwargs["extra"] = extra
-        return msg, kwargs
-
-
-# ---------------------------------------------------------------------------
-# Setup function
-# ---------------------------------------------------------------------------
+# ── Setup function ───────────────────────────────────────────────────────
 
 def setup_logging(
+    *,
     level: str = "INFO",
-    json_output: bool = False,
+    format: str = "text",
+    include_source: bool = False,
 ) -> None:
-    """Configure the root logger with structured formatting.
+    """Configure the root logger with structured or human-readable output.
 
     Args:
-        level: Log level string (DEBUG, INFO, WARNING, ERROR, CRITICAL).
-        json_output: If True, output JSON lines. Otherwise human-readable.
-
-    This function:
-    1. Sets the root logger level
-    2. Removes any existing handlers
-    3. Adds a stderr handler with the StructuredFormatter
-    4. Silences noisy third-party loggers (discord, aiohttp, aiosqlite)
+        level: Log level name (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+        format: Output format — ``"json"`` for JSON-lines, ``"text"`` for
+            human-readable (default).
+        include_source: Include filename/lineno in JSON output.
     """
     root = logging.getLogger()
-    root.setLevel(getattr(logging, level.upper(), logging.INFO))
 
-    # Remove existing handlers to avoid duplicates on re-init
+    # Remove existing handlers to avoid duplicate output
     for handler in root.handlers[:]:
         root.removeHandler(handler)
 
-    # Console handler with structured formatter
-    console = logging.StreamHandler(sys.stderr)
-    console.setFormatter(StructuredFormatter(json_output=json_output))
-    root.addHandler(console)
+    handler = logging.StreamHandler(sys.stderr)
 
-    # Silence noisy third-party loggers
-    for name in ("discord", "discord.http", "discord.gateway",
-                 "aiohttp", "aiosqlite", "urllib3", "asyncio"):
-        logging.getLogger(name).setLevel(logging.WARNING)
+    if format == "json":
+        handler.setFormatter(StructuredFormatter(include_source=include_source))
+    else:
+        handler.setFormatter(HumanReadableFormatter())
+
+    log_level = getattr(logging, level.upper(), logging.INFO)
+    root.setLevel(log_level)
+    handler.setLevel(log_level)
+    root.addHandler(handler)
+
+    # Quiet down noisy third-party loggers
+    for noisy in ("discord", "discord.http", "discord.gateway", "aiohttp"):
+        logging.getLogger(noisy).setLevel(
+            max(log_level, logging.WARNING)
+        )

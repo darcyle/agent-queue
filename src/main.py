@@ -46,7 +46,7 @@ async def run(config_path: str) -> bool:
     # Set up structured logging early (before any other import logs)
     setup_logging(
         level=os.environ.get("AGENT_QUEUE_LOG_LEVEL", "INFO"),
-        json_output=os.environ.get("AGENT_QUEUE_LOG_FORMAT", "") == "json",
+        format="json" if os.environ.get("AGENT_QUEUE_LOG_FORMAT") == "json" else "text",
     )
 
     config = load_config(config_path)
@@ -54,6 +54,13 @@ async def run(config_path: str) -> bool:
         "Configuration loaded (env=%s, profile=%s)",
         config.env,
         config_path,
+    )
+
+    # Configure structured logging before anything else
+    setup_logging(
+        level=config.logging.level,
+        format=config.logging.format,
+        include_source=config.logging.include_source,
     )
 
     # Ensure database directory exists

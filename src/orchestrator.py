@@ -26,7 +26,7 @@ import time
 from typing import Any, Callable, Awaitable
 
 from src.adapters.base import MessageCallback
-from src.logging_config import TaskLogAdapter, correlation_context
+from src.logging_config import CorrelationContext
 from src.config import AppConfig
 from src.llm_logger import LLMLogger
 from src.database import Database
@@ -649,6 +649,15 @@ class Orchestrator:
 
     async def _execute_task_safe(self, action: AssignAction) -> None:
         """Wrapper around _execute_task that catches exceptions and enforces timeout."""
+        with CorrelationContext(
+            task_id=action.task_id,
+            project_id=action.project_id,
+            component="orchestrator",
+        ):
+            await self._execute_task_safe_inner(action)
+
+    async def _execute_task_safe_inner(self, action: AssignAction) -> None:
+        """Inner implementation of _execute_task_safe with correlation context already set."""
         timeout = self.config.agents_config.stuck_timeout_seconds
         try:
             if timeout > 0:

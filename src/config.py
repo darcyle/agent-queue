@@ -179,6 +179,21 @@ class MemoryConfig:
 
 
 @dataclass
+class LoggingConfig:
+    """Configuration for structured logging and output format.
+
+    Controls the Python stdlib logging setup. When ``format`` is ``"json"``,
+    all log output is emitted as single-line JSON objects suitable for log
+    aggregation systems. The ``"text"`` format (default) is human-readable
+    with correlation context appended.
+    """
+
+    level: str = "INFO"       # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    format: str = "text"      # "text" or "json"
+    include_source: bool = False  # Include filename/lineno in JSON output
+
+
+@dataclass
 class HookEngineConfig:
     enabled: bool = True
     max_concurrent_hooks: int = 2
@@ -264,6 +279,7 @@ class AppConfig:
     chat_provider: ChatProviderConfig = field(default_factory=ChatProviderConfig)
     hook_engine: HookEngineConfig = field(default_factory=HookEngineConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
     auto_task: AutoTaskConfig = field(default_factory=AutoTaskConfig)
@@ -564,6 +580,14 @@ def load_config(path: str) -> AppConfig:
         config.hook_engine = HookEngineConfig(
             enabled=h.get("enabled", True),
             max_concurrent_hooks=h.get("max_concurrent_hooks", 2),
+        )
+
+    if "logging" in raw:
+        lg = raw["logging"]
+        config.logging = LoggingConfig(
+            level=lg.get("level", "INFO"),
+            format=lg.get("format", "text"),
+            include_source=lg.get("include_source", False),
         )
 
     if "monitoring" in raw:
