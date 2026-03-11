@@ -80,7 +80,7 @@ from typing import Any, Callable, Awaitable
 
 from src.adapters.base import MessageCallback
 from src.logging_config import CorrelationContext
-from src.config import AppConfig
+from src.config import AppConfig, ConfigWatcher
 from src.llm_logger import LLMLogger
 from src.database import Database
 from src.discord.notifications import (
@@ -198,7 +198,7 @@ class Orchestrator:
         )
         self._last_log_cleanup: float = 0.0
         self._last_auto_archive: float = 0.0
-        self._last_config_reload: float = 0.0
+        self._config_watcher: ConfigWatcher | None = None
         # Chat provider for LLM-based plan parsing.  Optionally used by
         # ``_generate_tasks_from_plan`` to parse agent-written plan files
         # with an LLM instead of the regex parser, producing higher-quality
@@ -641,6 +641,16 @@ class Orchestrator:
             self.hooks.set_orchestrator(self)
             await self.hooks.initialize()
 
+        # Start config file watcher for hot-reloading
+        if self.config._config_path:
+            self._config_watcher = ConfigWatcher(
+                config_path=self.config._config_path,
+                event_bus=self.bus,
+                current_config=self.config,
+            )
+            self.bus.subscribe("config.reloaded", self._on_config_reloaded)
+            self._config_watcher.start()
+
     async def _recover_stale_state(self) -> None:
         """Reset any in-flight work from a previous daemon run.
 
@@ -737,6 +747,8 @@ class Orchestrator:
         for them to finish before closing it.
         """
         await self.wait_for_running_tasks(timeout=10)
+        if self._config_watcher:
+            await self._config_watcher.stop()
         if self.hooks:
             await self.hooks.shutdown()
         if self.memory_manager:
@@ -850,13 +862,10 @@ class Orchestrator:
             if self.hooks:
                 await self.hooks.tick()
 
-            # 8. Hot-reload non-critical config settings (~once per 5 minutes).
-            now = time.time()
-            if now - self._last_config_reload >= 300:
-                self._last_config_reload = now
-                self._try_reload_config()
+            # 8. Config hot-reload is handled by ConfigWatcher (background task).
 
             # 9. Periodic log cleanup and analytics flush (~once per hour).
+            now = time.time()
             if now - self._last_log_cleanup >= 3600:
                 self._last_log_cleanup = now
                 try:
@@ -974,28 +983,26 @@ class Orchestrator:
         finally:
             self._running_tasks.pop(action.task_id, None)
 
-    def _try_reload_config(self) -> None:
-        """Attempt to hot-reload non-critical configuration settings from disk.
+    async def _on_config_reloaded(self, data: dict) -> None:
+        """Handle config.reloaded events from the ConfigWatcher.
 
-        Called periodically (~every 5 minutes) from the main loop. Only
-        reloads settings that are safe to change at runtime without restart:
-        scheduling, pause_retry, auto_task, archive, monitoring, hook_engine,
-        and llm_logging.  Critical settings (discord, database_path,
-        workspace_dir, chat_provider, memory) are NOT reloaded.
-
-        If the reload fails (e.g., YAML parse error), the current config is
-        kept unchanged and the error is logged.
+        Updates the orchestrator's config reference and propagates changes
+        to subsystems that cache config values (hook engine, budget manager).
         """
-        try:
-            updated = self.config.reload_non_critical()
-            if updated is not self.config:
-                self.config = updated
-                # Update hook engine config reference if it exists
-                if self.hooks:
-                    self.hooks.config = updated
-                logger.info("Config hot-reload: non-critical settings refreshed from disk")
-        except Exception as e:
-            logger.warning("Config hot-reload error: %s", e)
+        config = data.get("config")
+        if config is None:
+            return
+        self.config = config
+        # Update hook engine config reference
+        if self.hooks:
+            self.hooks.config = config
+        # Update budget manager if global budget changed
+        if self.budget and config.global_token_budget_daily is not None:
+            self.budget._global_budget = config.global_token_budget_daily
+        logger.info(
+            "Config reloaded: updated sections: %s",
+            ", ".join(data.get("changed_sections", [])),
+        )
 
     async def _resume_paused_tasks(self) -> None:
         """Check PAUSED tasks whose ``resume_after`` has elapsed and promote to READY.

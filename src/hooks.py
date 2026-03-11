@@ -132,21 +132,30 @@ class HookEngine:
     async def initialize(self) -> None:
         """Subscribe to EventBus for event-driven hooks and restore state.
 
-        Two setup steps:
+        Three setup steps:
         1. Register a wildcard EventBus subscriber so ``_on_event`` receives
            every event type.  The method then filters for matching hooks.
-        2. Pre-populate ``_last_run_time`` from the DB so that periodic hooks
+        2. Subscribe to ``config.reloaded`` so the hook engine picks up
+           changes to ``hook_engine`` settings at runtime.
+        3. Pre-populate ``_last_run_time`` from the DB so that periodic hooks
            don't all fire immediately on daemon startup.  Without this, a
            restart would cause every periodic hook to trigger simultaneously
            (because their in-memory last-run timestamps would default to 0).
         """
         self.bus.subscribe("*", self._on_event)
+        self.bus.subscribe("config.reloaded", self._on_config_reloaded)
         # Pre-populate last run times from DB
         hooks = await self.db.list_hooks(enabled=True)
         for hook in hooks:
             last_run = await self.db.get_last_hook_run(hook.id)
             if last_run:
                 self._last_run_time[hook.id] = last_run.started_at
+
+    async def _on_config_reloaded(self, data: dict) -> None:
+        """Handle config.reloaded events — update hook engine config reference."""
+        config = data.get("config")
+        if config is not None:
+            self.config = config
 
     async def tick(self) -> None:
         """Called every orchestrator cycle (~5s). Manage hook lifecycle.
