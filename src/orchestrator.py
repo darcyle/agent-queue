@@ -476,6 +476,23 @@ class Orchestrator:
         logger.info("Budget warning: project %s at %.0f%% (%s/%s tokens, threshold=%d%%)", project_id, pct, usage, limit, crossed)
 
     async def initialize(self) -> None:
+        """Bootstrap the orchestrator and all subsystems.
+
+        Initialization order matters:
+
+        1. **Database** — create tables if needed, run migrations.
+        2. **Agent profiles** — sync YAML-defined profiles into DB rows so
+           tasks can reference them by ID.
+        3. **Stale state recovery** — after a daemon restart, no adapter
+           processes are actually running, so any IN_PROGRESS tasks and BUSY
+           agents left over from the previous run are reset to a schedulable
+           state (see ``_recover_stale_state``).
+        4. **Hook engine** — subscribe to EventBus events and pre-populate
+           last-run timestamps so periodic hooks don't fire immediately on
+           startup.
+
+        This method must be called (and awaited) before ``run_one_cycle``.
+        """
         await self.db.initialize()
         await self._sync_profiles_from_config()
         await self._recover_stale_state()
@@ -550,9 +567,18 @@ class Orchestrator:
         return "\n".join(lines)
 
     async def shutdown(self) -> None:
-        # Wait for any running task executions to finish before closing
-        # the database, otherwise they'll hit "Cannot operate on a closed
-        # database" errors.
+        """Gracefully shut down all subsystems in dependency order.
+
+        Shutdown order:
+        1. Wait for running agent tasks (with a 10s timeout so we don't
+           hang indefinitely if an adapter is stuck).
+        2. Shut down the hook engine (cancels any in-flight hook tasks).
+        3. Close the memory manager (flushes pending index writes).
+        4. Close the database connection.
+
+        The order matters: tasks and hooks use the DB, so we must wait
+        for them to finish before closing it.
+        """
         await self.wait_for_running_tasks(timeout=10)
         if self.hooks:
             await self.hooks.shutdown()
@@ -648,7 +674,15 @@ class Orchestrator:
             logger.error("Scheduler cycle error", exc_info=True)
 
     async def _execute_task_safe(self, action: AssignAction) -> None:
-        """Wrapper around _execute_task that catches exceptions and enforces timeout."""
+        """Top-level wrapper for background task execution.
+
+        Establishes a structured-logging correlation context (task_id,
+        project_id) so every log line emitted during this task's execution
+        can be traced back to it.  Delegates to ``_execute_task_safe_inner``
+        for timeout enforcement and error recovery.
+
+        This is the coroutine stored in ``_running_tasks[task_id]``.
+        """
         with CorrelationContext(
             task_id=action.task_id,
             project_id=action.project_id,
@@ -657,7 +691,20 @@ class Orchestrator:
             await self._execute_task_safe_inner(action)
 
     async def _execute_task_safe_inner(self, action: AssignAction) -> None:
-        """Inner implementation of _execute_task_safe with correlation context already set."""
+        """Timeout enforcement and crash recovery around ``_execute_task``.
+
+        Wraps the real execution pipeline with ``asyncio.wait_for`` so that
+        stuck agents are forcibly stopped after ``stuck_timeout_seconds``.
+
+        On timeout:
+          - The adapter is stopped, workspace lock released, task → BLOCKED,
+            agent → IDLE, and a downstream-chain-stuck check is performed.
+
+        On unexpected exception:
+          - Task → READY (so it can be retried), agent → IDLE, workspace
+            released.  The task is *not* counted as a retry because the
+            failure was in orchestrator logic, not agent logic.
+        """
         timeout = self.config.agents_config.stuck_timeout_seconds
         try:
             if timeout > 0:
@@ -997,11 +1044,17 @@ class Orchestrator:
         credit weights, deficit accounting, and workspace availability to
         decide which project's READY tasks should be assigned next.
         """
+        # Build a consistent point-in-time snapshot of all system state the
+        # scheduler needs.  Each query reads from the DB independently (no
+        # transaction), but the ~5s cycle frequency means the snapshot is
+        # close enough to consistent for scheduling purposes.
         projects = await self.db.list_projects()
         tasks = await self.db.list_tasks()
         agents = await self.db.list_agents()
 
-        # Calculate token usage in window
+        # Token usage within the rolling window — this is the "actual usage"
+        # that the deficit-based scheduler compares against each project's
+        # credit_weight target ratio to achieve proportional fairness.
         window_start = time.time() - (
             self.config.scheduling.rolling_window_hours * 3600
         )
@@ -1011,7 +1064,10 @@ class Orchestrator:
                 p.id, since=window_start
             )
 
-        # Count active agents per project
+        # Active (BUSY) agent count per project — used to enforce each
+        # project's max_concurrent_agents limit.  We look up the project
+        # from the agent's current task rather than storing it on the agent
+        # directly, because agent-project affinity is transient.
         active_counts: dict[str, int] = {}
         for a in agents:
             if a.state == AgentState.BUSY and a.current_task_id:
@@ -1023,7 +1079,10 @@ class Orchestrator:
 
         total_used = sum(project_usage.values())
 
-        # Count available (unlocked) workspaces per project
+        # Workspace availability acts as a hard constraint: a project
+        # cannot be assigned work if all its workspaces are locked by
+        # running agents.  This prevents the scheduler from assigning
+        # more tasks than can physically execute in parallel.
         workspace_counts: dict[str, int] = {}
         for p in projects:
             workspace_counts[p.id] = await self.db.count_available_workspaces(p.id)
@@ -1190,7 +1249,17 @@ class Orchestrator:
         return None
 
     async def _is_last_subtask(self, task: Task) -> bool:
-        """Check if all sibling subtasks (same parent) are COMPLETED except this one."""
+        """Check if this subtask is the final one to complete in a plan chain.
+
+        Returns True when every sibling subtask (all tasks sharing the same
+        ``parent_task_id``) has already reached COMPLETED status.  This
+        determines whether the post-completion workflow should trigger the
+        "final step" actions: merge to default branch or create a PR.
+
+        Intermediate subtasks only commit to the shared branch — they do
+        not merge or create PRs, keeping the chain flowing without human
+        intervention until the last step.
+        """
         if not task.parent_task_id:
             return True
         siblings = await self.db.get_subtasks(task.parent_task_id)
@@ -1797,7 +1866,23 @@ class Orchestrator:
         adapter = self._adapter_factory.create("claude", profile=profile)
         self._adapters[action.agent_id] = adapter
 
-        # Inject system context so the agent knows where it's working
+        # ------------------------------------------------------------------ #
+        # Build the agent's system context prompt.
+        #
+        # The context is assembled as a list of markdown sections and injected
+        # as the first part of the task description sent to the adapter.  It
+        # includes:
+        #   - System metadata (workspace path, project, branch)
+        #   - Execution rules (subtask vs. root task behavior)
+        #   - Upstream dependency results (so the agent has continuity)
+        #   - Profile-specific role instructions (if a profile is set)
+        #   - The actual task description (appended last)
+        #
+        # The prompt is intentionally opinionated: it tells the agent NOT to
+        # use plan mode, to commit its work, and to rebase before starting.
+        # These instructions are critical for the orchestrator's post-
+        # completion git workflow to function correctly.
+        # ------------------------------------------------------------------ #
         context_lines = [
             "## System Context",
             f"- Workspace directory: {workspace}",
@@ -2059,7 +2144,23 @@ class Orchestrator:
             else:
                 await self._notify_channel(msg, project_id=action.project_id, embed=embed)
 
-        # Handle result
+        # ------------------------------------------------------------------ #
+        # Result handling — branch on the agent's exit status.
+        #
+        # Each branch follows the same pattern:
+        #   1. Transition the task to its next state in the DB.
+        #   2. Perform any post-completion work (git merge/PR, plan parsing).
+        #   3. Post a detailed summary to the task thread (or channel).
+        #   4. Post a brief one-liner to the notifications channel.
+        #   5. Check for downstream dependency-chain impacts.
+        #   6. Save to memory for future task context (if enabled).
+        #
+        # The branches are:
+        #   COMPLETED        → verify, commit/merge/PR, auto-task, memory
+        #   FAILED           → increment retry counter, block if exhausted
+        #   PAUSED_*         → schedule a resume_after timestamp
+        #   WAITING_INPUT    → pause and notify for human response
+        # ------------------------------------------------------------------ #
         if output.result == AgentResult.COMPLETED:
             await self.db.transition_task(action.task_id, TaskStatus.VERIFYING,
                                           context="agent_completed")
@@ -2259,6 +2360,11 @@ class Orchestrator:
         elif output.result in (
             AgentResult.PAUSED_TOKENS, AgentResult.PAUSED_RATE_LIMIT
         ):
+            # PAUSED path — the agent hit an API limit (rate or context window).
+            # We set a future resume_after timestamp; _resume_paused_tasks()
+            # will promote the task back to READY once the backoff expires.
+            # Note: if the in-loop rate-limit retries above were exhausted,
+            # we end up here for PAUSED_RATE_LIMIT as a final fallback.
             retry_secs = (
                 self.config.pause_retry.rate_limit_backoff_seconds
                 if output.result == AgentResult.PAUSED_RATE_LIMIT
@@ -2307,10 +2413,19 @@ class Orchestrator:
             brief = f"❓ Agent question on: {task.title} (`{task.id}`)"
             await _notify_brief(brief, embed=embed)
 
-        # Release workspace lock for this task
+        # ------------------------------------------------------------------ #
+        # Cleanup — runs regardless of which result branch was taken above.
+        # ------------------------------------------------------------------ #
+
+        # Release the workspace lock so other tasks can use this workspace.
+        # This must happen before freeing the agent, because the scheduler
+        # checks workspace availability before assigning new work.
         await self.db.release_workspaces_for_task(action.task_id)
 
-        # Free agent — respect PAUSED state if set while the agent was BUSY
+        # Free the agent for new work.  We re-read the agent's current state
+        # from the DB because an admin may have paused the agent (via
+        # /pause-agent) while it was BUSY.  If so, we respect the PAUSED
+        # state instead of blindly resetting to IDLE.
         post_agent = await self.db.get_agent(action.agent_id)
         next_state = (AgentState.PAUSED
                       if post_agent and post_agent.state == AgentState.PAUSED

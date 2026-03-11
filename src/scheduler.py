@@ -119,11 +119,21 @@ class Scheduler:
         if not active_projects:
             return []
 
-        # Calculate total weight
+        # Calculate totals for proportional ratio computation.
+        # ``total_weight`` is the denominator for target ratios (each
+        # project's target = credit_weight / total_weight).
+        # ``total_tokens`` is the denominator for actual ratios (each
+        # project's actual = tokens_used / total_tokens).
+        # We clamp total_tokens to at least 1 to avoid division by zero
+        # during the first scheduling round before any tokens are used.
         total_weight = sum(p.credit_weight for p in active_projects)
         total_tokens = sum(state.project_token_usage.values()) or 1  # avoid div/0
 
-        # Track assignments made in this scheduling round
+        # Track assignments made in this scheduling round.  These sets
+        # prevent double-assignment: an agent or task matched once won't be
+        # considered again in the same round.  ``round_agent_counts`` is a
+        # mutable copy of the live counts so that assignments within this
+        # round are reflected in subsequent concurrency-limit checks.
         actions: list[AssignAction] = []
         assigned_agents: set[str] = set()
         assigned_tasks: set[str] = set()
@@ -133,7 +143,23 @@ class Scheduler:
             if agent.id in assigned_agents:
                 continue
 
-            # Sort projects: min-task-guarantee first, then by deficit
+            # Sort projects by scheduling priority using a two-level key:
+            #
+            # Level 1 — Min-task guarantee (binary):
+            #   Projects with zero completions in the window sort first
+            #   (has_guarantee=0).  This ensures starvation prevention:
+            #   every active project gets at least one task before
+            #   proportional allocation kicks in.
+            #
+            # Level 2 — Deficit score (continuous):
+            #   Among projects at the same guarantee level, the one whose
+            #   actual token usage ratio is furthest *below* its target
+            #   ratio (derived from credit_weight) sorts first.  A negative
+            #   deficit means the project is under-served relative to its
+            #   weight; a positive deficit means over-served.
+            #
+            # Together these produce a fair ordering: starved projects go
+            # first, then under-served projects, then over-served ones.
             def project_sort_key(p: Project) -> tuple[int, float]:
                 completed = state.tasks_completed_in_window.get(p.id, 0)
                 has_guarantee = 1 if completed > 0 else 0  # 0 = needs guarantee (sorts first)

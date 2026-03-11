@@ -90,26 +90,45 @@ class HookEngine:
                 self._last_run_time[hook.id] = last_run.started_at
 
     async def tick(self) -> None:
-        """Called every orchestrator cycle. Check periodic hooks that are due."""
-        # Clean up completed tasks
+        """Called every orchestrator cycle (~5s). Manage hook lifecycle.
+
+        This method performs two duties each tick:
+
+        **1. Reap completed hook tasks** — scan ``_running`` for asyncio
+        Tasks that have finished.  Surface any unhandled exceptions as log
+        errors (they are otherwise silently swallowed by asyncio).  Remove
+        finished tasks from the dict so their hook_id is eligible to fire
+        again.
+
+        **2. Check periodic hook schedules** — for each enabled periodic
+        hook, compare the current time against its ``interval_seconds`` and
+        ``cooldown_seconds``.  If both thresholds are met and the global
+        concurrency cap (``max_concurrent_hooks``) has room, launch the
+        hook as a new asyncio task.
+
+        Event-driven hooks are NOT checked here — they are triggered
+        asynchronously via ``_on_event`` when the EventBus delivers a
+        matching event.
+        """
+        # Phase 1: Reap completed hook tasks and surface exceptions.
         done = [hid for hid, t in self._running.items() if t.done()]
         for hid in done:
             task = self._running.pop(hid)
-            # Surface exceptions
             if task.done() and not task.cancelled():
                 exc = task.exception()
                 if exc:
                     logger.error("Hook task %s failed: %s", hid, exc)
 
+        # Phase 2: Check periodic hooks that are due to fire.
         hooks = await self.db.list_hooks(enabled=True)
         now = time.time()
         max_concurrent = self.config.hook_engine.max_concurrent_hooks
 
         for hook in hooks:
             if len(self._running) >= max_concurrent:
-                break
+                break  # Global concurrency cap reached
             if hook.id in self._running:
-                continue  # Already in-flight
+                continue  # Already in-flight — skip
 
             trigger = json.loads(hook.trigger)
             trigger_type = trigger.get("type")
@@ -122,7 +141,23 @@ class HookEngine:
                         self._launch_hook(hook, "periodic")
 
     async def _on_event(self, data: dict) -> None:
-        """Handle EventBus events for event-driven hooks."""
+        """Handle EventBus events for event-driven hooks.
+
+        Called by the EventBus wildcard subscription (``*``) so this method
+        receives *every* event.  For each event:
+
+        1. Extract the event type from ``data["_event_type"]``.
+        2. Scan all enabled hooks for those with ``trigger.type == "event"``
+           and a matching ``trigger.event_type``.
+        3. Skip hooks that are already in-flight, on cooldown, or would
+           exceed the concurrency cap.
+        4. Launch matching hooks with the full event data payload so
+           context steps can reference ``{{event.field}}`` placeholders.
+
+        Note: this re-queries enabled hooks from the DB on every event.
+        This is acceptable because events are infrequent (task lifecycle
+        transitions) and the query is fast (typically <10 hooks).
+        """
         event_type = data.get("_event_type", "")
         hooks = await self.db.list_hooks(enabled=True)
         now = time.time()
@@ -160,7 +195,13 @@ class HookEngine:
         trigger_reason: str,
         event_data: dict | None = None,
     ) -> None:
-        """Launch hook execution as an asyncio task."""
+        """Launch hook execution as a fire-and-forget asyncio task.
+
+        Records the launch time immediately (before the task runs) so that
+        cooldown checks in subsequent ticks/events see the hook as recently
+        fired.  The asyncio Task is stored in ``_running`` so ``tick()`` can
+        reap it and surface any exceptions.
+        """
         self._last_run_time[hook.id] = time.time()
         task = asyncio.create_task(
             self._execute_hook(hook, trigger_reason, event_data)
@@ -263,7 +304,23 @@ class HookEngine:
         steps: list[dict],
         event_data: dict | None = None,
     ) -> list[dict]:
-        """Run context steps sequentially. Each step's output is available to later steps."""
+        """Execute the context-gathering pipeline: a sequence of data-fetching steps.
+
+        Steps run **sequentially** (not concurrently) because later steps may
+        depend on earlier results via template placeholders.  Each step
+        produces a result dict whose shape depends on the step type:
+
+        - ``shell``: ``{stdout, stderr, exit_code}``
+        - ``read_file``: ``{content}``
+        - ``http``: ``{body, status_code}``
+        - ``db_query``: ``{rows, count}``
+        - ``git_diff``: ``{diff, exit_code}``
+        - ``memory_search``: ``{content, count}``
+
+        On error, the step result contains an ``{error: "..."}`` entry
+        instead.  The pipeline continues past errors so that downstream
+        steps and the short-circuit check still run.
+        """
         results = []
         for i, step in enumerate(steps):
             step_type = step.get("type", "")
@@ -357,7 +414,17 @@ class HookEngine:
     async def _step_db_query(
         self, step: dict, event_data: dict | None = None
     ) -> dict:
-        """Run a named DB query."""
+        """Run a pre-defined named DB query (not arbitrary SQL).
+
+        Security: hooks cannot execute arbitrary SQL.  The ``query`` field
+        must match a key in ``NAMED_QUERIES`` — a hardcoded allowlist of
+        safe, read-only queries.  Parameters are passed via SQLite's
+        parameterized query mechanism (``:param_name``) to prevent injection.
+
+        Template placeholders (``{{event.field}}``) in parameter values are
+        resolved before execution, allowing event-driven hooks to query
+        data related to the triggering event.
+        """
         query_name = step.get("query", "")
         params = step.get("params", {})
 
@@ -477,7 +544,20 @@ class HookEngine:
     def _should_skip_llm(
         self, steps: list[dict], results: list[dict]
     ) -> str | None:
-        """Check if any step's skip condition is met. Returns reason or None."""
+        """Evaluate short-circuit conditions to skip the LLM invocation.
+
+        Each context step can declare a skip condition.  If the condition is
+        met, the hook is marked "skipped" and the LLM is never called.  This
+        is a cost-saving mechanism: most periodic hooks (e.g. "check if any
+        tasks failed") produce empty results the majority of the time.
+
+        Supported skip conditions (set on the step config):
+        - ``skip_llm_if_exit_zero``: skip if a shell step exited 0 (success)
+        - ``skip_llm_if_empty``: skip if stdout + content is empty
+        - ``skip_llm_if_status_ok``: skip if an HTTP step returned 2xx
+
+        Returns a human-readable reason string, or None if no skip applies.
+        """
         for i, step in enumerate(steps):
             if i >= len(results):
                 break
@@ -504,7 +584,16 @@ class HookEngine:
         step_results: list[dict],
         event_data: dict | None = None,
     ) -> str:
-        """Replace {{step_N}}, {{step_N.field}}, and {{event.field}} placeholders."""
+        """Render the hook's prompt template by substituting placeholders.
+
+        Uses a regex to find all ``{{...}}`` patterns and delegates each
+        match to ``_resolve_placeholder``.  The rendered prompt is then
+        sent to the LLM as the hook's input.
+
+        Placeholders reference context step results (``{{step_0}}``,
+        ``{{step_1.exit_code}}``) or event data (``{{event.task_id}}``),
+        allowing hooks to inject dynamic context into their prompts.
+        """
         def replacer(match):
             placeholder = match.group(1)
             return self._resolve_placeholder(
@@ -519,7 +608,19 @@ class HookEngine:
         step_results: list[dict] | None = None,
         event_data: dict | None = None,
     ) -> str:
-        """Resolve a single {{...}} placeholder."""
+        """Resolve a single ``{{...}}`` template placeholder to a string.
+
+        Supported placeholder forms:
+
+        - ``{{event}}`` — the full event data as JSON
+        - ``{{event.field}}`` — a single field from the event data dict
+        - ``{{step_N}}`` — auto-selects the "main" output from step N
+          (prefers stdout > content > body > diff, falls back to JSON)
+        - ``{{step_N.field}}`` — a specific field from step N's result dict
+
+        Unrecognized placeholders are returned as-is (including the braces)
+        so they're visible in the rendered prompt for debugging.
+        """
         step_results = step_results or []
         key = placeholder.strip("{}")
 
@@ -623,7 +724,11 @@ class HookEngine:
         return hook.id
 
     async def shutdown(self) -> None:
-        """Cancel all running hook tasks."""
+        """Cancel all running hook tasks and wait for them to finish.
+
+        Uses ``asyncio.gather(..., return_exceptions=True)`` to ensure we
+        don't propagate CancelledError — we just want everything stopped.
+        """
         for hook_id, task in self._running.items():
             if not task.done():
                 task.cancel()
