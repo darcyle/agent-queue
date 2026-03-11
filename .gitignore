@@ -18,3 +18,4 @@ docs_out/
 eval_results
 .agent-queue-lock
 .claude
+plan.md
