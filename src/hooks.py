@@ -39,7 +39,13 @@ from src.models import Hook, HookRun
 
 logger = logging.getLogger(__name__)
 
-# Named DB queries (safe — not raw SQL)
+# Named DB queries — an allowlist of safe, read-only SQL queries that hooks
+# can execute via the ``db_query`` context step.  This is a security boundary:
+# hooks cannot run arbitrary SQL, only queries listed here.  Parameters are
+# bound via SQLite's ``?``-style parameterization to prevent injection.
+#
+# To add a new query: add an entry here with a descriptive key, then reference
+# it in a hook's context_steps as ``{"type": "db_query", "query": "<key>"}``.
 NAMED_QUERIES = {
     "recent_task_results": (
         "SELECT t.id, t.title, t.status, tr.result, tr.summary, tr.error_message, "
@@ -76,11 +82,28 @@ class HookEngine:
         self.db = db
         self.bus = bus
         self.config = config
-        self._running: dict[str, asyncio.Task] = {}  # hook_id -> asyncio.Task
-        self._last_run_time: dict[str, float] = {}   # hook_id -> last started_at
+        # In-flight hook executions.  Keyed by hook_id so we can:
+        # (a) enforce "one run at a time per hook" — skip if already in-flight,
+        # (b) count towards the global max_concurrent_hooks cap,
+        # (c) reap finished tasks and surface exceptions in tick().
+        self._running: dict[str, asyncio.Task] = {}
+        # Tracks when each hook last started (epoch seconds).  Used for both
+        # periodic interval checks ("has enough time passed?") and cooldown
+        # enforcement ("is the hook still in its cooldown window?").
+        # Pre-populated from DB at initialize() to survive daemon restarts.
+        self._last_run_time: dict[str, float] = {}
 
     async def initialize(self) -> None:
-        """Subscribe to EventBus for event-driven hooks."""
+        """Subscribe to EventBus for event-driven hooks and restore state.
+
+        Two setup steps:
+        1. Register a wildcard EventBus subscriber so ``_on_event`` receives
+           every event type.  The method then filters for matching hooks.
+        2. Pre-populate ``_last_run_time`` from the DB so that periodic hooks
+           don't all fire immediately on daemon startup.  Without this, a
+           restart would cause every periodic hook to trigger simultaneously
+           (because their in-memory last-run timestamps would default to 0).
+        """
         self.bus.subscribe("*", self._on_event)
         # Pre-populate last run times from DB
         hooks = await self.db.list_hooks(enabled=True)
@@ -661,7 +684,17 @@ class HookEngine:
         Creates a temporary ChatAgent instance so the hook's LLM call has
         access to all the same tools a human user would (create tasks, check
         status, etc.).  The hook can optionally override the LLM provider/model
-        via its ``llm_config`` field.
+        via its ``llm_config`` JSON field, allowing hooks to use cheaper/faster
+        models for simple checks while reserving expensive models for complex
+        reasoning.
+
+        Integration details:
+        - The ChatAgent instance is created fresh for each invocation (stateless).
+        - If an LLM logger is configured, the provider is wrapped with
+          ``LoggedChatProvider`` so hook token usage appears in analytics.
+        - The ``user_name`` is set to ``"hook:<hook_name>"`` for audit trails.
+        - Token counts are *estimated* from string length (÷4) since the
+          ChatAgent's ``chat()`` method doesn't return exact usage.
 
         Returns ``(response_text, estimated_tokens_used)``.
         """
@@ -709,7 +742,16 @@ class HookEngine:
         return response, tokens
 
     async def fire_hook(self, hook_id: str) -> str:
-        """Manually trigger a hook, ignoring cooldown. Returns run ID."""
+        """Manually trigger a hook, ignoring cooldown.
+
+        Used by the ``/fire-hook`` Discord command to allow operators to
+        run a hook on-demand (e.g. for testing or urgent checks).  Unlike
+        the normal periodic/event trigger path, this bypasses cooldown
+        checks — but it still respects the "already running" guard (a
+        hook cannot be fired if it's already in-flight).
+
+        Returns the hook ID (used as a proxy run identifier).
+        """
         hook = await self.db.get_hook(hook_id)
         if not hook:
             raise ValueError(f"Hook '{hook_id}' not found")
@@ -740,5 +782,15 @@ class HookEngine:
         self._running.clear()
 
     def set_orchestrator(self, orchestrator) -> None:
-        """Store reference to the orchestrator (for LLM invocation)."""
+        """Store reference to the orchestrator (for LLM invocation).
+
+        The HookEngine needs access to the Orchestrator for two reasons:
+        1. ``_invoke_llm`` creates a ChatAgent which requires an orchestrator
+           reference to register its tools (task management, status queries).
+        2. ``_step_memory_search`` accesses ``orchestrator.memory_manager``
+           for semantic search in context steps.
+
+        This is a circular reference (orchestrator owns hooks, hooks reference
+        orchestrator) that is broken at shutdown via ``hooks.shutdown()``.
+        """
         self._orchestrator = orchestrator

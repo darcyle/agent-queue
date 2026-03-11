@@ -104,6 +104,19 @@ class Orchestrator:
     """
 
     def __init__(self, config: AppConfig, adapter_factory=None):
+        """Initialize the orchestrator with its configuration and subsystems.
+
+        Args:
+            config: The application configuration (loaded from YAML).
+            adapter_factory: Factory for creating agent adapters (e.g.
+                ClaudeAdapterFactory).  When None, the orchestrator can
+                manage state and scheduling but cannot execute tasks.
+
+        The constructor wires up all subsystems but does NOT perform any
+        async initialization (DB schema creation, stale-state recovery,
+        hook subscriptions).  Call ``await initialize()`` before running
+        cycles.
+        """
         self.config = config
         self.db = Database(config.database_path)
         self.bus = EventBus()
@@ -112,11 +125,16 @@ class Orchestrator:
         )
         self.git = GitManager()
         self._adapter_factory = adapter_factory
-        self._adapters: dict[str, object] = {}  # agent_id -> adapter
-        self._running_tasks: dict[str, asyncio.Task] = {}  # task_id -> asyncio.Task
+        # Live adapter instances keyed by agent_id.  Stored so we can call
+        # adapter.stop() from admin commands (stop_task, timeout recovery).
+        self._adapters: dict[str, object] = {}
+        # Background asyncio Tasks for in-flight agent executions, keyed by
+        # task_id.  Cleaned up each cycle; prevents double-launching.
+        self._running_tasks: dict[str, asyncio.Task] = {}
         self._notify: NotifyCallback | None = None
         self._create_thread: CreateThreadCallback | None = None
         self._paused: bool = False
+        # Throttle: approval polling runs at most once per 60s.
         self._last_approval_check: float = 0.0
         # LLM interaction logger
         self.llm_logger = LLMLogger(
@@ -218,9 +236,17 @@ class Orchestrator:
         return None
 
     def pause(self) -> None:
+        """Pause scheduling — no new tasks are assigned, but monitoring continues.
+
+        When paused, ``run_one_cycle`` still runs approvals, dependency
+        promotion, stuck-task detection, hooks, and archival — only the
+        scheduler step (``_schedule``) is skipped.  In-flight agent work
+        continues unaffected; this only prevents *new* assignments.
+        """
         self._paused = True
 
     def resume(self) -> None:
+        """Resume scheduling after a pause.  New assignments start on the next cycle."""
         self._paused = False
 
     def set_notify_callback(self, callback: NotifyCallback) -> None:
@@ -634,8 +660,13 @@ class Orchestrator:
             else:
                 actions = []
 
-            # 4. Launch assigned tasks as background coroutines
-            # Clean up completed background tasks
+            # 4. Launch assigned tasks as background coroutines.
+            #
+            # First, reap completed background tasks from _running_tasks.
+            # We must do this BEFORE launching new tasks to free up task IDs
+            # (a task that just finished shouldn't block its re-assignment
+            # on a retry).  We don't inspect results here — error handling
+            # is done inside _execute_task_safe_inner.
             done = [tid for tid, t in self._running_tasks.items() if t.done()]
             for tid in done:
                 self._running_tasks.pop(tid)
@@ -971,7 +1002,14 @@ class Orchestrator:
         return stuck
 
     async def _notify_stuck_chain(self, blocked_task: Task) -> None:
-        """Check for downstream stuck tasks and send a notification."""
+        """Check for downstream stuck tasks and send a notification.
+
+        Uses ``_find_stuck_downstream`` to do a BFS walk of the dependency
+        graph.  If any DEFINED tasks are found that are transitively blocked
+        by this task, sends a single consolidated notification listing all
+        affected downstream tasks so operators can decide whether to skip,
+        retry, or manually unblock the chain.
+        """
         stuck = await self._find_stuck_downstream(blocked_task.id)
         if not stuck:
             return
@@ -1124,7 +1162,12 @@ class Orchestrator:
         repo_url = project.repo_url if project else ""
         default_branch = project.repo_default_branch if project else "main"
 
-        # Subtasks reuse the parent's branch to accumulate commits
+        # Branch naming strategy:
+        # - Root tasks get a fresh branch derived from their ID + title.
+        # - Plan subtasks REUSE their parent task's branch name so all
+        #   steps in the chain accumulate commits on a single branch.
+        #   This is what enables the "one PR for the whole plan" workflow
+        #   in _complete_workspace.
         if task.is_plan_subtask and task.parent_task_id:
             parent = await self.db.get_task(task.parent_task_id)
             branch_name = (parent.branch_name if parent and parent.branch_name
@@ -1135,8 +1178,21 @@ class Orchestrator:
         reuse_branch = task.is_plan_subtask and task.parent_task_id
         rebase_on_switch = self.config.auto_task.rebase_between_subtasks
 
-        # Git operations may fail but should never prevent returning the workspace path.
+        # Git operations may fail (network issues, auth errors, merge
+        # conflicts) but should never prevent returning the workspace path.
+        # The agent can still work in the directory; it just won't have
+        # proper branch management.  Errors are reported via Discord
+        # notification so operators are aware.
         try:
+            # Workspace source types determine the git setup strategy:
+            #
+            # CLONE: The orchestrator manages the full clone lifecycle.
+            #   - First use: clone from repo_url into the workspace path.
+            #   - Subsequent uses: fetch + create/switch branch.
+            #
+            # LINK: The workspace points to a pre-existing local checkout
+            #   (e.g. the developer's own repo).  The orchestrator only
+            #   manages branch operations, never clones.
             if ws.source_type == RepoSourceType.CLONE:
                 if not self.git.validate_checkout(workspace):
                     os.makedirs(os.path.dirname(workspace), exist_ok=True)
@@ -1217,8 +1273,20 @@ class Orchestrator:
             default_branch=default_branch,
         ) if has_repo or ws else None
 
-        # For plan subtasks: just commit, don't merge/push unless this is
-        # the final subtask in the chain.
+        # ------------------------------------------------------------------ #
+        # Plan subtask branch strategy:
+        #
+        # Subtasks share a single git branch with their siblings.  Intermediate
+        # subtasks only commit (the commit happened above via commit_all) and
+        # optionally rebase onto the default branch to keep the shared branch
+        # up-to-date (mid-chain sync).  Only the *final* subtask triggers the
+        # merge/PR workflow, because that's when the full plan is complete and
+        # the accumulated work is ready for review.
+        #
+        # This design minimizes human intervention: a 10-step plan produces
+        # 10 commits on one branch with one PR at the end, rather than 10
+        # separate branches and PRs that would require 10 reviews.
+        # ------------------------------------------------------------------ #
         if task.is_plan_subtask:
             is_last = await self._is_last_subtask(task)
             if is_last and repo:
@@ -1706,7 +1774,21 @@ class Orchestrator:
             )
 
     async def _check_pr_status(self, task: Task) -> None:
-        """Check whether a PR-backed AWAITING_APPROVAL task has been merged."""
+        """Check whether a PR-backed AWAITING_APPROVAL task has been merged.
+
+        Uses ``GitManager.check_pr_merged()`` (which shells out to ``gh``)
+        to determine the PR's current state.  Three outcomes:
+
+        - **True** — PR was merged → task transitions to COMPLETED, and the
+          remote task branch is cleaned up.
+        - **None** — PR was closed *without* merge → task transitions to
+          BLOCKED, and downstream dependents are checked for orphaning.
+        - **False** — PR is still open → no action (check again next cycle).
+
+        Requires a valid git checkout path to run ``gh pr view``.  Falls back
+        to any workspace associated with the project if the task's own
+        workspace has already been released.
+        """
         # Need a checkout path to run gh commands
         checkout_path = None
         # Try workspace locked by this task first
@@ -2018,10 +2100,20 @@ class Orchestrator:
 
         await adapter.start(ctx)
 
-        # Stream agent messages to the task thread (or fall back to notifications).
-        # Also detect agent questions (AskUserQuestion tool usage) and send a
-        # rich notification so humans are promptly alerted in Discord.
-        _question_notified = False  # avoid duplicate question notifications per task
+        # ------------------------------------------------------------------ #
+        # Agent message streaming and question detection.
+        #
+        # The adapter's ``wait(on_message=...)`` callback fires for each
+        # chunk of agent output.  We forward these to the Discord thread
+        # (created above) so humans can watch agent progress in real time.
+        #
+        # We also watch for the AskUserQuestion tool marker in the stream.
+        # When detected, a dedicated rich notification is sent to the
+        # project's notifications channel with an interactive view, because
+        # thread messages alone are easy to miss.  The ``_question_notified``
+        # flag deduplicates: at most one question notification per task run.
+        # ------------------------------------------------------------------ #
+        _question_notified = False
 
         async def forward_agent_message(text: str) -> None:
             nonlocal _question_notified

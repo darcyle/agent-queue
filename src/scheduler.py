@@ -17,8 +17,19 @@ a task:
    from ``credit_weight``).  This gradually converges each project toward
    its fair share of total agent time.
 
-Both phases respect per-project concurrency limits (``max_concurrent_agents``)
-and per-project / global budget caps.
+Both phases respect per-project concurrency limits (``max_concurrent_agents``),
+per-project / global budget caps, and workspace availability (a project with
+all workspaces locked cannot receive new assignments even if it has quota).
+
+Key design properties:
+
+- **Pure function** — the scheduler takes a snapshot (``SchedulerState``) and
+  returns actions with zero side effects, zero LLM calls, and zero I/O.
+- **Starvation-free** — ``min_task_guarantee`` ensures every active project
+  eventually receives at least one task per scheduling window.
+- **Convergent** — deficit-based proportional allocation gradually steers
+  each project toward its fair share; short-term imbalances self-correct
+  over multiple scheduling rounds.
 
 See specs/scheduler-and-budget.md for the full specification.
 """
@@ -184,7 +195,13 @@ class Scheduler:
                 if current_agents >= project.max_concurrent_agents:
                     continue
 
-                # Skip projects with no available workspaces
+                # Skip projects with no available workspaces.
+                # Workspace availability is a hard physical constraint: each
+                # agent execution needs an exclusive workspace lock, so we
+                # can't assign more tasks than there are unlocked workspaces.
+                # When project_available_workspaces is empty (e.g. in tests),
+                # this check is skipped — the orchestrator handles the
+                # "no workspace" case gracefully in _prepare_workspace.
                 if (
                     state.project_available_workspaces
                     and state.project_available_workspaces.get(project.id, 0) <= 0
