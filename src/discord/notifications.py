@@ -27,7 +27,7 @@ from src.discord.embeds import (
     status_embed, make_embed, truncate, EmbedStyle, TASK_TYPE_EMOJIS,
     LIMIT_FIELD_VALUE, LIMIT_DESCRIPTION,
 )
-from src.models import Task, Agent, AgentOutput, TaskStatus
+from src.models import Task, Agent, AgentOutput, TaskStatus, Workspace
 
 # ---------------------------------------------------------------------------
 # Error classification helpers
@@ -119,11 +119,14 @@ def classify_error(error_message: str | None) -> tuple[str, str]:
     return "Unexpected error", "Check daemon logs (`~/.agent-queue/daemon.log`) for full details."
 
 
-def format_task_started(task: Task, agent: Agent) -> str:
+def format_task_started(task: Task, agent: Agent, workspace: Workspace | None = None) -> str:
     lines = [
         f"**Task Started:** `{task.id}` — {task.title}",
         f"Project: `{task.project_id}` | Agent: {agent.name}",
     ]
+    if workspace:
+        label = workspace.name or workspace.workspace_path
+        lines.append(f"Workspace: `{label}`")
     if task.branch_name:
         lines.append(f"Branch: `{task.branch_name}`")
     lines.append("Status: IN_PROGRESS")
@@ -279,7 +282,7 @@ def format_plan_generated(
 # are preserved for logging, testing, and fallback.
 
 
-def format_task_started_embed(task: Task, agent: Agent) -> discord.Embed:
+def format_task_started_embed(task: Task, agent: Agent, workspace: Workspace | None = None) -> discord.Embed:
     """Rich embed version of :func:`format_task_started`.
 
     Uses the IN_PROGRESS status color (amber) to visually indicate that
@@ -291,6 +294,9 @@ def format_task_started_embed(task: Task, agent: Agent) -> discord.Embed:
         ("Agent", agent.name, True),
         ("Status", "\U0001F7E1 IN_PROGRESS", True),
     ]
+    if workspace:
+        label = workspace.name or workspace.workspace_path
+        fields.append(("Workspace", f"`{label}`", True))
     if task.branch_name:
         fields.append(("Branch", f"`{task.branch_name}`", True))
     return status_embed(

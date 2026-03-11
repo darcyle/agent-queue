@@ -1750,13 +1750,16 @@ class Orchestrator:
         task = await self.db.get_task(action.task_id)
         agent = await self.db.get_agent(action.agent_id)
 
+        # Fetch the workspace object for display in notifications
+        ws_obj = await self.db.get_workspace_for_task(task.id)
+
         # Notify that work is starting
-        start_msg = format_task_started(task, agent)
+        start_msg = format_task_started(task, agent, workspace=ws_obj)
         handler_ref = self._get_handler()
         await self._notify_channel(
             start_msg,
             project_id=action.project_id,
-            embed=format_task_started_embed(task, agent),
+            embed=format_task_started_embed(task, agent, workspace=ws_obj),
             view=TaskStartedView(task.id, handler=handler_ref),
         )
 

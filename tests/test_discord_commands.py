@@ -1,6 +1,7 @@
 import pytest
 from src.models import (
     Task, Agent, AgentOutput, AgentResult, TaskStatus, AgentState,
+    Workspace, RepoSourceType,
 )
 from src.discord.notifications import (
     format_task_started,
@@ -38,6 +39,28 @@ class TestNotificationFormatting:
         assert "claude-2" in result
         assert "Branch" not in result
 
+    def test_format_task_started_with_workspace(self):
+        task = Task(id="t-1", project_id="p-1", title="Add feature",
+                    description="D", branch_name="feat/add-feature")
+        agent = Agent(id="a-1", name="claude-1", agent_type="claude")
+        ws = Workspace(id="ws-1", project_id="p-1",
+                       workspace_path="/home/user/workspaces/ws-1",
+                       source_type=RepoSourceType.CLONE, name="workspace-alpha")
+        result = format_task_started(task, agent, workspace=ws)
+        assert "workspace-alpha" in result
+        assert "Workspace" in result
+
+    def test_format_task_started_with_workspace_no_name(self):
+        task = Task(id="t-1", project_id="p-1", title="Add feature",
+                    description="D")
+        agent = Agent(id="a-1", name="claude-1", agent_type="claude")
+        ws = Workspace(id="ws-1", project_id="p-1",
+                       workspace_path="/home/user/workspaces/ws-1",
+                       source_type=RepoSourceType.CLONE)
+        result = format_task_started(task, agent, workspace=ws)
+        assert "/home/user/workspaces/ws-1" in result
+        assert "Workspace" in result
+
     def test_format_task_started_embed(self):
         task = Task(id="t-1", project_id="p-1", title="Add feature",
                     description="D", branch_name="feat/add-feature")
@@ -66,6 +89,32 @@ class TestNotificationFormatting:
         field_names = [f.name for f in embed.fields]
         assert "Branch" not in field_names
         assert len(embed.fields) == 4  # Task ID, Project, Agent, Status
+
+    def test_format_task_started_embed_with_workspace(self):
+        task = Task(id="t-1", project_id="p-1", title="Add feature",
+                    description="D", branch_name="feat/add-feature")
+        agent = Agent(id="a-1", name="claude-1", agent_type="claude")
+        ws = Workspace(id="ws-1", project_id="p-1",
+                       workspace_path="/home/user/workspaces/ws-1",
+                       source_type=RepoSourceType.CLONE, name="workspace-alpha")
+        embed = format_task_started_embed(task, agent, workspace=ws)
+        field_names = [f.name for f in embed.fields]
+        field_values = [f.value for f in embed.fields]
+        assert "Workspace" in field_names
+        assert "`workspace-alpha`" in field_values
+
+    def test_format_task_started_embed_with_workspace_no_name(self):
+        task = Task(id="t-1", project_id="p-1", title="Add feature",
+                    description="D")
+        agent = Agent(id="a-1", name="claude-1", agent_type="claude")
+        ws = Workspace(id="ws-1", project_id="p-1",
+                       workspace_path="/home/user/workspaces/ws-1",
+                       source_type=RepoSourceType.CLONE)
+        embed = format_task_started_embed(task, agent, workspace=ws)
+        field_names = [f.name for f in embed.fields]
+        field_values = [f.value for f in embed.fields]
+        assert "Workspace" in field_names
+        assert "`/home/user/workspaces/ws-1`" in field_values
 
     def test_format_task_completed(self):
         task = Task(id="t-1", project_id="p-1", title="Fix bug", description="D")
