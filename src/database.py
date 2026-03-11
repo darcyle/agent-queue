@@ -795,14 +795,13 @@ class Database:
             Optional project filter.  When *None*, tasks from **all** projects
             are returned.
         exclude_statuses:
-            Set of :class:`TaskStatus` values to exclude.  Defaults to the
-            three terminal statuses: COMPLETED, FAILED, BLOCKED.
+            Set of :class:`TaskStatus` values to exclude.  Defaults to
+            COMPLETED only — FAILED and BLOCKED tasks are kept visible
+            since they still need attention.
         """
         if exclude_statuses is None:
             exclude_statuses = {
                 TaskStatus.COMPLETED,
-                TaskStatus.FAILED,
-                TaskStatus.BLOCKED,
             }
 
         conditions: list[str] = []
@@ -826,16 +825,15 @@ class Database:
         return [self._row_to_task(r) for r in rows]
 
     async def list_active_tasks_all_projects(self) -> list[Task]:
-        """Return all non-terminal tasks across every project.
+        """Return all non-completed tasks across every project.
 
-        Non-terminal means the task's status is NOT one of COMPLETED, FAILED,
-        or BLOCKED.  Results are ordered by project_id first (so the caller
-        can group by project) then by priority within each project.
+        Only COMPLETED tasks are excluded — FAILED and BLOCKED tasks are
+        kept visible since they still need attention.  Results are ordered
+        by project_id first (so the caller can group by project) then by
+        priority within each project.
         """
         terminal = (
             TaskStatus.COMPLETED.value,
-            TaskStatus.FAILED.value,
-            TaskStatus.BLOCKED.value,
         )
         placeholders = ", ".join("?" for _ in terminal)
         cursor = await self._db.execute(

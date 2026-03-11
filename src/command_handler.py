@@ -1040,13 +1040,12 @@ class CommandHandler:
     # -----------------------------------------------------------------------
 
     # Statuses considered "finished" for the include_completed / completed_only
-    # filters.  BLOCKED is included because blocked tasks are not actionable
-    # until their dependencies are resolved — callers interested in the active
-    # work queue typically want these hidden.
+    # filters.  Only COMPLETED is treated as finished — FAILED and BLOCKED
+    # tasks still need attention (retry/fix or dependency resolution) and
+    # should be visible in the default task list so the progress breakdown
+    # numbers add up correctly.
     _FINISHED_STATUSES: frozenset[TaskStatus] = frozenset({
         TaskStatus.COMPLETED,
-        TaskStatus.FAILED,
-        TaskStatus.BLOCKED,
     })
 
     async def _resolve_root_task_id(self, task_id: str) -> str:
@@ -1300,9 +1299,10 @@ class CommandHandler:
         """List active (non-terminal) tasks across ALL projects, grouped by project.
 
         This gives a cross-project overview of everything that is currently
-        queued, in-progress, or otherwise actionable.  Terminal statuses
-        (COMPLETED, FAILED, BLOCKED) are excluded by default but can be
-        included via ``include_completed=True``.
+        queued, in-progress, or otherwise actionable.  Only COMPLETED tasks
+        are excluded by default; FAILED and BLOCKED tasks are shown since
+        they still need attention.  Use ``include_completed=True`` to also
+        include completed tasks.
 
         Uses ``Database.list_active_tasks()`` for SQL-level filtering when
         showing only active tasks, avoiding the need to fetch and discard
@@ -1321,7 +1321,7 @@ class CommandHandler:
         hidden_completed = 0
         if not include_completed:
             status_counts = await self.db.count_tasks_by_status()
-            _terminal_values = {"COMPLETED", "FAILED", "BLOCKED"}
+            _terminal_values = {"COMPLETED"}
             hidden_completed = sum(
                 cnt for st, cnt in status_counts.items() if st in _terminal_values
             )
