@@ -1394,62 +1394,91 @@ class Database:
         back to any unlocked workspace if the preferred one is unavailable.
 
         Returns the locked workspace, or None if all workspaces are locked.
-        """
-        row = None
 
-        # Try preferred workspace first (e.g. the one with a merge conflict).
+        Race-safety: Multiple coroutines may call this concurrently.  The
+        UPDATE uses ``WHERE locked_by_agent_id IS NULL`` as an optimistic
+        lock, and we verify ``rowcount == 1`` before returning.  If another
+        coroutine locked the row between our SELECT and UPDATE, we retry
+        with the next available workspace instead of silently returning a
+        workspace we don't actually hold.
+        """
+        # Collect candidate workspace IDs, preferred first.
+        candidate_ids: list[str] = []
+
         if preferred_workspace_id:
             cursor = await self._db.execute(
-                "SELECT * FROM workspaces "
-                "WHERE id = ? AND project_id = ? AND locked_by_agent_id IS NULL "
-                "LIMIT 1",
+                "SELECT id FROM workspaces "
+                "WHERE id = ? AND project_id = ? AND locked_by_agent_id IS NULL",
                 (preferred_workspace_id, project_id),
             )
             row = await cursor.fetchone()
+            if row:
+                candidate_ids.append(row["id"])
 
-        # Fallback: any unlocked workspace for the project.
-        if not row:
-            cursor = await self._db.execute(
-                "SELECT * FROM workspaces "
-                "WHERE project_id = ? AND locked_by_agent_id IS NULL "
-                "LIMIT 1",
-                (project_id,),
-            )
-            row = await cursor.fetchone()
-
-        if not row:
-            return None
-
-        # Layer 1: Path-level lock check — prevent two workspace rows
-        # pointing at the same filesystem path from being locked simultaneously,
-        # even across different projects (e.g. two LINK workspaces at the same dir).
+        # All unlocked workspaces for the project (excluding preferred, already tried).
         cursor = await self._db.execute(
             "SELECT id FROM workspaces "
-            "WHERE workspace_path = ? AND locked_by_agent_id IS NOT NULL AND id != ?",
-            (row["workspace_path"], row["id"]),
+            "WHERE project_id = ? AND locked_by_agent_id IS NULL "
+            "ORDER BY id",
+            (project_id,),
         )
-        conflict = await cursor.fetchone()
-        if conflict:
-            logger.warning(
-                "Workspace path %s already locked by workspace %s — skipping %s",
-                row["workspace_path"], conflict["id"], row["id"],
-            )
-            return None  # Path already in use by another workspace/task
+        for row in await cursor.fetchall():
+            if row["id"] not in candidate_ids:
+                candidate_ids.append(row["id"])
 
+        if not candidate_ids:
+            return None
+
+        # Try each candidate until one is successfully locked.
         now = time.time()
-        await self._db.execute(
-            "UPDATE workspaces SET locked_by_agent_id = ?, "
-            "locked_by_task_id = ?, locked_at = ? "
-            "WHERE id = ? AND locked_by_agent_id IS NULL",
-            (agent_id, task_id, now, row["id"]),
-        )
-        await self._db.commit()
+        for ws_id in candidate_ids:
+            # Re-fetch full row (it may have been locked between the list
+            # query above and now by another coroutine).
+            cursor = await self._db.execute(
+                "SELECT * FROM workspaces WHERE id = ? AND locked_by_agent_id IS NULL",
+                (ws_id,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                continue  # Already locked by another coroutine
 
-        ws = self._row_to_workspace(row)
-        ws.locked_by_agent_id = agent_id
-        ws.locked_by_task_id = task_id
-        ws.locked_at = now
-        return ws
+            # Layer 1: Path-level lock check — prevent two workspace rows
+            # pointing at the same filesystem path from being locked
+            # simultaneously, even across different projects.
+            cursor = await self._db.execute(
+                "SELECT id FROM workspaces "
+                "WHERE workspace_path = ? AND locked_by_agent_id IS NOT NULL "
+                "AND id != ?",
+                (row["workspace_path"], row["id"]),
+            )
+            conflict = await cursor.fetchone()
+            if conflict:
+                logger.warning(
+                    "Workspace path %s already locked by workspace %s — skipping %s",
+                    row["workspace_path"], conflict["id"], row["id"],
+                )
+                continue  # Try next candidate instead of giving up
+
+            # Optimistic lock: UPDATE only if still unlocked.
+            cursor = await self._db.execute(
+                "UPDATE workspaces SET locked_by_agent_id = ?, "
+                "locked_by_task_id = ?, locked_at = ? "
+                "WHERE id = ? AND locked_by_agent_id IS NULL",
+                (agent_id, task_id, now, row["id"]),
+            )
+            await self._db.commit()
+
+            if cursor.rowcount != 1:
+                # Another coroutine locked it between our SELECT and UPDATE.
+                continue
+
+            ws = self._row_to_workspace(row)
+            ws.locked_by_agent_id = agent_id
+            ws.locked_by_task_id = task_id
+            ws.locked_at = now
+            return ws
+
+        return None  # All candidates were locked by the time we tried
 
     async def release_workspace(self, workspace_id: str) -> None:
         """Clear lock columns on a workspace."""
