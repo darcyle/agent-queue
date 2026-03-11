@@ -435,7 +435,77 @@ defaults.
 
 ---
 
-## 7. Testing Strategy
+## 7. Logging Integration
+
+### 7.1 Structured logging with correlation context
+
+The system uses structured JSON logging with per-task correlation IDs (see
+`src/logging_config.py`). Your adapter should use the standard `logging` module
+— correlation fields (`task_id`, `project_id`, `cycle_id`) are automatically
+injected into every log record by the `CorrelationFilter`.
+
+```python
+import logging
+from src.logging_config import get_correlation_context
+
+logger = logging.getLogger(__name__)
+
+async def start(self, task: TaskContext) -> None:
+    self._task = task
+    self._cancel_event.clear()
+    # Correlation context is set by the orchestrator before calling start().
+    # Just use the standard logger — fields are injected automatically.
+    ctx = get_correlation_context()
+    logger.info(
+        "MyAgent adapter starting for task %s",
+        ctx.get("task_id", task.task_id),
+    )
+```
+
+You can also call `get_correlation_context()` to access the current task/project
+IDs explicitly (e.g., for passing to external APIs or custom log calls).
+
+### 7.2 LLM session logging
+
+The `AdapterFactory` passes an optional `llm_logger` (an `LLMLogger` instance
+from `src/llm_logger.py`) to each adapter. If present, your adapter should call
+`llm_logger.log_agent_session()` after each execution to record prompt, output,
+duration, and token usage for analytics.
+
+```python
+import time
+
+async def wait(self, on_message=None) -> AgentOutput:
+    start_time = time.monotonic()
+    prompt = self._build_prompt()
+    # ... run agent ...
+    output = AgentOutput(result=AgentResult.COMPLETED, ...)
+
+    # Log the session
+    if self._llm_logger:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        self._llm_logger.log_agent_session(
+            task_id=self._task.task_id,
+            session_id=self._session_id,  # from your agent's session
+            model=self._config.model or "(default)",
+            prompt=prompt,
+            config_summary={
+                "allowed_tools": self._config.allowed_tools,
+                # Include agent-specific config relevant for debugging
+            },
+            output=output,
+            duration_ms=duration_ms,
+        )
+    return output
+```
+
+Log the session on **all** code paths — success, failure, cancellation, and
+pause — so that token usage is tracked even for failed runs. See
+`ClaudeAdapter._log_session()` for the reference pattern.
+
+---
+
+## 8. Testing Strategy
 
 ### Unit tests (required)
 
@@ -520,7 +590,7 @@ a trivial task (e.g., "create a file called hello.txt") and verifies:
 
 ---
 
-## 8. Checklist
+## 9. Checklist
 
 Before submitting your adapter:
 
@@ -536,4 +606,5 @@ Before submitting your adapter:
 - [ ] Has unit tests covering start/stop/wait/cancellation
 - [ ] Sets working directory to `task.checkout_path`
 - [ ] Handles `ImportError` gracefully if the agent SDK is optional
-- [ ] Logs session to `llm_logger` if available
+- [ ] Logs session to `llm_logger` on all code paths (success, failure, cancel)
+- [ ] Uses standard `logging` module (correlation context is auto-injected)
