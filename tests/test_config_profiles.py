@@ -211,30 +211,30 @@ class TestProfileLoading:
 
 class TestParseArgs:
     def test_no_args(self):
-        config_path, profile = _parse_args([])
+        config_path, profile, _ = _parse_args([])
         assert profile is None
         assert "config.yaml" in config_path
 
     def test_config_path_only(self):
-        config_path, profile = _parse_args(["/path/to/config.yaml"])
+        config_path, profile, _ = _parse_args(["/path/to/config.yaml"])
         assert config_path == "/path/to/config.yaml"
         assert profile is None
 
     def test_profile_flag(self):
-        config_path, profile = _parse_args(["--profile", "dev", "/path/config.yaml"])
+        config_path, profile, _ = _parse_args(["--profile", "dev", "/path/config.yaml"])
         assert profile == "dev"
         assert config_path == "/path/config.yaml"
 
     def test_profile_equals_syntax(self):
-        config_path, profile = _parse_args(["--profile=staging", "/path/config.yaml"])
+        config_path, profile, _ = _parse_args(["--profile=staging", "/path/config.yaml"])
         assert profile == "staging"
         assert config_path == "/path/config.yaml"
 
     def test_profile_after_config_path(self):
-        config_path, profile = _parse_args(["/path/config.yaml", "--profile", "prod"])
+        config_path, profile, _ = _parse_args(["/path/config.yaml", "--profile", "prod"])
         assert profile == "prod"
         assert config_path == "/path/config.yaml"
 
     def test_validate_config_preserved(self):
-        _, profile = _parse_args(["--validate-config", "--profile", "dev"])
+        _, profile, _ = _parse_args(["--validate-config", "--profile", "dev"])
         assert profile == "dev"

@@ -26,6 +26,24 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class ConfigError:
+    """A single configuration validation error or warning.
+
+    Used by per-section ``validate()`` methods and ``AppConfig.validate()``
+    to collect ALL issues before reporting, so operators can fix everything
+    in one pass.
+    """
+
+    section: str
+    field: str
+    message: str
+    severity: str = "error"  # "error" or "warning"
+
+    def __str__(self) -> str:
+        return f"[{self.section}] {self.field}: {self.message}"
+
+
 class ConfigValidationError(Exception):
     """Raised when the application configuration fails validation checks.
 
@@ -64,6 +82,14 @@ class DiscordConfig:
         default_factory=PerProjectChannelsConfig
     )
 
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not self.bot_token:
+            errors.append(ConfigError("discord", "bot_token", "bot_token is required for Discord connection"))
+        if not self.guild_id:
+            errors.append(ConfigError("discord", "guild_id", "guild_id is required for Discord connection"))
+        return errors
+
 
 @dataclass
 class AgentsDefaultConfig:
@@ -72,6 +98,16 @@ class AgentsDefaultConfig:
     heartbeat_interval_seconds: int = 30
     stuck_timeout_seconds: int = 0  # 0 = no timeout (was 600)
     graceful_shutdown_timeout_seconds: int = 30
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.heartbeat_interval_seconds <= 0:
+            errors.append(ConfigError("agents", "heartbeat_interval_seconds", "must be > 0"))
+        if self.stuck_timeout_seconds < 0:
+            errors.append(ConfigError("agents", "stuck_timeout_seconds", "must be >= 0"))
+        if self.graceful_shutdown_timeout_seconds <= 0:
+            errors.append(ConfigError("agents", "graceful_shutdown_timeout_seconds", "must be > 0"))
+        return errors
 
 
 @dataclass
@@ -85,6 +121,12 @@ class SchedulingConfig:
 
     rolling_window_hours: int = 24
     min_task_guarantee: bool = True
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.rolling_window_hours <= 0:
+            errors.append(ConfigError("scheduling", "rolling_window_hours", "must be > 0"))
+        return errors
 
 
 @dataclass
@@ -101,6 +143,18 @@ class PauseRetryConfig:
     # Exponential-backoff retry knobs (in-process, before the task is paused)
     rate_limit_max_retries: int = 3
     rate_limit_max_backoff_seconds: int = 300
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.rate_limit_backoff_seconds <= 0:
+            errors.append(ConfigError("pause_retry", "rate_limit_backoff_seconds", "must be > 0"))
+        if self.token_exhaustion_retry_seconds <= 0:
+            errors.append(ConfigError("pause_retry", "token_exhaustion_retry_seconds", "must be > 0"))
+        if self.rate_limit_max_retries < 0:
+            errors.append(ConfigError("pause_retry", "rate_limit_max_retries", "must be >= 0"))
+        if self.rate_limit_max_backoff_seconds <= 0:
+            errors.append(ConfigError("pause_retry", "rate_limit_max_backoff_seconds", "must be > 0"))
+        return errors
 
 
 @dataclass
@@ -127,6 +181,16 @@ class AutoTaskConfig:
     use_llm_parser: bool = False        # Use LLM (Claude) for plan parsing
     llm_parser_model: str = ""          # Model override for plan parsing
 
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.max_plan_depth < 1:
+            errors.append(ConfigError("auto_task", "max_plan_depth", "must be >= 1"))
+        if self.max_steps_per_plan < 1:
+            errors.append(ConfigError("auto_task", "max_steps_per_plan", "must be >= 1"))
+        if self.base_priority < 0:
+            errors.append(ConfigError("auto_task", "base_priority", "must be >= 0"))
+        return errors
+
 
 @dataclass
 class ArchiveConfig:
@@ -143,6 +207,20 @@ class ArchiveConfig:
     statuses: list[str] = field(
         default_factory=lambda: ["COMPLETED", "FAILED", "BLOCKED"]
     )
+
+    def validate(self) -> list[ConfigError]:
+        from src.models import TaskStatus
+        errors: list[ConfigError] = []
+        if self.after_hours <= 0:
+            errors.append(ConfigError("archive", "after_hours", "must be > 0"))
+        valid_statuses = {s.name for s in TaskStatus}
+        for status in self.statuses:
+            if status not in valid_statuses:
+                errors.append(ConfigError(
+                    "archive", "statuses",
+                    f"'{status}' is not a valid TaskStatus (valid: {', '.join(sorted(valid_statuses))})"
+                ))
+        return errors
 
 
 @dataclass
@@ -177,6 +255,19 @@ class MemoryConfig:
     index_notes: bool = True  # index project notes/ directory
     index_sessions: bool = False  # index session transcripts
 
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.enabled:
+            valid_providers = {"openai", "google", "voyage", "ollama", "local"}
+            if self.embedding_provider not in valid_providers:
+                errors.append(ConfigError(
+                    "memory", "embedding_provider",
+                    f"must be one of {sorted(valid_providers)}, got '{self.embedding_provider}'"
+                ))
+            if self.max_chunk_size <= 0:
+                errors.append(ConfigError("memory", "max_chunk_size", "must be > 0"))
+        return errors
+
 
 @dataclass
 class LoggingConfig:
@@ -208,6 +299,21 @@ class ChatProviderConfig:
     base_url: str = ""           # For Ollama
     keep_alive: str = "1h"       # Ollama: how long to keep model loaded after last request
 
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        valid_providers = {"anthropic", "ollama"}
+        if self.provider and self.provider not in valid_providers:
+            errors.append(ConfigError(
+                "chat_provider", "provider",
+                f"must be one of {sorted(valid_providers)}, got '{self.provider}'"
+            ))
+        if self.provider == "ollama" and not self.base_url:
+            errors.append(ConfigError(
+                "chat_provider", "base_url",
+                "base_url is required when provider is 'ollama'"
+            ))
+        return errors
+
 
 @dataclass
 class LLMLoggingConfig:
@@ -215,6 +321,12 @@ class LLMLoggingConfig:
 
     enabled: bool = False
     retention_days: int = 30
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.enabled and self.retention_days <= 0:
+            errors.append(ConfigError("llm_logging", "retention_days", "must be > 0 when enabled"))
+        return errors
 
 
 @dataclass
@@ -234,6 +346,22 @@ class AgentProfileConfig:
     mcp_servers: dict[str, dict] = field(default_factory=dict)
     system_prompt_suffix: str = ""
     install: dict = field(default_factory=dict)
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not self.id:
+            errors.append(ConfigError(
+                "agent_profiles", "id",
+                f"profile with name '{self.name}' has an empty id"
+            ))
+        valid_permission_modes = {"default", "plan", "full", "bypassPermissions", ""}
+        if self.permission_mode and self.permission_mode not in valid_permission_modes:
+            errors.append(ConfigError(
+                "agent_profiles", "permission_mode",
+                f"profile '{self.id}': permission_mode must be one of "
+                f"{sorted(m for m in valid_permission_modes if m)}, got '{self.permission_mode}'"
+            ))
+        return errors
 
 
 @dataclass
@@ -291,83 +419,81 @@ class AppConfig:
     rate_limits: dict[str, dict[str, int]] = field(default_factory=dict)
     _config_path: str = field(default="", repr=False)
 
-    def validate(self) -> None:
-        """Validate critical configuration settings.
+    def validate(self) -> list[ConfigError]:
+        """Validate all configuration settings, delegating to per-section validators.
 
-        Raises ConfigValidationError with all errors found (not just the first)
-        so operators can fix everything in one pass.
+        Returns a list of all ConfigError instances found (errors and warnings).
+        Does NOT raise — callers decide how to handle errors. The ``load_config()``
+        function still raises ``ConfigValidationError`` for backward compatibility.
         """
-        errors: list[str] = []
+        errors: list[ConfigError] = []
 
-        # Critical: paths
+        # Cross-field: critical path checks
         if not self.workspace_dir:
-            errors.append("workspace_dir is required")
+            errors.append(ConfigError("app", "workspace_dir", "workspace_dir is required"))
+        elif not os.access(self.workspace_dir, os.W_OK) and not os.path.exists(self.workspace_dir):
+            # Check if parent dir is writable (could create workspace_dir)
+            parent = os.path.dirname(self.workspace_dir)
+            if parent and os.path.exists(parent) and not os.access(parent, os.W_OK):
+                errors.append(ConfigError(
+                    "app", "workspace_dir",
+                    f"'{self.workspace_dir}' is not writable and parent directory is not writable",
+                    severity="warning"
+                ))
+
         if not self.database_path:
-            errors.append("database_path is required")
+            errors.append(ConfigError("app", "database_path", "database_path is required"))
+        else:
+            db_parent = os.path.dirname(self.database_path)
+            if db_parent and not os.path.exists(db_parent):
+                # Check if we can create the parent
+                grandparent = os.path.dirname(db_parent)
+                if grandparent and os.path.exists(grandparent) and not os.access(grandparent, os.W_OK):
+                    errors.append(ConfigError(
+                        "app", "database_path",
+                        f"parent directory '{db_parent}' does not exist and cannot be created",
+                        severity="warning"
+                    ))
 
-        # Scheduling sanity
-        if self.scheduling.rolling_window_hours <= 0:
-            errors.append("scheduling.rolling_window_hours must be > 0")
+        # Delegate to per-section validators
+        errors.extend(self.discord.validate())
+        errors.extend(self.agents_config.validate())
+        errors.extend(self.scheduling.validate())
+        errors.extend(self.pause_retry.validate())
+        errors.extend(self.chat_provider.validate())
+        errors.extend(self.auto_task.validate())
+        errors.extend(self.archive.validate())
+        errors.extend(self.llm_logging.validate())
+        errors.extend(self.memory.validate())
 
-        # Pause/retry sanity
-        if self.pause_retry.rate_limit_backoff_seconds <= 0:
-            errors.append("pause_retry.rate_limit_backoff_seconds must be > 0")
-
-        # Auto-task bounds
-        if self.auto_task.max_plan_depth < 1:
-            errors.append("auto_task.max_plan_depth must be >= 1")
-        if self.auto_task.max_steps_per_plan < 1:
-            errors.append("auto_task.max_steps_per_plan must be >= 1")
-
-        # Archive sanity
-        if self.archive.enabled and self.archive.after_hours <= 0:
-            errors.append("archive.after_hours must be > 0 when archive is enabled")
-
-        # Chat provider validation
-        valid_providers = {"anthropic", "ollama"}
-        if self.chat_provider.provider and self.chat_provider.provider not in valid_providers:
-            errors.append(
-                f"chat_provider.provider must be one of {valid_providers}, "
-                f"got '{self.chat_provider.provider}'"
-            )
-
-        # Memory embedding provider validation
-        if self.memory.enabled:
-            valid_embedding = {"openai", "google", "voyage", "ollama", "local"}
-            if self.memory.embedding_provider not in valid_embedding:
-                errors.append(
-                    f"memory.embedding_provider must be one of {valid_embedding}, "
-                    f"got '{self.memory.embedding_provider}'"
-                )
+        # Agent profiles
+        for profile in self.agent_profiles:
+            errors.extend(profile.validate())
 
         # Health check port range
         if self.health_check.enabled:
             if not (1 <= self.health_check.port <= 65535):
-                errors.append(
-                    f"health_check.port must be between 1 and 65535, "
-                    f"got {self.health_check.port}"
-                )
+                errors.append(ConfigError(
+                    "health_check", "port",
+                    f"must be between 1 and 65535, got {self.health_check.port}"
+                ))
 
         # Monitoring threshold
         if self.monitoring.stuck_task_threshold_seconds < 0:
-            errors.append("monitoring.stuck_task_threshold_seconds must be >= 0")
-
-        # Agent profile IDs must be non-empty
-        for profile in self.agent_profiles:
-            if not profile.id:
-                errors.append(
-                    f"agent_profiles: profile with name '{profile.name}' has an empty id"
-                )
+            errors.append(ConfigError(
+                "monitoring", "stuck_task_threshold_seconds",
+                "must be >= 0"
+            ))
 
         # Rate limits structure validation
         for scope, limits in self.rate_limits.items():
             if not isinstance(limits, dict):
-                errors.append(
-                    f"rate_limits.{scope}: expected a dict, got {type(limits).__name__}"
-                )
+                errors.append(ConfigError(
+                    "rate_limits", scope,
+                    f"expected a dict, got {type(limits).__name__}"
+                ))
 
-        if errors:
-            raise ConfigValidationError(errors)
+        return errors
 
     def reload_non_critical(self) -> "AppConfig":
         """Return a new AppConfig with non-critical settings refreshed from disk.
@@ -729,6 +855,16 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.rate_limits = raw["rate_limits"]
 
     # Fail fast on misconfiguration — surface all errors at once.
-    config.validate()
+    # validate() returns ConfigError list; convert fatal errors to exception
+    # for backward compatibility.
+    config_errors = config.validate()
+    fatal_errors = [str(e) for e in config_errors if e.severity == "error"]
+    if fatal_errors:
+        raise ConfigValidationError(fatal_errors)
+
+    # Log warnings (non-fatal)
+    for e in config_errors:
+        if e.severity == "warning":
+            logger.warning("Config warning: %s", e)
 
     return config
