@@ -74,9 +74,9 @@ class TestMemoryConfig:
 class TestMemoryManager:
     """Unit tests with mocked memsearch dependency."""
 
-    def _make_manager(self, **overrides) -> MemoryManager:
+    def _make_manager(self, storage_root: str = "/tmp/aq-test", **overrides) -> MemoryManager:
         cfg = MemoryConfig(enabled=True, **overrides)
-        return MemoryManager(cfg)
+        return MemoryManager(cfg, storage_root=storage_root)
 
     # -- Disabled / unavailable scenarios ----------------------------------
 
@@ -152,22 +152,22 @@ class TestMemoryManager:
     def test_memory_paths_includes_notes_when_enabled(self, tmp_path):
         notes_dir = tmp_path / "notes"
         notes_dir.mkdir()
-        mgr = self._make_manager(index_notes=True)
-        paths = mgr._memory_paths(str(tmp_path))
-        assert str(tmp_path / "memory") in paths
+        mgr = self._make_manager(storage_root=str(tmp_path), index_notes=True)
+        paths = mgr._memory_paths("test-project", str(tmp_path))
+        assert mgr._project_memory_dir("test-project") in paths
         assert str(notes_dir) in paths
 
     def test_memory_paths_excludes_notes_when_disabled(self, tmp_path):
         (tmp_path / "notes").mkdir()
-        mgr = self._make_manager(index_notes=False)
-        paths = mgr._memory_paths(str(tmp_path))
+        mgr = self._make_manager(storage_root=str(tmp_path), index_notes=False)
+        paths = mgr._memory_paths("test-project", str(tmp_path))
         assert len(paths) == 1
         assert "notes" not in paths[0]
 
     def test_memory_paths_skips_missing_notes_dir(self, tmp_path):
         """notes/ directory absent — only memory/ included."""
-        mgr = self._make_manager(index_notes=True)
-        paths = mgr._memory_paths(str(tmp_path))
+        mgr = self._make_manager(storage_root=str(tmp_path), index_notes=True)
+        paths = mgr._memory_paths("test-project", str(tmp_path))
         assert len(paths) == 1
 
     # -- Recall with mocked MemSearch --------------------------------------

@@ -148,7 +148,9 @@ class Orchestrator:
         if hasattr(config, "memory") and config.memory.enabled:
             try:
                 from src.memory import MemoryManager
-                self.memory_manager = MemoryManager(config.memory)
+                self.memory_manager = MemoryManager(
+                    config.memory, storage_root=config.workspace_dir
+                )
             except Exception as e:
                 print(f"Memory manager initialization failed: {e}")
         # Reference to the command handler, set by the bot after initialization.

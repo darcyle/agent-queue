@@ -37,13 +37,20 @@ class MemoryManager:
     so memories are fully isolated between projects. Instances are created
     lazily on first access.
 
+    Memory files are stored centrally under ``{workspace_dir}/memory/{project_id}/``
+    to avoid polluting linked workspace directories (project repos) with
+    uncommitted memory files.
+
     When memsearch is not installed or the config has ``enabled=False``,
     every public method degrades gracefully (returns empty lists, None, etc.)
     without raising exceptions.
     """
 
-    def __init__(self, config: MemoryConfig) -> None:
+    def __init__(self, config: MemoryConfig, storage_root: str = "") -> None:
         self.config = config
+        self._storage_root = os.path.expanduser(
+            storage_root or "~/agent-queue-workspaces"
+        )
         self._instances: dict[str, Any] = {}  # project_id -> MemSearch
         self._watchers: dict[str, Any] = {}
 
@@ -56,14 +63,23 @@ class MemoryManager:
         safe_id = project_id.replace("-", "_").replace(" ", "_")
         return f"aq_{safe_id}_memory"
 
-    def _memory_paths(self, workspace_path: str) -> list[str]:
-        """Directories to index for a workspace.
+    def _project_memory_dir(self, project_id: str) -> str:
+        """Central memory storage directory for a project.
 
-        Always includes the ``memory/`` directory (created if absent).
-        Optionally includes ``notes/`` when ``index_notes`` is enabled and
-        the directory exists.
+        Returns ``{workspace_dir}/memory/{project_id}/``. This keeps memory
+        files out of linked workspace directories (project repos).
         """
-        paths = [os.path.join(workspace_path, "memory")]
+        return os.path.join(self._storage_root, "memory", project_id)
+
+    def _memory_paths(self, project_id: str, workspace_path: str) -> list[str]:
+        """Directories to index for a project.
+
+        Always includes the central ``{workspace_dir}/memory/{project_id}/``
+        directory (created if absent). Optionally includes the workspace's
+        ``notes/`` directory when ``index_notes`` is enabled and the
+        directory exists.
+        """
+        paths = [self._project_memory_dir(project_id)]
         if self.config.index_notes:
             notes_dir = os.path.join(workspace_path, "notes")
             if os.path.isdir(notes_dir):
@@ -95,11 +111,11 @@ class MemoryManager:
             return self._instances[project_id]
 
         try:
-            # Ensure the memory/tasks directory exists for remember()
-            memory_dir = os.path.join(workspace_path, "memory", "tasks")
+            # Ensure the central memory/tasks directory exists for remember()
+            memory_dir = os.path.join(self._project_memory_dir(project_id), "tasks")
             os.makedirs(memory_dir, exist_ok=True)
 
-            paths = self._memory_paths(workspace_path)
+            paths = self._memory_paths(project_id, workspace_path)
 
             instance = MemSearch(
                 paths=paths,
@@ -151,9 +167,9 @@ class MemoryManager:
     async def remember(self, task: Any, output: Any, workspace_path: str) -> str | None:
         """Save a task result as a structured markdown memory file.
 
-        Writes the file to ``{workspace}/memory/tasks/{task_id}.md`` and
-        indexes it via ``memsearch.index_file()``. Returns the file path on
-        success, ``None`` otherwise.
+        Writes the file to ``{workspace_dir}/memory/{project_id}/tasks/{task_id}.md``
+        and indexes it via ``memsearch.index_file()``. Returns the file path
+        on success, ``None`` otherwise.
         """
         if not self.config.auto_remember:
             return None
@@ -162,7 +178,9 @@ class MemoryManager:
         if not instance:
             return None
 
-        memory_path = os.path.join(workspace_path, "memory", "tasks", f"{task.id}.md")
+        memory_path = os.path.join(
+            self._project_memory_dir(task.project_id), "tasks", f"{task.id}.md"
+        )
         try:
             content = self._format_task_memory(task, output)
             os.makedirs(os.path.dirname(memory_path), exist_ok=True)
