@@ -15,11 +15,28 @@ See specs/config.md for the full specification of all configuration fields.
 
 from __future__ import annotations
 
+import copy
+import logging
 import os
 import re
 from dataclasses import dataclass, field
 
 import yaml
+
+logger = logging.getLogger(__name__)
+
+
+class ConfigValidationError(Exception):
+    """Raised when the application configuration fails validation checks.
+
+    Contains a list of all validation errors found, not just the first one,
+    so operators can fix all issues in one pass.
+    """
+
+    def __init__(self, errors: list[str]):
+        self.errors = errors
+        msg = "Configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
+        super().__init__(msg)
 
 
 @dataclass
@@ -205,11 +222,32 @@ class AgentProfileConfig:
 
 
 @dataclass
+class HealthCheckConfig:
+    """Configuration for the HTTP health check server.
+
+    When enabled, the daemon exposes ``/health`` and ``/ready`` endpoints
+    on the configured port for external monitoring and load balancer probes.
+    """
+
+    enabled: bool = False
+    port: int = 8080
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration aggregating all subsystem configs.
 
     Instantiated once by load_config() at startup and threaded through to all
     major components. Each component reads only its relevant sub-config.
+
+    The ``env`` field selects the environment profile (dev, staging, production).
+    When set, ``load_config`` will look for an override file named
+    ``config.{env}.yaml`` in the same directory as the main config file and
+    deep-merge it over the base config.
+
+    The ``validate()`` method performs fail-fast checks on critical settings.
+    The ``reload_non_critical()`` method returns a fresh config with only
+    non-critical settings updated from disk for hot-reloading.
     """
 
     workspace_dir: str = field(
@@ -218,12 +256,14 @@ class AppConfig:
     database_path: str = field(
         default_factory=lambda: os.path.expanduser("~/.agent-queue/agent-queue.db")
     )
+    env: str = "production"
     discord: DiscordConfig = field(default_factory=DiscordConfig)
     agents_config: AgentsDefaultConfig = field(default_factory=AgentsDefaultConfig)
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
     chat_provider: ChatProviderConfig = field(default_factory=ChatProviderConfig)
     hook_engine: HookEngineConfig = field(default_factory=HookEngineConfig)
+    health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
     auto_task: AutoTaskConfig = field(default_factory=AutoTaskConfig)
@@ -232,6 +272,121 @@ class AppConfig:
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
     rate_limits: dict[str, dict[str, int]] = field(default_factory=dict)
+    _config_path: str = field(default="", repr=False)
+
+    def validate(self) -> None:
+        """Validate critical configuration settings.
+
+        Raises ConfigValidationError with all errors found (not just the first)
+        so operators can fix everything in one pass.
+        """
+        errors: list[str] = []
+
+        # Critical: paths
+        if not self.workspace_dir:
+            errors.append("workspace_dir is required")
+        if not self.database_path:
+            errors.append("database_path is required")
+
+        # Scheduling sanity
+        if self.scheduling.rolling_window_hours <= 0:
+            errors.append("scheduling.rolling_window_hours must be > 0")
+
+        # Pause/retry sanity
+        if self.pause_retry.rate_limit_backoff_seconds <= 0:
+            errors.append("pause_retry.rate_limit_backoff_seconds must be > 0")
+
+        # Auto-task bounds
+        if self.auto_task.max_plan_depth < 1:
+            errors.append("auto_task.max_plan_depth must be >= 1")
+        if self.auto_task.max_steps_per_plan < 1:
+            errors.append("auto_task.max_steps_per_plan must be >= 1")
+
+        # Archive sanity
+        if self.archive.enabled and self.archive.after_hours <= 0:
+            errors.append("archive.after_hours must be > 0 when archive is enabled")
+
+        # Chat provider validation
+        valid_providers = {"anthropic", "ollama"}
+        if self.chat_provider.provider and self.chat_provider.provider not in valid_providers:
+            errors.append(
+                f"chat_provider.provider must be one of {valid_providers}, "
+                f"got '{self.chat_provider.provider}'"
+            )
+
+        # Memory embedding provider validation
+        if self.memory.enabled:
+            valid_embedding = {"openai", "google", "voyage", "ollama", "local"}
+            if self.memory.embedding_provider not in valid_embedding:
+                errors.append(
+                    f"memory.embedding_provider must be one of {valid_embedding}, "
+                    f"got '{self.memory.embedding_provider}'"
+                )
+
+        # Health check port range
+        if self.health_check.enabled:
+            if not (1 <= self.health_check.port <= 65535):
+                errors.append(
+                    f"health_check.port must be between 1 and 65535, "
+                    f"got {self.health_check.port}"
+                )
+
+        # Monitoring threshold
+        if self.monitoring.stuck_task_threshold_seconds < 0:
+            errors.append("monitoring.stuck_task_threshold_seconds must be >= 0")
+
+        # Agent profile IDs must be non-empty
+        for profile in self.agent_profiles:
+            if not profile.id:
+                errors.append(
+                    f"agent_profiles: profile with name '{profile.name}' has an empty id"
+                )
+
+        # Rate limits structure validation
+        for scope, limits in self.rate_limits.items():
+            if not isinstance(limits, dict):
+                errors.append(
+                    f"rate_limits.{scope}: expected a dict, got {type(limits).__name__}"
+                )
+
+        if errors:
+            raise ConfigValidationError(errors)
+
+    def reload_non_critical(self) -> "AppConfig":
+        """Return a new AppConfig with non-critical settings refreshed from disk.
+
+        Non-critical settings (safe to change at runtime without restart):
+        - scheduling, pause_retry, auto_task, archive, monitoring
+        - hook_engine, llm_logging
+
+        Critical settings (NOT reloaded — require restart):
+        - discord, database_path, workspace_dir, chat_provider, memory,
+          health_check
+
+        Returns a new AppConfig instance; the caller is responsible for
+        swapping references.  If the config file cannot be read or parsed,
+        the current config is returned unchanged and the error is logged.
+        """
+        if not self._config_path or not os.path.exists(self._config_path):
+            return self
+
+        try:
+            fresh = load_config(self._config_path)
+        except Exception as e:
+            logger.warning("Config hot-reload failed, keeping current config: %s", e)
+            return self
+
+        # Create a copy of current config and update only non-critical sections
+        updated = copy.deepcopy(self)
+        updated.scheduling = fresh.scheduling
+        updated.pause_retry = fresh.pause_retry
+        updated.auto_task = fresh.auto_task
+        updated.archive = fresh.archive
+        updated.monitoring = fresh.monitoring
+        updated.hook_engine = fresh.hook_engine
+        updated.llm_logging = fresh.llm_logging
+
+        return updated
 
 
 def _substitute_env_vars(value: str) -> str:
@@ -256,6 +411,21 @@ def _process_values(obj):
     return obj
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge *override* into *base* (override wins on conflict).
+
+    Used for environment-specific config overlays: values in the overlay
+    file take precedence, but keys only present in the base are preserved.
+    """
+    result = dict(base)
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
 def _load_env_file(config_path: str) -> None:
     """Load .env file from the same directory as the config file."""
     env_path = os.path.join(os.path.dirname(config_path), ".env")
@@ -275,10 +445,17 @@ def _load_env_file(config_path: str) -> None:
 def load_config(path: str) -> AppConfig:
     """Load and validate application configuration from a YAML file.
 
-    Processing order: load .env from the config file's directory (without
-    overriding existing env vars), parse YAML, recursively substitute
-    ${ENV_VAR} references in all string values, then map sections into
-    typed dataclass instances with sensible defaults for missing fields.
+    Processing order:
+      1. Load ``.env`` from the config file's directory (without overriding
+         existing env vars)
+      2. Parse the base YAML file
+      3. Determine the environment profile (``AGENT_QUEUE_ENV`` env var,
+         or ``env`` field in config, default ``"production"``)
+      4. If an overlay file ``config.{env}.yaml`` exists in the same
+         directory, deep-merge it over the base config
+      5. Recursively substitute ``${ENV_VAR}`` references in all strings
+      6. Map sections into typed dataclass instances
+      7. Run ``validate()`` to catch misconfiguration early
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Config file not found: {path}")
@@ -288,9 +465,24 @@ def load_config(path: str) -> AppConfig:
     with open(path) as f:
         raw = yaml.safe_load(f) or {}
 
+    # Determine environment profile for overlay loading
+    env = os.environ.get("AGENT_QUEUE_ENV", raw.get("env", "production"))
+
+    # Load environment-specific overlay (e.g. config.dev.yaml)
+    config_dir = os.path.dirname(path)
+    base_name = os.path.basename(path)
+    name_part, ext = os.path.splitext(base_name)
+    overlay_path = os.path.join(config_dir, f"{name_part}.{env}{ext}")
+    if os.path.exists(overlay_path):
+        with open(overlay_path) as f:
+            overlay = yaml.safe_load(f) or {}
+        raw = _deep_merge(raw, overlay)
+
     raw = _process_values(raw)
 
     config = AppConfig()
+    config._config_path = path
+    config.env = env
 
     if "workspace_dir" in raw:
         config.workspace_dir = raw["workspace_dir"]
@@ -457,7 +649,17 @@ def load_config(path: str) -> AppConfig:
             ))
         config.agent_profiles = profiles
 
+    if "health_check" in raw:
+        hc = raw["health_check"]
+        config.health_check = HealthCheckConfig(
+            enabled=hc.get("enabled", False),
+            port=hc.get("port", 8080),
+        )
+
     if "rate_limits" in raw:
         config.rate_limits = raw["rate_limits"]
+
+    # Fail fast on misconfiguration — surface all errors at once.
+    config.validate()
 
     return config
