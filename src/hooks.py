@@ -39,7 +39,12 @@ from src.models import Hook, HookRun
 
 logger = logging.getLogger(__name__)
 
-# Named DB queries (safe — not raw SQL)
+# Named DB queries available to hook context steps.
+#
+# This is a whitelist: hooks can only execute these pre-defined queries,
+# never arbitrary SQL.  Each query uses SQLite parameterized placeholders
+# (e.g. ``:task_id``) for safe parameter binding.  New queries should be
+# added here when hooks need access to additional data.
 NAMED_QUERIES = {
     "recent_task_results": (
         "SELECT t.id, t.title, t.status, tr.result, tr.summary, tr.error_message, "
@@ -90,26 +95,47 @@ class HookEngine:
                 self._last_run_time[hook.id] = last_run.started_at
 
     async def tick(self) -> None:
-        """Called every orchestrator cycle. Check periodic hooks that are due."""
-        # Clean up completed tasks
+        """Called every orchestrator cycle (~5s). Manages hook lifecycle.
+
+        This method performs two jobs:
+
+        1. **Housekeeping** — iterates ``_running`` to find completed asyncio
+           Tasks, removes them from the dict, and surfaces any uncaught
+           exceptions to the log.  This must happen *before* checking for new
+           hooks to launch so that the concurrency count is accurate.
+
+        2. **Periodic hook scheduling** — for each enabled hook with a
+           ``periodic`` trigger, checks whether enough time has elapsed since
+           its last run (``interval_seconds``) and whether the cooldown has
+           passed.  If both conditions are met and the concurrency cap hasn't
+           been reached, the hook is launched as a background asyncio Task.
+
+        Event-driven hooks are *not* checked here — they fire through the
+        ``_on_event`` callback, which is subscribed to all EventBus events.
+        """
+        # --- Phase 1: Clean up completed hook executions ---
         done = [hid for hid, t in self._running.items() if t.done()]
         for hid in done:
             task = self._running.pop(hid)
-            # Surface exceptions
+            # Surface exceptions that occurred during hook execution.
+            # Without this, asyncio silently swallows exceptions from
+            # fire-and-forget tasks, making hook failures invisible.
             if task.done() and not task.cancelled():
                 exc = task.exception()
                 if exc:
                     logger.error("Hook task %s failed: %s", hid, exc)
 
+        # --- Phase 2: Check periodic hooks that are due to fire ---
         hooks = await self.db.list_hooks(enabled=True)
         now = time.time()
         max_concurrent = self.config.hook_engine.max_concurrent_hooks
 
         for hook in hooks:
+            # Global concurrency cap: stop checking if we're at the limit.
             if len(self._running) >= max_concurrent:
                 break
             if hook.id in self._running:
-                continue  # Already in-flight
+                continue  # Already in-flight — skip
 
             trigger = json.loads(hook.trigger)
             trigger_type = trigger.get("type")
@@ -117,19 +143,36 @@ class HookEngine:
             if trigger_type == "periodic":
                 interval = trigger.get("interval_seconds", 3600)
                 last = self._last_run_time.get(hook.id, 0)
+                # Check both interval (enough time since last run) and
+                # cooldown (minimum gap between any two runs, including
+                # manual triggers).
                 if now - last >= interval:
                     if self._check_cooldown(hook, now):
                         self._launch_hook(hook, "periodic")
 
     async def _on_event(self, data: dict) -> None:
-        """Handle EventBus events for event-driven hooks."""
+        """Handle EventBus events for event-driven hooks.
+
+        Called for every event published to the EventBus (subscribed via
+        wildcard ``*``).  Iterates all enabled hooks, filters to those with
+        an ``event`` trigger type matching the incoming ``_event_type``, and
+        launches them if cooldown and concurrency limits allow.
+
+        The event ``data`` dict is forwarded to the hook's context pipeline
+        as ``event_data``, making fields like ``task_id``, ``project_id``,
+        etc. available via ``{{event.field}}`` placeholders in the prompt
+        template and context step parameters.
+
+        Note: hooks already in-flight (in ``_running``) are silently skipped
+        to prevent the same hook from running concurrently with itself.
+        """
         event_type = data.get("_event_type", "")
         hooks = await self.db.list_hooks(enabled=True)
         now = time.time()
 
         for hook in hooks:
             if hook.id in self._running:
-                continue
+                continue  # Prevent concurrent self-execution
 
             trigger = json.loads(hook.trigger)
             if trigger.get("type") != "event":
@@ -141,7 +184,7 @@ class HookEngine:
                 continue
 
             if len(self._running) >= self.config.hook_engine.max_concurrent_hooks:
-                break
+                break  # Global concurrency cap reached
 
             self._launch_hook(
                 hook,
@@ -150,7 +193,17 @@ class HookEngine:
             )
 
     def _check_cooldown(self, hook: Hook, now: float) -> bool:
-        """Return True if enough time has passed since last run."""
+        """Return True if enough time has passed since last run.
+
+        The cooldown is a *global* rate limiter for a hook — it applies
+        regardless of trigger type (periodic, event, or manual).  This
+        prevents a burst of events (e.g. 10 tasks completing in rapid
+        succession) from firing the same hook 10 times.
+
+        The cooldown is distinct from the periodic ``interval_seconds``:
+        interval controls *when* a periodic hook should fire; cooldown
+        controls the minimum gap between *any* two runs.
+        """
         last = self._last_run_time.get(hook.id, 0)
         return (now - last) >= hook.cooldown_seconds
 
@@ -160,7 +213,18 @@ class HookEngine:
         trigger_reason: str,
         event_data: dict | None = None,
     ) -> None:
-        """Launch hook execution as an asyncio task."""
+        """Launch hook execution as a fire-and-forget asyncio task.
+
+        Records the launch time *before* creating the task so the cooldown
+        is immediately effective — even if the hook's coroutine takes a
+        while to start due to event loop pressure, subsequent ``tick()``
+        or ``_on_event()`` calls won't re-launch it.
+
+        The asyncio Task is stored in ``_running[hook.id]`` so:
+        - ``tick()`` can detect completion and surface exceptions.
+        - Other launch attempts skip this hook (already in-flight).
+        - ``shutdown()`` can cancel all running hooks on daemon exit.
+        """
         self._last_run_time[hook.id] = time.time()
         task = asyncio.create_task(
             self._execute_hook(hook, trigger_reason, event_data)
@@ -263,7 +327,24 @@ class HookEngine:
         steps: list[dict],
         event_data: dict | None = None,
     ) -> list[dict]:
-        """Run context steps sequentially. Each step's output is available to later steps."""
+        """Run context-gathering steps sequentially, building the pipeline context.
+
+        Steps execute in order because later steps may reference earlier
+        results via ``{{step_N}}`` placeholders (though this is resolved at
+        prompt-render time, not during step execution).  Each step produces
+        a result dict with type-specific fields:
+
+        * ``shell``     → ``stdout``, ``stderr``, ``exit_code``
+        * ``read_file`` → ``content``
+        * ``http``      → ``body``, ``status_code``
+        * ``db_query``  → ``rows``, ``count``
+        * ``git_diff``  → ``diff``, ``exit_code``
+        * ``memory_search`` → ``content``, ``count``
+
+        If a step throws an exception, it returns ``{"error": "..."}``
+        and execution continues with the next step — a failing step
+        should not prevent the hook from running entirely.
+        """
         results = []
         for i, step in enumerate(steps):
             step_type = step.get("type", "")
@@ -357,7 +438,16 @@ class HookEngine:
     async def _step_db_query(
         self, step: dict, event_data: dict | None = None
     ) -> dict:
-        """Run a named DB query."""
+        """Run a pre-defined named DB query (no arbitrary SQL allowed).
+
+        Security model: hooks cannot execute arbitrary SQL.  They can only
+        reference query names from the ``NAMED_QUERIES`` whitelist defined
+        at module level.  Parameters are passed via SQLite's parameterized
+        query mechanism (``:``) to prevent injection.
+
+        Parameters can reference event data via ``{{event.field}}`` syntax,
+        which is resolved before query execution.
+        """
         query_name = step.get("query", "")
         params = step.get("params", {})
 
@@ -477,7 +567,28 @@ class HookEngine:
     def _should_skip_llm(
         self, steps: list[dict], results: list[dict]
     ) -> str | None:
-        """Check if any step's skip condition is met. Returns reason or None."""
+        """Check if any step's short-circuit condition is met.
+
+        Short-circuit conditions let hooks avoid an LLM call when the context
+        steps already indicate "nothing to do".  This is the primary mechanism
+        for controlling LLM token spend in hooks — a well-designed hook uses
+        context steps to check for actionable conditions and short-circuits
+        when everything is normal.
+
+        Three short-circuit types are supported (each is an opt-in flag
+        on a context step definition):
+
+        * ``skip_llm_if_exit_zero`` — a shell command returned exit code 0,
+          indicating the check passed (e.g. all tests pass → nothing to do).
+        * ``skip_llm_if_empty`` — the step produced no output (stdout or
+          content), indicating nothing was found (e.g. no new error logs).
+        * ``skip_llm_if_status_ok`` — an HTTP request returned 2xx,
+          indicating the service is healthy.
+
+        Returns a human-readable reason string if the LLM should be skipped,
+        or None if all steps want the LLM to proceed.  Only the *first*
+        matching condition fires (short-circuit).
+        """
         for i, step in enumerate(steps):
             if i >= len(results):
                 break
@@ -504,7 +615,20 @@ class HookEngine:
         step_results: list[dict],
         event_data: dict | None = None,
     ) -> str:
-        """Replace {{step_N}}, {{step_N.field}}, and {{event.field}} placeholders."""
+        """Replace template placeholders with context step results and event data.
+
+        Supported placeholder forms:
+
+        * ``{{step_N}}`` — auto-selects the "main" output field from step N
+          (tries stdout → content → body → diff in order; falls back to JSON).
+        * ``{{step_N.field}}`` — a specific field from step N's result dict
+          (e.g. ``{{step_0.exit_code}}``).
+        * ``{{event.field}}`` — a field from the triggering event's data dict
+          (e.g. ``{{event.task_id}}``).
+        * ``{{event}}`` — the full event data as a JSON string.
+
+        Unknown placeholders are left as-is (not replaced).
+        """
         def replacer(match):
             placeholder = match.group(1)
             return self._resolve_placeholder(
@@ -519,7 +643,17 @@ class HookEngine:
         step_results: list[dict] | None = None,
         event_data: dict | None = None,
     ) -> str:
-        """Resolve a single {{...}} placeholder."""
+        """Resolve a single ``{{...}}`` placeholder to its string value.
+
+        Resolution priority:
+        1. ``event.*`` — event data fields (checked first for specificity).
+        2. ``step_N.*`` — context step results by index.
+        3. Unrecognized placeholders are returned verbatim (no error).
+
+        All resolved values are stringified via ``str()``.  For step results
+        without a specific field, the method tries common output keys in
+        order (stdout, content, body, diff) to provide a sensible default.
+        """
         step_results = step_results or []
         key = placeholder.strip("{}")
 

@@ -60,10 +60,21 @@ class SchedulerState:
     projects: list[Project]
     tasks: list[Task]
     agents: list[Agent]
+    # Token usage within the rolling window (e.g. last 24h), used to
+    # compute each project's actual_ratio for deficit-based scheduling.
     project_token_usage: dict[str, int]  # project_id -> tokens in window
+    # Number of agents currently assigned to each project — used to
+    # enforce ``max_concurrent_agents`` limits.
     project_active_agent_counts: dict[str, int]  # project_id -> count
+    # Number of tasks completed by each project in the current window —
+    # used to implement the min-task guarantee (phase 1 of scheduling).
     tasks_completed_in_window: dict[str, int]  # project_id -> count
+    # Number of unlocked workspaces per project — a project with zero
+    # available workspaces cannot receive new assignments regardless of
+    # its scheduling priority.
     project_available_workspaces: dict[str, int] = field(default_factory=dict)
+    # Global daily token budget (None = unlimited).  When exhausted,
+    # no new tasks are scheduled for any project.
     global_budget: int | None = None
     global_tokens_used: int = 0
 
@@ -123,7 +134,14 @@ class Scheduler:
         total_weight = sum(p.credit_weight for p in active_projects)
         total_tokens = sum(state.project_token_usage.values()) or 1  # avoid div/0
 
-        # Track assignments made in this scheduling round
+        # Track assignments made in this scheduling round.
+        #
+        # These are local to this round — they're not persisted until the
+        # orchestrator acts on the returned AssignActions.  We track them
+        # here so that within a single scheduling round (which may assign
+        # multiple idle agents), we don't double-assign the same task or
+        # agent, and we correctly account for concurrency limits that would
+        # be exceeded by earlier assignments in this same round.
         actions: list[AssignAction] = []
         assigned_agents: set[str] = set()
         assigned_tasks: set[str] = set()
@@ -133,7 +151,26 @@ class Scheduler:
             if agent.id in assigned_agents:
                 continue
 
-            # Sort projects: min-task-guarantee first, then by deficit
+            # Sort projects by priority: min-task-guarantee first, then deficit.
+            #
+            # The sort key is a (phase, deficit) tuple:
+            #
+            # Phase 0 (has_guarantee == 0): projects with zero completions in
+            #   the current window.  These sort before all phase-1 projects,
+            #   ensuring every active project gets at least one task before
+            #   proportional allocation begins.  Among phase-0 projects, the
+            #   deficit sub-key breaks ties.
+            #
+            # Phase 1 (has_guarantee == 1): projects with >= 1 completion.
+            #   Sorted by deficit = (actual_ratio - target_ratio).  The most
+            #   negative deficit (furthest below fair share) sorts first,
+            #   gradually converging all projects toward their credit_weight
+            #   proportion of total token usage.
+            #
+            # Example: if project A has credit_weight=2 and B has weight=1,
+            #   A's target_ratio is 2/3 ≈ 0.667.  If A has only used 40% of
+            #   total tokens, its deficit is 0.4 - 0.667 = -0.267 (below
+            #   target), so it sorts before a project at or above target.
             def project_sort_key(p: Project) -> tuple[int, float]:
                 completed = state.tasks_completed_in_window.get(p.id, 0)
                 has_guarantee = 1 if completed > 0 else 0  # 0 = needs guarantee (sorts first)

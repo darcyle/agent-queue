@@ -104,6 +104,40 @@ class Orchestrator:
     """
 
     def __init__(self, config: AppConfig, adapter_factory=None):
+        """Initialize the orchestrator with its configuration and subsystems.
+
+        The orchestrator owns the following key subsystems:
+
+        * **Database** (``self.db``) — single SQLite connection used by all
+          methods.  Must be closed via ``shutdown()``.
+        * **EventBus** (``self.bus``) — in-process pub/sub for event-driven
+          hooks and cross-component notifications.
+        * **BudgetManager** (``self.budget``) — tracks global daily token
+          spend to prevent runaway cost.
+        * **GitManager** (``self.git``) — stateless helper for git operations
+          (clone, branch, merge, PR creation).
+        * **HookEngine** (``self.hooks``) — initialized lazily in
+          ``initialize()`` only when ``hook_engine.enabled`` is True.
+        * **MemoryManager** (``self.memory_manager``) — optional semantic
+          memory integration; initialized only when ``memory.enabled`` and
+          the memsearch package is installed.
+
+        Internal tracking dicts (all keyed for quick lookup, garbage-
+        collected periodically to avoid unbounded growth):
+
+        * ``_running_tasks`` — prevents double-launching the same task.
+        * ``_adapters`` — enables ``stop_task`` to reach into a running agent.
+        * ``_no_pr_reminded_at`` — rate-limits "no PR" reminders per task.
+        * ``_stuck_notified_at`` — rate-limits "stuck DEFINED" alerts per task.
+        * ``_budget_warned_at`` — prevents duplicate budget threshold alerts.
+
+        Args:
+            config: The validated application configuration.
+            adapter_factory: Factory for creating agent adapters (e.g.
+                ``AdapterFactory``).  If None, task execution is disabled
+                and the orchestrator will log an error when ``_execute_task``
+                is called.
+        """
         self.config = config
         self.db = Database(config.database_path)
         self.bus = EventBus()
@@ -112,21 +146,39 @@ class Orchestrator:
         )
         self.git = GitManager()
         self._adapter_factory = adapter_factory
-        self._adapters: dict[str, object] = {}  # agent_id -> adapter
-        self._running_tasks: dict[str, asyncio.Task] = {}  # task_id -> asyncio.Task
+
+        # --- Live agent tracking ---
+        # Maps agent_id → adapter instance so we can send stop signals to
+        # running agents from admin commands (``stop_task``).
+        self._adapters: dict[str, object] = {}
+        # Maps task_id → asyncio.Task for each background agent execution.
+        # Checked every cycle to detect finished work and prevent double-launch.
+        self._running_tasks: dict[str, asyncio.Task] = {}
+
+        # --- Discord integration (injected post-init via setters) ---
         self._notify: NotifyCallback | None = None
         self._create_thread: CreateThreadCallback | None = None
+
+        # --- Orchestrator state ---
         self._paused: bool = False
+
+        # --- Rate-limiting timestamps for periodic checks ---
         self._last_approval_check: float = 0.0
-        # LLM interaction logger
+        self._last_log_cleanup: float = 0.0
+        self._last_auto_archive: float = 0.0
+        self._last_config_reload: float = 0.0
+
+        # LLM interaction logger — writes JSONL files for each chat provider
+        # call and agent session, enabling cost tracking and prompt analytics.
         self.llm_logger = LLMLogger(
             enabled=config.llm_logging.enabled,
             retention_days=config.llm_logging.retention_days,
         )
-        self._last_log_cleanup: float = 0.0
-        self._last_auto_archive: float = 0.0
-        self._last_config_reload: float = 0.0
-        # Chat provider for LLM-based plan parsing
+
+        # Chat provider for LLM-based plan parsing — lazily created only
+        # when auto_task.use_llm_parser is True.  Wrapped with LoggedChatProvider
+        # so plan-parsing token usage shows up in LLM logs under the
+        # "plan_parser" caller tag.
         self._chat_provider = None
         if config.auto_task.use_llm_parser:
             try:
@@ -139,12 +191,23 @@ class Orchestrator:
                 self._chat_provider = provider
             except Exception:
                 pass
+
+        # --- Notification rate-limiting dicts ---
         # Tracks the last time we sent a reminder for an AWAITING_APPROVAL
-        # task that has no PR URL (keyed by task_id).
+        # task that has no PR URL (keyed by task_id).  Garbage-collected
+        # each cycle in ``_check_awaiting_approval``.
         self._no_pr_reminded_at: dict[str, float] = {}
         # Tracks the last time a "stuck DEFINED" notification was sent for
-        # each task (keyed by task_id) to rate-limit alerts.
+        # each task (keyed by task_id) to rate-limit alerts.  Garbage-collected
+        # each cycle in ``_check_stuck_defined_tasks``.
         self._stuck_notified_at: dict[str, float] = {}
+        # Tracks per-project budget warning thresholds already sent so we
+        # don't spam the same warning.  Keyed by project_id, value is the
+        # highest threshold percentage (e.g. 80, 95) already notified.
+        # Cleared when usage drops below the lowest threshold (new window).
+        self._budget_warned_at: dict[str, int] = {}
+
+        # --- Subsystems initialized later ---
         self.hooks: HookEngine | None = None
         # Semantic memory manager — optional integration with memsearch.
         # Initialized only when config.memory.enabled is True and the
@@ -158,14 +221,11 @@ class Orchestrator:
                 )
             except Exception as e:
                 logger.warning("Memory manager initialization failed: %s", e)
+
         # Reference to the command handler, set by the bot after initialization.
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).
         self._command_handler: Any = None
-        # Tracks per-project budget warning thresholds already sent so we
-        # don't spam the same warning.  Keyed by project_id, value is the
-        # highest threshold percentage (e.g. 80, 95) already notified.
-        self._budget_warned_at: dict[str, int] = {}
 
     def set_command_handler(self, handler: Any) -> None:
         """Store a reference to the command handler for interactive views."""
@@ -476,6 +536,21 @@ class Orchestrator:
         logger.info("Budget warning: project %s at %.0f%% (%s/%s tokens, threshold=%d%%)", project_id, pct, usage, limit, crossed)
 
     async def initialize(self) -> None:
+        """Boot the orchestrator: DB schema, profile sync, crash recovery, hooks.
+
+        Initialization order matters:
+
+        1. **Database** — creates tables/indexes if they don't exist.
+        2. **Profile sync** — ensures YAML-defined agent profiles exist in the
+           DB (idempotent upsert).
+        3. **Stale state recovery** — after a daemon restart, no adapters are
+           actually running, so any IN_PROGRESS tasks or BUSY agents from the
+           previous run are reset to safe states (READY / IDLE).
+        4. **Hook engine** — subscribes to the EventBus and pre-populates
+           last-run timestamps from the DB for accurate periodic scheduling.
+
+        This method must be called (and awaited) before ``run_one_cycle()``.
+        """
         await self.db.initialize()
         await self._sync_profiles_from_config()
         await self._recover_stale_state()
@@ -657,7 +732,30 @@ class Orchestrator:
             await self._execute_task_safe_inner(action)
 
     async def _execute_task_safe_inner(self, action: AssignAction) -> None:
-        """Inner implementation of _execute_task_safe with correlation context already set."""
+        """Inner implementation with correlation context already set.
+
+        Wraps ``_execute_task`` with two safety nets:
+
+        **Timeout guard** (``asyncio.TimeoutError``):
+            If the agent exceeds ``stuck_timeout_seconds``, the adapter is
+            force-stopped and the task transitions to BLOCKED.  BLOCKED (not
+            READY) is chosen deliberately: a timed-out task likely has an
+            underlying issue (infinite loop, unresponsive API) and should
+            not be blindly rescheduled.  An operator must investigate and
+            manually retry or skip.  Downstream dependents are checked for
+            orphan chains.
+
+        **Unexpected error** (``Exception``):
+            Infrastructure errors (e.g. DB unavailable, adapter crash) are
+            caught here.  The task transitions back to READY (not BLOCKED)
+            because the failure is likely transient — the next scheduling
+            cycle can retry it on a different agent.  The cleanup is wrapped
+            in its own try/except so a secondary DB failure doesn't mask the
+            original error.
+
+        In both cases, the ``finally`` block removes the task from
+        ``_running_tasks`` so the main loop knows this slot is free.
+        """
         timeout = self.config.agents_config.stuck_timeout_seconds
         try:
             if timeout > 0:
@@ -666,12 +764,16 @@ class Orchestrator:
                 await self._execute_task(action)
         except asyncio.TimeoutError:
             logger.warning("Task %s timed out after %ds", action.task_id, timeout)
-            # Stop the adapter if it's still running
+            # Stop the adapter if it's still running — best-effort, the
+            # subprocess may already be dead.
             if action.agent_id in self._adapters:
                 try:
                     await self._adapters[action.agent_id].stop()
                 except Exception:
                     pass
+            # Release resources: workspace lock, task assignment, agent state.
+            # Order matters: release workspace first so it's available for
+            # other tasks even if subsequent DB calls fail.
             await self.db.release_workspaces_for_task(action.task_id)
             await self.db.transition_task(
                 action.task_id, TaskStatus.BLOCKED,
@@ -692,8 +794,12 @@ class Orchestrator:
             return
         except Exception as e:
             logger.error("Error executing task %s", action.task_id, exc_info=True)
+            # Best-effort cleanup — wrapped in try/except so a secondary
+            # failure doesn't mask the original error in the log.
             try:
                 await self.db.release_workspaces_for_task(action.task_id)
+                # Return to READY (not BLOCKED) — transient infra errors
+                # should be retried automatically.
                 await self.db.transition_task(
                     action.task_id, TaskStatus.READY,
                     context="execution_error",
@@ -708,6 +814,8 @@ class Orchestrator:
                 project_id=action.project_id,
             )
         finally:
+            # Always remove from _running_tasks so the main loop knows
+            # this execution slot is free for new assignments.
             self._running_tasks.pop(action.task_id, None)
 
     def _try_reload_config(self) -> None:
@@ -1158,8 +1266,16 @@ class Orchestrator:
             default_branch=default_branch,
         ) if has_repo or ws else None
 
-        # For plan subtasks: just commit, don't merge/push unless this is
-        # the final subtask in the chain.
+        # --- Plan subtask branching logic ---
+        # Subtasks in a chained plan all share the same branch.  Intermediate
+        # subtasks only commit (no merge/push) so the next subtask picks up
+        # where the previous one left off.  Only the *final* subtask in the
+        # chain triggers the merge-or-PR workflow:
+        #   - If the parent task requires approval → create a PR
+        #   - If not → merge directly into the default branch
+        # Between subtasks, an optional mid-chain rebase keeps the branch
+        # up-to-date with the default branch (controlled by
+        # ``auto_task.rebase_between_subtasks``).
         if task.is_plan_subtask:
             is_last = await self._is_last_subtask(task)
             if is_last and repo:
@@ -1933,10 +2049,23 @@ class Orchestrator:
 
         await adapter.start(ctx)
 
-        # Stream agent messages to the task thread (or fall back to notifications).
-        # Also detect agent questions (AskUserQuestion tool usage) and send a
-        # rich notification so humans are promptly alerted in Discord.
-        _question_notified = False  # avoid duplicate question notifications per task
+        # --- Agent message streaming and question detection ---
+        #
+        # The agent adapter calls our ``forward_agent_message`` callback each
+        # time it produces output (typically every few seconds during active
+        # generation).  This closure serves two purposes:
+        #
+        # 1. **Streaming to Discord** — messages are routed to the per-task
+        #    thread if one was created, otherwise to the project's notification
+        #    channel with a task/agent header prepended.
+        #
+        # 2. **Question detection** — the Claude adapter emits a special marker
+        #    ``**[AskUserQuestion...]**`` when the agent invokes the
+        #    ``AskUserQuestion`` tool.  We detect this marker to send a rich
+        #    notification (embed + interactive buttons) to the main channel so
+        #    human operators are alerted.  The ``_question_notified`` flag
+        #    ensures we only send one such notification per task execution.
+        _question_notified = False
 
         async def forward_agent_message(text: str) -> None:
             nonlocal _question_notified
@@ -2016,7 +2145,20 @@ class Orchestrator:
             # Re-initialise the adapter so the next call starts a fresh query.
             await adapter.start(ctx)
 
-        # Record tokens and check budget warnings
+        # -----------------------------------------------------------------
+        # Post-execution: record metrics and handle result.
+        #
+        # At this point the agent has finished (or been rate-limit-retried
+        # to exhaustion).  ``output`` holds the final AgentOutput with one
+        # of five possible results:
+        #   - COMPLETED   → success path (commit/merge/PR/auto-task)
+        #   - FAILED      → retry or block path
+        #   - PAUSED_RATE_LIMIT / PAUSED_TOKENS → backoff + reschedule
+        #   - WAITING_INPUT → agent needs human answer
+        # -----------------------------------------------------------------
+
+        # Record token usage for budget tracking before handling the result,
+        # so budget warnings are sent even if the result handling fails.
         if output.tokens_used > 0:
             await self.db.record_token_usage(
                 action.project_id, action.agent_id,
@@ -2059,8 +2201,16 @@ class Orchestrator:
             else:
                 await self._notify_channel(msg, project_id=action.project_id, embed=embed)
 
-        # Handle result
+        # ============================================================
+        # Result handling: branch on agent outcome
+        # ============================================================
+
         if output.result == AgentResult.COMPLETED:
+            # --- Success path ---
+            # Transition through VERIFYING (a brief intermediate state) while
+            # we run post-completion git operations.  The final state depends
+            # on whether the task requires approval (→ AWAITING_APPROVAL) or
+            # not (→ COMPLETED).
             await self.db.transition_task(action.task_id, TaskStatus.VERIFYING,
                                           context="agent_completed")
 
@@ -2187,6 +2337,12 @@ class Orchestrator:
                     logger.warning("Memory remember failed for task %s: %s", task.id, e)
 
         elif output.result == AgentResult.FAILED:
+            # --- Failure path ---
+            # Two sub-paths depending on whether retries are left:
+            #   - Retries remaining → READY (will be re-scheduled next cycle)
+            #   - Retries exhausted → BLOCKED (requires operator intervention)
+            # BLOCKED tasks also trigger a dependency chain check to alert
+            # operators about downstream tasks that will never proceed.
             new_retry = task.retry_count + 1
             if new_retry >= task.max_retries:
                 await self.db.transition_task(action.task_id, TaskStatus.BLOCKED,
@@ -2259,6 +2415,14 @@ class Orchestrator:
         elif output.result in (
             AgentResult.PAUSED_TOKENS, AgentResult.PAUSED_RATE_LIMIT
         ):
+            # --- Pause path ---
+            # The agent hit an API rate limit or token quota.  Set a
+            # ``resume_after`` timestamp so ``_resume_paused_tasks`` will
+            # automatically re-promote the task to READY after the backoff
+            # period expires.  The backoff duration differs by cause:
+            #   - Rate limit: shorter (typically 60s), since these clear quickly.
+            #   - Token exhaustion: longer (typically 300s+), since quotas
+            #     reset on a longer cycle.
             retry_secs = (
                 self.config.pause_retry.rate_limit_backoff_seconds
                 if output.result == AgentResult.PAUSED_RATE_LIMIT
@@ -2276,8 +2440,12 @@ class Orchestrator:
             )
 
         elif output.result == AgentResult.WAITING_INPUT:
-            # Agent is blocked on a question — transition to WAITING_INPUT
-            # and notify so a human can respond.
+            # --- Agent question path ---
+            # The agent invoked the AskUserQuestion tool and is waiting for
+            # a human response.  WAITING_INPUT is a terminal state for the
+            # current execution — the agent process has exited.  When the
+            # human responds (via ``/answer`` command), the task is moved
+            # back to READY with the answer injected into the task context.
             question_text = output.question or output.summary or "(no question text)"
             await self.db.transition_task(
                 action.task_id, TaskStatus.WAITING_INPUT,
@@ -2307,10 +2475,19 @@ class Orchestrator:
             brief = f"❓ Agent question on: {task.title} (`{task.id}`)"
             await _notify_brief(brief, embed=embed)
 
-        # Release workspace lock for this task
+        # ============================================================
+        # Cleanup: release workspace and free the agent
+        # ============================================================
+
+        # Release workspace lock so it's available for the next task.
+        # This must happen regardless of outcome (success, failure, pause).
         await self.db.release_workspaces_for_task(action.task_id)
 
-        # Free agent — respect PAUSED state if set while the agent was BUSY
+        # Free the agent — but respect an externally-set PAUSED state.
+        # An admin may have paused the agent via ``/pause-agent`` while
+        # it was busy; in that case we preserve PAUSED instead of
+        # resetting to IDLE, so the agent stays offline until explicitly
+        # resumed.
         post_agent = await self.db.get_agent(action.agent_id)
         next_state = (AgentState.PAUSED
                       if post_agent and post_agent.state == AgentState.PAUSED
