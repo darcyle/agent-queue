@@ -3117,14 +3117,18 @@ class CommandHandler:
                 lock_info = ""
                 if ws.locked_by_agent_id:
                     lock_info = f" (locked by {ws.locked_by_agent_id})"
-                repo_statuses.append({
-                    "repo_id": ws.id,
+                ws_info: dict = {
+                    "workspace_id": ws.id,
+                    "workspace_name": ws.name or "",
                     "path": ws_path,
                     "branch": branch,
                     "status": status_output or "(clean)",
                     "recent_commits": recent_commits,
                     "lock": lock_info,
-                })
+                }
+                # Keep legacy key for backward compat
+                ws_info["repo_id"] = ws.id
+                repo_statuses.append(ws_info)
         else:
             # Legacy: check repos table
             repos = await self.db.list_repos(project_id=project_id)
@@ -3170,6 +3174,35 @@ class CommandHandler:
             "repos": repo_statuses,
         }
 
+    async def _resolve_workspace(
+        self, project_id: str, workspace: str | None,
+    ) -> tuple["Workspace | None", dict | None]:
+        """Resolve a workspace by ID or name within a project.
+
+        If *workspace* is ``None`` returns ``(None, None)`` — the caller
+        should fall back to the default (first) workspace.
+
+        Returns ``(workspace_obj, error_dict)``.
+        """
+        if not workspace:
+            return None, None
+
+        # Try by ID first
+        ws = await self.db.get_workspace(workspace)
+        if ws:
+            if ws.project_id != project_id:
+                return None, {
+                    "error": f"Workspace '{workspace}' belongs to a different project",
+                }
+            return ws, None
+
+        # Try by name
+        ws = await self.db.get_workspace_by_name(project_id, workspace)
+        if ws:
+            return ws, None
+
+        return None, {"error": f"Workspace '{workspace}' not found"}
+
     async def _resolve_repo_path(
         self, args: dict,
     ) -> tuple[str | None, Project | None, dict | None]:
@@ -3180,8 +3213,9 @@ class CommandHandler:
         ``None``.
 
         Resolution order:
-        1. Project's first workspace (from the workspaces table)
-        2. Legacy: project's first repo (for backward compat)
+        1. Specific workspace (if ``workspace`` arg is provided — by ID or name)
+        2. Project's first workspace (from the workspaces table)
+        3. Legacy: project's first repo (for backward compat)
 
         When no *project_id* is supplied, falls back to the active project.
         """
@@ -3208,9 +3242,18 @@ class CommandHandler:
 
         git = self.orchestrator.git
 
-        # Try new workspaces table first
+        # Try specific workspace if requested
         checkout_path = None
-        if project_id:
+        workspace_param = args.get("workspace")
+        if workspace_param and project_id:
+            ws, ws_err = await self._resolve_workspace(project_id, workspace_param)
+            if ws_err:
+                return None, project, ws_err
+            if ws:
+                checkout_path = ws.workspace_path
+
+        # Try new workspaces table first (default: first workspace)
+        if not checkout_path and project_id:
             workspaces = await self.db.list_workspaces(project_id=project_id)
             if workspaces:
                 checkout_path = workspaces[0].workspace_path

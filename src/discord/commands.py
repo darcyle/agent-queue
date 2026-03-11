@@ -3434,11 +3434,17 @@ def setup_commands(bot: commands.Bot) -> None:
 
         for rs in repo_statuses:
             if "error" in rs:
+                ws_label = rs.get("workspace_name") or rs.get("workspace_id") or rs.get("repo_id", "?")
                 sections.append(
-                    f"### Repo: `{rs['repo_id']}`\n⚠️ {rs['error']}"
+                    f"### Workspace: `{ws_label}`\n⚠️ {rs['error']}"
                 )
                 continue
-            lines = [f"### Repo: `{rs['repo_id']}`"]
+            ws_name = rs.get("workspace_name")
+            ws_id = rs.get("workspace_id") or rs.get("repo_id", "?")
+            header = f"### Workspace: `{ws_name}`" if ws_name else f"### Workspace: `{ws_id}`"
+            if ws_name:
+                header += f" (`{ws_id}`)"
+            lines = [header]
             if rs.get("path"):
                 lines.append(f"**Path:** `{rs['path']}`")
             if rs.get("branch"):
@@ -3468,11 +3474,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         name="New branch name to create (omit to list branches)",
         repo_id="Repo ID (optional — uses first repo if omitted)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_branches_command(
         interaction: discord.Interaction,
         name: str | None = None,
         repo_id: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
@@ -3485,6 +3493,8 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         if name:
             args["name"] = name
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("git_branch", args)
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
@@ -3513,11 +3523,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         branch_name="Branch name to switch to",
         repo_id="Repo ID (optional — uses first repo if omitted)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_checkout_command(
         interaction: discord.Interaction,
         branch_name: str,
         repo_id: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
@@ -3528,6 +3540,8 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {"project_id": project_id, "branch_name": branch_name}
         if repo_id:
             args["repo_id"] = repo_id
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("checkout_branch", args)
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
@@ -3546,11 +3560,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         message="Commit message",
         repo_id="Repo ID (optional — uses first repo if omitted)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def project_commit_command(
         interaction: discord.Interaction,
         message: str,
         repo_id: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
@@ -3561,6 +3577,8 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {"project_id": project_id, "message": message}
         if repo_id:
             args["repo_id"] = repo_id
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("commit_changes", args)
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
@@ -3587,11 +3605,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         branch_name="Branch to push (defaults to current branch)",
         repo_id="Repo ID (optional — uses first repo if omitted)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def project_push_command(
         interaction: discord.Interaction,
         branch_name: str | None = None,
         repo_id: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
@@ -3604,6 +3624,8 @@ def setup_commands(bot: commands.Bot) -> None:
             args["branch_name"] = branch_name
         if repo_id:
             args["repo_id"] = repo_id
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("push_branch", args)
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
@@ -3622,11 +3644,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         branch_name="Branch to merge",
         repo_id="Repo ID (optional — uses first repo if omitted)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def project_merge_command(
         interaction: discord.Interaction,
         branch_name: str,
         repo_id: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
@@ -3637,6 +3661,8 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {"project_id": project_id, "branch_name": branch_name}
         if repo_id:
             args["repo_id"] = repo_id
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("merge_branch", args)
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
@@ -3666,11 +3692,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         branch_name="Name for the new branch",
         repo_id="Repo ID (optional — uses first repo if omitted)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def project_create_branch_command(
         interaction: discord.Interaction,
         branch_name: str,
         repo_id: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
@@ -3681,6 +3709,8 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {"project_id": project_id, "branch_name": branch_name}
         if repo_id:
             args["repo_id"] = repo_id
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("create_branch", args)
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
@@ -3698,11 +3728,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         branch_name="Name for the new branch",
         repo_id="Specific repo ID (optional)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def create_branch_command(
         interaction: discord.Interaction,
         branch_name: str,
         repo_id: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
@@ -3712,6 +3744,8 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {"project_id": project_id, "branch_name": branch_name}
         if repo_id:
             args["repo_id"] = repo_id
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("create_branch", args)
         if "error" in result:
             await _send_error(interaction, result['error'])
@@ -3728,11 +3762,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         branch_name="Branch name to check out",
         repo_id="Specific repo ID (optional)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def checkout_branch_command(
         interaction: discord.Interaction,
         branch_name: str,
         repo_id: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
@@ -3742,6 +3778,8 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {"project_id": project_id, "branch_name": branch_name}
         if repo_id:
             args["repo_id"] = repo_id
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("checkout_branch", args)
         if "error" in result:
             await _send_error(interaction, result['error'])
@@ -3759,11 +3797,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         message="Commit message",
         repo_id="Specific repo ID (optional)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def commit_command(
         interaction: discord.Interaction,
         message: str,
         repo_id: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
@@ -3773,6 +3813,8 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {"project_id": project_id, "message": message}
         if repo_id:
             args["repo_id"] = repo_id
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("commit_changes", args)
         if "error" in result:
             await _send_error(interaction, result['error'])
@@ -3796,11 +3838,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         branch_name="Branch to push (optional — pushes current branch)",
         repo_id="Specific repo ID (optional)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def push_command(
         interaction: discord.Interaction,
         branch_name: str | None = None,
         repo_id: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
@@ -3812,6 +3856,8 @@ def setup_commands(bot: commands.Bot) -> None:
             args["branch_name"] = branch_name
         if repo_id:
             args["repo_id"] = repo_id
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("push_branch", args)
         if "error" in result:
             await _send_error(interaction, result['error'])
@@ -3829,11 +3875,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         branch_name="Branch to merge",
         repo_id="Specific repo ID (optional)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def merge_command(
         interaction: discord.Interaction,
         branch_name: str,
         repo_id: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
@@ -3843,6 +3891,8 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {"project_id": project_id, "branch_name": branch_name}
         if repo_id:
             args["repo_id"] = repo_id
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("merge_branch", args)
         if "error" in result:
             await _send_error(interaction, result['error'])
@@ -3869,11 +3919,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         message="Commit message",
         repo_id="Repository ID (optional — uses first repo if omitted)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_commit_command(
         interaction: discord.Interaction,
         message: str,
         repo_id: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         # Set active project from channel context so _resolve_repo_path can
@@ -3886,6 +3938,8 @@ def setup_commands(bot: commands.Bot) -> None:
             args["project_id"] = project_id
         if repo_id:
             args["repo_id"] = repo_id
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("git_commit", args)
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
@@ -3911,11 +3965,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         repo_id="Repository ID (optional — uses first repo if omitted)",
         branch="Branch name to push (defaults to current branch)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_push_command(
         interaction: discord.Interaction,
         repo_id: str | None = None,
         branch: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if project_id:
@@ -3928,6 +3984,8 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         if branch:
             args["branch"] = branch
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("git_push", args)
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
@@ -3946,11 +4004,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         branch_name="Name for the new branch",
         repo_id="Repository ID (optional — uses first repo if omitted)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_branch_command(
         interaction: discord.Interaction,
         branch_name: str,
         repo_id: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if project_id:
@@ -3961,6 +4021,8 @@ def setup_commands(bot: commands.Bot) -> None:
             args["project_id"] = project_id
         if repo_id:
             args["repo_id"] = repo_id
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("git_create_branch", args)
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
@@ -3980,12 +4042,14 @@ def setup_commands(bot: commands.Bot) -> None:
         branch_name="Branch to merge",
         repo_id="Repository ID (optional — uses first repo if omitted)",
         default_branch="Target branch (defaults to repo's default branch)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_merge_command(
         interaction: discord.Interaction,
         branch_name: str,
         repo_id: str | None = None,
         default_branch: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if project_id:
@@ -3998,6 +4062,8 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         if default_branch:
             args["default_branch"] = default_branch
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("git_merge", args)
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
@@ -4029,6 +4095,7 @@ def setup_commands(bot: commands.Bot) -> None:
         body="PR description (optional)",
         branch="Head branch (defaults to current)",
         base="Base branch (defaults to repo default)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_pr_command(
         interaction: discord.Interaction,
@@ -4037,6 +4104,7 @@ def setup_commands(bot: commands.Bot) -> None:
         body: str = "",
         branch: str | None = None,
         base: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if project_id:
@@ -4047,6 +4115,8 @@ def setup_commands(bot: commands.Bot) -> None:
             args["project_id"] = project_id
         if repo_id:
             args["repo_id"] = repo_id
+        if workspace:
+            args["workspace"] = workspace
         if branch:
             args["branch"] = branch
         if base:
@@ -4072,11 +4142,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         repo_id="Repository ID (optional — uses first repo if omitted)",
         base_branch="Branch to compare against (defaults to repo default)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_files_command(
         interaction: discord.Interaction,
         repo_id: str | None = None,
         base_branch: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if project_id:
@@ -4089,6 +4161,8 @@ def setup_commands(bot: commands.Bot) -> None:
             args["repo_id"] = repo_id
         if base_branch:
             args["base_branch"] = base_branch
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("git_changed_files", args)
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
@@ -4120,11 +4194,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         count="Number of commits to show (default 10)",
         repo_id="Specific repo ID (optional)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_log_command(
         interaction: discord.Interaction,
         count: int = 10,
         repo_id: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
@@ -4134,6 +4210,8 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {"project_id": project_id, "count": count}
         if repo_id:
             args["repo_id"] = repo_id
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("git_log", args)
         if "error" in result:
             await _send_error(interaction, result['error'])
@@ -4151,11 +4229,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @app_commands.describe(
         base_branch="Base branch to diff against (optional — shows working tree diff)",
         repo_id="Specific repo ID (optional)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_diff_command(
         interaction: discord.Interaction,
         base_branch: str | None = None,
         repo_id: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
@@ -4167,6 +4247,8 @@ def setup_commands(bot: commands.Bot) -> None:
             args["base_branch"] = base_branch
         if repo_id:
             args["repo_id"] = repo_id
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("git_diff", args)
         if "error" in result:
             await _send_error(interaction, result['error'])
