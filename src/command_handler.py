@@ -3513,7 +3513,12 @@ class CommandHandler:
             return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
         notes_dir = os.path.join(workspace, "notes")
         os.makedirs(notes_dir, exist_ok=True)
-        slug = self.orchestrator.git.slugify(args["title"])
+        # Strip .md extension before slugifying to avoid corrupted names
+        # e.g. "feature-requests.md" → slugify("feature-requests") → "feature-requests"
+        title_for_slug = args["title"]
+        if title_for_slug.lower().endswith(".md"):
+            title_for_slug = title_for_slug[:-3]
+        slug = self.orchestrator.git.slugify(title_for_slug)
         if not slug:
             return {"error": "Title produces an empty filename"}
         fpath = os.path.join(notes_dir, f"{slug}.md")
@@ -3561,11 +3566,19 @@ class CommandHandler:
             return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
         notes_dir = os.path.join(workspace, "notes")
         os.makedirs(notes_dir, exist_ok=True)
-        slug = self.orchestrator.git.slugify(args["title"])
-        if not slug:
-            return {"error": "Title produces an empty filename"}
-        fpath = os.path.join(notes_dir, f"{slug}.md")
-        existed = os.path.isfile(fpath)
+        # Try to resolve an existing note first
+        fpath = self._resolve_note_path(notes_dir, args["title"])
+        existed = fpath is not None
+        if not existed:
+            # Strip .md extension before slugifying to avoid corrupted names
+            # e.g. "feature-requests.md" → slugify("feature-requests") → "feature-requests"
+            title_for_slug = args["title"]
+            if title_for_slug.lower().endswith(".md"):
+                title_for_slug = title_for_slug[:-3]
+            slug = self.orchestrator.git.slugify(title_for_slug)
+            if not slug:
+                return {"error": "Title produces an empty filename"}
+            fpath = os.path.join(notes_dir, f"{slug}.md")
         if existed:
             with open(fpath, "a") as f:
                 f.write(f"\n\n{args['content']}")
@@ -3582,7 +3595,7 @@ class CommandHandler:
             "size_bytes": stat.st_size,
         }
         if self.on_note_written:
-            note_filename = f"{slug}.md"
+            note_filename = os.path.basename(fpath)
             await self.on_note_written(
                 args["project_id"], note_filename, fpath,
             )
