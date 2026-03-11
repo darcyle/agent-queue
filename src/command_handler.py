@@ -3566,12 +3566,11 @@ class CommandHandler:
             return {"error": f"Project '{args['project_id']}' has no workspaces. Use /add-workspace to create one."}
         notes_dir = os.path.join(workspace, "notes")
         os.makedirs(notes_dir, exist_ok=True)
-        # Try to resolve an existing note first
+        # Try to find an existing note first (handles .md extension, exact names, slugs)
         fpath = self._resolve_note_path(notes_dir, args["title"])
         existed = fpath is not None
         if not existed:
-            # Strip .md extension before slugifying to avoid corrupted names
-            # e.g. "feature-requests.md" → slugify("feature-requests") → "feature-requests"
+            # Strip .md extension before slugifying to avoid double-extension
             title_for_slug = args["title"]
             if title_for_slug.lower().endswith(".md"):
                 title_for_slug = title_for_slug[:-3]
