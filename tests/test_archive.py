@@ -118,6 +118,67 @@ class TestArchiveTask:
         assert archived["pr_url"] == "https://github.com/pr/123"
         assert archived["description"] == "Lots of details"
 
+    async def test_archive_task_with_subtasks_nulls_parent_ref(self, db):
+        """Archiving a parent task should not fail due to FK constraints
+        from subtasks that still reference it via parent_task_id."""
+        await _seed_project(db)
+        await _seed_task(db, "t-parent", status=TaskStatus.COMPLETED)
+        await _seed_task(
+            db, "t-child", status=TaskStatus.READY,
+            title="Child", parent_task_id="t-parent",
+        )
+
+        # This used to raise "FOREIGN KEY constraint failed"
+        result = await db.archive_task("t-parent")
+        assert result is True
+
+        # Parent is archived
+        assert await db.get_task("t-parent") is None
+        assert await db.get_archived_task("t-parent") is not None
+
+        # Child still exists but parent_task_id is now NULL
+        child = await db.get_task("t-child")
+        assert child is not None
+        assert child.parent_task_id is None
+
+    async def test_archive_task_clears_agent_current_task(self, db):
+        """Archiving a task should NULL out agents.current_task_id
+        so the DELETE doesn't violate the FK constraint."""
+        await _seed_project(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+        agent = Agent(
+            id="a-1", name="test-agent", agent_type="claude",
+            current_task_id="t-1",
+        )
+        await db.create_agent(agent)
+
+        result = await db.archive_task("t-1")
+        assert result is True
+
+        updated_agent = await db.get_agent("a-1")
+        assert updated_agent.current_task_id is None
+
+    async def test_archive_task_clears_workspace_lock(self, db):
+        """Archiving a task should NULL out workspaces.locked_by_task_id
+        so the DELETE doesn't violate the FK constraint."""
+        await _seed_project(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+        ws = Workspace(
+            id="ws-1", project_id="p-1",
+            workspace_path="/tmp/ws",
+            source_type=RepoSourceType.LINK,
+            locked_by_task_id="t-1",
+            locked_at=time.time(),
+        )
+        await db.create_workspace(ws)
+
+        result = await db.archive_task("t-1")
+        assert result is True
+
+        updated_ws = await db.get_workspace("ws-1")
+        assert updated_ws.locked_by_task_id is None
+        assert updated_ws.locked_at is None
+
 
 class TestArchiveCompletedTasks:
     async def test_archive_all_completed_for_project(self, db):

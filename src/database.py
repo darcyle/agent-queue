@@ -1984,6 +1984,21 @@ class Database:
         await self._db.execute("DELETE FROM task_criteria WHERE task_id = ?", (task_id,))
         await self._db.execute("DELETE FROM task_context WHERE task_id = ?", (task_id,))
         await self._db.execute("DELETE FROM task_tools WHERE task_id = ?", (task_id,))
+        # Null out foreign-key back-references from other tables so the
+        # DELETE doesn't violate FK constraints.
+        await self._db.execute(
+            "UPDATE tasks SET parent_task_id = NULL WHERE parent_task_id = ?",
+            (task_id,),
+        )
+        await self._db.execute(
+            "UPDATE agents SET current_task_id = NULL WHERE current_task_id = ?",
+            (task_id,),
+        )
+        await self._db.execute(
+            "UPDATE workspaces SET locked_by_task_id = NULL, locked_at = NULL "
+            "WHERE locked_by_task_id = ?",
+            (task_id,),
+        )
         await self._db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         await self._db.commit()
         return True
