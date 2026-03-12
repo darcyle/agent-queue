@@ -65,6 +65,7 @@ def mock_bot():
     bot = MagicMock()
     bot.config.discord.per_project_channels.auto_create = True
     bot.config.discord.per_project_channels.naming_convention = "{project_id}"
+    bot.config.discord.per_project_channels.category_name = ""
     return bot
 
 
@@ -74,6 +75,11 @@ def mock_interaction():
     interaction.user = MagicMock()
     interaction.user.id = 12345
     interaction.guild = MagicMock(spec=discord.Guild)
+    # Set up guild.create_text_channel to return a mock channel
+    mock_channel = MagicMock(spec=discord.TextChannel)
+    mock_channel.id = 999888777
+    mock_channel.mention = "#mock-channel"
+    interaction.guild.create_text_channel = AsyncMock(return_value=mock_channel)
     interaction.response = AsyncMock()
     interaction.followup = AsyncMock()
     interaction.edit_original_response = AsyncMock()
@@ -478,6 +484,8 @@ class TestWorkspaceLocationModal:
             {"created": "test"},
             {"created": "ws-001"},
             {"created": "ws-002"},
+            # Step 4: set_project_channel
+            {"ok": True},
         ])
 
         modal = WorkspaceLocationModal(mock_handler, mock_bot)
@@ -535,6 +543,8 @@ class TestWizardExecutorSuccess:
             # Step 3: add_workspace x2
             {"created": "ws-001"},
             {"created": "ws-002"},
+            # Step 4: set_project_channel (auto-create channel)
+            {"ok": True},
             # Step 5: generate_readme
             {"committed": True, "pushed": True},
         ])
@@ -547,7 +557,8 @@ class TestWizardExecutorSuccess:
         assert calls[1][0][0] == "create_project"
         assert calls[2][0][0] == "add_workspace"
         assert calls[3][0][0] == "add_workspace"
-        assert calls[4][0][0] == "generate_readme"
+        assert calls[4][0][0] == "set_project_channel"
+        assert calls[5][0][0] == "generate_readme"
 
         # State should be cleaned up
         assert 12345 not in _wizard_states
@@ -568,13 +579,16 @@ class TestWizardExecutorSuccess:
             {"created": "ws-001"},
             {"created": "ws-002"},
             {"created": "ws-003"},
+            # Step 4: set_project_channel (auto-create channel)
+            {"ok": True},
         ])
 
         await _execute_wizard(mock_interaction, state, mock_handler, mock_bot)
 
         calls = mock_handler.execute.call_args_list
         assert calls[0][0][0] == "create_project"
-        assert len(calls) == 4  # 1 project + 3 workspaces, no readme
+        assert calls[4][0][0] == "set_project_channel"
+        assert len(calls) == 5  # 1 project + 3 workspaces + 1 channel, no readme
 
     @pytest.mark.asyncio
     async def test_custom_workspace_root_passes_path(self, mock_handler, mock_bot, mock_interaction):
@@ -590,6 +604,8 @@ class TestWizardExecutorSuccess:
             {"created": "my-app"},
             {"created": "ws-001"},
             {"created": "ws-002"},
+            # Step 4: set_project_channel
+            {"ok": True},
         ])
 
         await _execute_wizard(mock_interaction, state, mock_handler, mock_bot)
@@ -617,6 +633,8 @@ class TestWizardExecutorSuccess:
         mock_handler.execute = AsyncMock(side_effect=[
             {"created": "my-app"},
             {"created": "ws-001"},
+            # Step 4: set_project_channel
+            {"ok": True},
         ])
 
         await _execute_wizard(mock_interaction, state, mock_handler, mock_bot)
@@ -638,6 +656,8 @@ class TestWizardExecutorSuccess:
         mock_handler.execute = AsyncMock(side_effect=[
             {"created": "test"},
             {"created": "ws-001"},
+            # Step 4: set_project_channel
+            {"ok": True},
             {"error": "README generation failed"},  # Non-fatal
         ])
 
@@ -645,7 +665,7 @@ class TestWizardExecutorSuccess:
 
         # Should NOT have triggered rollback (no remove_workspace calls)
         calls = mock_handler.execute.call_args_list
-        assert len(calls) == 3
+        assert len(calls) == 4
         assert all(c[0][0] != "remove_workspace" for c in calls)
 
 

@@ -610,20 +610,66 @@ async def _execute_wizard(
             if ws_id:
                 created_workspaces.append(ws_id)
 
-        # Step 4: Auto-create Discord channel
-        # The create_project step with auto_create_channels=True handles
-        # channel creation via the normal flow.  If the guild is available
-        # and auto-create didn't happen (e.g. called from DM), try manually.
+        # Step 4: Auto-create Discord channel (private, with bot access)
         channel_info = ""
         if interaction.guild is not None:
+            progress.description = "Creating Discord channel..."
+            try:
+                await interaction.edit_original_response(embed=progress)
+            except discord.NotFound:
+                pass
+
+            guild = interaction.guild
             ppc = bot.config.discord.per_project_channels
-            if ppc.auto_create:
-                # Channel was already created by the command handler flow
-                # when auto_create_channels=True was passed.
-                channel_name = ppc.naming_convention.format(
-                    project_id=project_id
+            channel_name = ppc.naming_convention.format(
+                project_id=project_id
+            )
+
+            # Look up optional category
+            target_category = None
+            if ppc.category_name:
+                target_category = discord.utils.get(
+                    guild.categories, name=ppc.category_name
                 )
-                channel_info = f"#{channel_name}"
+
+            # Make the channel private: deny @everyone, allow the bot
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(
+                    read_messages=False
+                ),
+                guild.me: discord.PermissionOverwrite(
+                    read_messages=True,
+                    send_messages=True,
+                    manage_channels=True,
+                    manage_messages=True,
+                ),
+            }
+
+            try:
+                new_channel = await guild.create_text_channel(
+                    name=channel_name,
+                    category=target_category,
+                    topic=f"Agent Queue channel for project: {project_id}",
+                    overwrites=overwrites,
+                    reason=f"AgentQueue: channel for project {project_id}",
+                )
+
+                # Link channel to project in the database
+                await handler.execute("set_project_channel", {
+                    "project_id": project_id,
+                    "channel_id": str(new_channel.id),
+                })
+
+                # Update bot's in-memory channel cache
+                bot.update_project_channel(project_id, new_channel)
+                channel_info = new_channel.mention
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                logger.warning(
+                    "Failed to create Discord channel for %s: %s",
+                    project_id,
+                    exc,
+                )
+                channel_info = "(channel creation failed)"
 
         # Step 5: Generate README (if we have a repo)
         if state.repo_url and created_workspaces:

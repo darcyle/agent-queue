@@ -2272,11 +2272,23 @@ def setup_commands(bot: commands.Bot) -> None:
 
         topic = f"Agent Queue channel for project: {project_id}"
 
+        # Make the channel private: deny @everyone, allow the bot
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            guild.me: discord.PermissionOverwrite(
+                read_messages=True,
+                send_messages=True,
+                manage_channels=True,
+                manage_messages=True,
+            ),
+        }
+
         try:
             new_channel = await guild.create_text_channel(
                 name=name,
                 category=category,
                 topic=topic,
+                overwrites=overwrites,
                 reason=f"AgentQueue: channel for project {project_id}",
             )
         except discord.Forbidden:
