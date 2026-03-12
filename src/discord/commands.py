@@ -4443,6 +4443,10 @@ def setup_commands(bot: commands.Bot) -> None:
         ("db_query", "Database query"),
         ("git_diff", "Git diff"),
         ("memory_search", "Search memory"),
+        ("create_task", "Create a new task"),
+        ("run_tests", "Run test suite"),
+        ("list_files", "List files in directory"),
+        ("file_diff", "Diff a specific file"),
     ]
 
     def _wizard_state(user_id: int) -> dict:
