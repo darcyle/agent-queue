@@ -29,6 +29,8 @@ from src.discord.project_wizard import (
     GitHubRepoModal,
     ExistingRepoModal,
     WorkspaceCountView,
+    WorkspaceLocationView,
+    WorkspaceLocationModal,
     WizardError,
     _cleanup_state,
     _execute_wizard,
@@ -175,6 +177,27 @@ class TestStateSummaryEmbed:
         repo_field = next(f for f in embed.fields if f.name == "Repository")
         assert "myorg/test-repo" in repo_field.value
         assert "public" in repo_field.value
+
+    def test_workspace_location_shown(self):
+        state = ProjectWizardState(
+            user_id=1,
+            project_name="Test",
+            workspace_root="/custom/path",
+        )
+        embed = _state_summary_embed(state)
+        field_names = [f.name for f in embed.fields]
+        assert "Workspace Location" in field_names
+        loc_field = next(f for f in embed.fields if f.name == "Workspace Location")
+        assert loc_field.value == "/custom/path"
+
+    def test_default_workspace_location_not_shown(self):
+        state = ProjectWizardState(
+            user_id=1,
+            project_name="Test",
+        )
+        embed = _state_summary_embed(state)
+        field_names = [f.name for f in embed.fields]
+        assert "Workspace Location" not in field_names
 
     def test_long_description_truncated(self):
         state = ProjectWizardState(
@@ -385,6 +408,106 @@ class TestWorkspaceCountView:
 
 
 # ---------------------------------------------------------------------------
+# WorkspaceLocationView
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceLocationView:
+    @pytest.mark.asyncio
+    async def test_default_location_sets_empty_root(
+        self, mock_handler, mock_bot, mock_interaction,
+    ):
+        """Default location button leaves workspace_root empty and executes."""
+        state = ProjectWizardState(
+            user_id=12345, project_name="Test", workspace_count=2,
+        )
+        _wizard_states[12345] = state
+
+        mock_handler.execute = AsyncMock(side_effect=[
+            {"created": "test"},
+            {"created": "ws-001"},
+            {"created": "ws-002"},
+        ])
+
+        view = WorkspaceLocationView(mock_handler, mock_bot)
+        await view.default_location_btn.callback(mock_interaction)
+
+        assert state.workspace_root == ""
+        # Should have proceeded to execute (deferred response)
+        mock_interaction.response.defer.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_custom_location_opens_modal(
+        self, mock_handler, mock_bot, mock_interaction,
+    ):
+        _wizard_states[12345] = ProjectWizardState(
+            user_id=12345, project_name="Test",
+        )
+        view = WorkspaceLocationView(mock_handler, mock_bot)
+        await view.custom_location_btn.callback(mock_interaction)
+        mock_interaction.response.send_modal.assert_called_once()
+        modal = mock_interaction.response.send_modal.call_args[0][0]
+        assert isinstance(modal, WorkspaceLocationModal)
+
+    @pytest.mark.asyncio
+    async def test_cancel_cleans_state(
+        self, mock_handler, mock_bot, mock_interaction,
+    ):
+        _wizard_states[12345] = ProjectWizardState(user_id=12345)
+        view = WorkspaceLocationView(mock_handler, mock_bot)
+        await view.cancel_btn.callback(mock_interaction)
+        assert 12345 not in _wizard_states
+
+
+# ---------------------------------------------------------------------------
+# WorkspaceLocationModal
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceLocationModal:
+    @pytest.mark.asyncio
+    async def test_on_submit_stores_custom_path(
+        self, mock_handler, mock_bot, mock_interaction,
+    ):
+        state = ProjectWizardState(
+            user_id=12345, project_name="Test", workspace_count=2,
+        )
+        _wizard_states[12345] = state
+
+        mock_handler.execute = AsyncMock(side_effect=[
+            {"created": "test"},
+            {"created": "ws-001"},
+            {"created": "ws-002"},
+        ])
+
+        modal = WorkspaceLocationModal(mock_handler, mock_bot)
+        modal.location_input._value = "/custom/workspace/path"
+
+        await modal.on_submit(mock_interaction)
+
+        assert state.workspace_root == "/custom/workspace/path"
+        # Should have proceeded to execute
+        mock_interaction.response.defer.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_on_submit_empty_path_rejected(
+        self, mock_handler, mock_bot, mock_interaction,
+    ):
+        _wizard_states[12345] = ProjectWizardState(
+            user_id=12345, project_name="Test",
+        )
+        modal = WorkspaceLocationModal(mock_handler, mock_bot)
+        modal.location_input._value = "   "
+
+        await modal.on_submit(mock_interaction)
+
+        # Should show error, not proceed to execute
+        mock_interaction.response.send_message.assert_called_once()
+        call_kwargs = mock_interaction.response.send_message.call_args
+        assert "required" in call_kwargs[0][0].lower()
+
+
+# ---------------------------------------------------------------------------
 # WizardExecutor — success
 # ---------------------------------------------------------------------------
 
@@ -452,6 +575,55 @@ class TestWizardExecutorSuccess:
         calls = mock_handler.execute.call_args_list
         assert calls[0][0][0] == "create_project"
         assert len(calls) == 4  # 1 project + 3 workspaces, no readme
+
+    @pytest.mark.asyncio
+    async def test_custom_workspace_root_passes_path(self, mock_handler, mock_bot, mock_interaction):
+        """Custom workspace_root should pass a 'path' arg to add_workspace."""
+        state = ProjectWizardState(
+            user_id=12345,
+            project_name="My App",
+            workspace_count=2,
+            workspace_root="/custom/workspaces",
+        )
+
+        mock_handler.execute = AsyncMock(side_effect=[
+            {"created": "my-app"},
+            {"created": "ws-001"},
+            {"created": "ws-002"},
+        ])
+
+        await _execute_wizard(mock_interaction, state, mock_handler, mock_bot)
+
+        calls = mock_handler.execute.call_args_list
+        # Workspace calls should include a 'path' arg
+        ws_call_1 = calls[1][0][1]  # args dict for first add_workspace
+        ws_call_2 = calls[2][0][1]  # args dict for second add_workspace
+        assert "path" in ws_call_1
+        assert "path" in ws_call_2
+        assert ws_call_1["path"].startswith("/custom/workspaces/my-app/")
+        assert ws_call_2["path"].startswith("/custom/workspaces/my-app/")
+        # Paths should be different
+        assert ws_call_1["path"] != ws_call_2["path"]
+
+    @pytest.mark.asyncio
+    async def test_default_workspace_root_no_path(self, mock_handler, mock_bot, mock_interaction):
+        """Default workspace_root (empty) should NOT pass a 'path' arg."""
+        state = ProjectWizardState(
+            user_id=12345,
+            project_name="My App",
+            workspace_count=1,
+        )
+
+        mock_handler.execute = AsyncMock(side_effect=[
+            {"created": "my-app"},
+            {"created": "ws-001"},
+        ])
+
+        await _execute_wizard(mock_interaction, state, mock_handler, mock_bot)
+
+        calls = mock_handler.execute.call_args_list
+        ws_call = calls[1][0][1]  # args dict for add_workspace
+        assert "path" not in ws_call
 
     @pytest.mark.asyncio
     async def test_readme_failure_is_non_fatal(self, mock_handler, mock_bot, mock_interaction):
