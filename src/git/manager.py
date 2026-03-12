@@ -886,7 +886,6 @@ class GitManager:
         cmd.append("--private" if private else "--public")
         if description:
             cmd.extend(["--description", description])
-        cmd.append("--yes")
         try:
             result = subprocess.run(
                 cmd,
