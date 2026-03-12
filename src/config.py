@@ -290,6 +290,9 @@ class LoggingConfig:
 class HookEngineConfig:
     enabled: bool = True
     max_concurrent_hooks: int = 2
+    file_watcher_enabled: bool = True
+    file_watcher_poll_interval: float = 10.0
+    file_watcher_debounce_seconds: float = 5.0
 
 
 @dataclass
@@ -925,6 +928,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.hook_engine = HookEngineConfig(
             enabled=h.get("enabled", True),
             max_concurrent_hooks=h.get("max_concurrent_hooks", 2),
+            file_watcher_enabled=h.get("file_watcher_enabled", True),
+            file_watcher_poll_interval=h.get("file_watcher_poll_interval", 10.0),
+            file_watcher_debounce_seconds=h.get("file_watcher_debounce_seconds", 5.0),
         )
 
     if "logging" in raw:

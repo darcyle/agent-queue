@@ -61,6 +61,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import subprocess
 import time
@@ -70,6 +71,7 @@ from src.chat_providers import ChatProvider, LoggedChatProvider, create_chat_pro
 from src.config import AppConfig, ChatProviderConfig
 from src.database import Database
 from src.event_bus import EventBus
+from src.file_watcher import FileWatcher, WatchRule
 from src.logging_config import CorrelationContext
 from src.models import Hook, HookRun, Task, TaskStatus
 
@@ -102,6 +104,25 @@ NAMED_QUERIES = {
         "SELECT * FROM hook_runs WHERE hook_id = :hook_id "
         "ORDER BY started_at DESC LIMIT 10"
     ),
+    "failed_tasks": (
+        "SELECT t.id, t.title, t.status, t.project_id, tr.error_message, "
+        "tr.summary, tr.created_at "
+        "FROM tasks t LEFT JOIN task_results tr ON tr.task_id = t.id "
+        "WHERE t.status = 'failed' "
+        "ORDER BY tr.created_at DESC LIMIT 20"
+    ),
+    "project_tasks_by_status": (
+        "SELECT t.id, t.title, t.status, t.priority, t.created_at "
+        "FROM tasks t WHERE t.project_id = :project_id "
+        "AND t.status = :status "
+        "ORDER BY t.priority ASC, t.created_at DESC LIMIT 20"
+    ),
+    "recent_hook_activity": (
+        "SELECT hr.id, hr.hook_id, h.name as hook_name, hr.trigger_reason, "
+        "hr.status, hr.tokens_used, hr.started_at, hr.completed_at "
+        "FROM hook_runs hr JOIN hooks h ON h.id = hr.hook_id "
+        "ORDER BY hr.started_at DESC LIMIT 20"
+    ),
 }
 
 
@@ -128,6 +149,11 @@ class HookEngine:
         # enforcement ("is the hook still in its cooldown window?").
         # Pre-populated from DB at initialize() to survive daemon restarts.
         self._last_run_time: dict[str, float] = {}
+        # FileWatcher for file/folder change monitoring.  Created at
+        # initialize() if file_watcher_enabled is True.  Watches are
+        # extracted from hook trigger configs that reference file.changed
+        # or folder.changed event types.
+        self.file_watcher: FileWatcher | None = None
 
     async def initialize(self) -> None:
         """Subscribe to EventBus for event-driven hooks and restore state.
@@ -151,11 +177,85 @@ class HookEngine:
             if last_run:
                 self._last_run_time[hook.id] = last_run.started_at
 
+        # Initialize FileWatcher for file/folder change event hooks
+        if self.config.hook_engine.file_watcher_enabled:
+            self.file_watcher = FileWatcher(
+                self.bus,
+                debounce_seconds=self.config.hook_engine.file_watcher_debounce_seconds,
+                poll_interval=self.config.hook_engine.file_watcher_poll_interval,
+            )
+            await self._sync_file_watches(hooks)
+
     async def _on_config_reloaded(self, data: dict) -> None:
         """Handle config.reloaded events — update hook engine config reference."""
         config = data.get("config")
         if config is not None:
             self.config = config
+
+    async def _sync_file_watches(self, hooks: list[Hook] | None = None) -> None:
+        """Synchronize FileWatcher rules from hook trigger configs.
+
+        Scans all enabled hooks for ``file.changed`` and ``folder.changed``
+        event triggers that include a ``watch`` config block, and registers
+        corresponding WatchRules with the FileWatcher.
+
+        Called at initialize() and can be called again to pick up new hooks.
+        """
+        if not self.file_watcher:
+            return
+
+        if hooks is None:
+            hooks = await self.db.list_hooks(enabled=True)
+
+        # Track which watch IDs are still active
+        active_ids: set[str] = set()
+
+        for hook in hooks:
+            trigger = json.loads(hook.trigger)
+            if trigger.get("type") != "event":
+                continue
+
+            event_type = trigger.get("event_type", "")
+            watch_cfg = trigger.get("watch")
+            if not watch_cfg:
+                continue
+
+            if event_type not in ("file.changed", "folder.changed"):
+                continue
+
+            paths = watch_cfg.get("paths", [])
+            if not paths:
+                continue
+
+            # Resolve base_dir from project workspace if available
+            base_dir = watch_cfg.get("base_dir", "")
+            if not base_dir:
+                try:
+                    ws_path = await self.db.get_project_workspace_path(
+                        hook.project_id
+                    )
+                    if ws_path:
+                        base_dir = ws_path
+                except Exception:
+                    pass
+
+            watch_type = "folder" if event_type == "folder.changed" else "file"
+            rule = WatchRule(
+                watch_id=hook.id,
+                project_id=watch_cfg.get("project_id", hook.project_id),
+                paths=paths,
+                recursive=watch_cfg.get("recursive", False),
+                extensions=watch_cfg.get("extensions"),
+                watch_type=watch_type,
+                base_dir=base_dir,
+            )
+            self.file_watcher.add_watch(rule)
+            active_ids.add(hook.id)
+
+        # Remove watches for hooks that no longer exist or are disabled
+        stale_ids = set(self.file_watcher._watches.keys()) - active_ids
+        for stale_id in stale_ids:
+            self.file_watcher.remove_watch(stale_id)
 
     async def tick(self) -> None:
         """Called every orchestrator cycle (~5s). Manage hook lifecycle.
@@ -207,6 +307,16 @@ class HookEngine:
                 if now - last >= interval:
                     if self._check_cooldown(hook, now):
                         self._launch_hook(hook, "periodic")
+
+        # Phase 3: Poll file watcher for filesystem changes.
+        # The file watcher emits file.changed / folder.changed events on
+        # the EventBus, which are then picked up by _on_event like any
+        # other event-driven hook.
+        if self.file_watcher:
+            try:
+                await self.file_watcher.check()
+            except Exception as e:
+                logger.warning("FileWatcher check failed: %s", e)
 
     async def _on_event(self, data: dict) -> None:
         """Handle EventBus events for event-driven hooks.
@@ -452,6 +562,12 @@ class HookEngine:
                     result = await self._step_memory_search(step, event_data)
                 elif step_type == "create_task":
                     result = await self._step_create_task(step, event_data)
+                elif step_type == "run_tests":
+                    result = await self._step_run_tests(step)
+                elif step_type == "list_files":
+                    result = await self._step_list_files(step, event_data)
+                elif step_type == "file_diff":
+                    result = await self._step_file_diff(step, event_data)
                 else:
                     result = {"error": f"Unknown step type: {step_type}"}
             except Exception as e:
@@ -713,6 +829,270 @@ class HookEngine:
         except Exception as e:
             logger.error("create_task step failed: %s", e)
             return {"error": str(e)}
+
+    async def _step_run_tests(self, step: dict) -> dict:
+        """Run a test command and parse results for automated testing hooks.
+
+        Extends the basic ``shell`` step with structured test result parsing.
+        Captures exit code, stdout/stderr, and attempts to extract individual
+        test failure names from common test frameworks (pytest, jest, mocha).
+
+        Step config keys:
+            ``command``    – test command to run (e.g. ``"pytest tests/ -v"``)
+            ``timeout``    – max seconds (default 300 for test suites)
+            ``workspace``  – working directory (default ``"."``)
+            ``framework``  – hint for parsing: ``"pytest"``, ``"jest"``, or ``"auto"``
+        """
+        command = step.get("command", "pytest")
+        timeout = step.get("timeout", 300)
+        workspace = step.get("workspace", ".")
+        framework = step.get("framework", "auto")
+
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=workspace,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                return {
+                    "stdout": "",
+                    "stderr": f"Test command timed out after {timeout}s",
+                    "exit_code": -1,
+                    "passed": False,
+                    "failures": [],
+                    "test_count": 0,
+                }
+
+            stdout_str = stdout.decode("utf-8", errors="replace")[:100000]
+            stderr_str = stderr.decode("utf-8", errors="replace")[:50000]
+            exit_code = proc.returncode
+            passed = exit_code == 0
+
+            # Parse test failures from output
+            failures = self._parse_test_failures(
+                stdout_str, stderr_str, framework
+            )
+
+            # Try to extract test count
+            test_count = self._parse_test_count(stdout_str, framework)
+
+            return {
+                "stdout": stdout_str,
+                "stderr": stderr_str,
+                "exit_code": exit_code,
+                "passed": passed,
+                "failures": failures,
+                "test_count": test_count,
+                "framework": framework,
+            }
+        except Exception as e:
+            return {"error": str(e), "passed": False, "failures": []}
+
+    @staticmethod
+    def _parse_test_failures(
+        stdout: str, stderr: str, framework: str
+    ) -> list[str]:
+        """Extract failing test names from test output.
+
+        Supports pytest (``FAILED test_file.py::test_name``) and
+        jest/mocha (``✕ test description`` or ``FAIL test_file``).
+        """
+        failures = []
+        combined = stdout + "\n" + stderr
+
+        # pytest: "FAILED tests/test_foo.py::test_bar - AssertionError..."
+        for match in re.finditer(
+            r"FAILED\s+(\S+::\S+)", combined
+        ):
+            failures.append(match.group(1))
+
+        # jest/mocha: "✕ test description" or "● test description"
+        if not failures:
+            for match in re.finditer(
+                r"[✕●✗]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$", combined, re.MULTILINE
+            ):
+                failures.append(match.group(1).strip())
+
+        # Generic: "FAIL " prefix (jest summary style)
+        if not failures:
+            for match in re.finditer(
+                r"^FAIL\s+(\S+)", combined, re.MULTILINE
+            ):
+                failures.append(match.group(1))
+
+        return failures[:50]  # Cap at 50 to avoid huge payloads
+
+    @staticmethod
+    def _parse_test_count(stdout: str, framework: str) -> int:
+        """Try to extract total test count from test output."""
+        # jest: "Tests: 2 failed, 5 passed, 7 total" — check first since
+        # the "passed" pattern below would also match the jest format
+        match = re.search(r"Tests:\s+.*?(\d+)\s+total", stdout)
+        if match:
+            return int(match.group(1))
+
+        # pytest: "5 passed, 2 failed"
+        match = re.search(
+            r"(\d+)\s+passed(?:.*?(\d+)\s+failed)?", stdout
+        )
+        if match:
+            total = int(match.group(1))
+            if match.group(2):
+                total += int(match.group(2))
+            return total
+
+        return 0
+
+    async def _step_list_files(
+        self, step: dict, event_data: dict | None = None
+    ) -> dict:
+        """List files in a directory, optionally filtered by extension or pattern.
+
+        Useful for docs hooks and folder watch automation to enumerate what
+        files exist in a directory before taking action.
+
+        Step config keys:
+            ``path``       – directory to list (supports ``{{event.path}}``)
+            ``recursive``  – descend into subdirectories (default False)
+            ``extensions`` – list of extensions to filter (e.g. ``[".md", ".txt"]``)
+            ``max_files``  – maximum number of files to return (default 200)
+        """
+        path = step.get("path", ".")
+        recursive = step.get("recursive", False)
+        extensions = step.get("extensions")
+        max_files = step.get("max_files", 200)
+
+        # Resolve placeholders in path
+        if event_data and "{{" in path:
+            path = self._resolve_placeholder(path, [], event_data)
+
+        if not os.path.isdir(path):
+            return {"error": f"Not a directory: {path}", "files": []}
+
+        files = []
+        try:
+            if recursive:
+                for dirpath, dirnames, filenames in os.walk(path):
+                    dirnames[:] = [
+                        d for d in dirnames if not d.startswith(".")
+                    ]
+                    for fname in sorted(filenames):
+                        if fname.startswith("."):
+                            continue
+                        if extensions and not any(
+                            fname.endswith(ext) for ext in extensions
+                        ):
+                            continue
+                        full = os.path.join(dirpath, fname)
+                        rel = os.path.relpath(full, path)
+                        try:
+                            stat = os.stat(full)
+                            files.append({
+                                "path": rel,
+                                "size": stat.st_size,
+                                "mtime": stat.st_mtime,
+                            })
+                        except OSError:
+                            pass
+                        if len(files) >= max_files:
+                            break
+                    if len(files) >= max_files:
+                        break
+            else:
+                for fname in sorted(os.listdir(path)):
+                    if fname.startswith("."):
+                        continue
+                    full = os.path.join(path, fname)
+                    if not os.path.isfile(full):
+                        continue
+                    if extensions and not any(
+                        fname.endswith(ext) for ext in extensions
+                    ):
+                        continue
+                    try:
+                        stat = os.stat(full)
+                        files.append({
+                            "path": fname,
+                            "size": stat.st_size,
+                            "mtime": stat.st_mtime,
+                        })
+                    except OSError:
+                        pass
+                    if len(files) >= max_files:
+                        break
+        except (OSError, PermissionError) as e:
+            return {"error": str(e), "files": []}
+
+        return {
+            "files": files,
+            "count": len(files),
+            "directory": path,
+            "content": "\n".join(f["path"] for f in files),
+        }
+
+    async def _step_file_diff(
+        self, step: dict, event_data: dict | None = None
+    ) -> dict:
+        """Get the diff of a specific file against its last committed version.
+
+        Useful for file change hooks to see exactly what changed.
+
+        Step config keys:
+            ``path``       – file path (supports ``{{event.path}}``)
+            ``workspace``  – git workspace root (default ``"."``)
+        """
+        path = step.get("path", "")
+        workspace = step.get("workspace", ".")
+
+        # Resolve placeholders
+        if event_data and "{{" in path:
+            path = self._resolve_placeholder(path, [], event_data)
+        if event_data and "{{" in workspace:
+            workspace = self._resolve_placeholder(workspace, [], event_data)
+
+        if not path:
+            return {"error": "path is required", "diff": ""}
+
+        try:
+            result = await asyncio.create_subprocess_exec(
+                "git", "diff", "HEAD", "--", path,
+                cwd=workspace,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                result.communicate(), timeout=30
+            )
+            diff_output = stdout.decode("utf-8", errors="replace")[:50000]
+
+            # If no diff against HEAD, try against index
+            if not diff_output.strip():
+                result2 = await asyncio.create_subprocess_exec(
+                    "git", "diff", "--cached", "--", path,
+                    cwd=workspace,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout2, _ = await asyncio.wait_for(
+                    result2.communicate(), timeout=30
+                )
+                diff_output = stdout2.decode("utf-8", errors="replace")[:50000]
+
+            return {
+                "diff": diff_output,
+                "path": path,
+                "exit_code": result.returncode,
+            }
+        except Exception as e:
+            return {"error": str(e), "diff": ""}
 
     def _should_skip_llm(
         self, steps: list[dict], results: list[dict]

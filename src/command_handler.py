@@ -4228,6 +4228,16 @@ class CommandHandler:
             await self.on_note_written(
                 args["project_id"], f"{slug}.md", fpath,
             )
+        # Emit note event for hook automation
+        event_type = "note.updated" if existed else "note.created"
+        if hasattr(self.orchestrator, "bus"):
+            await self.orchestrator.bus.emit(event_type, {
+                "project_id": args["project_id"],
+                "note_name": f"{slug}.md",
+                "note_path": fpath,
+                "title": args["title"],
+                "operation": "updated" if existed else "created",
+            })
         return result
 
     async def _cmd_read_note(self, args: dict) -> dict:
@@ -4286,6 +4296,16 @@ class CommandHandler:
             await self.on_note_written(
                 args["project_id"], note_filename, fpath,
             )
+        # Emit note event for hook automation
+        event_type = "note.updated" if existed else "note.created"
+        if hasattr(self.orchestrator, "bus"):
+            await self.orchestrator.bus.emit(event_type, {
+                "project_id": args["project_id"],
+                "note_name": os.path.basename(fpath),
+                "note_path": fpath,
+                "title": args["title"],
+                "operation": status,  # "appended" or "created"
+            })
         return result
 
     async def _cmd_compare_specs_notes(self, args: dict) -> dict:
@@ -4354,6 +4374,14 @@ class CommandHandler:
         if not fpath:
             return {"error": f"Note '{args['title']}' not found"}
         os.remove(fpath)
+        # Emit note.deleted event for hook automation
+        if hasattr(self.orchestrator, "bus"):
+            await self.orchestrator.bus.emit("note.deleted", {
+                "project_id": args["project_id"],
+                "note_name": os.path.basename(fpath),
+                "note_path": fpath,
+                "title": args["title"],
+            })
         return {"deleted": fpath, "title": args["title"]}
 
     # -----------------------------------------------------------------------
