@@ -15,8 +15,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# Skip entire module if memsearch is not installed
+# Skip entire module if memsearch or sentence-transformers is not installed.
+# memsearch is installed but the "local" embedding provider requires
+# sentence-transformers, which is an optional dependency.
 memsearch = pytest.importorskip("memsearch", reason="memsearch not installed")
+pytest.importorskip("sentence_transformers", reason="sentence-transformers not installed (required for local embeddings)")
 
 from src.memory import MemoryConfig, MemoryManager  # noqa: E402
 

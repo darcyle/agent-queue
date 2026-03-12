@@ -173,6 +173,62 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
+    # --- find_merge_conflict_workspaces ---
+    TestCase(
+        id="ws-find-merge-conflicts",
+        description="Find workspaces with merge conflicts",
+        category="workspaces",
+        difficulty=Difficulty.EASY,
+        tags=["find_merge_conflict_workspaces"],
+        turns=[
+            Turn(
+                user_message="are there any workspaces with merge conflicts?",
+                expected_tools=[ExpectedTool(name="find_merge_conflict_workspaces")],
+            ),
+        ],
+    ),
+    TestCase(
+        id="ws-find-merge-conflicts-variant",
+        description="Check for conflicting workspaces using natural phrasing",
+        category="workspaces",
+        difficulty=Difficulty.MEDIUM,
+        tags=["find_merge_conflict_workspaces"],
+        turns=[
+            Turn(
+                user_message="which workspaces have conflicts right now?",
+                expected_tools=[ExpectedTool(name="find_merge_conflict_workspaces")],
+            ),
+        ],
+    ),
+    # --- sync_workspaces ---
+    TestCase(
+        id="ws-sync-all",
+        description="Sync all workspaces with their remotes",
+        category="workspaces",
+        difficulty=Difficulty.EASY,
+        tags=["sync_workspaces"],
+        turns=[
+            Turn(
+                user_message="sync all workspaces",
+                expected_tools=[ExpectedTool(name="sync_workspaces")],
+            ),
+        ],
+    ),
+    TestCase(
+        id="ws-sync-project",
+        description="Sync workspaces for a specific project",
+        category="workspaces",
+        difficulty=Difficulty.EASY,
+        tags=["sync_workspaces"],
+        turns=[
+            Turn(
+                user_message="sync the workspaces for project p-1",
+                expected_tools=[
+                    ExpectedTool(name="sync_workspaces", args={"project_id": "p-1"}),
+                ],
+            ),
+        ],
+    ),
     # --- release_workspace ---
     TestCase(
         id="ws-release-explicit",

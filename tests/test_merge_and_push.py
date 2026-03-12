@@ -66,7 +66,9 @@ class TestMergeAndPushClone:
 
     @pytest.fixture
     def git(self):
-        return MagicMock(spec=GitManager)
+        g = MagicMock(spec=GitManager)
+        g.has_remote.return_value = True
+        return g
 
     @pytest.fixture
     def orch(self, git):
@@ -166,6 +168,7 @@ class TestMergeAndPushClone:
     @pytest.mark.asyncio
     async def test_sync_and_merge_not_called_for_link(self, orch, git):
         """LINK repos should never call sync_and_merge."""
+        git.has_remote.return_value = False
         git.merge_branch.return_value = True
         task = _make_task()
         repo = _make_repo(source_type=RepoSourceType.LINK)
@@ -241,7 +244,9 @@ class TestMergeAndPushLink:
 
     @pytest.fixture
     def git(self):
-        return MagicMock(spec=GitManager)
+        g = MagicMock(spec=GitManager)
+        g.has_remote.return_value = False
+        return g
 
     @pytest.fixture
     def orch(self, git):

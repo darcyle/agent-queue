@@ -230,7 +230,9 @@ class TestCreatePrForTaskForceWithLease:
 
     @pytest.fixture
     def git(self):
-        return MagicMock(spec=GitManager)
+        g = MagicMock(spec=GitManager)
+        g.has_remote.return_value = True
+        return g
 
     @pytest.fixture
     def orch(self, git):
@@ -267,6 +269,7 @@ class TestCreatePrForTaskForceWithLease:
     @pytest.mark.asyncio
     async def test_link_repo_skips_push(self, orch, git):
         """LINK repos should not push at all — just notify for manual review."""
+        git.has_remote.return_value = False
         task = _make_task()
         repo = _make_repo(source_type=RepoSourceType.LINK)
 

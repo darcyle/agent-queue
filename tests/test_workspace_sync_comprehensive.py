@@ -902,7 +902,9 @@ class TestOrchestratorMergeAndPushIntegration:
 
     @pytest.fixture
     def git(self):
-        return MagicMock(spec=GitManager)
+        g = MagicMock(spec=GitManager)
+        g.has_remote.return_value = True
+        return g
 
     @pytest.fixture
     def orch(self, git):
@@ -958,6 +960,7 @@ class TestOrchestratorMergeAndPushIntegration:
     @pytest.mark.asyncio
     async def test_link_repo_rebase_fallback_on_conflict(self, orch, git):
         """LINK repo: rebase fallback tried when merge conflicts."""
+        git.has_remote.return_value = False
         # First merge fails, rebase succeeds, second merge succeeds
         git.merge_branch.side_effect = [False, True]
         git.rebase_onto.return_value = True

@@ -363,6 +363,9 @@ class TestConfigProfileLoading:
     def test_load_profiles_from_yaml(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text("""
+discord:
+  bot_token: "test-token"
+  guild_id: "123456"
 agent_profiles:
   reviewer:
     name: "Code Reviewer"
@@ -396,7 +399,7 @@ agent_profiles:
 
     def test_no_profiles_section(self, tmp_path):
         config_path = tmp_path / "config.yaml"
-        config_path.write_text("scheduling:\n  rolling_window_hours: 48\n")
+        config_path.write_text("discord:\n  bot_token: test-token\n  guild_id: '123'\nscheduling:\n  rolling_window_hours: 48\n")
         config = load_config(str(config_path))
         assert config.agent_profiles == []
 

@@ -79,7 +79,7 @@ CASES: list[TestCase] = [
                 expected_tools=[
                     ExpectedTool(name="git_commit", args={"message": "update readme"}),
                 ],
-                not_expected_tools=["git_push", "push_branch"],
+                not_expected_tools=["git_push"],
             ),
         ],
     ),
@@ -117,13 +117,13 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
-    # --- git_push / push_branch ---
+    # --- git_push ---
     TestCase(
         id="git-push-simple",
         description="Push current branch",
         category="git",
         difficulty=Difficulty.TRIVIAL,
-        tags=["git_push", "push_branch"],
+        tags=["git_push"],
         active_project="p-1",
         turns=[
             Turn(
@@ -137,7 +137,7 @@ CASES: list[TestCase] = [
         description="Push a specific branch by name",
         category="git",
         difficulty=Difficulty.EASY,
-        tags=["git_push", "push_branch"],
+        tags=["git_push"],
         active_project="p-1",
         turns=[
             Turn(
@@ -163,6 +163,36 @@ CASES: list[TestCase] = [
                         name="git_push",
                         args={"branch": "develop"},
                     ),
+                ],
+            ),
+        ],
+    ),
+    # --- git_pull ---
+    TestCase(
+        id="git-pull-simple",
+        description="Pull latest changes from remote",
+        category="git",
+        difficulty=Difficulty.TRIVIAL,
+        tags=["git_pull"],
+        active_project="p-1",
+        turns=[
+            Turn(
+                user_message="pull the latest changes",
+                expected_tools=[ExpectedTool(name="git_pull")],
+            ),
+        ],
+    ),
+    TestCase(
+        id="git-pull-project",
+        description="Pull changes for a specific project",
+        category="git",
+        difficulty=Difficulty.EASY,
+        tags=["git_pull"],
+        turns=[
+            Turn(
+                user_message="pull updates for project p-2",
+                expected_tools=[
+                    ExpectedTool(name="git_pull", args={"project_id": "p-2"}),
                 ],
             ),
         ],

@@ -13,7 +13,7 @@ Covers:
 
 import pytest
 from unittest.mock import patch
-from setup_wizard import _step_per_project_channels
+from src.setup_wizard import _step_per_project_channels
 
 
 class TestStepPerProjectChannelsDecline:

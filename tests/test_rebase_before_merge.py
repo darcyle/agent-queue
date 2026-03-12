@@ -478,7 +478,9 @@ class TestLinkRepoRebaseFallback:
 
     @pytest.fixture
     def git(self):
-        return MagicMock(spec=GitManager)
+        g = MagicMock(spec=GitManager)
+        g.has_remote.return_value = False
+        return g
 
     @pytest.fixture
     def orch(self, git):
@@ -568,6 +570,7 @@ class TestLinkRepoRebaseFallback:
         """CLONE repo: rebase fallback is handled inside sync_and_merge, not orchestrator."""
         from src.models import RepoSourceType
 
+        git.has_remote.return_value = True
         git.sync_and_merge.return_value = (True, "")
 
         task = _make_task()

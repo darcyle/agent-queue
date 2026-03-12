@@ -25,6 +25,7 @@ CATEGORY_MODULES = [
     "error_handling",
     "context_dependent",
     "memory",
+    "profiles",
 ]
 
 
