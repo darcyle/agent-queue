@@ -348,7 +348,11 @@ def _parse_implementation_section(content: str) -> list[PlanStep]:
     Returns an empty list if no implementation section is found.
     """
     heading_pattern = re.compile(r"^(#{2,4})\s+(.+)$", re.MULTILINE)
-    matches = list(heading_pattern.finditer(content))
+    fence_ranges = _fenced_code_ranges(content)
+    matches = [
+        m for m in heading_pattern.finditer(content)
+        if not _is_inside_code_fence(m.start(), fence_ranges)
+    ]
 
     if not matches:
         return []
@@ -499,7 +503,11 @@ def _parse_heading_sections(content: str) -> list[PlanStep]:
     the ``###`` level).
     """
     heading_pattern = re.compile(r"^(#{2,3})\s+(.+)$", re.MULTILINE)
-    matches = list(heading_pattern.finditer(content))
+    fence_ranges = _fenced_code_ranges(content)
+    matches = [
+        m for m in heading_pattern.finditer(content)
+        if not _is_inside_code_fence(m.start(), fence_ranges)
+    ]
 
     if not matches:
         return []
@@ -700,6 +708,25 @@ def _clean_step_title(title: str) -> str:
     return title.strip()
 
 
+_FENCED_CODE_BLOCK_RE = re.compile(
+    r"^`{3,}[^\n]*\n.*?^`{3,}[^\n]*$",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def _fenced_code_ranges(content: str) -> list[tuple[int, int]]:
+    """Return (start, end) byte ranges of fenced code blocks in *content*."""
+    return [(m.start(), m.end()) for m in _FENCED_CODE_BLOCK_RE.finditer(content)]
+
+
+def _is_inside_code_fence(pos: int, ranges: list[tuple[int, int]]) -> bool:
+    """Check whether *pos* falls inside any fenced code block range."""
+    for start, end in ranges:
+        if start <= pos < end:
+            return True
+    return False
+
+
 def _truncate(text: str, max_len: int) -> str:
     """Truncate text to max_len, adding ellipsis if needed."""
     if len(text) <= max_len:
@@ -808,9 +835,13 @@ def validate_plan_quality(content: str) -> PlanQualityReport:
             recommendation="Empty document — nothing to split.",
         )
 
-    # Extract all ## and ### headings
+    # Extract all ## and ### headings (skip those inside code fences)
     heading_pattern = re.compile(r"^#{2,3}\s+(.+)$", re.MULTILINE)
-    headings = [m.group(1).strip() for m in heading_pattern.finditer(content)]
+    fence_ranges = _fenced_code_ranges(content)
+    headings = [
+        m.group(1).strip() for m in heading_pattern.finditer(content)
+        if not _is_inside_code_fence(m.start(), fence_ranges)
+    ]
     total_sections = len(headings)
 
     if total_sections == 0:

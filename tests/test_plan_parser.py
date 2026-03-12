@@ -560,6 +560,92 @@ Build REST API endpoints for CRUD operations on the models.
         assert len(plan.steps) == 2
 
 
+# ── Fenced code block filtering ───────────────────────────────────────── #
+
+class TestFencedCodeBlockFiltering:
+    """Headings inside ``` code fences must not be extracted as plan steps."""
+
+    def test_headings_inside_code_fence_are_ignored(self):
+        """The exact bug: PLAN_STRUCTURE_GUIDE example headings leak through."""
+        content = """\
+## Implementation Plan
+
+### Phase 1: Add database migrations
+
+Create the migration files and update the schema.
+
+### Phase 2: Build API endpoints
+
+Add REST endpoints for the new resource.
+
+Here is an example of the plan format for reference:
+
+```markdown
+### Phase 1: [Action Verb] [Broad Area of Work]
+
+[Description]
+
+### Phase 2: [Action Verb] [Broad Area of Work]
+
+[Description]
+```
+"""
+        plan = parse_plan(content)
+        titles = [s.title for s in plan.steps]
+        assert "[Action Verb] [Broad Area of Work]" not in " ".join(titles)
+        assert len(plan.steps) == 2
+        assert "Add database migrations" in titles[0]
+        assert "Build API endpoints" in titles[1]
+
+    def test_code_examples_in_descriptions_preserved(self):
+        """Code blocks inside step descriptions should not break parsing."""
+        content = """\
+## Add authentication
+
+- Install bcrypt
+- Create auth module
+
+```python
+from bcrypt import hashpw
+```
+
+## Update frontend
+
+- Add login form component with username and password fields
+- Add form validation and error display
+"""
+        plan = parse_plan(content)
+        assert len(plan.steps) == 2
+        # The code block content is part of the description, but the
+        # ``` block itself is not a heading so nothing is lost.
+        assert "bcrypt" in plan.steps[0].description
+
+    def test_multiple_code_fences(self):
+        content = """\
+## Real step one
+
+Description here.
+
+```
+## Fake heading inside fence
+### Another fake heading
+```
+
+## Real step two
+
+More description.
+
+```bash
+echo "## not a heading"
+```
+"""
+        plan = parse_plan(content)
+        titles = [s.title for s in plan.steps]
+        assert len(plan.steps) == 2
+        assert "Real step one" in titles[0]
+        assert "Real step two" in titles[1]
+
+
 # ── NON_ACTIONABLE_HEADINGS constant ──────────────────────────────────── #
 
 class TestNonActionableHeadingsConstant:
