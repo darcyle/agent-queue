@@ -928,6 +928,29 @@ class MenuView(discord.ui.View):
 
 _HOOKS_PER_PAGE = 10  # max hooks per page (Discord allows 5 rows × 5 items)
 
+# Common event types for the event hook selection menu (used by both wizard and edit UI).
+_HOOK_EVENT_CATEGORIES: list[tuple[str, list[str]]] = [
+    ("Task", [
+        "task.created", "task.started", "task.completed", "task.failed",
+        "task.blocked", "task.paused", "task.resumed", "task.retried",
+    ]),
+    ("Agent", [
+        "agent.registered", "agent.idle", "agent.error",
+        "agent.heartbeat_lost",
+    ]),
+    ("Project", [
+        "project.created", "project.paused", "project.resumed",
+        "project.budget_warning", "project.budget_exhausted",
+    ]),
+    ("Git", [
+        "git.commit_created", "git.pr_created", "git.pr_merged",
+    ]),
+    ("Error", [
+        "error.agent_crash", "error.adapter_failure",
+        "error.dependency_cycle",
+    ]),
+]
+
 
 class _HookInlineEditModal(discord.ui.Modal, title="Edit Hook"):
     """Modal for editing a hook's properties inline from the hooks list."""
@@ -1010,6 +1033,289 @@ class _HookInlineEditModal(discord.ui.Modal, title="Edit Hook"):
             await self._refresh_callback(interaction)
 
 
+class _HookScheduleEditModal(discord.ui.Modal, title="Edit Schedule"):
+    """Modal for editing a periodic hook's interval."""
+
+    interval_input = discord.ui.TextInput(
+        label="Interval (e.g. 30s, 5m, 2h, 1d)",
+        placeholder="5m",
+        required=True,
+        max_length=20,
+    )
+
+    def __init__(self, hook: dict, handler, *, refresh_callback=None) -> None:
+        super().__init__()
+        self._hook_id = hook["id"]
+        self._handler = handler
+        self._refresh_callback = refresh_callback
+        # Pre-fill with current interval
+        trigger = hook.get("trigger", {})
+        if isinstance(trigger, dict) and trigger.get("type") == "periodic":
+            secs = trigger.get("interval_seconds", 0)
+            if secs >= 86400 and secs % 86400 == 0:
+                self.interval_input.default = f"{secs // 86400}d"
+            elif secs >= 3600 and secs % 3600 == 0:
+                self.interval_input.default = f"{secs // 3600}h"
+            elif secs >= 60 and secs % 60 == 0:
+                self.interval_input.default = f"{secs // 60}m"
+            else:
+                self.interval_input.default = f"{secs}s"
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        raw = self.interval_input.value.strip().lower()
+        # Parse interval string like "30s", "5m", "2h", "1d" or plain seconds
+        seconds: int | None = None
+        if raw.endswith("d"):
+            try:
+                seconds = int(raw[:-1]) * 86400
+            except ValueError:
+                pass
+        elif raw.endswith("h"):
+            try:
+                seconds = int(raw[:-1]) * 3600
+            except ValueError:
+                pass
+        elif raw.endswith("m"):
+            try:
+                seconds = int(raw[:-1]) * 60
+            except ValueError:
+                pass
+        elif raw.endswith("s"):
+            try:
+                seconds = int(raw[:-1])
+            except ValueError:
+                pass
+        else:
+            try:
+                seconds = int(raw)
+            except ValueError:
+                pass
+
+        if seconds is None or seconds <= 0:
+            await interaction.response.send_message(
+                "❌ Invalid interval. Use a format like `30s`, `5m`, `2h`, `1d` or a number of seconds.",
+                ephemeral=True,
+            )
+            return
+
+        trigger = {"type": "periodic", "interval_seconds": seconds}
+        result = await self._handler.execute("edit_hook", {
+            "hook_id": self._hook_id,
+            "trigger": trigger,
+        })
+        if "error" in result:
+            await interaction.response.send_message(
+                f"❌ {result['error']}", ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            f"✅ Hook `{self._hook_id}` schedule updated to every {seconds}s.",
+            ephemeral=True,
+        )
+        if self._refresh_callback:
+            await self._refresh_callback(interaction)
+
+
+class _HookTriggerEditView(discord.ui.View):
+    """View shown when editing a hook — lets the user change trigger or open the details modal."""
+
+    # Pull event categories from the wizard constant defined later in this file.
+    # We reference the module-level list via a lazy accessor in _rebuild.
+
+    def __init__(self, hook: dict, handler, *, refresh_callback=None) -> None:
+        super().__init__(timeout=300)
+        self._hook = hook
+        self._handler = handler
+        self._refresh_callback = refresh_callback
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        self.clear_items()
+        trigger = self._hook.get("trigger", {})
+        ttype = trigger.get("type", "?") if isinstance(trigger, dict) else "?"
+
+        if ttype == "event":
+            # Show a dropdown with all event types
+            current_event = (
+                trigger.get("event_type") or trigger.get("event", "")
+            ) if isinstance(trigger, dict) else ""
+            options: list[discord.SelectOption] = []
+            for cat, events in _HOOK_EVENT_CATEGORIES:
+                for evt in events:
+                    options.append(discord.SelectOption(
+                        label=evt,
+                        value=evt,
+                        description=f"{cat} event",
+                        default=(evt == current_event),
+                    ))
+            select = discord.ui.Select(
+                placeholder="Change event type…",
+                options=options,
+                row=0,
+            )
+            select.callback = self._event_select_callback
+            self.add_item(select)
+
+            # Custom event type button
+            custom_btn = discord.ui.Button(
+                label="Custom event type…",
+                style=discord.ButtonStyle.secondary,
+                row=1,
+            )
+            custom_btn.callback = self._custom_event_callback
+            self.add_item(custom_btn)
+
+        elif ttype == "periodic":
+            # Show a button to change the schedule
+            schedule_btn = discord.ui.Button(
+                label="⏱️ Change Schedule",
+                style=discord.ButtonStyle.primary,
+                row=0,
+            )
+            schedule_btn.callback = self._schedule_callback
+            self.add_item(schedule_btn)
+
+        # Always show an "Edit Details" button to open the original modal
+        details_btn = discord.ui.Button(
+            label="📝 Edit Details",
+            style=discord.ButtonStyle.secondary,
+            row=2,
+        )
+        details_btn.callback = self._details_callback
+        self.add_item(details_btn)
+
+        # Close button
+        close_btn = discord.ui.Button(
+            label="Close",
+            style=discord.ButtonStyle.secondary,
+            row=2,
+        )
+        close_btn.callback = self._close_callback
+        self.add_item(close_btn)
+
+    def build_content(self) -> str:
+        h = self._hook
+        trigger = h.get("trigger", {})
+        ttype = trigger.get("type", "?") if isinstance(trigger, dict) else "?"
+        if ttype == "periodic":
+            interval = trigger.get("interval_seconds", "?") if isinstance(trigger, dict) else "?"
+            trigger_desc = f"every {interval}s"
+        elif ttype == "event":
+            event = (trigger.get("event_type") or trigger.get("event", "?")) if isinstance(trigger, dict) else "?"
+            trigger_desc = f"on `{event}`"
+        else:
+            trigger_desc = ttype
+        status = "✅" if h.get("enabled") else "❌"
+        return (
+            f"**✏️ Editing Hook: {h.get('name', h['id'])}**\n"
+            f"{status} Trigger: {trigger_desc}\n\n"
+            f"Use the controls below to change the trigger or edit other details."
+        )
+
+    async def _event_select_callback(self, interaction: discord.Interaction) -> None:
+        event_type = interaction.data.get("values", [None])[0]
+        if not event_type:
+            return
+        trigger = {"type": "event", "event_type": event_type}
+        result = await self._handler.execute("edit_hook", {
+            "hook_id": self._hook["id"],
+            "trigger": trigger,
+        })
+        if "error" in result:
+            await interaction.response.send_message(
+                f"❌ {result['error']}", ephemeral=True,
+            )
+            return
+
+        # Update local hook data and refresh
+        self._hook["trigger"] = trigger
+        self._rebuild()
+        await interaction.response.edit_message(
+            content=self.build_content(), view=self,
+        )
+        if self._refresh_callback:
+            await self._refresh_callback(interaction)
+
+    async def _custom_event_callback(self, interaction: discord.Interaction) -> None:
+        modal = _HookCustomEventEditModal(
+            self._hook, self._handler, refresh_callback=self._refresh_callback,
+            parent_view=self,
+        )
+        await interaction.response.send_modal(modal)
+
+    async def _schedule_callback(self, interaction: discord.Interaction) -> None:
+        modal = _HookScheduleEditModal(
+            self._hook, self._handler, refresh_callback=self._refresh_callback,
+        )
+        await interaction.response.send_modal(modal)
+
+    async def _details_callback(self, interaction: discord.Interaction) -> None:
+        modal = _HookInlineEditModal(
+            self._hook, self._handler, refresh_callback=self._refresh_callback,
+        )
+        await interaction.response.send_modal(modal)
+
+    async def _close_callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(
+            content="Hook edit closed.", view=None,
+        )
+
+
+class _HookCustomEventEditModal(discord.ui.Modal, title="Custom Event Type"):
+    """Modal for entering a custom event type when editing a hook."""
+
+    event_input = discord.ui.TextInput(
+        label="Event type",
+        placeholder="e.g. my.custom.event",
+        required=True,
+        max_length=100,
+    )
+
+    def __init__(self, hook: dict, handler, *, refresh_callback=None, parent_view=None) -> None:
+        super().__init__()
+        self._hook = hook
+        self._hook_id = hook["id"]
+        self._handler = handler
+        self._refresh_callback = refresh_callback
+        self._parent_view = parent_view
+        # Pre-fill with current event type
+        trigger = hook.get("trigger", {})
+        if isinstance(trigger, dict) and trigger.get("type") == "event":
+            self.event_input.default = trigger.get("event_type", "")
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        event_type = self.event_input.value.strip()
+        if not event_type:
+            await interaction.response.send_message(
+                "❌ Event type cannot be empty.", ephemeral=True,
+            )
+            return
+
+        trigger = {"type": "event", "event_type": event_type}
+        result = await self._handler.execute("edit_hook", {
+            "hook_id": self._hook_id,
+            "trigger": trigger,
+        })
+        if "error" in result:
+            await interaction.response.send_message(
+                f"❌ {result['error']}", ephemeral=True,
+            )
+            return
+
+        # Update parent view if available
+        if self._parent_view:
+            self._hook["trigger"] = trigger
+            self._parent_view._rebuild()
+
+        await interaction.response.send_message(
+            f"✅ Hook `{self._hook_id}` event type changed to `{event_type}`.",
+            ephemeral=True,
+        )
+        if self._refresh_callback:
+            await self._refresh_callback(interaction)
+
+
 class _HookEditButton(discord.ui.Button):
     """Per-hook ✏️ Edit button shown in the hooks list view."""
 
@@ -1028,10 +1334,12 @@ class _HookEditButton(discord.ui.Button):
         self._refresh_callback = refresh_callback
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        modal = _HookInlineEditModal(
+        view = _HookTriggerEditView(
             self._hook, self._handler, refresh_callback=self._refresh_callback,
         )
-        await interaction.response.send_modal(modal)
+        await interaction.response.send_message(
+            content=view.build_content(), view=view, ephemeral=True,
+        )
 
 
 class HooksListView(discord.ui.View):
@@ -4126,28 +4434,6 @@ def setup_commands(bot: commands.Bot) -> None:
     # In-memory store keyed by Discord user ID.
     _hook_wizard_states: dict[int, dict] = {}
 
-    # Common event types for the event hook selection menu.
-    _HOOK_EVENT_CATEGORIES: list[tuple[str, list[str]]] = [
-        ("Task", [
-            "task.created", "task.started", "task.completed", "task.failed",
-            "task.blocked", "task.paused", "task.resumed", "task.retried",
-        ]),
-        ("Agent", [
-            "agent.registered", "agent.idle", "agent.error",
-            "agent.heartbeat_lost",
-        ]),
-        ("Project", [
-            "project.created", "project.paused", "project.resumed",
-            "project.budget_warning", "project.budget_exhausted",
-        ]),
-        ("Git", [
-            "git.commit_created", "git.pr_created", "git.pr_merged",
-        ]),
-        ("Error", [
-            "error.agent_crash", "error.adapter_failure",
-            "error.dependency_cycle",
-        ]),
-    ]
 
     # Context step types available in the wizard.
     _HOOK_STEP_TYPES: list[tuple[str, str]] = [
