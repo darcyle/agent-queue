@@ -24,6 +24,7 @@ from src.discord.embeds import (
     truncate, progress_bar, format_tree_task,
     TREE_PIPE, TREE_SPACE, LIMIT_FIELD_VALUE,
 )
+from src.discord.project_wizard import ProjectInfoModal
 from src.models import TaskStatus
 
 _NOTES_PER_PAGE = 20  # Max note buttons (4 rows × 5 buttons)
@@ -2005,6 +2006,20 @@ def setup_commands(bot: commands.Bot) -> None:
             await interaction.followup.send(embed=embed)
         else:
             await interaction.response.send_message(embed=embed)
+
+    @bot.tree.command(
+        name="new-project",
+        description="Create a new project with an interactive wizard",
+    )
+    async def new_project_command(interaction: discord.Interaction):
+        """Launch the interactive project-creation wizard.
+
+        Opens a modal to collect project name, description, tech stack,
+        and branch, then guides the user through repo setup and workspace
+        selection before creating everything automatically.
+        """
+        modal = ProjectInfoModal(handler, bot)
+        await interaction.response.send_modal(modal)
 
     @bot.tree.command(name="edit-project", description="Edit a project's settings")
     @app_commands.describe(
