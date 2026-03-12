@@ -294,18 +294,6 @@ Output includes event type, project ID, task ID, and timestamp.
 
 ### 3.2 Project Management Commands
 
-#### `/create-project`
-Creates a new project. If `auto_create_channels` is true (or set to true in config), the response is deferred because channel creation may take more than 3 seconds.
-
-| Parameter | Type | Description |
-|---|---|---|
-| `name` | str | Project display name |
-| `credit_weight` | float (optional, default 1.0) | Scheduling weight |
-| `max_concurrent_agents` | int (optional, default 2) | Max simultaneous agents |
-| `auto_create_channels` | bool (optional) | Override config auto-channel creation flag |
-
-Returns an embed with project ID, workspace path, and channel info if channels were auto-created. When `per_project_channels.private` is `True`, both the auto-created category and channels are created with permission overwrites that deny `view_channel` to `@everyone` and grant `view_channel` + `send_messages` to the bot.
-
 #### `/edit-project`
 Edits an existing project's settings.
 
