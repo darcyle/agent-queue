@@ -1020,13 +1020,16 @@ class TestMergeBranchPullsBeforeMerge:
         local_repo = str(tmp_path / "local-repo")
         mgr.init_repo(local_repo)
 
+        # Detect the default branch (could be main or master depending on git config)
+        default_branch = mgr.get_default_branch(local_repo)
+
         # Create a branch with work
         mgr.create_branch(local_repo, "task/local-only")
         _git_commit(local_repo, "work.txt", "work", "local work")
-        _git(["checkout", "master"], cwd=local_repo)
+        _git(["checkout", default_branch], cwd=local_repo)
 
         # merge_branch should succeed even though fetch fails (no remote)
-        result = mgr.merge_branch(local_repo, "task/local-only", default_branch="master")
+        result = mgr.merge_branch(local_repo, "task/local-only", default_branch=default_branch)
         assert result is True
 
         log = _git(["log", "--oneline"], cwd=local_repo)
@@ -2754,3 +2757,85 @@ class TestCreateGithubRepo:
         mgr.create_github_repo("my-app")
         assert "--yes" in captured_args["cmd"]
         assert "--confirm" not in captured_args["cmd"]
+
+
+class TestGetDefaultBranch:
+    """Tests for get_default_branch dynamic branch detection."""
+
+    def test_detects_main_from_remote_head(self, git_repo, tmp_path):
+        """Detects 'main' from remote HEAD symbolic ref."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # The git_repo fixture uses main as default
+        default_branch = mgr.get_default_branch(clone)
+        assert default_branch == "main"
+
+    def test_detects_master_from_remote_head(self, tmp_path):
+        """Detects 'master' from remote HEAD symbolic ref."""
+        mgr = GitManager()
+
+        # Create a repo with master as default
+        remote = tmp_path / "remote.git"
+        subprocess.run(["git", "init", "--bare", "--initial-branch=master", str(remote)],
+                       check=True, capture_output=True)
+        clone = tmp_path / "clone"
+        subprocess.run(["git", "clone", str(remote), str(clone)], check=True,
+                       capture_output=True)
+        _commit_file(str(clone), "README.md", "test", "Initial commit")
+        _git(["push", "origin", "master"], cwd=str(clone))
+
+        default_branch = mgr.get_default_branch(str(clone))
+        assert default_branch == "master"
+
+    def test_detects_from_local_branches_when_no_remote_head(self, tmp_path):
+        """Falls back to checking local branches when remote HEAD not set."""
+        mgr = GitManager()
+        local_repo = str(tmp_path / "local-repo")
+        mgr.init_repo(local_repo)
+
+        # Should detect whatever branch init_repo created (main or master)
+        default_branch = mgr.get_default_branch(local_repo)
+        assert default_branch in ["main", "master"]
+
+    def test_detects_from_remote_branches_when_local_missing(self, git_repo, tmp_path):
+        """Detects from remote branches when local branch doesn't exist."""
+        mgr = GitManager()
+        remote = git_repo["remote"]
+
+        # Create a second clone without checking out main locally
+        clone2 = tmp_path / "clone2"
+        subprocess.run(["git", "clone", "--no-checkout", remote, str(clone2)],
+                       check=True, capture_output=True)
+
+        default_branch = mgr.get_default_branch(str(clone2))
+        assert default_branch == "main"
+
+    def test_detects_develop_branch(self, tmp_path):
+        """Detects 'develop' as default branch when it's the only option."""
+        mgr = GitManager()
+
+        # Create a repo with develop as default
+        remote = tmp_path / "remote.git"
+        subprocess.run(["git", "init", "--bare", "--initial-branch=develop", str(remote)],
+                       check=True, capture_output=True)
+        clone = tmp_path / "clone"
+        subprocess.run(["git", "clone", str(remote), str(clone)], check=True,
+                       capture_output=True)
+        _commit_file(str(clone), "README.md", "test", "Initial commit")
+        _git(["push", "origin", "develop"], cwd=str(clone))
+
+        default_branch = mgr.get_default_branch(str(clone))
+        assert default_branch == "develop"
+
+    def test_fallback_to_main_when_no_branches_exist(self, tmp_path):
+        """Falls back to 'main' when no branches can be detected."""
+        mgr = GitManager()
+
+        # Create a fresh empty repo with no commits or branches
+        empty_repo = str(tmp_path / "empty-repo")
+        subprocess.run(["git", "init", str(empty_repo)], check=True, capture_output=True)
+
+        # Should fall back to "main"
+        default_branch = mgr.get_default_branch(empty_repo)
+        assert default_branch == "main"

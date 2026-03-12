@@ -713,6 +713,54 @@ class GitManager:
         except GitError:
             return ""
 
+    def get_default_branch(self, checkout_path: str) -> str:
+        """Detect the default branch for the repository.
+
+        Tries multiple strategies to determine the default branch:
+        1. Query the remote HEAD symbolic ref (most reliable)
+        2. Check for common default branch names (main, master, develop)
+        3. Fall back to the current branch
+
+        Returns the detected default branch name, or "main" as a last resort.
+        """
+        # Strategy 1: Try to get the default branch from remote HEAD
+        try:
+            # This works if the remote has a HEAD symbolic ref set
+            remote_head = self._run(
+                ["symbolic-ref", "refs/remotes/origin/HEAD"],
+                cwd=checkout_path
+            )
+            # Output format: "refs/remotes/origin/main"
+            # Extract just the branch name
+            if remote_head.startswith("refs/remotes/origin/"):
+                return remote_head.replace("refs/remotes/origin/", "")
+        except GitError:
+            pass
+
+        # Strategy 2: Check which common default branches exist locally
+        for branch in ["main", "master", "develop", "trunk"]:
+            try:
+                self._run(["rev-parse", "--verify", branch], cwd=checkout_path)
+                return branch
+            except GitError:
+                continue
+
+        # Strategy 3: Check which common default branches exist on remote
+        try:
+            remote_branches = self._run(
+                ["ls-remote", "--heads", "origin"],
+                cwd=checkout_path
+            )
+            for branch in ["main", "master", "develop", "trunk"]:
+                if f"refs/heads/{branch}" in remote_branches:
+                    return branch
+        except GitError:
+            pass
+
+        # Last resort: use current branch or default to "main"
+        current = self.get_current_branch(checkout_path)
+        return current if current else "main"
+
     def get_recent_commits(self, checkout_path: str, count: int = 5) -> str:
         """Return recent commit log (one-line format)."""
         try:

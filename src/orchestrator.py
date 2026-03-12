@@ -254,6 +254,35 @@ class Orchestrator:
         """Return the command handler or None. Used by interactive views."""
         return self._command_handler
 
+    def _get_default_branch(self, project, workspace: str | None = None) -> str:
+        """Get the default branch for a project, with dynamic detection fallback.
+
+        First tries to use the project's configured ``repo_default_branch``.
+        If not set and a workspace path is provided that contains a valid git
+        checkout, attempts to detect the default branch from the repository.
+        Otherwise falls back to "main" as a last resort.
+
+        Args:
+            project: The project record (may be None)
+            workspace: Optional workspace path for branch detection
+
+        Returns:
+            The default branch name (e.g., "main", "master", "develop")
+        """
+        # Use the project's configured default branch if available
+        if project and project.repo_default_branch:
+            return project.repo_default_branch
+
+        # Try to detect from the workspace if it exists and is valid
+        if workspace and self.git.validate_checkout(workspace):
+            try:
+                return self.git.get_default_branch(workspace)
+            except Exception:
+                pass  # Fall through to default
+
+        # Last resort fallback
+        return "main"
+
     async def _sync_profiles_from_config(self) -> None:
         """Sync agent profiles from YAML config into the database (idempotent upsert).
 
@@ -1491,7 +1520,7 @@ class Orchestrator:
             logger.warning("Failed to write sentinel to %s: %s", workspace, e)
 
         repo_url = project.repo_url if project else ""
-        default_branch = project.repo_default_branch if project else "main"
+        default_branch = self._get_default_branch(project, workspace)
 
         # Branch naming strategy:
         # - Root tasks get a fresh branch derived from their ID + title.
@@ -1601,7 +1630,7 @@ class Orchestrator:
             return None
 
         project = await self.db.get_project(task.project_id)
-        default_branch = project.repo_default_branch if project else "main"
+        default_branch = self._get_default_branch(project, workspace)
         has_repo = bool(project and project.repo_url)
 
         # Commit any uncommitted work the agent left behind.  The agent is
@@ -2303,7 +2332,7 @@ class Orchestrator:
             return
 
         project = await self.db.get_project(task.project_id)
-        default_branch = project.repo_default_branch if project else "main"
+        default_branch = self._get_default_branch(project, ws.workspace_path)
         has_repo = bool(project and project.repo_url)
         if not has_repo:
             return
@@ -2990,7 +3019,7 @@ class Orchestrator:
             # Build pipeline context
             ws = await self.db.get_workspace_for_task(task.id)
             project = await self.db.get_project(task.project_id)
-            default_branch = project.repo_default_branch if project else "main"
+            default_branch = self._get_default_branch(project, ws.workspace_path if ws else workspace)
             has_repo = bool(project and project.repo_url)
 
             repo = RepoConfig(
