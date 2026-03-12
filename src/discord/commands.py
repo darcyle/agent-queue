@@ -3303,13 +3303,13 @@ def setup_commands(bot: commands.Bot) -> None:
 
         for rs in repo_statuses:
             if "error" in rs:
-                ws_label = rs.get("workspace_name") or rs.get("workspace_id") or rs.get("repo_id", "?")
+                ws_label = rs.get("workspace_name") or rs.get("workspace_id") or "?"
                 sections.append(
                     f"### Workspace: `{ws_label}`\n⚠️ {rs['error']}"
                 )
                 continue
             ws_name = rs.get("workspace_name")
-            ws_id = rs.get("workspace_id") or rs.get("repo_id", "?")
+            ws_id = rs.get("workspace_id") or "?"
             header = f"### Workspace: `{ws_name}`" if ws_name else f"### Workspace: `{ws_id}`"
             if ws_name:
                 header += f" (`{ws_id}`)"
@@ -3342,13 +3342,11 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         name="New branch name to create (omit to list branches)",
-        repo_id="Repo ID (optional — uses first repo if omitted)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_branches_command(
         interaction: discord.Interaction,
         name: str | None = None,
-        repo_id: str | None = None,
         workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
@@ -3358,8 +3356,6 @@ def setup_commands(bot: commands.Bot) -> None:
         handler.set_active_project(project_id)
         await interaction.response.defer()
         args: dict = {"project_id": project_id}
-        if repo_id:
-            args["repo_id"] = repo_id
         if name:
             args["name"] = name
         if workspace:
@@ -3391,13 +3387,11 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         branch_name="Branch name to switch to",
-        repo_id="Repo ID (optional — uses first repo if omitted)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_checkout_command(
         interaction: discord.Interaction,
         branch_name: str,
-        repo_id: str | None = None,
         workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
@@ -3407,8 +3401,6 @@ def setup_commands(bot: commands.Bot) -> None:
         handler.set_active_project(project_id)
         await interaction.response.defer()
         args: dict = {"project_id": project_id, "branch_name": branch_name}
-        if repo_id:
-            args["repo_id"] = repo_id
         if workspace:
             args["workspace"] = workspace
         result = await handler.execute("checkout_branch", args)
@@ -3428,13 +3420,11 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         message="Commit message",
-        repo_id="Repo ID (optional — uses first repo if omitted)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def project_commit_command(
         interaction: discord.Interaction,
         message: str,
-        repo_id: str | None = None,
         workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
@@ -3444,8 +3434,6 @@ def setup_commands(bot: commands.Bot) -> None:
         handler.set_active_project(project_id)
         await interaction.response.defer()
         args: dict = {"project_id": project_id, "message": message}
-        if repo_id:
-            args["repo_id"] = repo_id
         if workspace:
             args["workspace"] = workspace
         result = await handler.execute("commit_changes", args)
@@ -3453,7 +3441,7 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result['error'], followup=True)
             return
         if result.get("status") == "committed":
-            repo_label = result.get("repo_id", "?")
+            repo_label = project_id
             await _send_success(
                 interaction, "Changes Committed",
                 description=f"Committed in `{repo_label}` on `{project_id}`: {message}",
@@ -3473,13 +3461,11 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         branch_name="Branch to push (defaults to current branch)",
-        repo_id="Repo ID (optional — uses first repo if omitted)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def project_push_command(
         interaction: discord.Interaction,
         branch_name: str | None = None,
-        repo_id: str | None = None,
         workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
@@ -3491,8 +3477,6 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {"project_id": project_id}
         if branch_name:
             args["branch_name"] = branch_name
-        if repo_id:
-            args["repo_id"] = repo_id
         if workspace:
             args["workspace"] = workspace
         result = await handler.execute("push_branch", args)
@@ -3512,13 +3496,11 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         branch_name="Branch to merge",
-        repo_id="Repo ID (optional — uses first repo if omitted)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def project_merge_command(
         interaction: discord.Interaction,
         branch_name: str,
-        repo_id: str | None = None,
         workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
@@ -3528,8 +3510,6 @@ def setup_commands(bot: commands.Bot) -> None:
         handler.set_active_project(project_id)
         await interaction.response.defer()
         args: dict = {"project_id": project_id, "branch_name": branch_name}
-        if repo_id:
-            args["repo_id"] = repo_id
         if workspace:
             args["workspace"] = workspace
         result = await handler.execute("merge_branch", args)
@@ -3560,13 +3540,11 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         branch_name="Name for the new branch",
-        repo_id="Repo ID (optional — uses first repo if omitted)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def project_create_branch_command(
         interaction: discord.Interaction,
         branch_name: str,
-        repo_id: str | None = None,
         workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
@@ -3576,8 +3554,6 @@ def setup_commands(bot: commands.Bot) -> None:
         handler.set_active_project(project_id)
         await interaction.response.defer()
         args: dict = {"project_id": project_id, "branch_name": branch_name}
-        if repo_id:
-            args["repo_id"] = repo_id
         if workspace:
             args["workspace"] = workspace
         result = await handler.execute("create_branch", args)
@@ -3596,13 +3572,11 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         branch_name="Name for the new branch",
-        repo_id="Specific repo ID (optional)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def create_branch_command(
         interaction: discord.Interaction,
         branch_name: str,
-        repo_id: str | None = None,
         workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
@@ -3611,8 +3585,6 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "branch_name": branch_name}
-        if repo_id:
-            args["repo_id"] = repo_id
         if workspace:
             args["workspace"] = workspace
         result = await handler.execute("create_branch", args)
@@ -3621,7 +3593,7 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         await _send_success(
             interaction, "Branch Created",
-            description=f"Branch `{branch_name}` created in `{result.get('repo_id', project_id)}`",
+            description=f"Branch `{branch_name}` created in `{project_id}`",
         )
 
     @bot.tree.command(
@@ -3630,13 +3602,11 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         branch_name="Branch name to check out",
-        repo_id="Specific repo ID (optional)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def checkout_branch_command(
         interaction: discord.Interaction,
         branch_name: str,
-        repo_id: str | None = None,
         workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
@@ -3645,8 +3615,6 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "branch_name": branch_name}
-        if repo_id:
-            args["repo_id"] = repo_id
         if workspace:
             args["workspace"] = workspace
         result = await handler.execute("checkout_branch", args)
@@ -3655,7 +3623,7 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         await _send_success(
             interaction, "Branch Switched",
-            description=f"Switched to branch `{branch_name}` in `{result.get('repo_id', project_id)}`",
+            description=f"Switched to branch `{branch_name}` in `{project_id}`",
             result=result,
         )
 
@@ -3665,13 +3633,11 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         message="Commit message",
-        repo_id="Specific repo ID (optional)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def commit_command(
         interaction: discord.Interaction,
         message: str,
-        repo_id: str | None = None,
         workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
@@ -3680,8 +3646,6 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "message": message}
-        if repo_id:
-            args["repo_id"] = repo_id
         if workspace:
             args["workspace"] = workspace
         result = await handler.execute("commit_changes", args)
@@ -3691,12 +3655,12 @@ def setup_commands(bot: commands.Bot) -> None:
         if result.get("status") == "nothing_to_commit":
             await _send_info(
                 interaction, "Nothing to Commit",
-                description=f"Working tree clean in `{result.get('repo_id', project_id)}`.",
+                description=f"Working tree clean in `{project_id}`.",
             )
             return
         await _send_success(
             interaction, "Changes Committed",
-            description=f"Committed in `{result.get('repo_id', project_id)}`: {message}",
+            description=f"Committed in `{project_id}`: {message}",
             result=result,
         )
 
@@ -3706,13 +3670,11 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         branch_name="Branch to push (optional — pushes current branch)",
-        repo_id="Specific repo ID (optional)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def push_command(
         interaction: discord.Interaction,
         branch_name: str | None = None,
-        repo_id: str | None = None,
         workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
@@ -3723,8 +3685,6 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {"project_id": project_id}
         if branch_name:
             args["branch_name"] = branch_name
-        if repo_id:
-            args["repo_id"] = repo_id
         if workspace:
             args["workspace"] = workspace
         result = await handler.execute("push_branch", args)
@@ -3734,7 +3694,7 @@ def setup_commands(bot: commands.Bot) -> None:
         pushed_branch = result.get("branch", branch_name or "current")
         await _send_success(
             interaction, "Branch Pushed",
-            description=f"Pushed `{pushed_branch}` in `{result.get('repo_id', project_id)}`",
+            description=f"Pushed `{pushed_branch}` in `{project_id}`",
         )
 
     @bot.tree.command(
@@ -3743,13 +3703,11 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         branch_name="Branch to merge",
-        repo_id="Specific repo ID (optional)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def merge_command(
         interaction: discord.Interaction,
         branch_name: str,
-        repo_id: str | None = None,
         workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
@@ -3758,8 +3716,6 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "branch_name": branch_name}
-        if repo_id:
-            args["repo_id"] = repo_id
         if workspace:
             args["workspace"] = workspace
         result = await handler.execute("merge_branch", args)
@@ -3771,13 +3727,13 @@ def setup_commands(bot: commands.Bot) -> None:
                 interaction, "Merge Conflict",
                 description=(
                     f"Merge conflict: `{branch_name}` → `{result.get('target', 'main')}` "
-                    f"in `{result.get('repo_id', project_id)}`. Merge was aborted."
+                    f"in `{project_id}`. Merge was aborted."
                 ),
             )
             return
         await _send_success(
             interaction, "Branch Merged",
-            description=f"Merged `{branch_name}` → `{result.get('target', 'main')}` in `{result.get('repo_id', project_id)}`",
+            description=f"Merged `{branch_name}` → `{result.get('target', 'main')}` in `{project_id}`",
             result=result,
         )
 
@@ -3787,13 +3743,11 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         message="Commit message",
-        repo_id="Repository ID (optional — uses first repo if omitted)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_commit_command(
         interaction: discord.Interaction,
         message: str,
-        repo_id: str | None = None,
         workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
@@ -3805,15 +3759,13 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {"message": message}
         if project_id:
             args["project_id"] = project_id
-        if repo_id:
-            args["repo_id"] = repo_id
         if workspace:
             args["workspace"] = workspace
         result = await handler.execute("git_commit", args)
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
             return
-        label = result.get("repo_id", project_id or "repo")
+        label = project_id or "repo"
         if result.get("committed"):
             await _send_success(
                 interaction, "Changes Committed",
@@ -3832,13 +3784,11 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Pull (fetch + merge) a branch from remote origin",
     )
     @app_commands.describe(
-        repo_id="Repository ID (optional — uses first repo if omitted)",
         branch="Branch name to pull (defaults to current branch)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_pull_command(
         interaction: discord.Interaction,
-        repo_id: str | None = None,
         branch: str | None = None,
         workspace: str | None = None,
     ):
@@ -3849,8 +3799,6 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {}
         if project_id:
             args["project_id"] = project_id
-        if repo_id:
-            args["repo_id"] = repo_id
         if branch:
             args["branch"] = branch
         if workspace:
@@ -3859,7 +3807,7 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
             return
-        label = result.get("repo_id", project_id or "repo")
+        label = project_id or "repo"
         await _send_success(
             interaction, "Branch Pulled",
             description=f"Pulled `{result['pulled']}` in `{label}`",
@@ -3871,13 +3819,11 @@ def setup_commands(bot: commands.Bot) -> None:
         description="Push a branch to remote origin",
     )
     @app_commands.describe(
-        repo_id="Repository ID (optional — uses first repo if omitted)",
         branch="Branch name to push (defaults to current branch)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_push_command(
         interaction: discord.Interaction,
-        repo_id: str | None = None,
         branch: str | None = None,
         workspace: str | None = None,
     ):
@@ -3888,8 +3834,6 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {}
         if project_id:
             args["project_id"] = project_id
-        if repo_id:
-            args["repo_id"] = repo_id
         if branch:
             args["branch"] = branch
         if workspace:
@@ -3898,7 +3842,7 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
             return
-        label = result.get("repo_id", project_id or "repo")
+        label = project_id or "repo"
         await _send_success(
             interaction, "Branch Pushed",
             description=f"Pushed `{result['pushed']}` in `{label}`",
@@ -3911,13 +3855,11 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         branch_name="Name for the new branch",
-        repo_id="Repository ID (optional — uses first repo if omitted)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_branch_command(
         interaction: discord.Interaction,
         branch_name: str,
-        repo_id: str | None = None,
         workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
@@ -3927,15 +3869,13 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {"branch_name": branch_name}
         if project_id:
             args["project_id"] = project_id
-        if repo_id:
-            args["repo_id"] = repo_id
         if workspace:
             args["workspace"] = workspace
         result = await handler.execute("git_create_branch", args)
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
             return
-        label = result.get("repo_id", project_id or "repo")
+        label = project_id or "repo"
         await _send_success(
             interaction, "Branch Created",
             description=f"Created and switched to branch `{branch_name}` in `{label}`",
@@ -3948,14 +3888,12 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         branch_name="Branch to merge",
-        repo_id="Repository ID (optional — uses first repo if omitted)",
         default_branch="Target branch (defaults to repo's default branch)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_merge_command(
         interaction: discord.Interaction,
         branch_name: str,
-        repo_id: str | None = None,
         default_branch: str | None = None,
         workspace: str | None = None,
     ):
@@ -3966,8 +3904,6 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {"branch_name": branch_name}
         if project_id:
             args["project_id"] = project_id
-        if repo_id:
-            args["repo_id"] = repo_id
         if default_branch:
             args["default_branch"] = default_branch
         if workspace:
@@ -3976,7 +3912,7 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
             return
-        label = result.get("repo_id", project_id or "repo")
+        label = project_id or "repo"
         if result.get("merged"):
             await _send_success(
                 interaction, "Branch Merged",
@@ -3999,7 +3935,6 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         title="PR title",
-        repo_id="Repository ID (optional — uses first repo if omitted)",
         body="PR description (optional)",
         branch="Head branch (defaults to current)",
         base="Base branch (defaults to repo default)",
@@ -4008,7 +3943,6 @@ def setup_commands(bot: commands.Bot) -> None:
     async def git_pr_command(
         interaction: discord.Interaction,
         title: str,
-        repo_id: str | None = None,
         body: str = "",
         branch: str | None = None,
         base: str | None = None,
@@ -4021,8 +3955,6 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {"title": title, "body": body}
         if project_id:
             args["project_id"] = project_id
-        if repo_id:
-            args["repo_id"] = repo_id
         if workspace:
             args["workspace"] = workspace
         if branch:
@@ -4048,13 +3980,11 @@ def setup_commands(bot: commands.Bot) -> None:
         description="List files changed compared to a base branch",
     )
     @app_commands.describe(
-        repo_id="Repository ID (optional — uses first repo if omitted)",
         base_branch="Branch to compare against (defaults to repo default)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_files_command(
         interaction: discord.Interaction,
-        repo_id: str | None = None,
         base_branch: str | None = None,
         workspace: str | None = None,
     ):
@@ -4065,8 +3995,6 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {}
         if project_id:
             args["project_id"] = project_id
-        if repo_id:
-            args["repo_id"] = repo_id
         if base_branch:
             args["base_branch"] = base_branch
         if workspace:
@@ -4075,7 +4003,7 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'], followup=True)
             return
-        label = result.get("repo_id", project_id or "repo")
+        label = project_id or "repo"
         files = result.get("files", [])
         count = result.get("count", 0)
         base = result.get("base_branch", "main")
@@ -4101,13 +4029,11 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         count="Number of commits to show (default 10)",
-        repo_id="Specific repo ID (optional)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_log_command(
         interaction: discord.Interaction,
         count: int = 10,
-        repo_id: str | None = None,
         workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
@@ -4116,8 +4042,6 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         handler.set_active_project(project_id)
         args: dict = {"project_id": project_id, "count": count}
-        if repo_id:
-            args["repo_id"] = repo_id
         if workspace:
             args["workspace"] = workspace
         result = await handler.execute("git_log", args)
@@ -4126,7 +4050,7 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         branch = result.get("branch", "?")
         log = result.get("log", "(no commits)")
-        repo_label = result.get("repo_id", project_id)
+        repo_label = project_id
         msg = f"## Git Log: `{repo_label}` (branch: `{branch}`)\n```\n{log}\n```"
         await _send_long(interaction, msg, followup=False)
 
@@ -4136,13 +4060,11 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         base_branch="Base branch to diff against (optional — shows working tree diff)",
-        repo_id="Specific repo ID (optional)",
         workspace="Workspace ID or name (optional — defaults to first workspace)",
     )
     async def git_diff_command(
         interaction: discord.Interaction,
         base_branch: str | None = None,
-        repo_id: str | None = None,
         workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
@@ -4153,8 +4075,6 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {"project_id": project_id}
         if base_branch:
             args["base_branch"] = base_branch
-        if repo_id:
-            args["repo_id"] = repo_id
         if workspace:
             args["workspace"] = workspace
         result = await handler.execute("git_diff", args)
@@ -4164,7 +4084,7 @@ def setup_commands(bot: commands.Bot) -> None:
 
         diff = result.get("diff", "(no changes)")
         base_label = result.get("base_branch", "working tree")
-        repo_label = result.get("repo_id", project_id)
+        repo_label = project_id
         header = f"**Repo:** `{repo_label}` | **Diff against:** `{base_label}`\n"
 
         if len(diff) > 1800:

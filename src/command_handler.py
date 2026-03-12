@@ -737,7 +737,7 @@ class CommandHandler:
 
         ``_resolve_repo_path`` centralizes the surprisingly tricky logic
         for finding the right git checkout directory given a combination
-        of project_id, repo_id, and the active project fallback.
+        of project_id, workspace, and the active project fallback.
     """
 
     def __init__(self, orchestrator: Orchestrator, config: AppConfig):
@@ -1754,7 +1754,6 @@ class CommandHandler:
         if not project_id:
             return {"error": "project_id is required (no active project set)"}
         task_id = await generate_task_id(self.db)
-        repo_id = args.get("repo_id")
         requires_approval = args.get("requires_approval", False)
         # Resolve optional task_type from string to enum.
         raw_task_type = args.get("task_type")
@@ -1787,7 +1786,6 @@ class CommandHandler:
             description=args.get("description", args["title"]),
             priority=args.get("priority", 100),
             status=TaskStatus.READY,
-            repo_id=repo_id,
             requires_approval=requires_approval,
             task_type=task_type,
             profile_id=profile_id,
@@ -1799,8 +1797,6 @@ class CommandHandler:
             "title": task.title,
             "project_id": task.project_id,
         }
-        if repo_id:
-            result["repo_id"] = repo_id
         if requires_approval:
             result["requires_approval"] = True
         if task_type:
@@ -3338,13 +3334,13 @@ class CommandHandler:
                 ws_path = ws.workspace_path
                 if not os.path.isdir(ws_path):
                     repo_statuses.append({
-                        "repo_id": ws.id,
+                        "workspace_id": ws.id,
                         "error": f"Path not found: {ws_path}",
                     })
                     continue
                 if not git.validate_checkout(ws_path):
                     repo_statuses.append({
-                        "repo_id": ws.id,
+                        "workspace_id": ws.id,
                         "error": f"Not a valid git repository: {ws_path}",
                     })
                     continue
@@ -3363,8 +3359,6 @@ class CommandHandler:
                     "recent_commits": recent_commits,
                     "lock": lock_info,
                 }
-                # Keep legacy key for backward compat
-                ws_info["repo_id"] = ws.id
                 repo_statuses.append(ws_info)
         else:
             # Legacy: check repos table
@@ -3457,19 +3451,14 @@ class CommandHandler:
         When no *project_id* is supplied, falls back to the active project.
         """
         project_id = args.get("project_id")
-        repo_id = args.get("repo_id")
 
         # Fall back to the active project when no identifiers are supplied.
-        if not project_id and not repo_id:
+        if not project_id:
             if self._active_project_id:
                 project_id = self._active_project_id
                 args["project_id"] = project_id
             else:
                 return None, None, {"error": "project_id is required (no active project set)"}
-        elif not project_id and repo_id:
-            if self._active_project_id:
-                project_id = self._active_project_id
-                args["project_id"] = project_id
 
         project = None
         if project_id:
@@ -3496,14 +3485,7 @@ class CommandHandler:
                 checkout_path = workspaces[0].workspace_path
 
         # Legacy fallback: try repos table
-        if not checkout_path and repo_id:
-            repo = await self.db.get_repo(repo_id)
-            if repo:
-                if repo.source_type == RepoSourceType.LINK and repo.source_path:
-                    checkout_path = repo.source_path
-                elif repo.source_type in (RepoSourceType.CLONE, RepoSourceType.INIT) and repo.checkout_base_path:
-                    checkout_path = repo.checkout_base_path
-        elif not checkout_path and project_id:
+        if not checkout_path and project_id:
             repos = await self.db.list_repos(project_id=project_id)
             if repos:
                 repo = repos[0]
@@ -3533,35 +3515,35 @@ class CommandHandler:
         checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
-        repo_id = args.get("repo_id") or (project.id if project else "(workspace)")
+        project_id = args.get("project_id", "")
         try:
             committed = self.orchestrator.git.commit_all(checkout_path, message)
         except GitError as e:
             return {"error": str(e)}
         if not committed:
-            return {"repo_id": repo_id, "committed": False, "message": "Nothing to commit — working tree clean"}
-        return {"repo_id": repo_id, "committed": True, "commit_message": message}
+            return {"project_id": project_id, "committed": False, "message": "Nothing to commit — working tree clean"}
+        return {"project_id": project_id, "committed": True, "commit_message": message}
 
     async def _cmd_git_pull(self, args: dict) -> dict:
         """Pull (fetch + merge) a branch from the remote origin."""
         checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
-        repo_id = args.get("repo_id") or (project.id if project else "(workspace)")
+        project_id = args.get("project_id", "")
         git = self.orchestrator.git
         branch = args.get("branch") or None
         try:
             pulled = git.pull_branch(checkout_path, branch)
         except GitError as e:
             return {"error": str(e)}
-        return {"repo_id": repo_id, "pulled": pulled}
+        return {"project_id": project_id, "pulled": pulled}
 
     async def _cmd_git_push(self, args: dict) -> dict:
         """Push a branch to the remote origin."""
         checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
-        repo_id = args.get("repo_id") or (project.id if project else "(workspace)")
+        project_id = args.get("project_id", "")
         git = self.orchestrator.git
         branch = args.get("branch") or git.get_current_branch(checkout_path)
         if not branch:
@@ -3570,7 +3552,7 @@ class CommandHandler:
             git.push_branch(checkout_path, branch)
         except GitError as e:
             return {"error": str(e)}
-        return {"repo_id": repo_id, "pushed": branch}
+        return {"project_id": project_id, "pushed": branch}
 
     async def _cmd_git_create_branch(self, args: dict) -> dict:
         """Create and switch to a new git branch."""
@@ -3578,12 +3560,12 @@ class CommandHandler:
         checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
-        repo_id = args.get("repo_id") or (project.id if project else "(workspace)")
+        project_id = args.get("project_id", "")
         try:
             self.orchestrator.git.create_branch(checkout_path, branch_name)
         except GitError as e:
             return {"error": str(e)}
-        return {"repo_id": repo_id, "created_branch": branch_name}
+        return {"project_id": project_id, "created_branch": branch_name}
 
     async def _cmd_git_merge(self, args: dict) -> dict:
         """Merge a branch into the default branch."""
@@ -3591,7 +3573,7 @@ class CommandHandler:
         checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
-        repo_id = args.get("repo_id") or (project.id if project else "(workspace)")
+        project_id = args.get("project_id", "")
         default_branch = args.get("default_branch") or (project.repo_default_branch if project else "main") or "main"
         try:
             success = self.orchestrator.git.merge_branch(checkout_path, branch_name, default_branch)
@@ -3599,13 +3581,13 @@ class CommandHandler:
             return {"error": str(e)}
         if not success:
             return {
-                "repo_id": repo_id,
+                "project_id": project_id,
                 "merged": False,
                 "into": default_branch,
                 "message": f"Merge conflict — merge of '{branch_name}' into '{default_branch}' was aborted",
             }
         return {
-            "repo_id": repo_id,
+            "project_id": project_id,
             "merged": True,
             "branch": branch_name,
             "into": default_branch,
@@ -3618,7 +3600,7 @@ class CommandHandler:
         checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
-        repo_id = args.get("repo_id") or (project.id if project else "(workspace)")
+        project_id = args.get("project_id", "")
         git = self.orchestrator.git
         branch = args.get("branch") or git.get_current_branch(checkout_path)
         if not branch:
@@ -3628,7 +3610,7 @@ class CommandHandler:
             pr_url = git.create_pr(checkout_path, branch, title, body, base)
         except GitError as e:
             return {"error": str(e)}
-        return {"repo_id": repo_id, "pr_url": pr_url, "branch": branch, "base": base}
+        return {"project_id": project_id, "pr_url": pr_url, "branch": branch, "base": base}
 
     async def _cmd_create_github_repo(self, args: dict) -> dict:
         """Create a new GitHub repository via the ``gh`` CLI.
@@ -3759,11 +3741,11 @@ class CommandHandler:
         checkout_path, project, err = await self._resolve_repo_path(args)
         if err:
             return err
-        repo_id = args.get("repo_id") or (project.id if project else "(workspace)")
+        project_id = args.get("project_id", "")
         base_branch = args.get("base_branch") or (project.repo_default_branch if project else "main") or "main"
         files = self.orchestrator.git.get_changed_files(checkout_path, base_branch)
         return {
-            "repo_id": repo_id,
+            "project_id": project_id,
             "base_branch": base_branch,
             "files": files,
             "count": len(files),
@@ -3783,7 +3765,6 @@ class CommandHandler:
 
         return {
             "project_id": args["project_id"],
-            "repo_id": project.id if project else "(workspace)",
             "branch": branch,
             "log": log_output or "(no commits)",
         }
@@ -3867,7 +3848,6 @@ class CommandHandler:
 
         return {
             "project_id": args["project_id"],
-            "repo_id": project.id if project else "(workspace)",
             "base_branch": base or "(working tree)",
             "diff": diff or "(no changes)",
         }
@@ -3890,7 +3870,6 @@ class CommandHandler:
 
         return {
             "project_id": args["project_id"],
-            "repo_id": project.id if project else "(workspace)",
             "branch": branch_name,
             "status": "created",
         }
@@ -3925,7 +3904,6 @@ class CommandHandler:
 
         result = {
             "project_id": args["project_id"],
-            "repo_id": project.id if project else "(workspace)",
             "branch": branch_name,
             "status": "checked_out",
         }
@@ -3953,14 +3931,12 @@ class CommandHandler:
         if not committed:
             return {
                 "project_id": args["project_id"],
-                "repo_id": project.id if project else "(workspace)",
                 "status": "nothing_to_commit",
                 "message": "No changes to commit",
             }
 
         result = {
             "project_id": args["project_id"],
-            "repo_id": project.id if project else "(workspace)",
             "commit_message": message,
             "status": "committed",
         }
@@ -3989,7 +3965,6 @@ class CommandHandler:
 
         return {
             "project_id": args["project_id"],
-            "repo_id": project.id if project else "(workspace)",
             "branch": branch_name,
             "status": "pushed",
         }
@@ -4017,7 +3992,6 @@ class CommandHandler:
         if not success:
             result = {
                 "project_id": args["project_id"],
-                "repo_id": project.id if project else "(workspace)",
                 "branch": branch_name,
                 "target": default_branch,
                 "status": "conflict",
@@ -4029,7 +4003,6 @@ class CommandHandler:
 
         result = {
             "project_id": args["project_id"],
-            "repo_id": project.id if project else "(workspace)",
             "branch": branch_name,
             "target": default_branch,
             "status": "merged",

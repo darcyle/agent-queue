@@ -335,10 +335,6 @@ TOOLS = [
                     "description": "Priority (lower = higher priority, default 100)",
                     "default": 100,
                 },
-                "repo_id": {
-                    "type": "string",
-                    "description": "Repository ID to work in (optional — agent gets an isolated checkout/worktree)",
-                },
                 "requires_approval": {
                     "type": "boolean",
                     "description": "If true, agent work creates a PR instead of auto-merging. Human must approve/merge the PR.",

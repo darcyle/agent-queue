@@ -694,13 +694,12 @@ class TestResolveRepoPath:
         assert "error" in result
         assert "project_id" in result["error"].lower() or "required" in result["error"].lower()
 
-    async def test_with_specific_repo_id(self, handler, db, mock_git, project_with_repo, tmp_path):
-        """Commands should work when repo_id is explicitly specified."""
+    async def test_with_workspace_param(self, handler, db, mock_git, project_with_repo, tmp_path):
+        """Commands should work when project_id is explicitly specified."""
         project_id, repo_id, checkout_path = project_with_repo
 
         result = await handler.execute("create_branch", {
             "project_id": project_id,
-            "repo_id": repo_id,
             "branch_name": "feature/via-repo-id",
         })
 
@@ -830,7 +829,7 @@ class TestActiveProjectFallback:
 
         assert "error" not in result
         assert result["committed"] is True
-        assert result["repo_id"] == project_id
+        assert result["project_id"] == project_id
         mock_git.commit_all.assert_called_once_with(
             checkout_path, "feat: inferred commit",
         )
@@ -845,7 +844,7 @@ class TestActiveProjectFallback:
 
         assert "error" not in result
         assert result["pulled"] == "main"
-        assert result["repo_id"] == project_id
+        assert result["project_id"] == project_id
         mock_git.pull_branch.assert_called_once_with(checkout_path, None)
 
     async def test_git_pull_with_branch(self, handler, mock_git, project_with_repo):
@@ -881,7 +880,7 @@ class TestActiveProjectFallback:
 
         assert "error" not in result
         assert result["pushed"] == "feature/auto"
-        assert result["repo_id"] == project_id
+        assert result["project_id"] == project_id
 
     async def test_git_create_branch_infers_active_project(self, handler, mock_git, project_with_repo):
         """git_create_branch (old-style) should work without repo_id when active project is set."""
@@ -894,7 +893,7 @@ class TestActiveProjectFallback:
 
         assert "error" not in result
         assert result["created_branch"] == "feature/auto-branch"
-        assert result["repo_id"] == project_id
+        assert result["project_id"] == project_id
 
     async def test_git_changed_files_infers_active_project(self, handler, mock_git, project_with_repo):
         """git_changed_files (old-style) should work without repo_id when active project is set."""
@@ -905,7 +904,7 @@ class TestActiveProjectFallback:
         result = await handler.execute("git_changed_files", {})
 
         assert "error" not in result
-        assert result["repo_id"] == project_id
+        assert result["project_id"] == project_id
         assert result["count"] == 2
 
     async def test_no_fallback_without_active_project(self, handler):
@@ -954,7 +953,7 @@ class TestActiveProjectFallback:
 
         assert "error" not in result
         assert result["merged"] is True
-        assert result["repo_id"] == project_id
+        assert result["project_id"] == project_id
 
     async def test_git_create_pr_infers_active_project(self, handler, mock_git, project_with_repo):
         """git_create_pr should work without repo_id when active project is set."""
@@ -968,7 +967,7 @@ class TestActiveProjectFallback:
         })
 
         assert "error" not in result
-        assert result["repo_id"] == project_id
+        assert result["project_id"] == project_id
         assert "pr_url" in result
 
     async def test_explicit_project_id_overrides_active(self, handler, db, mock_git, project_with_repo, tmp_path):
