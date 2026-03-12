@@ -2178,6 +2178,40 @@ def setup_commands(bot: commands.Bot) -> None:
             description=desc,
         )
 
+    @bot.tree.command(
+        name="set-default-branch",
+        description="Set the default branch for a project (creates it if needed)",
+    )
+    @app_commands.describe(
+        project_id="Project ID",
+        branch="Branch name to use as default (e.g. dev, main, master)",
+    )
+    async def set_default_branch_command(
+        interaction: discord.Interaction,
+        project_id: str,
+        branch: str,
+    ):
+        await interaction.response.defer()
+        result = await handler.execute(
+            "set_default_branch",
+            {"project_id": project_id, "branch": branch},
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+        desc = (
+            f"Project `{project_id}` default branch set to `{result['default_branch']}`"
+            f"\n(was `{result['previous_branch']}`)"
+        )
+        if result.get("branch_created"):
+            desc += f"\n\n🌿 Branch `{branch}` was created on the remote."
+        await _send_success(
+            interaction,
+            "Default Branch Updated",
+            description=desc,
+            followup=True,
+        )
+
     @bot.tree.command(name="delete-project", description="Delete a project and all its data")
     @app_commands.describe(
         project_id="Project ID to delete",

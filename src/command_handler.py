@@ -960,12 +960,14 @@ class CommandHandler:
                 if not profile:
                     return {"error": f"Profile '{dpid}' not found"}
             updates["default_profile_id"] = dpid  # None clears it
+        if "repo_default_branch" in args:
+            updates["repo_default_branch"] = args["repo_default_branch"]
         if not updates:
             return {
                 "error": (
                     "No fields to update. Provide name, credit_weight, "
                     "max_concurrent_agents, budget_limit, discord_channel_id, "
-                    "or default_profile_id."
+                    "default_profile_id, or repo_default_branch."
                 )
             }
         await self.db.update_project(pid, **updates)
@@ -986,6 +988,72 @@ class CommandHandler:
             "channel_id": channel_id,
             "status": "linked",
         }
+
+    async def _cmd_set_default_branch(self, args: dict) -> dict:
+        """Set (or change) a project's default branch.
+
+        If the branch does not exist on the remote yet, it is created by
+        pushing the current HEAD of the old default branch to the new name.
+        """
+        pid = args["project_id"]
+        project = await self.db.get_project(pid)
+        if not project:
+            return {"error": f"Project '{pid}' not found"}
+
+        branch = args.get("branch", "").strip()
+        if not branch:
+            return {"error": "branch is required"}
+
+        old_branch = project.repo_default_branch or "main"
+
+        # If the project has a workspace, optionally create the branch
+        # on the remote when it doesn't exist yet.
+        ws_path = await self.db.get_project_workspace_path(pid)
+        branch_created = False
+        if ws_path:
+            git = self.orchestrator.git
+            try:
+                # Fetch latest so we know what branches exist on the remote
+                git._run(["fetch", "origin"], cwd=ws_path)
+
+                # Check if the branch exists on the remote
+                try:
+                    git._run(
+                        ["rev-parse", "--verify", f"refs/remotes/origin/{branch}"],
+                        cwd=ws_path,
+                    )
+                except Exception:
+                    # Branch does not exist on the remote — create it from
+                    # the current default branch (or HEAD).
+                    try:
+                        git._run(
+                            ["branch", branch, f"origin/{old_branch}"],
+                            cwd=ws_path,
+                        )
+                    except Exception:
+                        # If old default branch ref doesn't exist, branch from HEAD
+                        git._run(["branch", branch, "HEAD"], cwd=ws_path)
+                    git._run(
+                        ["push", "-u", "origin", branch], cwd=ws_path,
+                    )
+                    branch_created = True
+            except Exception as exc:
+                logger.warning(
+                    "Could not verify/create branch %s for project %s: %s",
+                    branch, pid, exc,
+                )
+
+        await self.db.update_project(pid, repo_default_branch=branch)
+
+        result: dict = {
+            "project_id": pid,
+            "default_branch": branch,
+            "previous_branch": old_branch,
+            "status": "updated",
+        }
+        if branch_created:
+            result["branch_created"] = True
+        return result
 
     async def _cmd_set_control_interface(self, args: dict) -> dict:
         """Set a project's channel by channel *name* (string lookup).

@@ -123,8 +123,9 @@ TOOLS = [
         "name": "edit_project",
         "description": (
             "Edit a project's properties: name, credit_weight, max_concurrent_agents, "
-            "budget_limit, discord_channel_id, or default_profile_id. Use this to rename projects, adjust "
-            "scheduling weight, set token budgets, link Discord channels, or set a default agent profile."
+            "budget_limit, discord_channel_id, default_profile_id, or repo_default_branch. "
+            "Use this to rename projects, adjust scheduling weight, set token budgets, "
+            "link Discord channels, set a default agent profile, or change the default git branch."
         ),
         "input_schema": {
             "type": "object",
@@ -136,8 +137,26 @@ TOOLS = [
                 "budget_limit": {"type": ["integer", "null"], "description": "Token budget limit (optional, null to clear)"},
                 "discord_channel_id": {"type": ["string", "null"], "description": "Discord channel ID to link (optional, null to unlink)"},
                 "default_profile_id": {"type": ["string", "null"], "description": "Default agent profile ID for tasks in this project (optional, null to clear)"},
+                "repo_default_branch": {"type": "string", "description": "Default git branch for the project (e.g. main, dev, master)"},
             },
             "required": ["project_id"],
+        },
+    },
+    {
+        "name": "set_default_branch",
+        "description": (
+            "Set (or change) the default git branch for a project. If the branch "
+            "does not exist on the remote yet, it will be created automatically "
+            "from the current default branch. Use this when a project should branch "
+            "off of and merge into a branch other than 'main' (e.g. 'dev')."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "branch": {"type": "string", "description": "Branch name to use as the new default (e.g. dev, main, master)"},
+            },
+            "required": ["project_id", "branch"],
         },
     },
     # Note: set_project_channel and set_control_interface have been removed.
