@@ -47,6 +47,18 @@ phases are ALWAYS preferred.
 - Don't produce more than {{max_steps}} implementation phases
 - Don't write a design document when asked to implement something
 
+### Plan File Lifecycle
+
+When your task completes, any plan file left in the workspace (`.claude/plan.md`
+or `plan.md`) will be **automatically parsed and converted into follow-up subtasks**.
+
+- **If you only wrote the plan** (did NOT implement it): leave the plan file in place
+  so the system creates subtasks to execute each phase.
+- **If you implemented the plan yourself** (both planned AND executed the work in a
+  single task): **DELETE the plan file** before completing, or add `auto_tasks: false`
+  to the plan's YAML frontmatter. Leaving a completed plan file behind creates
+  duplicate/unnecessary follow-up tasks.
+
 ### Ideal Plan Structure:
 
 ```markdown
