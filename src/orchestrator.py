@@ -188,6 +188,7 @@ class Orchestrator:
         self._notify: NotifyCallback | None = None
         self._create_thread: CreateThreadCallback | None = None
         self._paused: bool = False
+        self._restart_requested: bool = False
         # Throttle: approval polling runs at most once per 60s.
         self._last_approval_check: float = 0.0
         # LLM interaction logger — records all LLM API calls (both direct

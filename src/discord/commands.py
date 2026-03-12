@@ -5239,7 +5239,6 @@ def setup_commands(bot: commands.Bot) -> None:
             desc += "\n" + " · ".join(git_info_parts)
 
         await _send_warning(interaction, "Restarting", description=desc)
-        bot._restart_requested = True
         await handler.execute("restart_daemon", {})
 
     # ===================================================================

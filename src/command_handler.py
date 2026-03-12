@@ -4574,6 +4574,7 @@ class CommandHandler:
             }
 
     async def _cmd_restart_daemon(self, args: dict) -> dict:
+        self.orchestrator._restart_requested = True
         os.kill(os.getpid(), signal.SIGTERM)
         return {"status": "restarting", "message": "Daemon restart initiated"}
 

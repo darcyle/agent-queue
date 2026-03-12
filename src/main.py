@@ -114,7 +114,7 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         await shutdown_event.wait()
     finally:
         # Shut down bot, health server, and orchestrator
-        restart = bot._restart_requested
+        restart = orch._restart_requested
         await health_server.stop()
         await bot.close()
         bot_task.cancel()

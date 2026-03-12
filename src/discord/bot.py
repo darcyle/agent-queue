@@ -86,7 +86,6 @@ class AgentQueueBot(commands.Bot):
         self._channel_buffers: dict[int, collections.deque[CachedMessage]] = {}
         self._buffer_last_access: dict[int, float] = {}  # channel_id -> last access timestamp
         self._summarization_tasks: dict[int, asyncio.Task] = {}  # channel_id -> background task
-        self._restart_requested = False
         self._boot_time: float | None = None
         self._notes_threads: dict[int, str] = {}  # thread_id -> project_id
         self._notes_toc_messages: dict[int, int] = {}  # thread_id -> toc_message_id
