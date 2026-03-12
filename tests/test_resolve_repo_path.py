@@ -148,8 +148,8 @@ class TestLinkedRepo:
         assert project.id == "p-link"
         mock_git.validate_checkout.assert_called_once_with(checkout)
 
-    async def test_resolve_linked_repo_by_repo_id(self, handler, db, tmp_path, mock_git):
-        """repo_id alone (without project_id) should still resolve via legacy fallback."""
+    async def test_resolve_linked_repo_with_active_project(self, handler, db, tmp_path, mock_git):
+        """When no project_id given but active project is set, resolves via active project."""
         checkout = _make_dir(str(tmp_path / "linked-only"))
 
         await db.create_project(Project(id="p-link2", name="Link2"))
@@ -160,33 +160,13 @@ class TestLinkedRepo:
             source_path=checkout,
         ))
 
-        path, project, err = await handler._resolve_repo_path({"repo_id": "r-link2"})
+        handler.set_active_project("p-link2")
+        path, project, err = await handler._resolve_repo_path({})
 
         assert err is None
         assert path == checkout
-        # No project_id given and no active project → project is None
-        assert project is None
-
-    async def test_resolve_linked_repo_with_both_ids(self, handler, db, tmp_path):
-        """When both project_id and repo_id are given, resolution still works."""
-        checkout = _make_dir(str(tmp_path / "linked-both"))
-
-        await db.create_project(Project(id="p-both", name="Both IDs"))
-        await db.create_repo(RepoConfig(
-            id="r-both",
-            project_id="p-both",
-            source_type=RepoSourceType.LINK,
-            source_path=checkout,
-        ))
-
-        path, project, err = await handler._resolve_repo_path({
-            "project_id": "p-both",
-            "repo_id": "r-both",
-        })
-
-        assert err is None
-        assert path == checkout
-        assert project.id == "p-both"
+        assert project is not None
+        assert project.id == "p-link2"
 
 
 class TestClonedRepo:
@@ -212,7 +192,8 @@ class TestClonedRepo:
         assert project.id == "p-clone"
         mock_git.validate_checkout.assert_called_once_with(checkout)
 
-    async def test_resolve_cloned_repo_by_repo_id(self, handler, db, tmp_path):
+    async def test_resolve_cloned_repo_with_active_project(self, handler, db, tmp_path):
+        """When no project_id given but active project is set, resolves cloned repo."""
         checkout = _make_dir(str(tmp_path / "clone-by-id"))
 
         await db.create_project(Project(id="p-clone2", name="Clone2"))
@@ -224,12 +205,13 @@ class TestClonedRepo:
             checkout_base_path=checkout,
         ))
 
-        path, project, err = await handler._resolve_repo_path({"repo_id": "r-clone2"})
+        handler.set_active_project("p-clone2")
+        path, project, err = await handler._resolve_repo_path({})
 
         assert err is None
         assert path == checkout
-        # repo_id-only → project is None
-        assert project is None
+        assert project is not None
+        assert project.id == "p-clone2"
 
 
 class TestInitRepo:
@@ -306,38 +288,8 @@ class TestInvalidProject:
         assert "project_id" in err["error"].lower() or "required" in err["error"].lower()
 
 
-class TestInvalidRepoId:
-    """Invalid / non-existent repo_id → falls through to error."""
-
-    async def test_nonexistent_repo_id(self, handler, db):
-        """repo_id that doesn't exist in DB → falls through to workspace fallback error."""
-        await db.create_project(Project(id="p-exists", name="Exists"))
-
-        path, project, err = await handler._resolve_repo_path({
-            "project_id": "p-exists",
-            "repo_id": "nonexistent-repo",
-        })
-
-        assert path is None
-        assert err is not None
-        # With no workspaces and invalid repo_id, falls through to workspace_path error
-        assert "no workspaces" in err["error"].lower() or "no valid workspace" in err["error"].lower()
-
-    async def test_repo_id_only_nonexistent(self, handler):
-        """repo_id alone and it doesn't exist → error."""
-        path, project, err = await handler._resolve_repo_path({
-            "repo_id": "ghost-repo",
-        })
-
-        assert path is None
-        assert project is None
-        assert err is not None
-        # Without project_id, falls through to "no project context" error
-        assert "no" in err["error"].lower()
-
-
 class TestMissingArgs:
-    """Neither project_id nor repo_id supplied."""
+    """No project_id supplied."""
 
     async def test_no_ids_at_all(self, handler):
         path, project, err = await handler._resolve_repo_path({})
@@ -468,30 +420,3 @@ class TestMultipleRepos:
         # Should have used the first repo returned by list_repos
         assert path in (checkout1, checkout2)
 
-    async def test_explicit_repo_id_overrides_default(self, handler, db, tmp_path, mock_git):
-        """When repo_id is given, that specific repo is used regardless of order."""
-        checkout1 = _make_dir(str(tmp_path / "first"))
-        checkout2 = _make_dir(str(tmp_path / "second"))
-
-        await db.create_project(Project(id="p-pick", name="Pick Repo"))
-        await db.create_repo(RepoConfig(
-            id="r-pick-1",
-            project_id="p-pick",
-            source_type=RepoSourceType.LINK,
-            source_path=checkout1,
-        ))
-        await db.create_repo(RepoConfig(
-            id="r-pick-2",
-            project_id="p-pick",
-            source_type=RepoSourceType.LINK,
-            source_path=checkout2,
-        ))
-
-        path, project, err = await handler._resolve_repo_path({
-            "project_id": "p-pick",
-            "repo_id": "r-pick-2",
-        })
-
-        assert err is None
-        assert path == checkout2
-        assert project.id == "p-pick"
