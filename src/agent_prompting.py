@@ -27,6 +27,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Sequence
 
+from src.prompt_registry import registry
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -54,137 +56,51 @@ class PromptConfig:
 
 
 # ---------------------------------------------------------------------------
-# Prompt templates
+# Prompt templates — loaded from src/prompts/*.md via the prompt registry.
+#
+# The source of truth for each prompt is the corresponding .md file in
+# src/prompts/.  These helper functions render them with the appropriate
+# variables so that callers get a ready-to-use string.
 # ---------------------------------------------------------------------------
 
-# The plan structure guide is included in prompts for tasks that are
-# expected to produce implementation plans. It teaches agents to write
-# plans that the parser can reliably extract actionable steps from.
-PLAN_STRUCTURE_GUIDE = """\
-## Plan Structure Requirements
 
-When producing an implementation plan, follow these formatting rules
-to ensure the plan can be automatically parsed into subtasks.
+def _render_plan_structure_guide(max_steps: int | str) -> str:
+    """Render the plan structure guide with ``max_steps`` filled in."""
+    return registry.render("plan-structure-guide", {"max_steps": str(max_steps)})
 
-IMPORTANT: Each phase becomes a separate subtask executed by an agent.
-Phases should be COARSE — each one should represent a substantial chunk
-of work containing MANY concrete steps. Do NOT create a separate
-phase for every small action (e.g. "create file X", "add import Y").
-Instead, group related work into 2-4 broad phases. Fewer, larger
-phases are ALWAYS preferred.
 
-### DO:
-- Use action-verb headings: "## Implement X", "## Create Y", "## Add Z"
-- Use numbered phases: "## Phase 1: Database Layer and Migrations"
-- Group related work AGGRESSIVELY: a phase like "Build API Endpoints"
-  should include creating routes, adding validation, writing handlers,
-  AND writing tests for those endpoints — all in one phase
-- Include a numbered outline of ALL concrete steps within each phase
-  (so the agent can see the full scope of work at a glance)
-- Include detailed descriptions for each step after the outline
-- Include estimated effort for each phase
-- Put implementation phases under a "## Implementation Plan" container heading
-- Keep the total number of phases between 2 and {max_steps} (aim for 2-4)
-- Each phase should be independently executable and represent several
-  hours of focused work
+def _get_execution_focus() -> str:
+    """Return the execution-focus instructions (no variables)."""
+    return registry.get("execution-focus")
 
-### DON'T:
-- Don't create more than 4 phases unless the work is truly enormous
-- Don't create a separate phase for each individual file change or function
-- Don't include overview/summary sections as separate headings
-- Don't include design discussion, architecture review, or rationale sections
-- Don't include reference material (file change summaries, API specs, examples)
-- Don't include sections labeled "Future Work", "Out of Scope", or "Background"
-- Don't produce more than {max_steps} implementation phases
-- Don't write a design document when asked to implement something
 
-### Ideal Plan Structure:
+def _render_controlled_splitting(current_depth: int | str, max_depth: int | str) -> str:
+    """Render the controlled-splitting instructions with depth info."""
+    return registry.render("controlled-splitting", {
+        "current_depth": str(current_depth),
+        "max_depth": str(max_depth),
+    })
 
-```markdown
-# Implementation Plan: [Feature Name]
 
-## Implementation Plan
+# Backward-compatible module-level constants.  These load the template
+# body from the registry (with ``{{var}}`` Mustache placeholders converted
+# to ``{var}`` Python-format placeholders) so that existing code using
+# ``PLAN_STRUCTURE_GUIDE.replace("{max_steps}", ...)`` keeps working.
+def _compat_plan_structure_guide() -> str:
+    body = registry.get("plan-structure-guide")
+    return body.replace("{{max_steps}}", "{max_steps}")
 
-### Phase 1: [Action Verb] [Broad Area of Work]
 
-[High-level description of this phase]
+def _compat_controlled_splitting() -> str:
+    body = registry.get("controlled-splitting")
+    return body.replace("{{current_depth}}", "{current_depth}").replace("{{max_depth}}", "{max_depth}")
 
-Steps in this phase:
-1. [Step within this phase]
-2. [Another step within this phase]
-3. [Yet another step]
-4. [More steps as needed]
 
-[Detailed description for step 1]
-
-[Detailed description for step 2]
-
-...
-
-Files to modify/create:
-- `path/to/file1.py`
-- `path/to/file2.py`
-
-**Estimated effort:** ~N hours
-
-### Phase 2: [Action Verb] [Broad Area of Work]
-
-[Description covering multiple related changes]
-
-Steps in this phase:
-1. [Step]
-2. [Step]
-3. [Step]
-4. [Step]
-
-[Detailed descriptions for each step]
-
-**Estimated effort:** ~N hours
-```
-"""
-
-# Execution focus instructions for subtasks that should execute,
-# not generate more plans.
-EXECUTION_FOCUS_INSTRUCTIONS = """\
-## Execution Focus
-
-This task is a subtask generated from a parent plan. Your job is to
-**execute** the implementation described below, not to create another plan.
-
-Guidelines:
-- Implement the code changes directly
-- Write tests for your changes
-- Do not produce a new implementation plan document
-- Do not create additional plan files
-- Focus on completing this specific task fully
-- If the task scope is too large, implement the most critical parts
-  and note what remains in code comments
-"""
-
-# Depth-aware instructions for subtasks that CAN generate sub-plans
-# but should do so judiciously.
-CONTROLLED_SPLITTING_INSTRUCTIONS = """\
-## Task Execution with Optional Sub-Planning
-
-This task was generated from a parent plan (depth {current_depth}/{max_depth}).
-You may either:
-
-1. **Execute directly** — Implement the changes described below.
-   This is strongly preferred for well-scoped tasks.
-
-2. **Create a focused sub-plan** — Only if the task is genuinely too
-   large for a single agent session. If you do, follow the plan
-   structure requirements carefully.
-
-Guidelines:
-- Strongly prefer direct execution over sub-planning
-- If sub-planning, limit to 2-3 coarse phases that each group many
-  related steps together
-- Do NOT create fine-grained phases for individual changes
-- Do NOT produce design documents or architecture reviews
-- Do NOT include background, overview, or rationale sections
-- Every heading in your plan must start with an action verb
-"""
+# These are evaluated at first import.  For hot-reload, call
+# ``registry.reload()`` and then re-import.
+PLAN_STRUCTURE_GUIDE: str = _compat_plan_structure_guide()
+EXECUTION_FOCUS_INSTRUCTIONS: str = _get_execution_focus()
+CONTROLLED_SPLITTING_INSTRUCTIONS: str = _compat_controlled_splitting()
 
 
 # ---------------------------------------------------------------------------
@@ -249,8 +165,7 @@ def build_plan_generation_prompt(
         parts.append(f"## Project Context\n\n{config.project_context}\n")
 
     # Plan structure guide
-    guide = PLAN_STRUCTURE_GUIDE.replace("{max_steps}", str(config.max_steps_per_plan))
-    parts.append(guide)
+    parts.append(_render_plan_structure_guide(config.max_steps_per_plan))
 
     # Dependencies context
     if task.dependency_titles:
@@ -312,7 +227,7 @@ def build_execution_prompt(
     parts.append(f"# Task: {task.title}\n")
 
     # Execution focus
-    parts.append(EXECUTION_FOCUS_INSTRUCTIONS)
+    parts.append(_get_execution_focus())
 
     # Task details
     if task.description:
@@ -387,12 +302,7 @@ def build_subtask_prompt(
     parts.append(f"# Task: {task.title}\n")
 
     # Depth-aware instructions
-    splitting_instructions = CONTROLLED_SPLITTING_INSTRUCTIONS.replace(
-        "{current_depth}", str(task.plan_depth)
-    ).replace(
-        "{max_depth}", str(config.max_plan_depth)
-    )
-    parts.append(splitting_instructions)
+    parts.append(_render_controlled_splitting(task.plan_depth, config.max_plan_depth))
 
     # Task details
     if task.description:
@@ -407,10 +317,7 @@ def build_subtask_prompt(
 
     # If sub-planning is allowed, include the structure guide
     if task.plan_depth < config.max_plan_depth:
-        guide = PLAN_STRUCTURE_GUIDE.replace(
-            "{max_steps}", str(min(5, config.max_steps_per_plan))
-        )
-        parts.append(guide)
+        parts.append(_render_plan_structure_guide(min(5, config.max_steps_per_plan)))
 
     # Dependencies context
     if task.dependency_titles:
@@ -549,28 +456,17 @@ def build_retry_prompt(
 
     parts: list[str] = []
 
-    parts.append(f"# Task: {task.title} (RETRY — Implementation Plan Needed)\n")
-
-    parts.append(
-        "## Important: Previous Output Was a Design Document\n\n"
-        "Your previous response was a design document rather than an "
-        "implementation plan. It contained the following non-actionable "
-        "sections that cannot be converted to tasks:\n"
-    )
-    for signal in design_signals:
-        parts.append(f"- {signal}")
-    parts.append("")
-
-    parts.append(
-        "**Please produce a focused IMPLEMENTATION PLAN instead.**\n\n"
-        "An implementation plan contains ONLY actionable phases that "
-        "describe what code to write, not design discussions or "
-        "architecture reviews.\n"
-    )
+    # Render the retry header from the template
+    signal_list = "\n".join(f"- {s}" for s in design_signals)
+    retry_header = registry.render("retry-design-doc", {
+        "task_title": task.title,
+        "signal_list": signal_list,
+        "max_steps": str(config.max_steps_per_plan),
+    })
+    parts.append(retry_header)
 
     # Include the plan structure guide with emphasis
-    guide = PLAN_STRUCTURE_GUIDE.replace("{max_steps}", str(config.max_steps_per_plan))
-    parts.append(guide)
+    parts.append(_render_plan_structure_guide(config.max_steps_per_plan))
 
     # Original task description
     if task.description:

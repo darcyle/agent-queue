@@ -36,6 +36,7 @@ from src.command_handler import CommandHandler
 from src.config import AppConfig
 from src.llm_logger import LLMLogger
 from src.orchestrator import Orchestrator
+from src.prompt_registry import registry as _prompt_registry
 
 
 # ---------------------------------------------------------------------------
@@ -1746,6 +1747,9 @@ TOOLS = [
 # An ACTIVE PROJECT addendum is appended dynamically when the user is
 # chatting in a project-specific Discord channel.
 # ---------------------------------------------------------------------------
+# The chat agent system prompt now lives in src/prompts/chat_agent_system.md.
+# SYSTEM_PROMPT_TEMPLATE is kept for backward compatibility but _build_system_prompt()
+# uses the registry.
 SYSTEM_PROMPT_TEMPLATE = """\
 You are AgentQueue, a Discord bot that manages an AI agent task queue. You help \
 users manage projects, tasks, and agents through natural conversation.
@@ -2070,7 +2074,10 @@ class ChatAgent:
         return self.initialize()
 
     def _build_system_prompt(self) -> str:
-        prompt = SYSTEM_PROMPT_TEMPLATE.format(workspace_dir=self.config.workspace_dir)
+        prompt = _prompt_registry.render(
+            "chat-agent-system",
+            {"workspace_dir": self.config.workspace_dir},
+        )
         if self._active_project_id:
             prompt += (
                 f"\n\nACTIVE PROJECT: `{self._active_project_id}`. "
