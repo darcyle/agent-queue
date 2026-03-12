@@ -1558,6 +1558,10 @@ class Orchestrator:
                     os.makedirs(os.path.dirname(workspace), exist_ok=True)
                     if repo_url:
                         self.git.create_checkout(repo_url, workspace)
+                    # Re-detect default branch now that the repo is cloned.
+                    # The initial detection (above) may have fallen back to
+                    # "main" because the workspace didn't exist yet.
+                    default_branch = self._get_default_branch(project, workspace)
                 if reuse_branch:
                     self.git.switch_to_branch(
                         workspace, branch_name,
