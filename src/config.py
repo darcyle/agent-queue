@@ -182,6 +182,7 @@ class AutoTaskConfig:
     max_steps_per_plan: int = 5         # Cap phases from a single plan
     use_llm_parser: bool = False        # Use LLM (Claude) for plan parsing
     llm_parser_model: str = ""          # Model override for plan parsing
+    skip_if_implemented: bool = True    # Skip task generation if branch already has substantial code changes
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -976,6 +977,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             max_steps_per_plan=at.get("max_steps_per_plan", 5),
             use_llm_parser=at.get("use_llm_parser", False),
             llm_parser_model=at.get("llm_parser_model", ""),
+            skip_if_implemented=at.get("skip_if_implemented", True),
         )
 
     if "memory" in raw:
