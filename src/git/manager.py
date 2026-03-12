@@ -241,7 +241,19 @@ class GitManager:
             # then create task branch. Hard reset is used instead of pull
             # because pull can fail when local main has diverged (e.g. from
             # un-pushed merge commits left by _merge_and_push).
-            self._run(["checkout", default_branch], cwd=checkout_path)
+            try:
+                self._run(["checkout", default_branch], cwd=checkout_path)
+            except GitError:
+                # The specified default branch doesn't exist locally.
+                # This can happen when the caller passed a stale/wrong
+                # default_branch value (e.g. "main" when the repo uses
+                # "master").  Re-detect and retry once.
+                detected = self.get_default_branch(checkout_path)
+                if detected != default_branch:
+                    default_branch = detected
+                    self._run(["checkout", default_branch], cwd=checkout_path)
+                else:
+                    raise
             self._run(
                 ["reset", "--hard", f"origin/{default_branch}"],
                 cwd=checkout_path,
