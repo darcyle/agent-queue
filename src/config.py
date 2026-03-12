@@ -977,6 +977,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             max_steps_per_plan=at.get("max_steps_per_plan", 5),
             use_llm_parser=at.get("use_llm_parser", False),
             llm_parser_model=at.get("llm_parser_model", ""),
+            skip_if_implemented=at.get("skip_if_implemented", True),
         )
 
     if "memory" in raw:

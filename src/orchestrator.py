@@ -96,7 +96,7 @@ from src.discord.notifications import (
     TaskStartedView, TaskFailedView, TaskApprovalView, TaskBlockedView, AgentQuestionView,
 )
 from src.event_bus import EventBus
-from src.git.manager import GitManager
+from src.git.manager import GitError, GitManager
 from src.models import (
     AgentOutput, AgentProfile, AgentResult, AgentState,
     PhaseResult, PipelineContext, RepoConfig, RepoSourceType,
@@ -1889,6 +1889,85 @@ class Orchestrator:
             )
             return None
 
+    def _task_has_code_changes(
+        self, workspace: str, min_files: int = 3, min_lines: int = 50
+    ) -> bool:
+        """Check if the current branch has substantial non-plan code changes.
+
+        Uses ``git diff --stat`` against the merge-base with the default branch,
+        excluding plan file paths.  Returns True if the diff exceeds the given
+        thresholds (files changed OR lines changed), indicating the plan was
+        likely already implemented during this task.
+
+        Args:
+            workspace: Path to the git checkout.
+            min_files: Minimum number of changed files to consider "substantial".
+            min_lines: Minimum number of lines changed (insertions + deletions).
+
+        Returns:
+            True if the branch has substantial code changes beyond plan files.
+        """
+        try:
+            if not self.git.validate_checkout(workspace):
+                return False
+
+            default_branch = self.git.get_default_branch(workspace)
+
+            # Find the merge-base between HEAD and the default branch
+            try:
+                merge_base = self.git._run(
+                    ["merge-base", f"origin/{default_branch}", "HEAD"],
+                    cwd=workspace,
+                )
+            except GitError:
+                # No remote tracking or no common ancestor — can't compare
+                try:
+                    merge_base = self.git._run(
+                        ["merge-base", default_branch, "HEAD"],
+                        cwd=workspace,
+                    )
+                except GitError:
+                    return False
+
+            # Get diff stat excluding plan files
+            stat_output = self.git._run(
+                [
+                    "diff", "--stat", f"{merge_base}..HEAD",
+                    "--", ".",
+                    ":!.claude/plan.md",
+                    ":!plan.md",
+                    ":!.claude/plans/",
+                    ":!docs/plans/",
+                    ":!docs/plan.md",
+                    ":!plans/",
+                ],
+                cwd=workspace,
+            )
+
+            if not stat_output:
+                return False
+
+            # Parse the summary line, e.g.:
+            #  "10 files changed, 200 insertions(+), 50 deletions(-)"
+            lines = stat_output.strip().splitlines()
+            summary = lines[-1] if lines else ""
+
+            import re
+            files_match = re.search(r"(\d+)\s+files?\s+changed", summary)
+            insertions_match = re.search(r"(\d+)\s+insertions?", summary)
+            deletions_match = re.search(r"(\d+)\s+deletions?", summary)
+
+            files_changed = int(files_match.group(1)) if files_match else 0
+            insertions = int(insertions_match.group(1)) if insertions_match else 0
+            deletions = int(deletions_match.group(1)) if deletions_match else 0
+            total_lines = insertions + deletions
+
+            return files_changed >= min_files or total_lines >= min_lines
+
+        except Exception as e:
+            logger.debug("_task_has_code_changes failed (will proceed normally): %s", e)
+            return False
+
     async def _generate_tasks_from_plan(
         self, task: Task, workspace: str
     ) -> list[Task]:
@@ -2793,16 +2872,14 @@ class Orchestrator:
                 "4. Put ALL background/reference material (design specs, constraints,\n"
                 "   architecture notes) BEFORE the phase headings, NOT as separate phases\n"
                 "5. Keep each phase focused on a single actionable implementation step\n"
-                "6. If you implement the plan yourself (i.e., you both plan AND execute\n"
-                "   the work in a single task), DELETE the plan file before completing.\n"
-                "   Only leave a plan file in the workspace if you want the system to\n"
-                "   create follow-up tasks from it. Alternatively, add `auto_tasks: false`\n"
-                "   to the plan's YAML frontmatter.\n"
+                "6. If you implement the plan yourself (i.e., you both plan AND execute the work\n"
+                "   in a single task), DELETE the plan file before completing. Only leave a plan\n"
+                "   file in the workspace if you want the system to create follow-up tasks from it.\n"
+                "   Alternatively, add `auto_tasks: false` to the plan's YAML frontmatter.\n"
                 "\n"
-                "NOTE: Any plan file left in the workspace when your task completes will\n"
-                "be automatically parsed and converted into follow-up subtasks. If you\n"
-                "already did the work described in the plan, this creates duplicate/\n"
-                "unnecessary tasks.\n"
+                "NOTE: Any plan file left in the workspace when your task completes will be\n"
+                "automatically parsed and converted into follow-up subtasks. If you already\n"
+                "did the work described in the plan, this creates duplicate/unnecessary tasks.\n"
                 "\n"
                 "This is required for the system to automatically split your plan into\n"
                 "follow-up tasks. Plans that mix reference sections with implementation\n"
