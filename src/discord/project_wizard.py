@@ -11,12 +11,15 @@ Flow:
      -> RepoChoiceView (Create GitHub Repo | Use Existing | Skip)
      -> GitHubRepoModal / ExistingRepoModal (optional)
      -> WorkspaceCountView (2/3/4/5)
+     -> WorkspaceLocationView (Default Location | Custom Location)
+     -> WorkspaceLocationModal (optional, custom path)
      -> WizardExecutor (creates project, clones workspaces, channel, README)
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -56,6 +59,7 @@ class ProjectWizardState:
     repo_org: str = ""
     # Workspace
     workspace_count: int = 3
+    workspace_root: str = ""  # Custom workspace root; empty = use default
     # Timestamp for timeout tracking
     started_at: float = field(default_factory=time.time)
 
@@ -97,6 +101,12 @@ def _state_summary_embed(state: ProjectWizardState) -> discord.Embed:
         embed.add_field(name="Tech Stack", value=state.tech_stack, inline=True)
     if state.default_branch != "main":
         embed.add_field(name="Branch", value=state.default_branch, inline=True)
+    if state.workspace_root:
+        embed.add_field(
+            name="Workspace Location",
+            value=state.workspace_root,
+            inline=False,
+        )
     if state.repo_url:
         embed.add_field(name="Repository", value=state.repo_url, inline=False)
     elif state.create_repo:
@@ -376,7 +386,18 @@ class WorkspaceCountView(discord.ui.View):
         async def callback(interaction: discord.Interaction) -> None:
             state = _get_or_create_state(interaction.user.id)
             state.workspace_count = count
-            await _execute_wizard(interaction, state, self._handler, self._bot)
+
+            embed = _state_summary_embed(state)
+            embed.add_field(
+                name="Workspace Location",
+                value=(
+                    "Where should workspaces be cloned?\n"
+                    "Use the default location or specify a custom path."
+                ),
+                inline=False,
+            )
+            view = WorkspaceLocationView(self._handler, self._bot)
+            await interaction.response.edit_message(embed=embed, view=view)
 
         return callback
 
@@ -392,6 +413,93 @@ class WorkspaceCountView(discord.ui.View):
         await interaction.response.edit_message(
             content="Project wizard cancelled.", embed=None, view=None,
         )
+
+
+# ---------------------------------------------------------------------------
+# View: Workspace location (Default / Custom)
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceLocationView(discord.ui.View):
+    """Buttons to choose default or custom workspace clone location."""
+
+    def __init__(self, handler, bot) -> None:
+        super().__init__(timeout=_WIZARD_TIMEOUT_SECONDS)
+        self._handler = handler
+        self._bot = bot
+
+    @discord.ui.button(
+        label="Use Default Location",
+        style=discord.ButtonStyle.primary,
+        emoji="\U0001F4C1",
+        row=0,
+    )
+    async def default_location_btn(
+        self, interaction: discord.Interaction, button: discord.ui.Button,
+    ) -> None:
+        state = _get_or_create_state(interaction.user.id)
+        state.workspace_root = ""  # Empty = use default
+        await _execute_wizard(interaction, state, self._handler, self._bot)
+
+    @discord.ui.button(
+        label="Custom Location",
+        style=discord.ButtonStyle.secondary,
+        emoji="\U0001F4DD",
+        row=0,
+    )
+    async def custom_location_btn(
+        self, interaction: discord.Interaction, button: discord.ui.Button,
+    ) -> None:
+        modal = WorkspaceLocationModal(self._handler, self._bot)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(
+        label="Cancel",
+        style=discord.ButtonStyle.danger,
+        row=1,
+    )
+    async def cancel_btn(
+        self, interaction: discord.Interaction, button: discord.ui.Button,
+    ) -> None:
+        _cleanup_state(interaction.user.id)
+        await interaction.response.edit_message(
+            content="Project wizard cancelled.", embed=None, view=None,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Modal: Custom workspace location
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceLocationModal(discord.ui.Modal, title="Workspace Location"):
+    """Collect a custom path for workspace cloning."""
+
+    location_input = discord.ui.TextInput(
+        label="Workspace Root Directory",
+        placeholder="/home/user/projects/my-app-workspaces",
+        style=discord.TextStyle.short,
+        required=True,
+        max_length=500,
+    )
+
+    def __init__(self, handler, bot) -> None:
+        super().__init__()
+        self._handler = handler
+        self._bot = bot
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        state = _get_or_create_state(interaction.user.id)
+        state.workspace_root = self.location_input.value.strip()
+
+        if not state.workspace_root:
+            await interaction.response.send_message(
+                "Workspace location is required when using a custom path.",
+                ephemeral=True,
+            )
+            return
+
+        await _execute_wizard(interaction, state, self._handler, self._bot)
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +594,13 @@ async def _execute_wizard(
                 "project_id": project_id,
                 "source": "clone" if state.repo_url else "init",
             }
+            # If a custom workspace root was specified, build the path
+            if state.workspace_root:
+                import uuid as _uuid
+                ws_name = f"checkout-{_uuid.uuid4().hex[:6]}"
+                ws_args["path"] = os.path.join(
+                    state.workspace_root, project_id, ws_name,
+                )
             result = await handler.execute("add_workspace", ws_args)
             if "error" in result:
                 raise WizardError(
@@ -541,9 +656,12 @@ async def _execute_wizard(
         embed.add_field(name="Project ID", value=f"`{project_id}`", inline=True)
         if state.repo_url:
             embed.add_field(name="Repository", value=state.repo_url, inline=False)
+        ws_info = f"{len(created_workspaces)} workspace(s) created"
+        if state.workspace_root:
+            ws_info += f"\nLocation: `{state.workspace_root}`"
         embed.add_field(
             name="Workspaces",
-            value=f"{len(created_workspaces)} workspace(s) created",
+            value=ws_info,
             inline=True,
         )
         if channel_info:
