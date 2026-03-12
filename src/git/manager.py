@@ -764,7 +764,7 @@ class GitManager:
         cmd.append("--private" if private else "--public")
         if description:
             cmd.extend(["--description", description])
-        cmd.append("--confirm")
+        cmd.append("--yes")
         try:
             result = subprocess.run(
                 cmd,
@@ -779,11 +779,26 @@ class GitManager:
             )
         if result.returncode != 0:
             raise GitError(f"gh repo create failed: {result.stderr.strip()}")
-        # gh repo create prints the repo URL to stdout
-        url = result.stdout.strip()
+        # gh repo create prints the repo URL to stdout, but may also include
+        # deprecation warnings or other messages.  Extract the URL robustly.
+        url = ""
+        for line in result.stdout.strip().splitlines():
+            line = line.strip()
+            if line.startswith("https://") or line.startswith("http://"):
+                url = line
+                break
         if not url:
             # Some gh versions print URL to stderr instead
-            url = result.stderr.strip().split("\n")[-1]
+            for line in reversed(result.stderr.strip().splitlines()):
+                line = line.strip()
+                if line.startswith("https://") or line.startswith("http://"):
+                    url = line
+                    break
+        if not url:
+            raise GitError(
+                "gh repo create succeeded but no repository URL was found "
+                f"in output: {result.stdout.strip()}"
+            )
         return url
 
     @staticmethod

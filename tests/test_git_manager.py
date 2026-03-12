@@ -2701,3 +2701,56 @@ class TestCreateGithubRepo:
 
         url = mgr.create_github_repo("my-app")
         assert url == "https://github.com/user/my-app"
+
+    def test_extracts_url_from_noisy_stdout(self, monkeypatch):
+        """URL is extracted even when stdout contains extra output like deprecation warnings."""
+        mgr = GitManager()
+
+        def mock_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0,
+                stdout=(
+                    "Flag --confirm has been deprecated, "
+                    "Pass any argument to skip confirmation prompt\n"
+                    "https://github.com/user/my-app\n"
+                ),
+                stderr="",
+            )
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        url = mgr.create_github_repo("my-app")
+        assert url == "https://github.com/user/my-app"
+
+    def test_no_url_in_output_raises_git_error(self, monkeypatch):
+        """Raises GitError when no URL is found in stdout or stderr."""
+        mgr = GitManager()
+
+        def mock_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0,
+                stdout="some random output\n", stderr="",
+            )
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        with pytest.raises(GitError, match="no repository URL was found"):
+            mgr.create_github_repo("my-app")
+
+    def test_uses_yes_flag(self, monkeypatch):
+        """Uses --yes instead of deprecated --confirm flag."""
+        mgr = GitManager()
+        captured_args = {}
+
+        def mock_run(cmd, **kwargs):
+            captured_args["cmd"] = cmd
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0,
+                stdout="https://github.com/user/my-app\n", stderr="",
+            )
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        mgr.create_github_repo("my-app")
+        assert "--yes" in captured_args["cmd"]
+        assert "--confirm" not in captured_args["cmd"]
