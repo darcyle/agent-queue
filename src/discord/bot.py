@@ -35,6 +35,7 @@ from discord.ext import commands
 
 from src.chat_agent import ChatAgent
 from src.config import AppConfig
+from src.discord.notifications import format_server_started, format_server_started_embed
 from src.orchestrator import Orchestrator
 
 
@@ -425,6 +426,12 @@ class AgentQueueBot(commands.Bot):
 
         # Start periodic buffer cleanup (evicts idle channel buffers)
         asyncio.create_task(self._periodic_buffer_cleanup())
+
+        # Notify Discord that the server is back online
+        await self._send_message(
+            format_server_started(),
+            embed=format_server_started_embed(),
+        )
 
     @staticmethod
     async def _delete_thinking_msg(msg: discord.Message | None) -> None:
