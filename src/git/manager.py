@@ -713,6 +713,68 @@ class GitManager:
         except GitError:
             return ""
 
+    def has_non_plan_changes(
+        self,
+        checkout_path: str,
+        default_branch: str = "main",
+        min_files: int = 3,
+        min_lines: int = 50,
+    ) -> bool:
+        """Check if the branch has substantial code changes beyond plan files.
+
+        Compares the current HEAD against the merge-base with the default
+        branch, excluding plan file paths from the diff.  Returns True if
+        the diff exceeds the given thresholds (files changed or lines
+        changed), indicating the plan was likely already implemented.
+
+        Returns False (conservative) on any git error so callers fall
+        through to normal task-generation behaviour.
+        """
+        try:
+            # Find merge-base between current HEAD and default branch
+            merge_base = self._run(
+                ["merge-base", f"origin/{default_branch}", "HEAD"],
+                cwd=checkout_path,
+            )
+        except GitError:
+            # No merge-base available (e.g. shallow clone, no remote) — be
+            # conservative and allow task generation.
+            return False
+
+        try:
+            # Get diff stat excluding plan files
+            stat_output = self._run(
+                [
+                    "diff", "--stat", f"{merge_base}..HEAD",
+                    "--", ".",
+                    ":!.claude/plan.md",
+                    ":!plan.md",
+                    ":!.claude/plans/",
+                ],
+                cwd=checkout_path,
+            )
+        except GitError:
+            return False
+
+        if not stat_output:
+            return False
+
+        # Parse the summary line, e.g. "5 files changed, 120 insertions(+), 30 deletions(-)"
+        # It's always the last line of git diff --stat output.
+        lines = stat_output.strip().split("\n")
+        summary = lines[-1] if lines else ""
+
+        files_match = re.search(r"(\d+)\s+files?\s+changed", summary)
+        insertions_match = re.search(r"(\d+)\s+insertions?", summary)
+        deletions_match = re.search(r"(\d+)\s+deletions?", summary)
+
+        files_changed = int(files_match.group(1)) if files_match else 0
+        insertions = int(insertions_match.group(1)) if insertions_match else 0
+        deletions = int(deletions_match.group(1)) if deletions_match else 0
+        total_lines = insertions + deletions
+
+        return files_changed >= min_files or total_lines >= min_lines
+
     def get_default_branch(self, checkout_path: str) -> str:
         """Detect the default branch for the repository.
 

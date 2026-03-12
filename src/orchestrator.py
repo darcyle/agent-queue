@@ -1924,6 +1924,28 @@ class Orchestrator:
         if task.is_plan_subtask:
             return []
 
+        # Git-diff heuristic: if the task already made substantial code
+        # changes (beyond the plan file itself), the plan was likely
+        # already executed during this task — skip generating subtasks.
+        if config.skip_if_implemented:
+            try:
+                project = await self.db.get_project(task.project_id) if task.project_id else None
+                default_branch = self._get_default_branch(project, workspace)
+                if self.git.has_non_plan_changes(workspace, default_branch):
+                    logger.info(
+                        "Auto-task: skipping task generation for task %s — "
+                        "branch has substantial code changes beyond the plan file, "
+                        "indicating the plan was already implemented",
+                        task.id,
+                    )
+                    return []
+            except Exception as e:
+                # On any error, fall through to normal behaviour
+                logger.debug(
+                    "Auto-task: skip_if_implemented check failed for task %s: %s",
+                    task.id, e,
+                )
+
         plan_path = find_plan_file(workspace, config.plan_file_patterns)
         if not plan_path:
             logger.debug("Auto-task: no plan file found for task %s in workspace %s (searched patterns: %s)", task.id, workspace, config.plan_file_patterns)

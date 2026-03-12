@@ -182,6 +182,7 @@ class AutoTaskConfig:
     max_steps_per_plan: int = 5         # Cap phases from a single plan
     use_llm_parser: bool = False        # Use LLM (Claude) for plan parsing
     llm_parser_model: str = ""          # Model override for plan parsing
+    skip_if_implemented: bool = True    # Skip task generation if branch has substantial code changes
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []

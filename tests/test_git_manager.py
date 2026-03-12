@@ -2839,3 +2839,92 @@ class TestGetDefaultBranch:
         # Should fall back to "main"
         default_branch = mgr.get_default_branch(empty_repo)
         assert default_branch == "main"
+
+
+class TestHasNonPlanChanges:
+    """Tests for GitManager.has_non_plan_changes()."""
+
+    def test_plan_only_changes_returns_false(self, git_repo):
+        """A branch with only plan file changes should return False."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        # Create a feature branch
+        _git(["checkout", "-b", "feature/plan-only"], cwd=clone)
+        # Add only a plan file
+        pathlib.Path(clone, ".claude").mkdir(exist_ok=True)
+        _commit_file(clone, ".claude/plan.md", "# Plan\n## Phase 1\nDo stuff", "add plan")
+
+        assert mgr.has_non_plan_changes(clone, "main") is False
+
+    def test_substantial_code_changes_returns_true(self, git_repo):
+        """A branch with many code changes beyond the plan should return True."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        _git(["checkout", "-b", "feature/implemented"], cwd=clone)
+        # Add a plan file
+        pathlib.Path(clone, ".claude").mkdir(exist_ok=True)
+        _commit_file(clone, ".claude/plan.md", "# Plan\n## Phase 1\nDo stuff", "add plan")
+        # Add substantial code changes (3+ files)
+        pathlib.Path(clone, "src").mkdir(exist_ok=True)
+        _commit_file(clone, "src/foo.py", "print('hello')\n" * 20, "add foo")
+        _commit_file(clone, "src/bar.py", "print('world')\n" * 20, "add bar")
+        _commit_file(clone, "src/baz.py", "print('test')\n" * 20, "add baz")
+
+        assert mgr.has_non_plan_changes(clone, "main") is True
+
+    def test_minor_changes_below_threshold_returns_false(self, git_repo):
+        """A branch with only 1-2 small file changes should return False (below threshold)."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        _git(["checkout", "-b", "feature/minor"], cwd=clone)
+        pathlib.Path(clone, ".claude").mkdir(exist_ok=True)
+        _commit_file(clone, ".claude/plan.md", "# Plan\n## Phase 1", "add plan")
+        # One small file change — below the default 3-file / 50-line threshold
+        _commit_file(clone, "config.txt", "key=value", "tweak config")
+
+        assert mgr.has_non_plan_changes(clone, "main") is False
+
+    def test_custom_thresholds(self, git_repo):
+        """Custom thresholds should be respected."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        _git(["checkout", "-b", "feature/custom-thresh"], cwd=clone)
+        _commit_file(clone, "one_file.py", "x = 1\n", "add one file")
+
+        # With min_files=1, even one file should be detected
+        assert mgr.has_non_plan_changes(clone, "main", min_files=1) is True
+        # With high threshold, should not be detected
+        assert mgr.has_non_plan_changes(clone, "main", min_files=10, min_lines=1000) is False
+
+    def test_lines_threshold(self, git_repo):
+        """Should trigger on line count even if file count is below threshold."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        _git(["checkout", "-b", "feature/many-lines"], cwd=clone)
+        # One file but lots of lines
+        _commit_file(clone, "big_file.py", "line\n" * 60, "add big file")
+
+        # 1 file < 3 (min_files), but 60 lines >= 50 (min_lines)
+        assert mgr.has_non_plan_changes(clone, "main") is True
+
+    def test_no_git_repo_returns_false(self, tmp_path):
+        """Non-git directory should return False (conservative fallback)."""
+        mgr = GitManager()
+        non_git = str(tmp_path / "not-a-repo")
+        pathlib.Path(non_git).mkdir()
+
+        assert mgr.has_non_plan_changes(non_git, "main") is False
+
+    def test_no_changes_returns_false(self, git_repo):
+        """A branch with no changes at all should return False."""
+        mgr = GitManager()
+        clone = git_repo["clone"]
+
+        _git(["checkout", "-b", "feature/empty"], cwd=clone)
+
+        assert mgr.has_non_plan_changes(clone, "main") is False
