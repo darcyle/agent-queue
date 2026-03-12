@@ -369,6 +369,21 @@ class GitManager:
 
         return True
 
+    def pull_branch(
+        self, checkout_path: str, branch_name: str | None = None,
+    ) -> str:
+        """Pull (fetch + merge) a branch from the ``origin`` remote.
+
+        If *branch_name* is ``None``, the current branch is used.  Returns the
+        name of the branch that was pulled.
+        """
+        if not branch_name:
+            branch_name = self.get_current_branch(checkout_path)
+            if not branch_name:
+                raise GitError("Could not determine current branch")
+        self._run(["pull", "origin", branch_name], cwd=checkout_path)
+        return branch_name
+
     def push_branch(
         self, checkout_path: str, branch_name: str, *,
         force_with_lease: bool = False,

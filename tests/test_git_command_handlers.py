@@ -835,6 +835,42 @@ class TestActiveProjectFallback:
             checkout_path, "feat: inferred commit",
         )
 
+    async def test_git_pull_infers_active_project(self, handler, mock_git, project_with_repo):
+        """git_pull should work without repo_id when active project is set."""
+        project_id, repo_id, checkout_path = project_with_repo
+        mock_git.pull_branch.return_value = "main"
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("git_pull", {})
+
+        assert "error" not in result
+        assert result["pulled"] == "main"
+        assert result["repo_id"] == project_id
+        mock_git.pull_branch.assert_called_once_with(checkout_path, None)
+
+    async def test_git_pull_with_branch(self, handler, mock_git, project_with_repo):
+        """git_pull with explicit branch should pass it through."""
+        project_id, repo_id, checkout_path = project_with_repo
+        mock_git.pull_branch.return_value = "feature/xyz"
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("git_pull", {"branch": "feature/xyz"})
+
+        assert "error" not in result
+        assert result["pulled"] == "feature/xyz"
+        mock_git.pull_branch.assert_called_once_with(checkout_path, "feature/xyz")
+
+    async def test_git_pull_error(self, handler, mock_git, project_with_repo):
+        """git_pull should return error when pull fails."""
+        project_id, repo_id, checkout_path = project_with_repo
+        mock_git.pull_branch.side_effect = GitError("merge conflict")
+        handler.set_active_project(project_id)
+
+        result = await handler.execute("git_pull", {})
+
+        assert "error" in result
+        assert "merge conflict" in result["error"]
+
     async def test_git_push_infers_active_project(self, handler, mock_git, project_with_repo):
         """git_push (old-style) should work without repo_id when active project is set."""
         project_id, repo_id, checkout_path = project_with_repo

@@ -3542,6 +3542,20 @@ class CommandHandler:
             return {"repo_id": repo_id, "committed": False, "message": "Nothing to commit — working tree clean"}
         return {"repo_id": repo_id, "committed": True, "commit_message": message}
 
+    async def _cmd_git_pull(self, args: dict) -> dict:
+        """Pull (fetch + merge) a branch from the remote origin."""
+        checkout_path, project, err = await self._resolve_repo_path(args)
+        if err:
+            return err
+        repo_id = args.get("repo_id") or (project.id if project else "(workspace)")
+        git = self.orchestrator.git
+        branch = args.get("branch") or None
+        try:
+            pulled = git.pull_branch(checkout_path, branch)
+        except GitError as e:
+            return {"error": str(e)}
+        return {"repo_id": repo_id, "pulled": pulled}
+
     async def _cmd_git_push(self, args: dict) -> dict:
         """Push a branch to the remote origin."""
         checkout_path, project, err = await self._resolve_repo_path(args)

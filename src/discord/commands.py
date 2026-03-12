@@ -4007,6 +4007,45 @@ def setup_commands(bot: commands.Bot) -> None:
             )
 
     @bot.tree.command(
+        name="git-pull",
+        description="Pull (fetch + merge) a branch from remote origin",
+    )
+    @app_commands.describe(
+        repo_id="Repository ID (optional — uses first repo if omitted)",
+        branch="Branch name to pull (defaults to current branch)",
+        workspace="Workspace ID or name (optional — defaults to first workspace)",
+    )
+    async def git_pull_command(
+        interaction: discord.Interaction,
+        repo_id: str | None = None,
+        branch: str | None = None,
+        workspace: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, None)
+        if project_id:
+            handler.set_active_project(project_id)
+        await interaction.response.defer()
+        args: dict = {}
+        if project_id:
+            args["project_id"] = project_id
+        if repo_id:
+            args["repo_id"] = repo_id
+        if branch:
+            args["branch"] = branch
+        if workspace:
+            args["workspace"] = workspace
+        result = await handler.execute("git_pull", args)
+        if "error" in result:
+            await _send_error(interaction, result['error'], followup=True)
+            return
+        label = result.get("repo_id", project_id or "repo")
+        await _send_success(
+            interaction, "Branch Pulled",
+            description=f"Pulled `{result['pulled']}` in `{label}`",
+            followup=True,
+        )
+
+    @bot.tree.command(
         name="git-push",
         description="Push a branch to remote origin",
     )

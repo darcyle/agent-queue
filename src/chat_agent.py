@@ -1293,6 +1293,22 @@ TOOLS = [
         },
     },
     {
+        "name": "git_pull",
+        "description": (
+            "Pull (fetch + merge) a branch from the remote origin. Defaults to the current branch if not specified. "
+            "Operates on the active project's repository. "
+            "Use the workspace parameter to target a specific workspace."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID (optional — inferred from active project)"},
+                "branch": {"type": "string", "description": "Branch name to pull (defaults to current branch)"},
+                "workspace": {"type": "string", "description": "Workspace ID or name to operate on (optional — defaults to first workspace)"},
+            },
+        },
+    },
+    {
         "name": "git_push",
         "description": (
             "Push a branch to the remote origin. Defaults to the current branch if not specified. "
