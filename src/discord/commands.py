@@ -5544,6 +5544,68 @@ def setup_commands(bot: commands.Bot) -> None:
         await handler.execute("restart_daemon", {})
 
     # ===================================================================
+    # CHANNEL MANAGEMENT
+    # ===================================================================
+
+    @bot.tree.command(
+        name="clear",
+        description="Clear messages from the current channel",
+    )
+    @app_commands.describe(
+        count="Number of messages to delete (default: all, max: 1000)",
+    )
+    async def clear_command(
+        interaction: discord.Interaction,
+        count: int | None = None,
+    ):
+        channel = interaction.channel
+
+        # Validate the channel supports bulk deletion
+        if not hasattr(channel, "purge"):
+            await _send_error(
+                interaction,
+                "This command can only be used in text channels.",
+            )
+            return
+
+        # Check bot permissions
+        bot_member = interaction.guild.me if interaction.guild else None
+        if bot_member:
+            perms = channel.permissions_for(bot_member)
+            if not perms.manage_messages:
+                await _send_error(
+                    interaction,
+                    "I need the **Manage Messages** permission to clear messages.",
+                )
+                return
+
+        limit = min(count, 1000) if count is not None else 1000
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            deleted = await channel.purge(limit=limit)
+            await _send_success(
+                interaction,
+                "Channel Cleared",
+                description=f"Deleted **{len(deleted)}** message{'s' if len(deleted) != 1 else ''}.",
+                followup=True,
+                ephemeral=True,
+            )
+        except discord.Forbidden:
+            await _send_error(
+                interaction,
+                "Missing permissions to delete messages in this channel.",
+                followup=True,
+            )
+        except discord.HTTPException as exc:
+            await _send_error(
+                interaction,
+                f"Failed to clear messages: {exc}",
+                followup=True,
+            )
+
+    # ===================================================================
     # INTERACTIVE MENU
     # ===================================================================
 
