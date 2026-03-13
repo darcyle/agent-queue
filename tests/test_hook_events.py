@@ -78,6 +78,60 @@ async def _create_hook(db, **overrides) -> Hook:
     return hook
 
 
+# --- Project scoping ---
+
+
+class TestHookProjectScoping:
+    @pytest.mark.asyncio
+    async def test_event_hook_ignores_other_project(self, db, bus, engine):
+        """Hook should NOT fire on events from a different project."""
+        await _create_project(db, "project-a")
+        await _create_project(db, "project-b")
+        hook = await _create_hook(
+            db,
+            id="scoped-hook",
+            project_id="project-a",
+            name="scoped-hook",
+            trigger='{"type": "event", "event_type": "task.completed"}',
+            cooldown_seconds=0,
+            context_steps='[{"type": "shell", "command": "echo done", "skip_llm_if_exit_zero": true}]',
+        )
+
+        # Emit event for project-b — hook belongs to project-a, should NOT fire
+        await bus.emit("task.completed", {
+            "_event_type": "task.completed",
+            "task_id": "t1",
+            "project_id": "project-b",
+        })
+        await asyncio.sleep(0.1)
+
+        assert hook.id not in engine._running
+        assert len(await db.list_hook_runs(hook.id)) == 0
+
+    @pytest.mark.asyncio
+    async def test_event_hook_fires_for_own_project(self, db, bus, engine):
+        """Hook SHOULD fire on events from its own project."""
+        await _create_project(db, "project-a")
+        hook = await _create_hook(
+            db,
+            id="own-proj-hook",
+            project_id="project-a",
+            name="own-proj-hook",
+            trigger='{"type": "event", "event_type": "task.completed"}',
+            cooldown_seconds=0,
+            context_steps='[{"type": "shell", "command": "echo done", "skip_llm_if_exit_zero": true}]',
+        )
+
+        await bus.emit("task.completed", {
+            "_event_type": "task.completed",
+            "task_id": "t2",
+            "project_id": "project-a",
+        })
+        await asyncio.sleep(0.1)
+
+        assert hook.id in engine._running or len(await db.list_hook_runs(hook.id)) > 0
+
+
 # --- Note event hooks ---
 
 

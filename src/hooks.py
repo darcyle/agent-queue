@@ -350,6 +350,11 @@ class HookEngine:
             if trigger.get("event_type") != event_type:
                 continue
 
+            # Hooks are project-scoped — only fire on events from the same project
+            event_project = data.get("project_id", "")
+            if event_project and hook.project_id != event_project:
+                continue
+
             if not self._check_cooldown(hook, now):
                 continue
 
