@@ -3036,6 +3036,8 @@ class CommandHandler:
         if source_type == RepoSourceType.LINK:
             if not path:
                 return {"error": "Link workspaces require a 'path' parameter"}
+            # Always store as absolute path to prevent CWD-relative resolution issues
+            path = os.path.realpath(path)
             if not os.path.isdir(path):
                 return {"error": f"Path '{path}' does not exist or is not a directory"}
         elif source_type == RepoSourceType.CLONE:
@@ -3045,6 +3047,8 @@ class CommandHandler:
                 path = os.path.join(
                     self.config.workspace_dir, project_id, ws_name,
                 )
+            # Always store as absolute path
+            path = os.path.realpath(path)
             if project.repo_url:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 try:

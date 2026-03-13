@@ -1499,10 +1499,23 @@ def setup_commands(bot: commands.Bot) -> None:
         unchanged.  Otherwise the interaction's channel is checked against
         the bot's reverse channel-to-project lookup so that commands run
         inside a project-specific channel automatically inherit that project.
+
+        For threads inside a project channel, the parent channel is also
+        checked so that slash commands invoked from threads still resolve
+        to the correct project.
         """
         if project_id is not None:
             return project_id
-        return bot.get_project_for_channel(interaction.channel_id)
+        # Direct channel lookup
+        result = bot.get_project_for_channel(interaction.channel_id)
+        if result:
+            return result
+        # If the interaction is in a thread, check the parent channel
+        channel = interaction.channel
+        parent_id = getattr(channel, "parent_id", None)
+        if parent_id:
+            return bot.get_project_for_channel(parent_id)
+        return None
 
     _NO_PROJECT_MSG = (
         "Could not determine project — please provide `project_id` "

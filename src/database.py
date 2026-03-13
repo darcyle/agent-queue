@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import uuid
 
@@ -336,6 +337,7 @@ class Database:
         # Migrate repos -> projects and agent_workspaces -> workspaces
         await self._migrate_repos_to_projects()
         await self._migrate_agent_workspaces_to_workspaces()
+        await self._normalize_workspace_paths()
         await self._db.commit()
 
     async def close(self) -> None:
@@ -459,7 +461,8 @@ class Database:
             rows = await cursor.fetchall()
             for row in rows:
                 project_id = row["project_id"]
-                workspace_path = row["workspace_path"]
+                # Normalize to absolute path to prevent CWD-relative issues
+                workspace_path = os.path.realpath(row["workspace_path"])
                 # Determine source_type from repo if available
                 source_type = "clone"
                 if row["repo_id"]:
@@ -485,6 +488,36 @@ class Database:
                 )
         except Exception as e:
             logger.debug("Agent-workspaces-to-workspaces migration (benign): %s", e)
+
+    async def _normalize_workspace_paths(self) -> None:
+        """Normalize any relative workspace_path entries to absolute paths.
+
+        Idempotent: only updates rows whose workspace_path differs after
+        os.path.realpath() resolution.
+        """
+        try:
+            cursor = await self._db.execute(
+                "SELECT id, workspace_path FROM workspaces"
+            )
+            rows = await cursor.fetchall()
+            updated = 0
+            for row in rows:
+                raw = row["workspace_path"]
+                resolved = os.path.realpath(raw)
+                if resolved != raw:
+                    await self._db.execute(
+                        "UPDATE workspaces SET workspace_path = ? WHERE id = ?",
+                        (resolved, row["id"]),
+                    )
+                    logger.info(
+                        "Normalized workspace %s path: %r -> %r",
+                        row["id"], raw, resolved,
+                    )
+                    updated += 1
+            if updated:
+                logger.info("Normalized %d workspace paths to absolute", updated)
+        except Exception as e:
+            logger.debug("Workspace path normalization (benign): %s", e)
 
     # --- Projects ---
     # CRUD for the projects table. Each project has a credit_weight that
