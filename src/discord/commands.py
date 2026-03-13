@@ -9,7 +9,9 @@ logic lives here -- see ``src/command_handler.py`` for that.
 """
 from __future__ import annotations
 
+import asyncio
 import io
+import os
 import re
 import subprocess
 import traceback
@@ -5830,10 +5832,37 @@ def setup_commands(bot: commands.Bot) -> None:
 
         async def _refresh(self, interaction: discord.Interaction):
             await interaction.response.defer()
-            result = await self._handler.execute(
-                "list_directory",
-                {"project_id": self._project_id, "path": self._current_path},
-            )
+
+            # List directory contents directly to avoid handler/DB overhead.
+            def _list_dir_sync():
+                rel_path = self._current_path or ""
+                if rel_path:
+                    full_path = os.path.join(self._workspace_path, rel_path)
+                else:
+                    full_path = self._workspace_path
+                real = os.path.realpath(full_path)
+                if not os.path.isdir(real):
+                    return {"error": f"Directory not found: {rel_path or '/'}"}
+                try:
+                    entries = sorted(os.listdir(real))
+                except PermissionError:
+                    return {"error": f"Permission denied: {rel_path or '/'}"}
+                dirs = []
+                files = []
+                for entry in entries:
+                    entry_path = os.path.join(real, entry)
+                    if os.path.isdir(entry_path):
+                        dirs.append(entry)
+                    else:
+                        try:
+                            size = os.path.getsize(entry_path)
+                        except OSError:
+                            size = 0
+                        files.append({"name": entry, "size": size})
+                return {"directories": dirs, "files": files}
+
+            result = await asyncio.to_thread(_list_dir_sync)
+
             if "error" in result:
                 await interaction.edit_original_response(
                     content=f"❌ {result['error']}", embed=None, view=None,
@@ -5874,9 +5903,29 @@ def setup_commands(bot: commands.Bot) -> None:
 
             await interaction.response.defer(ephemeral=True)
 
-            result = await self._handler.execute(
-                "read_file", {"path": file_full, "max_lines": 100},
-            )
+            # Read the file directly to avoid handler/DB overhead that
+            # caused timeouts on larger files.
+            def _read_file_sync():
+                max_lines = 100
+                real = os.path.realpath(file_full)
+                if not os.path.isfile(real):
+                    return {"error": f"File not found: {file_rel}"}
+                try:
+                    with open(real, "r") as f:
+                        lines = []
+                        for i, line in enumerate(f):
+                            if i >= max_lines:
+                                lines.append(f"\n... truncated at {max_lines} lines")
+                                break
+                            lines.append(line.rstrip("\n"))
+                    return {"content": "\n".join(lines)}
+                except UnicodeDecodeError:
+                    return {"error": "Binary file — cannot display contents"}
+                except OSError as exc:
+                    return {"error": str(exc)}
+
+            result = await asyncio.to_thread(_read_file_sync)
+
             if "error" in result:
                 await interaction.followup.send(
                     embed=error_embed("Error", description=result["error"]),
