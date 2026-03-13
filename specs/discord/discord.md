@@ -844,7 +844,42 @@ Deletes a project note by title.
 
 ---
 
-### 3.10 System / Admin Commands
+### 3.10 File Browsing Commands
+
+#### `/browse`
+Opens an interactive file browser for a project workspace. The initial listing is fetched via `handler.execute("list_directory", ...)`.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `path` | str (optional) | Starting subdirectory path |
+| `workspace` | str (optional, autocomplete) | Workspace name or ID (defaults to first workspace) |
+
+**Behavior:**
+1. Resolves the project from channel context.
+2. Calls `list_directory` to fetch the directory listing, which resolves the workspace path to an absolute path via `os.path.realpath()`.
+3. Creates a `_FileBrowserView` — a persistent interactive view (5-minute timeout) with:
+   - **Parent directory button** (row 0): navigates up one level (hidden at root).
+   - **Directory dropdown** (row 1): select a subdirectory to navigate into, paginated at 20 items per page.
+   - **File dropdown** (row 2): select a file to view its info (size, path) with action buttons, paginated at 20 items per page.
+   - **Pagination buttons** (row 3): "◀ Prev Dirs/Files" and "Next Dirs/Files ▶" when entries exceed one page.
+4. The embed shows:
+   - Title: `📂 <current path>`
+   - Description: project ID and workspace name
+   - Contents field: directory and file counts
+   - Footer: resolved absolute workspace path (for transparency)
+
+**Refresh / Navigation:** All directory navigation (parent, subdirectory selection) goes through `_refresh`, which calls `handler.execute("list_directory", ...)` with the workspace name. This ensures consistent workspace path resolution through the same code path as the initial load, rather than doing inline filesystem listing.
+
+**File view:** Selecting a file shows an ephemeral embed with file path and size, plus action buttons via `_FileInfoView`.
+
+**Workspace autocomplete:** The `workspace` parameter provides autocomplete that lists all workspaces for the resolved project, showing lock status (🔒) for workspaces in use by agents.
+
+#### `/edit-file`
+Opens a text editor modal dialog for editing a file in the project workspace. Not documented in detail here — see the source for the full implementation.
+
+---
+
+### 3.11 System / Admin Commands
 
 #### `/orchestrator`
 Pauses, resumes, or queries the orchestrator's scheduling state.
@@ -888,7 +923,7 @@ Pulls latest source, installs dependencies, and restarts the daemon.
 
 ---
 
-### 3.11 UI Components — `TaskReportView`
+### 3.12 UI Components — `TaskReportView`
 
 `/tasks` renders an interactive `discord.ui.View` with collapsible status sections.
 

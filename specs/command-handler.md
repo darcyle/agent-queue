@@ -1930,6 +1930,39 @@ Searches for patterns in files within a validated directory. Intended for the ch
 
 ---
 
+#### `list_directory`
+
+Lists files and directories at a given path within a project workspace. Used by both the chat agent and the `/browse` Discord command.
+
+**Parameters:**
+- `project_id` (optional if active project is set): Project whose workspace to browse.
+- `workspace` (optional): Workspace name or ID. If omitted, the first workspace for the project is used. Looked up by name first, then by ID.
+- `path` (optional, default `""`): Relative path within the workspace to list. Empty string lists the workspace root.
+
+**Behavior:** Resolves the workspace path to an absolute path via `os.path.realpath()` to prevent CWD-relative resolution issues (e.g., if a workspace path was stored as a relative path, it could otherwise resolve relative to the bot's working directory). Joins the relative `path` with the workspace root, validates it via `_validate_path`, then lists the directory contents. Entries are sorted alphabetically and separated into directories and files (with sizes).
+
+**Returns on success:**
+```python
+{
+    "project_id": <str>,
+    "path": <str: relative path or "/">,
+    "workspace_path": <str: resolved absolute workspace root>,
+    "workspace_name": <str>,
+    "directories": [<str>, ...],
+    "files": [{"name": <str>, "size": <int>}, ...],
+}
+```
+
+**Errors:**
+- `project_id` is required (no active project set).
+- Workspace not found for project.
+- Project has no workspaces.
+- Access denied: path is outside allowed directories.
+- Directory not found.
+- Permission denied.
+
+---
+
 ## 5. Path Validation (`_validate_path`)
 
 ```python
