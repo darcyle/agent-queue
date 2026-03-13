@@ -977,6 +977,7 @@ class GitManager:
         full_name = f"{org}/{name}" if org else name
         cmd = ["gh", "repo", "create", full_name]
         cmd.append("--private" if private else "--public")
+        cmd.append("--yes")
         if description:
             cmd.extend(["--description", description])
         try:
@@ -1523,6 +1524,7 @@ class GitManager:
         full_name = f"{org}/{name}" if org else name
         cmd = ["gh", "repo", "create", full_name]
         cmd.append("--private" if private else "--public")
+        cmd.append("--yes")
         if description:
             cmd.extend(["--description", description])
         try:

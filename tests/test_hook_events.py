@@ -46,6 +46,7 @@ def config():
 async def engine(db, bus, config):
     engine = HookEngine(db, bus, config)
     engine._orchestrator = MagicMock()
+    engine._orchestrator._notify_channel = AsyncMock()
     engine._orchestrator.db = db
     engine._orchestrator.hooks = engine
     await engine.initialize()
