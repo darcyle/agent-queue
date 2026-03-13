@@ -458,6 +458,14 @@ class HookEngine:
         )
         await self.db.create_hook_run(run)
 
+        # Log to the project's chat channel that the hook is running
+        orchestrator = getattr(self, "_orchestrator", None)
+        if orchestrator:
+            await orchestrator._notify_channel(
+                f"🪝 Hook **{hook.name}** is running (trigger: `{trigger_reason}`).",
+                project_id=hook.project_id,
+            )
+
         try:
             # Check if this hook skips LLM entirely (only runs context steps)
             trigger = json.loads(hook.trigger)
