@@ -4880,12 +4880,18 @@ class CommandHandler:
             }
 
     async def _cmd_restart_daemon(self, args: dict) -> dict:
+        reason = args.get("reason", "No reason provided")
+        # Log the restart reason to the notification channel before restarting
+        await self.orchestrator._notify_channel(
+            f"🔄 **Daemon restart initiated** — {reason}"
+        )
         self.orchestrator._restart_requested = True
         os.kill(os.getpid(), signal.SIGTERM)
-        return {"status": "restarting", "message": "Daemon restart initiated"}
+        return {"status": "restarting", "message": "Daemon restart initiated", "reason": reason}
 
     async def _cmd_update_and_restart(self, args: dict) -> dict:
         """Pull the latest source from git and restart the daemon."""
+        reason = args.get("reason", "No reason provided")
         # Determine the repo root (where this source lives)
         repo_dir = str(Path(__file__).resolve().parent.parent)
 
@@ -4911,6 +4917,10 @@ class CommandHandler:
             stderr = pip.stderr.strip() or pip.stdout.strip()
             return {"error": f"pip install failed: {stderr}"}
 
+        # Log the update/restart reason to the notification channel
+        await self.orchestrator._notify_channel(
+            f"🔄 **Daemon update & restart initiated** — {reason}"
+        )
         # Trigger restart
         self.orchestrator._restart_requested = True
         os.kill(os.getpid(), signal.SIGTERM)
@@ -4918,6 +4928,7 @@ class CommandHandler:
             "status": "updating",
             "message": "Update pulled and daemon restart initiated",
             "pull_output": pull_output,
+            "reason": reason,
         }
 
     # -----------------------------------------------------------------------

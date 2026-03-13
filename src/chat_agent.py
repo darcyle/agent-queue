@@ -1473,8 +1473,17 @@ TOOLS = [
     },
     {
         "name": "restart_daemon",
-        "description": "Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect.",
-        "input_schema": {"type": "object", "properties": {}},
+        "description": "Restart the agent-queue daemon process. The bot will disconnect briefly and reconnect. A reason is required.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Why the restart is being requested",
+                },
+            },
+            "required": ["reason"],
+        },
     },
     {
         "name": "orchestrator_control",

@@ -5635,7 +5635,11 @@ def setup_commands(bot: commands.Bot) -> None:
             )
 
     @bot.tree.command(name="restart", description="Restart the agent-queue daemon")
-    async def restart_command(interaction: discord.Interaction):
+    @app_commands.describe(reason="Why are you restarting? (required)")
+    async def restart_command(interaction: discord.Interaction, reason: str):
+        user_name = interaction.user.display_name
+        full_reason = f"User {user_name} requested a restart: {reason}"
+
         # Gather git info for the restart message
         git_info_parts: list[str] = []
         try:
@@ -5661,18 +5665,22 @@ def setup_commands(bot: commands.Bot) -> None:
         except Exception:
             pass
 
-        desc = "Agent-queue daemon is restarting…"
+        desc = f"Agent-queue daemon is restarting…\n**Reason:** {full_reason}"
         if git_info_parts:
             desc += "\n" + " · ".join(git_info_parts)
 
         await _send_warning(interaction, "Restarting", description=desc)
-        await handler.execute("restart_daemon", {})
+        await handler.execute("restart_daemon", {"reason": full_reason})
 
     @bot.tree.command(
         name="update",
         description="Pull latest source, install deps, and restart the daemon",
     )
-    async def update_command(interaction: discord.Interaction):
+    @app_commands.describe(reason="Why are you updating? (optional, auto-filled if omitted)")
+    async def update_command(interaction: discord.Interaction, reason: str | None = None):
+        user_name = interaction.user.display_name
+        full_reason = f"User {user_name} requested an update" + (f": {reason}" if reason else "")
+
         await interaction.response.defer(ephemeral=False)
 
         # Show current commit before pulling
@@ -5686,7 +5694,7 @@ def setup_commands(bot: commands.Bot) -> None:
         except Exception:
             pass
 
-        result = await handler.execute("update_and_restart", {})
+        result = await handler.execute("update_and_restart", {"reason": full_reason})
 
         if "error" in result:
             await _send_error(interaction, result["error"], followup=True)
