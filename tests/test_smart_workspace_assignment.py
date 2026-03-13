@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.database import Database
+from src.git.manager import GitManager
 from src.models import (
     Agent, AgentState, Project, ProjectStatus, RepoSourceType, Task, TaskStatus, Workspace,
 )
@@ -259,7 +260,7 @@ class TestFindMergeConflictWorkspacesCommand:
 
     @pytest.fixture
     async def handler_and_db(self, tmp_path):
-        """Create a minimal CommandHandler with real DB."""
+        """Create a minimal CommandHandler with real DB and real GitManager."""
         db = Database(str(tmp_path / "test.db"))
         await db.initialize()
 
@@ -274,6 +275,8 @@ class TestFindMergeConflictWorkspacesCommand:
         config.workspace_dir = str(tmp_path / "workspaces")
         orchestrator = MagicMock()
         orchestrator.db = db
+        # Use real GitManager so async git methods work with real repos
+        orchestrator.git = GitManager()
 
         from src.command_handler import CommandHandler
         handler = CommandHandler(orchestrator=orchestrator, config=config)

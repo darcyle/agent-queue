@@ -114,20 +114,24 @@ class AgentQueueBot(commands.Bot):
         except Exception as e:
             print(f"Warning: could not load notes threads: {e}")
 
-    def _save_notes_threads(self) -> None:
+    async def _save_notes_threads(self) -> None:
         try:
             data = {
                 "threads": {str(k): v for k, v in self._notes_threads.items()},
                 "toc_messages": {str(k): v for k, v in self._notes_toc_messages.items()},
             }
-            with open(self._notes_threads_path, "w") as f:
-                json.dump(data, f)
+            await asyncio.to_thread(self._save_notes_threads_sync, data)
         except Exception as e:
             print(f"Warning: could not save notes threads: {e}")
 
-    def register_notes_thread(self, thread_id: int, project_id: str) -> None:
+    def _save_notes_threads_sync(self, data: dict) -> None:
+        """Synchronous file write — called via ``asyncio.to_thread``."""
+        with open(self._notes_threads_path, "w") as f:
+            json.dump(data, f)
+
+    async def register_notes_thread(self, thread_id: int, project_id: str) -> None:
         self._notes_threads[thread_id] = project_id
-        self._save_notes_threads()
+        await self._save_notes_threads()
 
     async def _handle_note_written(
         self, project_id: str, note_filename: str, note_path: str,
@@ -280,7 +284,13 @@ class AgentQueueBot(commands.Bot):
             for tid in stale_thread_ids:
                 stale_channel_ids.add(tid)
                 del self._notes_threads[tid]
-            self._save_notes_threads()
+            # Synchronous save — this method is called from a sync callback
+            # (_on_project_deleted).  The file is tiny so blocking is negligible.
+            data = {
+                "threads": {str(k): v for k, v in self._notes_threads.items()},
+                "toc_messages": {str(k): v for k, v in self._notes_toc_messages.items()},
+            }
+            self._save_notes_threads_sync(data)
 
         # Purge channel-level caches keyed by Discord channel/thread ID.
         for cid in stale_channel_ids:
