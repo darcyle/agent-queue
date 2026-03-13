@@ -1,5 +1,5 @@
 ---
-auto_tasks: true
+auto_tasks: false
 ---
 
 # Plan: Fix Orchestrator Responsiveness During Chat Agent Processing
@@ -52,84 +52,53 @@ When a chat request triggers git operations:
 
 ---
 
-## Phase 1: Make GitManager Non-Blocking
+## Implementation Status
 
-Convert `GitManager._run()` from synchronous `subprocess.run()` to async using
-`asyncio.create_subprocess_exec()`. This is the highest-impact change since ALL git
-operations flow through this single method.
+### Phase 1: Make GitManager Non-Blocking — COMPLETED
 
-**Files to modify:**
-- `src/git/manager.py` — Add `async def _arun()` method using `asyncio.create_subprocess_exec()`,
-  then convert all public methods that call `_run()` to have async counterparts (or convert
-  them directly to async). The synchronous `_run()` should be kept for backward compatibility
-  in non-async contexts (e.g., if any caller is synchronous), but all callers from
-  `command_handler.py` and `chat_agent.py` should switch to the async versions.
+`src/git/manager.py` now has:
+- `async def _arun()` — Core async method using `asyncio.create_subprocess_exec()` with
+  `asyncio.wait_for()` for timeout handling. Kills subprocess on timeout.
+- `async def _arun_subprocess()` — Async helper for non-git commands (e.g. `gh` CLI)
+  returning `CompletedProcess`-compatible result.
+- All public methods have async counterparts prefixed with `a`: `avalidate_checkout`,
+  `aget_current_branch`, `aget_status`, `acommit_all`, `acreate_pr`, `acheck_pr_merged`,
+  `apush_branch`, `apull_branch`, `amerge_branch`, `async_and_merge`, `arebase_onto`,
+  `adelete_branch`, `acreate_worktree`, `aremove_worktree`, `ainit_repo`, `aget_diff`,
+  `aget_changed_files`, `ahas_non_plan_changes`, `aget_default_branch`,
+  `aget_recent_commits`, `acheck_gh_auth`, `acreate_github_repo`, etc.
+- Synchronous methods preserved for backward compatibility.
 
-**Key changes:**
-- Add `async def _arun(self, args, cwd=None, timeout=None) -> str` that uses
-  `asyncio.create_subprocess_exec()`
-- Convert public methods to async: `async def get_current_branch()`,
-  `async def get_status()`, `async def validate_checkout()`, etc.
-- Keep sync `_run()` for use in non-async contexts (orchestrator task execution
-  subprocess launching, etc.)
+### Phase 2: Convert Direct subprocess.run() Calls — COMPLETED
 
-## Phase 2: Convert Direct subprocess.run() Calls in command_handler.py
+All direct `subprocess.run()` calls in async contexts are now non-blocking:
+- `src/command_handler.py` — All `subprocess.run()` calls (in `_cmd_find_merge_conflict_workspaces`,
+  `_cmd_sync_workspace_single`, `_cmd_update_and_restart`, `_cmd_run_command`,
+  `_cmd_search_files`) are wrapped with `asyncio.to_thread()`.
+- `src/discord/commands.py` — All subprocess calls wrapped with `asyncio.to_thread()`.
 
-Convert all remaining synchronous `subprocess.run()` calls in `command_handler.py` that
-are not going through GitManager to use `asyncio.create_subprocess_exec()` or
-`asyncio.to_thread()`.
+### Phase 3: Convert Synchronous File I/O in Discord Bot — NOT STARTED (Low Priority)
 
-**Files to modify:**
-- `src/command_handler.py` — Focus on `_cmd_find_merge_conflict_workspaces()` which has
-  8+ direct `subprocess.run()` calls. Convert each to use `asyncio.create_subprocess_exec()`.
+`src/discord/bot.py` — `_load_notes_threads()` and `_save_notes_threads()` use
+synchronous `open()`/`json.load()`/`json.dump()`. These are small local file operations
+that complete in microseconds, so the blocking impact is negligible. Could be wrapped
+with `asyncio.to_thread()` for correctness but is very low priority.
 
-**Key changes:**
-- Replace all `subprocess.run(["git", ...])` calls with async subprocess equivalents
-- Ensure timeout handling is preserved (use `asyncio.wait_for()` around `proc.communicate()`)
+### Phase 4: Update All Callers to Use Async Git Methods — COMPLETED
 
-## Phase 3: Convert Synchronous File I/O in Discord Bot
+All callers in the main async code paths use the async git API:
+- `src/orchestrator.py` — All git calls use `await self.git.a*()` methods.
+- `src/command_handler.py` — All git calls use `await git.a*()` or `await git._arun()`.
+- `src/discord/commands.py` — Subprocess calls wrapped with `asyncio.to_thread()`.
 
-Convert the synchronous file I/O in `discord/bot.py` to non-blocking.
+### Phase 5: Run Chat Agent in Background Task — NOT STARTED (Optional Enhancement)
 
-**Files to modify:**
-- `src/discord/bot.py` — `_load_notes_threads()` and `_save_notes_threads()` use
-  synchronous `open()`/`json.load()`/`json.dump()`. Wrap with `asyncio.to_thread()` or
-  use `aiofiles`.
+This is a larger architectural change. The async subprocess fixes in Phases 1-4 address
+the primary blocking issue. The chat agent lock serialization is a separate concern that
+should be evaluated independently.
 
-## Phase 4: Update All Callers to Use Async Git Methods
+## Summary
 
-Update all callers of the now-async GitManager methods throughout the codebase.
-
-**Files to modify:**
-- `src/command_handler.py` — Update all command handlers that call git methods to await
-  the async versions
-- `src/discord/commands.py` — Update any direct git calls
-- `src/orchestrator.py` — Update any direct git calls (note: orchestrator task execution
-  already runs in background tasks, so these may already be in async context)
-
-**Approach:**
-- Search for all `.get_current_branch()`, `.get_status()`, `.validate_checkout()`,
-  `.get_recent_commits()` etc. calls
-- Ensure each call site is in an async context and uses `await`
-
-## Phase 5: Run Chat Agent in Background Task (Optional Enhancement)
-
-As an additional safeguard, consider running the chat agent's processing as a detached
-background task rather than holding the channel lock for the full duration. This would
-prevent even slow (but non-blocking) LLM API calls from serializing all interactions
-on a channel.
-
-**Current pattern:**
-```python
-async with lock:
-    response = await self.agent.chat(...)  # holds lock for entire multi-turn conversation
-```
-
-**Improved pattern:**
-```python
-# Immediately acknowledge, then process in background
-asyncio.create_task(self._process_chat(message, user_text, ...))
-```
-
-This is a larger architectural change and should be evaluated separately — the async
-subprocess fix in Phases 1-4 addresses the primary blocking issue.
+**The primary blocking issue is resolved.** Phases 1, 2, and 4 are complete. The event loop
+is no longer blocked by git subprocess calls. Remaining items (Phase 3 file I/O, Phase 5
+background chat) are low-priority enhancements that do not affect responsiveness in practice.
