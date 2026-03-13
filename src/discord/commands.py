@@ -13,7 +13,6 @@ import asyncio
 import io
 import os
 import re
-import subprocess
 import traceback
 from pathlib import Path
 
@@ -1452,6 +1451,30 @@ class HooksListView(discord.ui.View):
         await interaction.response.edit_message(
             content=self.build_content(), view=self,
         )
+
+
+async def _async_git_output(
+    args: list[str], *, cwd: str | None = None, timeout: int = 10,
+) -> str:
+    """Run a git command asynchronously and return stripped stdout.
+
+    Uses ``asyncio.create_subprocess_exec`` to avoid blocking the event loop
+    (unlike ``asyncio.to_thread(subprocess.run, ...)`` which consumes a thread-
+    pool slot).  Raises on non-zero exit or timeout.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "git", *args,
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return ""
+    return stdout.decode(errors="replace").strip()
 
 
 def setup_commands(bot: commands.Bot) -> None:
@@ -5643,28 +5666,14 @@ def setup_commands(bot: commands.Bot) -> None:
         # Gather git info for the restart message
         git_info_parts: list[str] = []
         try:
-            r = await asyncio.to_thread(
-                subprocess.run,
-                ["git", "rev-parse", "--short", "HEAD"],
-                capture_output=True, text=True, timeout=5,
-            )
-            short_hash = r.stdout.strip()
+            short_hash = await _async_git_output(["rev-parse", "--short", "HEAD"], timeout=5)
             if short_hash:
                 git_info_parts.append(f"commit `{short_hash}`")
         except Exception:
             pass
         try:
-            await asyncio.to_thread(
-                subprocess.run,
-                ["git", "fetch", "--quiet"],
-                capture_output=True, text=True, timeout=15,
-            )
-            r = await asyncio.to_thread(
-                subprocess.run,
-                ["git", "rev-list", "--count", "HEAD..@{u}"],
-                capture_output=True, text=True, timeout=5,
-            )
-            behind = r.stdout.strip()
+            await _async_git_output(["fetch", "--quiet"], timeout=15)
+            behind = await _async_git_output(["rev-list", "--count", "HEAD..@{u}"], timeout=5)
             if behind and int(behind) > 0:
                 git_info_parts.append(f"**{behind}** commit{'s' if int(behind) != 1 else ''} behind origin")
         except Exception:
@@ -5692,12 +5701,9 @@ def setup_commands(bot: commands.Bot) -> None:
         repo_dir = str(Path(__file__).resolve().parent.parent.parent)
         before_hash = ""
         try:
-            r = await asyncio.to_thread(
-                subprocess.run,
-                ["git", "rev-parse", "--short", "HEAD"],
-                capture_output=True, text=True, timeout=5, cwd=repo_dir,
+            before_hash = await _async_git_output(
+                ["rev-parse", "--short", "HEAD"], cwd=repo_dir, timeout=5,
             )
-            before_hash = r.stdout.strip()
         except Exception:
             pass
 
@@ -5710,12 +5716,9 @@ def setup_commands(bot: commands.Bot) -> None:
         pull_output = result.get("pull_output", "")
         after_hash = ""
         try:
-            r = await asyncio.to_thread(
-                subprocess.run,
-                ["git", "rev-parse", "--short", "HEAD"],
-                capture_output=True, text=True, timeout=5, cwd=repo_dir,
+            after_hash = await _async_git_output(
+                ["rev-parse", "--short", "HEAD"], cwd=repo_dir, timeout=5,
             )
-            after_hash = r.stdout.strip()
         except Exception:
             pass
 
