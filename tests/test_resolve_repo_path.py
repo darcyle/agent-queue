@@ -15,7 +15,7 @@ from src.database import Database
 from src.git.manager import GitManager
 from src.models import Project, RepoConfig, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +46,7 @@ def mock_git():
     """Mock GitManager that treats all directories as valid git repos."""
     git = MagicMock(spec=GitManager)
     git.validate_checkout.return_value = True
+    git.avalidate_checkout = AsyncMock(return_value=True)
     return git
 
 
@@ -93,7 +94,7 @@ class TestWorkspaceResolution:
         assert path == checkout
         assert project is not None
         assert project.id == "p-ws"
-        mock_git.validate_checkout.assert_called_once_with(checkout)
+        mock_git.avalidate_checkout.assert_called_once_with(checkout)
 
     async def test_workspace_takes_priority_over_legacy_repo(
         self, handler, db, tmp_path, mock_git,
@@ -146,7 +147,7 @@ class TestLinkedRepo:
         assert path == checkout
         assert project is not None
         assert project.id == "p-link"
-        mock_git.validate_checkout.assert_called_once_with(checkout)
+        mock_git.avalidate_checkout.assert_called_once_with(checkout)
 
     async def test_resolve_linked_repo_with_active_project(self, handler, db, tmp_path, mock_git):
         """When no project_id given but active project is set, resolves via active project."""
@@ -190,7 +191,7 @@ class TestClonedRepo:
         assert path == checkout
         assert project is not None
         assert project.id == "p-clone"
-        mock_git.validate_checkout.assert_called_once_with(checkout)
+        mock_git.avalidate_checkout.assert_called_once_with(checkout)
 
     async def test_resolve_cloned_repo_with_active_project(self, handler, db, tmp_path):
         """When no project_id given but active project is set, resolves cloned repo."""
@@ -233,7 +234,7 @@ class TestInitRepo:
         assert err is None
         assert path == checkout
         assert project.id == "p-init"
-        mock_git.validate_checkout.assert_called_once_with(checkout)
+        mock_git.avalidate_checkout.assert_called_once_with(checkout)
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +338,7 @@ class TestPathValidation:
         """Path exists but git.validate_checkout returns False."""
         checkout = _make_dir(str(tmp_path / "not-a-git-repo"))
         mock_git.validate_checkout.return_value = False
+        mock_git.avalidate_checkout.return_value = False
 
         await db.create_project(Project(id="p-nogit", name="Not Git"))
         await db.create_repo(RepoConfig(

@@ -1,7 +1,7 @@
 import asyncio
 import os
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from src.orchestrator import Orchestrator
@@ -1119,18 +1119,21 @@ class TestPrepareWorkspaceRebase:
 
         mock_git = MagicMock()
         mock_git.validate_checkout.return_value = True
+        mock_git.avalidate_checkout = AsyncMock(return_value=True)
+        mock_git.aswitch_to_branch = AsyncMock()
+        mock_git.aprepare_for_task = AsyncMock()
         orch.git = mock_git
 
         result = await orch._prepare_workspace(subtask, agent)
 
         assert result == workspace
-        mock_git.switch_to_branch.assert_called_once_with(
+        mock_git.aswitch_to_branch.assert_called_once_with(
             workspace, "task/t-parent/parent-plan",
             default_branch="develop",
             rebase=False,
         )
-        # prepare_for_task should NOT be called for subtask branch reuse
-        mock_git.prepare_for_task.assert_not_called()
+        # aprepare_for_task should NOT be called for subtask branch reuse
+        mock_git.aprepare_for_task.assert_not_called()
 
     async def test_subtask_passes_default_branch_and_rebase_true(self, setup):
         """When rebase_between_subtasks is True, switch_to_branch is called
@@ -1145,12 +1148,15 @@ class TestPrepareWorkspaceRebase:
 
         mock_git = MagicMock()
         mock_git.validate_checkout.return_value = True
+        mock_git.avalidate_checkout = AsyncMock(return_value=True)
+        mock_git.aswitch_to_branch = AsyncMock()
+        mock_git.aprepare_for_task = AsyncMock()
         orch.git = mock_git
 
         result = await orch._prepare_workspace(subtask, agent)
 
         assert result == workspace
-        mock_git.switch_to_branch.assert_called_once_with(
+        mock_git.aswitch_to_branch.assert_called_once_with(
             workspace, "task/t-parent/parent-plan",
             default_branch="develop",
             rebase=True,
@@ -1178,15 +1184,18 @@ class TestPrepareWorkspaceRebase:
 
         mock_git = MagicMock()
         mock_git.validate_checkout.return_value = True
+        mock_git.avalidate_checkout = AsyncMock(return_value=True)
+        mock_git.aswitch_to_branch = AsyncMock()
+        mock_git.aprepare_for_task = AsyncMock()
         orch.git = mock_git
 
         result = await orch._prepare_workspace(regular_task, agent)
 
         assert result == workspace
-        mock_git.switch_to_branch.assert_not_called()
-        mock_git.prepare_for_task.assert_called_once()
-        # Verify default_branch was passed to prepare_for_task
-        call_args = mock_git.prepare_for_task.call_args
+        mock_git.aswitch_to_branch.assert_not_called()
+        mock_git.aprepare_for_task.assert_called_once()
+        # Verify default_branch was passed to aprepare_for_task
+        call_args = mock_git.aprepare_for_task.call_args
         assert call_args[0][2] == "develop"  # third positional arg is default_branch
 
     async def test_link_repo_subtask_passes_default_branch(self, tmp_path):
@@ -1237,11 +1246,14 @@ class TestPrepareWorkspaceRebase:
 
         mock_git = MagicMock()
         mock_git.validate_checkout.return_value = True
+        mock_git.avalidate_checkout = AsyncMock(return_value=True)
+        mock_git.aswitch_to_branch = AsyncMock()
+        mock_git.aprepare_for_task = AsyncMock()
         orch.git = mock_git
 
         await orch._prepare_workspace(subtask, agent)
 
-        mock_git.switch_to_branch.assert_called_once_with(
+        mock_git.aswitch_to_branch.assert_called_once_with(
             str(workspace), "task/t-parent/parent",
             default_branch="trunk",
             rebase=True,
@@ -1295,11 +1307,14 @@ class TestPrepareWorkspaceRebase:
 
         mock_git = MagicMock()
         mock_git.validate_checkout.return_value = True
+        mock_git.avalidate_checkout = AsyncMock(return_value=True)
+        mock_git.aswitch_to_branch = AsyncMock()
+        mock_git.aprepare_for_task = AsyncMock()
         orch.git = mock_git
 
         await orch._prepare_workspace(subtask, agent)
 
-        mock_git.switch_to_branch.assert_called_once_with(
+        mock_git.aswitch_to_branch.assert_called_once_with(
             str(workspace), "task/t-parent/parent",
             default_branch="master",
             rebase=True,
@@ -1367,12 +1382,14 @@ class TestMergeAndPushSyncWorkflow:
 
         mock_git = MagicMock()
         mock_git.has_remote.return_value = True
-        mock_git.sync_and_merge.return_value = (True, "")
+        mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.async_and_merge = AsyncMock(return_value=(True, ""))
+        mock_git.adelete_branch = AsyncMock()
         orch.git = mock_git
 
         await orch._merge_and_push(task, repo, workspace)
 
-        mock_git.sync_and_merge.assert_called_once_with(
+        mock_git.async_and_merge.assert_called_once_with(
             workspace, "t-1/test-task", "develop",
             max_retries=2,
         )
@@ -1386,12 +1403,14 @@ class TestMergeAndPushSyncWorkflow:
 
         mock_git = MagicMock()
         mock_git.has_remote.return_value = True
-        mock_git.sync_and_merge.return_value = (True, "")
+        mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.async_and_merge = AsyncMock(return_value=(True, ""))
+        mock_git.adelete_branch = AsyncMock()
         orch.git = mock_git
 
         await orch._merge_and_push(task, repo, workspace)
 
-        mock_git.delete_branch.assert_called_once_with(
+        mock_git.adelete_branch.assert_called_once_with(
             workspace, "t-1/test-task", delete_remote=True,
         )
 
@@ -1410,15 +1429,18 @@ class TestMergeAndPushSyncWorkflow:
 
         mock_git = MagicMock()
         mock_git.has_remote.return_value = True
-        mock_git.sync_and_merge.return_value = (False, "merge_conflict")
+        mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.async_and_merge = AsyncMock(return_value=(False, "merge_conflict"))
+        mock_git.arecover_workspace = AsyncMock()
+        mock_git.adelete_branch = AsyncMock()
         orch.git = mock_git
 
         await orch._merge_and_push(task, repo, workspace)
 
-        # recover_workspace should have been called
-        mock_git.recover_workspace.assert_called_once_with(workspace, "develop")
+        # arecover_workspace should have been called
+        mock_git.arecover_workspace.assert_called_once_with(workspace, "develop")
         # Should NOT try to delete branch on failure
-        mock_git.delete_branch.assert_not_called()
+        mock_git.adelete_branch.assert_not_called()
         # Should have sent a notification
         assert len(notifications) >= 1
 
@@ -1437,13 +1459,16 @@ class TestMergeAndPushSyncWorkflow:
 
         mock_git = MagicMock()
         mock_git.has_remote.return_value = True
-        mock_git.sync_and_merge.return_value = (False, "push_failed: error")
+        mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.async_and_merge = AsyncMock(return_value=(False, "push_failed: error"))
+        mock_git.arecover_workspace = AsyncMock()
+        mock_git.adelete_branch = AsyncMock()
         orch.git = mock_git
 
         await orch._merge_and_push(task, repo, workspace)
 
-        mock_git.recover_workspace.assert_called_once_with(workspace, "develop")
-        mock_git.delete_branch.assert_not_called()
+        mock_git.arecover_workspace.assert_called_once_with(workspace, "develop")
+        mock_git.adelete_branch.assert_not_called()
         assert len(notifications) >= 1
 
     async def test_merge_and_push_tolerates_recover_failure(self, setup):
@@ -1455,8 +1480,9 @@ class TestMergeAndPushSyncWorkflow:
 
         mock_git = MagicMock()
         mock_git.has_remote.return_value = True
-        mock_git.sync_and_merge.return_value = (False, "merge_conflict")
-        mock_git.recover_workspace.side_effect = Exception("git broken")
+        mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.async_and_merge = AsyncMock(return_value=(False, "merge_conflict"))
+        mock_git.arecover_workspace = AsyncMock(side_effect=Exception("git broken"))
         orch.git = mock_git
 
         # Should not raise
@@ -1542,14 +1568,17 @@ class TestCompleteWorkspaceMidChainSync:
 
         mock_git = MagicMock()
         mock_git.validate_checkout.return_value = True
+        mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.commit_all.return_value = True
+        mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.mid_chain_sync.return_value = True
+        mock_git.amid_chain_sync = AsyncMock(return_value=True)
         orch.git = mock_git
 
         result = await orch._complete_workspace(sub1, agent)
 
         assert result is None  # No PR for non-final subtask
-        mock_git.mid_chain_sync.assert_called_once_with(
+        mock_git.amid_chain_sync.assert_called_once_with(
             workspace, "task/t-parent/parent-plan", "main",
         )
 
@@ -1563,13 +1592,16 @@ class TestCompleteWorkspaceMidChainSync:
 
         mock_git = MagicMock()
         mock_git.validate_checkout.return_value = True
+        mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.commit_all.return_value = True
+        mock_git.acommit_all = AsyncMock(return_value=True)
+        mock_git.amid_chain_sync = AsyncMock()
         orch.git = mock_git
 
         result = await orch._complete_workspace(sub1, agent)
 
         assert result is None
-        mock_git.mid_chain_sync.assert_not_called()
+        mock_git.amid_chain_sync.assert_not_called()
 
     async def test_mid_chain_sync_failure_is_non_fatal(self, setup):
         """If mid_chain_sync raises, _complete_workspace should not crash."""
@@ -1579,8 +1611,11 @@ class TestCompleteWorkspaceMidChainSync:
 
         mock_git = MagicMock()
         mock_git.validate_checkout.return_value = True
+        mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.commit_all.return_value = True
+        mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.mid_chain_sync.side_effect = Exception("rebase exploded")
+        mock_git.amid_chain_sync = AsyncMock(side_effect=Exception("rebase exploded"))
         orch.git = mock_git
 
         # Should not raise
@@ -1605,17 +1640,23 @@ class TestCompleteWorkspaceMidChainSync:
 
         mock_git = MagicMock()
         mock_git.validate_checkout.return_value = True
+        mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.has_remote.return_value = True
+        mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.commit_all.return_value = True
+        mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.sync_and_merge.return_value = (True, "")
+        mock_git.async_and_merge = AsyncMock(return_value=(True, ""))
+        mock_git.adelete_branch = AsyncMock()
+        mock_git.amid_chain_sync = AsyncMock()
         orch.git = mock_git
 
         result = await orch._complete_workspace(sub2_updated, agent)
 
-        # Should NOT call mid_chain_sync
-        mock_git.mid_chain_sync.assert_not_called()
-        # Should call sync_and_merge (merge+push for last subtask)
-        mock_git.sync_and_merge.assert_called_once()
+        # Should NOT call amid_chain_sync
+        mock_git.amid_chain_sync.assert_not_called()
+        # Should call async_and_merge (merge+push for last subtask)
+        mock_git.async_and_merge.assert_called_once()
 
     async def test_final_subtask_with_approval_creates_pr(self, setup):
         """When the final subtask completes and parent requires approval,
@@ -1637,18 +1678,25 @@ class TestCompleteWorkspaceMidChainSync:
 
         mock_git = MagicMock()
         mock_git.validate_checkout.return_value = True
+        mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.has_remote.return_value = True
+        mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.commit_all.return_value = True
+        mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.create_pr.return_value = "https://github.com/org/repo/pull/42"
+        mock_git.acreate_pr = AsyncMock(return_value="https://github.com/org/repo/pull/42")
+        mock_git.apush_branch = AsyncMock()
+        mock_git.amid_chain_sync = AsyncMock()
+        mock_git.async_and_merge = AsyncMock()
         orch.git = mock_git
 
         result = await orch._complete_workspace(sub2_updated, agent)
 
         assert result == "https://github.com/org/repo/pull/42"
-        mock_git.push_branch.assert_called_once()
-        mock_git.create_pr.assert_called_once()
-        mock_git.mid_chain_sync.assert_not_called()
-        mock_git.sync_and_merge.assert_not_called()
+        mock_git.apush_branch.assert_called_once()
+        mock_git.acreate_pr.assert_called_once()
+        mock_git.amid_chain_sync.assert_not_called()
+        mock_git.async_and_merge.assert_not_called()
 
 
 # ── Completion Pipeline Tests ──────────────────────────────────────────
@@ -1681,10 +1729,20 @@ class TestCompletionPipeline:
         # Mock git
         mock_git = MagicMock()
         mock_git.validate_checkout.return_value = True
+        mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.commit_all.return_value = True
+        mock_git.acommit_all = AsyncMock(return_value=True)
         mock_git.has_remote.return_value = True
+        mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.sync_and_merge.return_value = (True, "")
+        mock_git.async_and_merge = AsyncMock(return_value=(True, ""))
         mock_git.delete_branch.return_value = None
+        mock_git.adelete_branch = AsyncMock(return_value=None)
+        mock_git.arecover_workspace = AsyncMock()
+        mock_git.ahas_non_plan_changes = AsyncMock(return_value=False)
+        mock_git.amid_chain_sync = AsyncMock()
+        mock_git.apush_branch = AsyncMock()
+        mock_git.acreate_pr = AsyncMock()
         o.git = mock_git
 
         yield o
@@ -1718,9 +1776,9 @@ class TestCompletionPipeline:
         assert ok is True
         assert pr_url is None
         # Commit should have been called
-        orch.git.commit_all.assert_called_once()
+        orch.git.acommit_all.assert_called_once()
         # Merge should have been called
-        orch.git.sync_and_merge.assert_called_once()
+        orch.git.async_and_merge.assert_called_once()
 
     async def test_pipeline_stops_on_phase_failure(self, pipeline_orch):
         """When merge phase returns STOP, pipeline should stop."""
@@ -1728,7 +1786,7 @@ class TestCompletionPipeline:
         from src.models import PipelineContext, PhaseResult
 
         # Make merge fail
-        orch.git.sync_and_merge.return_value = (False, "merge_conflict")
+        orch.git.async_and_merge = AsyncMock(return_value=(False, "merge_conflict"))
 
         task = Task(id="t-2", project_id="p-1", title="Test",
                     description="test", branch_name="feature-2",
@@ -1757,7 +1815,7 @@ class TestCompletionPipeline:
         from src.models import PipelineContext
 
         # Make commit_all raise
-        orch.git.commit_all.side_effect = RuntimeError("git broken")
+        orch.git.acommit_all = AsyncMock(side_effect=RuntimeError("git broken"))
 
         task = Task(id="t-3", project_id="p-1", title="Test",
                     description="test", branch_name="feature-3",
@@ -1785,7 +1843,7 @@ class TestCompletionPipeline:
         orch = pipeline_orch
         from src.models import PipelineContext
 
-        orch.git.sync_and_merge.return_value = (False, "merge_conflict")
+        orch.git.async_and_merge = AsyncMock(return_value=(False, "merge_conflict"))
 
         task = Task(id="t-4", project_id="p-1", title="Test",
                     description="test", branch_name="feature-4",
@@ -1843,7 +1901,7 @@ class TestCompletionPipeline:
         orch = pipeline_orch
         from src.models import PipelineContext
 
-        orch.git.sync_and_merge.return_value = (False, "merge_conflict")
+        orch.git.async_and_merge = AsyncMock(return_value=(False, "merge_conflict"))
 
         task = Task(id="t-6", project_id="p-1", title="Test",
                     description="test", branch_name="feature-6",
@@ -1873,7 +1931,7 @@ class TestCompletionPipeline:
         orch = pipeline_orch
         from src.models import PipelineContext
 
-        orch.git.sync_and_merge.return_value = (False, "merge_conflict")
+        orch.git.async_and_merge = AsyncMock(return_value=(False, "merge_conflict"))
 
         events = []
         orch.bus.subscribe("task.merge_failed", lambda data: events.append(data))

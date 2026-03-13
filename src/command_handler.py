@@ -1208,11 +1208,11 @@ class CommandHandler:
             git = self.orchestrator.git
             try:
                 # Fetch latest so we know what branches exist on the remote
-                git._run(["fetch", "origin"], cwd=ws_path)
+                await git._arun(["fetch", "origin"], cwd=ws_path)
 
                 # Check if the branch exists on the remote
                 try:
-                    git._run(
+                    await git._arun(
                         ["rev-parse", "--verify", f"refs/remotes/origin/{branch}"],
                         cwd=ws_path,
                     )
@@ -1220,14 +1220,14 @@ class CommandHandler:
                     # Branch does not exist on the remote — create it from
                     # the current default branch (or HEAD).
                     try:
-                        git._run(
+                        await git._arun(
                             ["branch", branch, f"origin/{old_branch}"],
                             cwd=ws_path,
                         )
                     except Exception:
                         # If old default branch ref doesn't exist, branch from HEAD
-                        git._run(["branch", branch, "HEAD"], cwd=ws_path)
-                    git._run(
+                        await git._arun(["branch", branch, "HEAD"], cwd=ws_path)
+                    await git._arun(
                         ["push", "-u", "origin", branch], cwd=ws_path,
                     )
                     branch_created = True
@@ -2873,7 +2873,7 @@ class CommandHandler:
 
         project = await self.db.get_project(task.project_id)
         default_branch = project.repo_default_branch if project else "main"
-        diff = self.orchestrator.git.get_diff(checkout_path, default_branch)
+        diff = await self.orchestrator.git.aget_diff(checkout_path, default_branch)
         if not diff:
             return {"diff": "(no changes)", "branch": task.branch_name}
         return {"diff": diff, "branch": task.branch_name}
@@ -3005,7 +3005,7 @@ class CommandHandler:
             if project.repo_url:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 try:
-                    self.orchestrator.git.create_checkout(project.repo_url, path)
+                    await self.orchestrator.git.acreate_checkout(project.repo_url, path)
                 except Exception as e:
                     return {"error": f"Clone failed: {e}"}
 
@@ -3114,7 +3114,7 @@ class CommandHandler:
 
             try:
                 # Fetch latest remote state
-                subprocess.run(
+                await asyncio.to_thread(subprocess.run,
                     ["git", "fetch", "origin", "--prune", "--quiet"],
                     cwd=ws_path, capture_output=True, timeout=30,
                 )
@@ -3122,7 +3122,7 @@ class CommandHandler:
                 main_ref = f"origin/{default_branch}"
 
                 # Verify main exists
-                check = subprocess.run(
+                check = await asyncio.to_thread(subprocess.run,
                     ["git", "rev-parse", main_ref],
                     cwd=ws_path, capture_output=True, timeout=10,
                 )
@@ -3130,7 +3130,7 @@ class CommandHandler:
                     continue
 
                 # Get current branch
-                current_branch_result = subprocess.run(
+                current_branch_result = await asyncio.to_thread(subprocess.run,
                     ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                     cwd=ws_path, capture_output=True, text=True, timeout=10,
                 )
@@ -3138,7 +3138,7 @@ class CommandHandler:
 
                 # Check for uncommitted merge conflict markers in working tree
                 has_working_tree_conflict = False
-                status_result = subprocess.run(
+                status_result = await asyncio.to_thread(subprocess.run,
                     ["git", "status", "--porcelain"],
                     cwd=ws_path, capture_output=True, text=True, timeout=10,
                 )
@@ -3149,7 +3149,7 @@ class CommandHandler:
                             break
 
                 # List remote branches and check each for merge conflicts
-                branch_result = subprocess.run(
+                branch_result = await asyncio.to_thread(subprocess.run,
                     ["git", "branch", "-r", "--list", "origin/*"],
                     cwd=ws_path, capture_output=True, text=True, timeout=10,
                 )
@@ -3172,7 +3172,7 @@ class CommandHandler:
                         continue
 
                     # Find merge base
-                    mb_result = subprocess.run(
+                    mb_result = await asyncio.to_thread(subprocess.run,
                         ["git", "merge-base", main_ref, branch_ref],
                         cwd=ws_path, capture_output=True, text=True, timeout=10,
                     )
@@ -3181,7 +3181,7 @@ class CommandHandler:
                     merge_base = mb_result.stdout.strip()
 
                     # Use merge-tree to check for conflicts
-                    mt_result = subprocess.run(
+                    mt_result = await asyncio.to_thread(subprocess.run,
                         ["git", "merge-tree", merge_base, main_ref, branch_ref],
                         cwd=ws_path, capture_output=True, text=True, timeout=10,
                     )
@@ -3201,7 +3201,7 @@ class CommandHandler:
                             task_id_part = branch_name
 
                         # Commits behind main
-                        behind_result = subprocess.run(
+                        behind_result = await asyncio.to_thread(subprocess.run,
                             ["git", "rev-list", "--count", f"{branch_ref}..{main_ref}"],
                             cwd=ws_path, capture_output=True, text=True, timeout=10,
                         )
@@ -3337,18 +3337,18 @@ class CommandHandler:
         try:
             # Step 1: Fetch latest remote state
             try:
-                git._run(["fetch", "origin", "--prune"], cwd=ws_path)
+                await git._arun(["fetch", "origin", "--prune"], cwd=ws_path)
             except GitError as e:
                 return {**ws_info, "status": "error", "reason": f"fetch failed: {e}"}
 
             # Step 2: Determine current branch
-            current_branch = git.get_current_branch(ws_path)
+            current_branch = await git.aget_current_branch(ws_path)
             ws_info["current_branch"] = current_branch
 
             # Step 3: Check for uncommitted changes
             has_uncommitted = False
             try:
-                result = subprocess.run(
+                result = await asyncio.to_thread(subprocess.run,
                     ["git", "status", "--porcelain"],
                     cwd=ws_path, capture_output=True, text=True, timeout=10,
                 )
@@ -3360,7 +3360,7 @@ class CommandHandler:
 
             # Step 4: Check for active merge/rebase conflicts
             try:
-                status_result = subprocess.run(
+                status_result = await asyncio.to_thread(subprocess.run,
                     ["git", "status", "--porcelain"],
                     cwd=ws_path, capture_output=True, text=True, timeout=10,
                 )
@@ -3381,9 +3381,9 @@ class CommandHandler:
                 try:
                     if has_uncommitted:
                         # Stash uncommitted changes to avoid losing them
-                        git._run(["stash"], cwd=ws_path)
+                        await git._arun(["stash"], cwd=ws_path)
                         ws_info["stashed_changes"] = True
-                    git._run(
+                    await git._arun(
                         ["reset", "--hard", f"origin/{default_branch}"],
                         cwd=ws_path,
                     )
@@ -3397,7 +3397,7 @@ class CommandHandler:
                 # Auto-commit uncommitted changes if any
                 if has_uncommitted:
                     try:
-                        committed = git.commit_all(
+                        committed = await git.acommit_all(
                             ws_path, "[sync-workspaces] auto-commit uncommitted changes",
                         )
                         if committed:
@@ -3408,7 +3408,7 @@ class CommandHandler:
 
                 # Push the current feature branch to origin (save work)
                 try:
-                    git.push_branch(ws_path, current_branch, force_with_lease=True)
+                    await git.apush_branch(ws_path, current_branch, force_with_lease=True)
                     actions.append("pushed_branch")
                 except GitError:
                     # Push failed — might not have remote tracking, that's OK
@@ -3417,15 +3417,15 @@ class CommandHandler:
                 # Now update the local default branch to match origin
                 # We need to be careful: if this is a worktree we can't
                 # checkout the default branch. Use update-ref instead.
-                is_worktree = git._is_worktree(ws_path)
+                is_worktree = await git._ais_worktree(ws_path)
 
                 if is_worktree:
                     # In a worktree, update the local ref without checkout
                     try:
-                        origin_sha = git._run(
+                        origin_sha = await git._arun(
                             ["rev-parse", f"origin/{default_branch}"], cwd=ws_path,
                         )
-                        git._run(
+                        await git._arun(
                             ["update-ref", f"refs/heads/{default_branch}", origin_sha],
                             cwd=ws_path,
                         )
@@ -3435,31 +3435,31 @@ class CommandHandler:
                 else:
                     # Normal repo: checkout default, reset, then go back
                     try:
-                        git._run(["checkout", default_branch], cwd=ws_path)
-                        git._run(
+                        await git._arun(["checkout", default_branch], cwd=ws_path)
+                        await git._arun(
                             ["reset", "--hard", f"origin/{default_branch}"],
                             cwd=ws_path,
                         )
                         actions.append("updated_default_branch")
                         # Switch back to the feature branch
-                        git._run(["checkout", current_branch], cwd=ws_path)
+                        await git._arun(["checkout", current_branch], cwd=ws_path)
                     except GitError:
                         # Try to get back to the feature branch
                         try:
-                            git._run(["checkout", current_branch], cwd=ws_path)
+                            await git._arun(["checkout", current_branch], cwd=ws_path)
                         except GitError:
                             pass
 
                 # Optionally rebase the feature branch onto latest main
                 try:
-                    git._run(
+                    await git._arun(
                         ["rebase", f"origin/{default_branch}"], cwd=ws_path,
                     )
                     actions.append("rebased_onto_main")
                 except GitError:
                     # Rebase failed — abort and leave branch as-is
                     try:
-                        git._run(["rebase", "--abort"], cwd=ws_path)
+                        await git._arun(["rebase", "--abort"], cwd=ws_path)
                     except GitError:
                         pass
                     actions.append("rebase_skipped_conflicts")
@@ -3616,15 +3616,15 @@ class CommandHandler:
                         "error": f"Path not found: {ws_path}",
                     })
                     continue
-                if not git.validate_checkout(ws_path):
+                if not await git.avalidate_checkout(ws_path):
                     repo_statuses.append({
                         "workspace_id": ws.id,
                         "error": f"Not a valid git repository: {ws_path}",
                     })
                     continue
-                branch = git.get_current_branch(ws_path)
-                status_output = git.get_status(ws_path)
-                recent_commits = git.get_recent_commits(ws_path, count=5)
+                branch = await git.aget_current_branch(ws_path)
+                status_output = await git.aget_status(ws_path)
+                recent_commits = await git.aget_recent_commits(ws_path, count=5)
                 lock_info = ""
                 if ws.locked_by_agent_id:
                     lock_info = f" (locked by {ws.locked_by_agent_id})"
@@ -3655,15 +3655,15 @@ class CommandHandler:
                             "error": f"Path not found: {repo_path}",
                         })
                         continue
-                    if not git.validate_checkout(repo_path):
+                    if not await git.avalidate_checkout(repo_path):
                         repo_statuses.append({
                             "repo_id": repo.id,
                             "error": f"Not a valid git repository: {repo_path}",
                         })
                         continue
-                    branch = git.get_current_branch(repo_path)
-                    status_output = git.get_status(repo_path)
-                    recent_commits = git.get_recent_commits(repo_path, count=5)
+                    branch = await git.aget_current_branch(repo_path)
+                    status_output = await git.aget_status(repo_path)
+                    recent_commits = await git.aget_recent_commits(repo_path, count=5)
                     repo_statuses.append({
                         "repo_id": repo.id,
                         "path": repo_path,
@@ -3782,7 +3782,7 @@ class CommandHandler:
 
         if not os.path.isdir(checkout_path):
             return None, project, {"error": f"Path not found: {checkout_path}"}
-        if not git.validate_checkout(checkout_path):
+        if not await git.avalidate_checkout(checkout_path):
             return None, project, {"error": f"Not a valid git repository: {checkout_path}"}
 
         return checkout_path, project, None
@@ -3795,7 +3795,7 @@ class CommandHandler:
             return err
         project_id = args.get("project_id", "")
         try:
-            committed = self.orchestrator.git.commit_all(checkout_path, message)
+            committed = await self.orchestrator.git.acommit_all(checkout_path, message)
         except GitError as e:
             return {"error": str(e)}
         if not committed:
@@ -3811,7 +3811,7 @@ class CommandHandler:
         git = self.orchestrator.git
         branch = args.get("branch") or None
         try:
-            pulled = git.pull_branch(checkout_path, branch)
+            pulled = await git.apull_branch(checkout_path, branch)
         except GitError as e:
             return {"error": str(e)}
         return {"project_id": project_id, "pulled": pulled}
@@ -3823,11 +3823,11 @@ class CommandHandler:
             return err
         project_id = args.get("project_id", "")
         git = self.orchestrator.git
-        branch = args.get("branch") or git.get_current_branch(checkout_path)
+        branch = args.get("branch") or await git.aget_current_branch(checkout_path)
         if not branch:
             return {"error": "Could not determine current branch"}
         try:
-            git.push_branch(checkout_path, branch)
+            await git.apush_branch(checkout_path, branch)
         except GitError as e:
             return {"error": str(e)}
         return {"project_id": project_id, "pushed": branch}
@@ -3840,7 +3840,7 @@ class CommandHandler:
             return err
         project_id = args.get("project_id", "")
         try:
-            self.orchestrator.git.create_branch(checkout_path, branch_name)
+            await self.orchestrator.git.acreate_branch(checkout_path, branch_name)
         except GitError as e:
             return {"error": str(e)}
         return {"project_id": project_id, "created_branch": branch_name}
@@ -3854,7 +3854,7 @@ class CommandHandler:
         project_id = args.get("project_id", "")
         default_branch = args.get("default_branch") or (project.repo_default_branch if project else "main") or "main"
         try:
-            success = self.orchestrator.git.merge_branch(checkout_path, branch_name, default_branch)
+            success = await self.orchestrator.git.amerge_branch(checkout_path, branch_name, default_branch)
         except GitError as e:
             return {"error": str(e)}
         if not success:
@@ -3880,12 +3880,12 @@ class CommandHandler:
             return err
         project_id = args.get("project_id", "")
         git = self.orchestrator.git
-        branch = args.get("branch") or git.get_current_branch(checkout_path)
+        branch = args.get("branch") or await git.aget_current_branch(checkout_path)
         if not branch:
             return {"error": "Could not determine current branch"}
         base = args.get("base") or (project.repo_default_branch if project else "main") or "main"
         try:
-            pr_url = git.create_pr(checkout_path, branch, title, body, base)
+            pr_url = await git.acreate_pr(checkout_path, branch, title, body, base)
         except GitError as e:
             return {"error": str(e)}
         return {"project_id": project_id, "pr_url": pr_url, "branch": branch, "base": base}
@@ -3912,7 +3912,7 @@ class CommandHandler:
         git = self.orchestrator.git
 
         # Pre-check: is gh CLI authenticated?
-        if not git.check_gh_auth():
+        if not await git.acheck_gh_auth():
             return {
                 "error": (
                     "GitHub CLI is not authenticated. "
@@ -3921,7 +3921,7 @@ class CommandHandler:
             }
 
         try:
-            url = git.create_github_repo(
+            url = await git.acreate_github_repo(
                 name, private=private, org=org, description=description,
             )
         except GitError as e:
@@ -3983,7 +3983,7 @@ class CommandHandler:
 
         git = self.orchestrator.git
         try:
-            committed = git.commit_all(checkout_path, "Add generated README.md")
+            committed = await git.acommit_all(checkout_path, "Add generated README.md")
         except GitError as e:
             return {"error": f"Failed to commit README.md: {e}"}
 
@@ -3999,8 +3999,8 @@ class CommandHandler:
         # Push to remote
         pushed = False
         try:
-            branch = git.get_current_branch(checkout_path) or "main"
-            git.push_branch(checkout_path, branch)
+            branch = await git.aget_current_branch(checkout_path) or "main"
+            await git.apush_branch(checkout_path, branch)
             pushed = True
         except GitError:
             # Push failure is non-fatal — the commit is still local
@@ -4021,7 +4021,7 @@ class CommandHandler:
             return err
         project_id = args.get("project_id", "")
         base_branch = args.get("base_branch") or (project.repo_default_branch if project else "main") or "main"
-        files = self.orchestrator.git.get_changed_files(checkout_path, base_branch)
+        files = await self.orchestrator.git.aget_changed_files(checkout_path, base_branch)
         return {
             "project_id": project_id,
             "base_branch": base_branch,
@@ -4038,8 +4038,8 @@ class CommandHandler:
         git = self.orchestrator.git
         count = args.get("count", 10)
 
-        log_output = git.get_recent_commits(checkout_path, count=count)
-        branch = git.get_current_branch(checkout_path)
+        log_output = await git.aget_recent_commits(checkout_path, count=count)
+        branch = await git.aget_current_branch(checkout_path)
 
         return {
             "project_id": args["project_id"],
@@ -4065,7 +4065,7 @@ class CommandHandler:
 
         if new_branch:
             try:
-                git.create_branch(checkout_path, new_branch)
+                await git.acreate_branch(checkout_path, new_branch)
             except GitError as e:
                 return {"error": str(e)}
             return {
@@ -4074,8 +4074,8 @@ class CommandHandler:
                 "message": f"Created and switched to branch '{new_branch}'",
             }
         else:
-            branches = git.list_branches(checkout_path)
-            current = git.get_current_branch(checkout_path)
+            branches = await git.alist_branches(checkout_path)
+            current = await git.aget_current_branch(checkout_path)
             return {
                 "project_id": args["project_id"],
                 "current_branch": current,
@@ -4092,12 +4092,12 @@ class CommandHandler:
         branch = args["branch"]
         git = self.orchestrator.git
 
-        old_branch = git.get_current_branch(checkout_path)
+        old_branch = await git.aget_current_branch(checkout_path)
         try:
-            git.checkout_branch(checkout_path, branch)
+            await git.acheckout_branch(checkout_path, branch)
         except GitError as e:
             return {"error": str(e)}
-        new_branch = git.get_current_branch(checkout_path)
+        new_branch = await git.aget_current_branch(checkout_path)
 
         return {
             "project_id": args["project_id"],
@@ -4117,10 +4117,10 @@ class CommandHandler:
 
         try:
             if base:
-                diff = git.get_diff(checkout_path, base)
+                diff = await git.aget_diff(checkout_path, base)
             else:
                 # Working tree diff (unstaged changes)
-                diff = git._run(["diff"], cwd=checkout_path)
+                diff = await git._arun(["diff"], cwd=checkout_path)
         except GitError as e:
             return {"error": str(e)}
 
@@ -4142,7 +4142,7 @@ class CommandHandler:
 
         git = self.orchestrator.git
         try:
-            git.create_branch(checkout_path, branch_name)
+            await git.acreate_branch(checkout_path, branch_name)
         except GitError as e:
             return {"error": str(e)}
 
@@ -4176,7 +4176,7 @@ class CommandHandler:
 
         git = self.orchestrator.git
         try:
-            git.checkout_branch(checkout_path, branch_name)
+            await git.acheckout_branch(checkout_path, branch_name)
         except GitError as e:
             return {"error": str(e)}
 
@@ -4202,7 +4202,7 @@ class CommandHandler:
 
         git = self.orchestrator.git
         try:
-            committed = git.commit_all(checkout_path, message)
+            committed = await git.acommit_all(checkout_path, message)
         except GitError as e:
             return {"error": str(e)}
 
@@ -4232,12 +4232,12 @@ class CommandHandler:
         git = self.orchestrator.git
         branch_name = args.get("branch_name")
         if not branch_name:
-            branch_name = git.get_current_branch(checkout_path)
+            branch_name = await git.aget_current_branch(checkout_path)
             if not branch_name:
                 return {"error": "Could not determine current branch"}
 
         try:
-            git.push_branch(checkout_path, branch_name)
+            await git.apush_branch(checkout_path, branch_name)
         except GitError as e:
             return {"error": str(e)}
 
@@ -4261,7 +4261,7 @@ class CommandHandler:
         default_branch = project.repo_default_branch if project else "main"
 
         try:
-            success = git.merge_branch(checkout_path, branch_name, default_branch)
+            success = await git.amerge_branch(checkout_path, branch_name, default_branch)
         except GitError as e:
             return {"error": str(e)}
 
@@ -4896,7 +4896,7 @@ class CommandHandler:
         repo_dir = str(Path(__file__).resolve().parent.parent)
 
         # git pull
-        pull = subprocess.run(
+        pull = await asyncio.to_thread(subprocess.run,
             ["git", "pull", "--ff-only"],
             capture_output=True, text=True, timeout=30,
             cwd=repo_dir,
@@ -4908,7 +4908,7 @@ class CommandHandler:
         pull_output = pull.stdout.strip()
 
         # pip install -e . to pick up any dependency changes
-        pip = subprocess.run(
+        pip = await asyncio.to_thread(subprocess.run,
             ["pip", "install", "-e", "."],
             capture_output=True, text=True, timeout=120,
             cwd=repo_dir,

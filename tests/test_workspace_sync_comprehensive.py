@@ -904,6 +904,7 @@ class TestOrchestratorMergeAndPushIntegration:
     def git(self):
         g = MagicMock(spec=GitManager)
         g.has_remote.return_value = True
+        g.ahas_remote = AsyncMock(return_value=True)
         return g
 
     @pytest.fixture
@@ -913,21 +914,23 @@ class TestOrchestratorMergeAndPushIntegration:
     @pytest.mark.asyncio
     async def test_merge_conflict_recovery_uses_correct_branch(self, orch, git):
         """Recovery after merge conflict uses the repo's configured default_branch."""
-        git.sync_and_merge.return_value = (False, "merge_conflict")
+        git.async_and_merge = AsyncMock(return_value=(False, "merge_conflict"))
+        git.arecover_workspace = AsyncMock()
         task = _make_task()
         repo = _make_repo(default_branch="develop")
 
         await orch._merge_and_push(task, repo, "/workspace")
 
         # Recovery should use "develop", not "main"
-        git.recover_workspace.assert_called_once_with("/workspace", "develop")
+        git.arecover_workspace.assert_called_once_with("/workspace", "develop")
 
     @pytest.mark.asyncio
     async def test_push_failure_recovery_and_notification(self, orch, git):
         """Push failure sends detailed notification and recovers workspace."""
-        git.sync_and_merge.return_value = (
+        git.async_and_merge = AsyncMock(return_value=(
             False, "push_failed: remote rejected (non-fast-forward)",
-        )
+        ))
+        git.arecover_workspace = AsyncMock()
         task = _make_task(id="my-task")
         repo = _make_repo()
 
@@ -940,19 +943,20 @@ class TestOrchestratorMergeAndPushIntegration:
         assert "5 attempts" in msg
         assert "diverged" in msg
 
-        # Recovery via recover_workspace
-        git.recover_workspace.assert_called_once_with("/workspace", "main")
+        # Recovery via arecover_workspace
+        git.arecover_workspace.assert_called_once_with("/workspace", "main")
 
     @pytest.mark.asyncio
     async def test_success_cleans_up_branch(self, orch, git):
         """Successful merge cleans up the task branch."""
-        git.sync_and_merge.return_value = (True, "")
+        git.async_and_merge = AsyncMock(return_value=(True, ""))
+        git.adelete_branch = AsyncMock()
         task = _make_task(branch_name="task/cleanup-test")
         repo = _make_repo()
 
         await orch._merge_and_push(task, repo, "/workspace")
 
-        git.delete_branch.assert_called_once_with(
+        git.adelete_branch.assert_called_once_with(
             "/workspace", "task/cleanup-test", delete_remote=True,
         )
         assert not orch._notifications
@@ -960,22 +964,23 @@ class TestOrchestratorMergeAndPushIntegration:
     @pytest.mark.asyncio
     async def test_link_repo_rebase_fallback_on_conflict(self, orch, git):
         """LINK repo: rebase fallback tried when merge conflicts."""
-        git.has_remote.return_value = False
+        git.ahas_remote = AsyncMock(return_value=False)
         # First merge fails, rebase succeeds, second merge succeeds
-        git.merge_branch.side_effect = [False, True]
-        git.rebase_onto.return_value = True
+        git.amerge_branch = AsyncMock(side_effect=[False, True])
+        git.arebase_onto = AsyncMock(return_value=True)
+        git.adelete_branch = AsyncMock()
 
         task = _make_task()
         repo = _make_repo(source_type=RepoSourceType.LINK)
 
         await orch._merge_and_push(task, repo, "/workspace")
 
-        git.rebase_onto.assert_called_once_with(
+        git.arebase_onto.assert_called_once_with(
             "/workspace", "task/test-branch", "main",
         )
-        assert git.merge_branch.call_count == 2
+        assert git.amerge_branch.call_count == 2
         assert not orch._notifications
-        git.delete_branch.assert_called_once_with(
+        git.adelete_branch.assert_called_once_with(
             "/workspace", "task/test-branch", delete_remote=False,
         )
 

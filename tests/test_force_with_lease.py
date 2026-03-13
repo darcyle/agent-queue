@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pathlib
 import subprocess
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -232,6 +232,7 @@ class TestCreatePrForTaskForceWithLease:
     def git(self):
         g = MagicMock(spec=GitManager)
         g.has_remote.return_value = True
+        g.ahas_remote = AsyncMock(return_value=True)
         return g
 
     @pytest.fixture
@@ -241,13 +242,14 @@ class TestCreatePrForTaskForceWithLease:
     @pytest.mark.asyncio
     async def test_push_uses_force_with_lease(self, orch, git):
         """_create_pr_for_task should push with force_with_lease=True."""
-        git.create_pr.return_value = "https://github.com/test/repo/pull/42"
+        git.acreate_pr = AsyncMock(return_value="https://github.com/test/repo/pull/42")
+        git.apush_branch = AsyncMock()
         task = _make_task()
         repo = _make_repo()
 
         result = await orch._create_pr_for_task(task, repo, "/workspace")
 
-        git.push_branch.assert_called_once_with(
+        git.apush_branch.assert_called_once_with(
             "/workspace", "task/test-branch", force_with_lease=True,
         )
         assert result == "https://github.com/test/repo/pull/42"
@@ -255,7 +257,7 @@ class TestCreatePrForTaskForceWithLease:
     @pytest.mark.asyncio
     async def test_push_failure_notifies(self, orch, git):
         """Push failure should send notification and return None."""
-        git.push_branch.side_effect = GitError("push rejected")
+        git.apush_branch = AsyncMock(side_effect=GitError("push rejected"))
         task = _make_task()
         repo = _make_repo()
 
@@ -269,13 +271,14 @@ class TestCreatePrForTaskForceWithLease:
     @pytest.mark.asyncio
     async def test_link_repo_skips_push(self, orch, git):
         """LINK repos should not push at all — just notify for manual review."""
-        git.has_remote.return_value = False
+        git.ahas_remote = AsyncMock(return_value=False)
+        git.apush_branch = AsyncMock()
         task = _make_task()
         repo = _make_repo(source_type=RepoSourceType.LINK)
 
         result = await orch._create_pr_for_task(task, repo, "/workspace")
 
-        git.push_branch.assert_not_called()
+        git.apush_branch.assert_not_called()
         assert result is None
         assert len(orch._notifications) == 1
         assert "Approval Required" in orch._notifications[0]
@@ -283,31 +286,33 @@ class TestCreatePrForTaskForceWithLease:
     @pytest.mark.asyncio
     async def test_pr_creation_after_push(self, orch, git):
         """After successful push, create_pr should be called with correct args."""
-        git.create_pr.return_value = "https://github.com/test/repo/pull/99"
+        git.apush_branch = AsyncMock()
+        git.acreate_pr = AsyncMock(return_value="https://github.com/test/repo/pull/99")
         task = _make_task(title="My Feature", description="A long description " * 50)
         repo = _make_repo(default_branch="develop")
 
         result = await orch._create_pr_for_task(task, repo, "/workspace")
 
-        git.push_branch.assert_called_once_with(
+        git.apush_branch.assert_called_once_with(
             "/workspace", "task/test-branch", force_with_lease=True,
         )
-        git.create_pr.assert_called_once()
-        call_kwargs = git.create_pr.call_args
+        git.acreate_pr.assert_called_once()
+        call_kwargs = git.acreate_pr.call_args
         assert call_kwargs[1]["base"] == "develop" or call_kwargs[0][3] == "develop"
         assert result == "https://github.com/test/repo/pull/99"
 
     @pytest.mark.asyncio
     async def test_pr_creation_failure_notifies(self, orch, git):
         """PR creation failure should notify but push already succeeded."""
-        git.create_pr.side_effect = GitError("gh not found")
+        git.apush_branch = AsyncMock()
+        git.acreate_pr = AsyncMock(side_effect=GitError("gh not found"))
         task = _make_task()
         repo = _make_repo()
 
         result = await orch._create_pr_for_task(task, repo, "/workspace")
 
         # Push should have been called (and succeeded, since no side_effect)
-        git.push_branch.assert_called_once()
+        git.apush_branch.assert_called_once()
         assert result is None
         assert len(orch._notifications) == 1
         assert "PR Creation Failed" in orch._notifications[0]

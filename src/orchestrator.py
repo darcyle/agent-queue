@@ -254,7 +254,7 @@ class Orchestrator:
         """Return the command handler or None. Used by interactive views."""
         return self._command_handler
 
-    def _get_default_branch(self, project, workspace: str | None = None) -> str:
+    async def _get_default_branch(self, project, workspace: str | None = None) -> str:
         """Get the default branch for a project, with dynamic detection fallback.
 
         First tries to use the project's configured ``repo_default_branch``.
@@ -274,9 +274,9 @@ class Orchestrator:
             return project.repo_default_branch
 
         # Try to detect from the workspace if it exists and is valid
-        if workspace and self.git.validate_checkout(workspace):
+        if workspace and await self.git.avalidate_checkout(workspace):
             try:
-                return self.git.get_default_branch(workspace)
+                return await self.git.aget_default_branch(workspace)
             except Exception:
                 pass  # Fall through to default
 
@@ -1520,7 +1520,7 @@ class Orchestrator:
             logger.warning("Failed to write sentinel to %s: %s", workspace, e)
 
         repo_url = project.repo_url if project else ""
-        default_branch = self._get_default_branch(project, workspace)
+        default_branch = await self._get_default_branch(project, workspace)
 
         # Branch naming strategy:
         # - Root tasks get a fresh branch derived from their ID + title.
@@ -1554,22 +1554,22 @@ class Orchestrator:
             #   (e.g. the developer's own repo).  The orchestrator only
             #   manages branch operations, never clones.
             if ws.source_type == RepoSourceType.CLONE:
-                if not self.git.validate_checkout(workspace):
+                if not await self.git.avalidate_checkout(workspace):
                     os.makedirs(os.path.dirname(workspace), exist_ok=True)
                     if repo_url:
-                        self.git.create_checkout(repo_url, workspace)
+                        await self.git.acreate_checkout(repo_url, workspace)
                     # Re-detect default branch now that the repo is cloned.
                     # The initial detection (above) may have fallen back to
                     # "main" because the workspace didn't exist yet.
-                    default_branch = self._get_default_branch(project, workspace)
+                    default_branch = await self._get_default_branch(project, workspace)
                 if reuse_branch:
-                    self.git.switch_to_branch(
+                    await self.git.aswitch_to_branch(
                         workspace, branch_name,
                         default_branch=default_branch,
                         rebase=rebase_on_switch,
                     )
                 else:
-                    self.git.prepare_for_task(workspace, branch_name, default_branch)
+                    await self.git.aprepare_for_task(workspace, branch_name, default_branch)
 
             elif ws.source_type == RepoSourceType.LINK:
                 if not os.path.isdir(workspace):
@@ -1577,15 +1577,15 @@ class Orchestrator:
                         f"**Warning:** Linked workspace path `{workspace}` does not exist.",
                         project_id=task.project_id,
                     )
-                elif self.git.validate_checkout(workspace):
+                elif await self.git.avalidate_checkout(workspace):
                     if reuse_branch:
-                        self.git.switch_to_branch(
+                        await self.git.aswitch_to_branch(
                             workspace, branch_name,
                             default_branch=default_branch,
                             rebase=rebase_on_switch,
                         )
                     else:
-                        self.git.prepare_for_task(workspace, branch_name, default_branch)
+                        await self.git.aprepare_for_task(workspace, branch_name, default_branch)
 
             # Update task branch in DB
             await self.db.update_task(task.id, branch_name=branch_name)
@@ -1627,14 +1627,14 @@ class Orchestrator:
         # Find workspace locked by this task
         ws = await self.db.get_workspace_for_task(task.id)
         workspace = ws.workspace_path if ws else None
-        if not workspace or not self.git.validate_checkout(workspace):
+        if not workspace or not await self.git.avalidate_checkout(workspace):
             return None
 
         if not task.branch_name:
             return None
 
         project = await self.db.get_project(task.project_id)
-        default_branch = self._get_default_branch(project, workspace)
+        default_branch = await self._get_default_branch(project, workspace)
         has_repo = bool(project and project.repo_url)
 
         # Commit any uncommitted work the agent left behind.  The agent is
@@ -1642,7 +1642,7 @@ class Orchestrator:
         # _execute_task), but this catch-all ensures nothing is lost if the
         # agent forgot or was killed before committing.  The commit message
         # includes the task ID for traceability in git log.
-        committed = self.git.commit_all(
+        committed = await self.git.acommit_all(
             workspace, f"agent: {task.title}\n\nTask-Id: {task.id}"
         )
         if not committed:
@@ -1683,7 +1683,7 @@ class Orchestrator:
                     await self._merge_and_push(task, repo, workspace)
             elif not is_last and repo and self.config.auto_task.rebase_between_subtasks:
                 try:
-                    synced = self.git.mid_chain_sync(
+                    synced = await self.git.amid_chain_sync(
                         workspace, task.branch_name, default_branch,
                     )
                     if synced:
@@ -1748,13 +1748,13 @@ class Orchestrator:
         For local-only repos this means checking out the default branch.
         Recovery is best-effort — failures are silently ignored.
         """
-        has_remote = self.git.has_remote(workspace)
+        has_remote = await self.git.ahas_remote(workspace)
 
         if has_remote:
             # sync_and_merge handles fetch, hard-reset, merge, and push
             # with retry.  max_retries counts *retries* after the first
             # attempt, so subtract 1 from _max_retries (total attempts).
-            success, error = self.git.sync_and_merge(
+            success, error = await self.git.async_and_merge(
                 workspace,
                 task.branch_name,
                 repo.default_branch,
@@ -1781,24 +1781,24 @@ class Orchestrator:
                 # branch may contain un-pushed merge commits; hard-resetting
                 # to origin discards them.
                 try:
-                    self.git.recover_workspace(workspace, repo.default_branch)
+                    await self.git.arecover_workspace(workspace, repo.default_branch)
                 except Exception:
                     pass  # best-effort recovery
                 return
         else:
             # LINK / INIT repos have no remote — just merge locally.
-            merged = self.git.merge_branch(
+            merged = await self.git.amerge_branch(
                 workspace, task.branch_name, repo.default_branch,
             )
             if not merged:
                 # Rebase fallback: rebase the task branch onto the default
                 # branch and retry the merge.  This resolves conflicts caused
                 # by the task branch being based on a stale snapshot.
-                rebased = self.git.rebase_onto(
+                rebased = await self.git.arebase_onto(
                     workspace, task.branch_name, repo.default_branch,
                 )
                 if rebased:
-                    merged = self.git.merge_branch(
+                    merged = await self.git.amerge_branch(
                         workspace, task.branch_name, repo.default_branch,
                     )
             if not merged:
@@ -1813,7 +1813,7 @@ class Orchestrator:
                 # already aborts the merge, but we make sure we're on the
                 # right branch as a safety net.
                 try:
-                    self.git._run(
+                    await self.git._arun(
                         ["checkout", repo.default_branch], cwd=workspace,
                     )
                 except Exception:
@@ -1822,7 +1822,7 @@ class Orchestrator:
 
             # Clean up the task branch after successful local merge
             try:
-                self.git.delete_branch(
+                await self.git.adelete_branch(
                     workspace, task.branch_name,
                     delete_remote=False,
                 )
@@ -1832,7 +1832,7 @@ class Orchestrator:
 
         # Clean up the task branch after successful merge + push
         try:
-            self.git.delete_branch(
+            await self.git.adelete_branch(
                 workspace, task.branch_name,
                 delete_remote=has_remote,
             )
@@ -1850,7 +1850,7 @@ class Orchestrator:
         safe here because the task branch is owned exclusively by this agent —
         no other user is expected to push to it (resolves **G5**).
         """
-        if not self.git.has_remote(workspace):
+        if not await self.git.ahas_remote(workspace):
             # No remote — notify user to review the branch locally
             await self._notify_channel(
                 f"**Approval Required:** Task `{task.id}` — {task.title}\n"
@@ -1865,7 +1865,7 @@ class Orchestrator:
             # branch was previously pushed (e.g. task retries or subtask
             # chains that push intermediate results).  Task branches are
             # owned by a single agent, so force-pushing is safe.
-            self.git.push_branch(
+            await self.git.apush_branch(
                 workspace, task.branch_name, force_with_lease=True,
             )
         except Exception as e:
@@ -1877,7 +1877,7 @@ class Orchestrator:
             return None
 
         try:
-            pr_url = self.git.create_pr(
+            pr_url = await self.git.acreate_pr(
                 workspace,
                 branch=task.branch_name,
                 title=task.title,
@@ -1893,7 +1893,7 @@ class Orchestrator:
             )
             return None
 
-    def _task_has_code_changes(
+    async def _task_has_code_changes(
         self, workspace: str, min_files: int = 3, min_lines: int = 50
     ) -> bool:
         """Check if the current branch has substantial non-plan code changes.
@@ -1912,21 +1912,21 @@ class Orchestrator:
             True if the branch has substantial code changes beyond plan files.
         """
         try:
-            if not self.git.validate_checkout(workspace):
+            if not await self.git.avalidate_checkout(workspace):
                 return False
 
-            default_branch = self.git.get_default_branch(workspace)
+            default_branch = await self.git.aget_default_branch(workspace)
 
             # Find the merge-base between HEAD and the default branch
             try:
-                merge_base = self.git._run(
+                merge_base = await self.git._arun(
                     ["merge-base", f"origin/{default_branch}", "HEAD"],
                     cwd=workspace,
                 )
             except GitError:
                 # No remote tracking or no common ancestor — can't compare
                 try:
-                    merge_base = self.git._run(
+                    merge_base = await self.git._arun(
                         ["merge-base", default_branch, "HEAD"],
                         cwd=workspace,
                     )
@@ -1934,7 +1934,7 @@ class Orchestrator:
                     return False
 
             # Get diff stat excluding plan files
-            stat_output = self.git._run(
+            stat_output = await self.git._arun(
                 [
                     "diff", "--stat", f"{merge_base}..HEAD",
                     "--", ".",
@@ -2013,8 +2013,8 @@ class Orchestrator:
         if config.skip_if_implemented:
             try:
                 project = await self.db.get_project(task.project_id) if task.project_id else None
-                default_branch = self._get_default_branch(project, workspace)
-                if self.git.has_non_plan_changes(workspace, default_branch):
+                default_branch = await self._get_default_branch(project, workspace)
+                if await self.git.ahas_non_plan_changes(workspace, default_branch):
                     logger.info(
                         "Auto-task: skipping task generation for task %s — "
                         "branch has substantial code changes beyond the plan file, "
@@ -2240,10 +2240,10 @@ class Orchestrator:
         """Pipeline phase: commit any uncommitted work."""
         if not ctx.workspace_path or not ctx.task.branch_name:
             return PhaseResult.CONTINUE
-        if not self.git.validate_checkout(ctx.workspace_path):
+        if not await self.git.avalidate_checkout(ctx.workspace_path):
             return PhaseResult.CONTINUE
 
-        committed = self.git.commit_all(
+        committed = await self.git.acommit_all(
             ctx.workspace_path,
             f"agent: {ctx.task.title}\n\nTask-Id: {ctx.task.id}",
         )
@@ -2258,7 +2258,7 @@ class Orchestrator:
         """Pipeline phase: merge task branch or create PR."""
         if not ctx.workspace_path or not ctx.task.branch_name:
             return PhaseResult.CONTINUE
-        if not self.git.validate_checkout(ctx.workspace_path):
+        if not await self.git.avalidate_checkout(ctx.workspace_path):
             return PhaseResult.CONTINUE
         if not ctx.repo:
             return PhaseResult.CONTINUE
@@ -2282,7 +2282,7 @@ class Orchestrator:
                 # Mid-chain: optional rebase
                 if ctx.repo and self.config.auto_task.rebase_between_subtasks:
                     try:
-                        synced = self.git.mid_chain_sync(
+                        synced = await self.git.amid_chain_sync(
                             ctx.workspace_path, task.branch_name,
                             ctx.default_branch,
                         )
@@ -2311,10 +2311,10 @@ class Orchestrator:
         repo = ctx.repo
         workspace = ctx.workspace_path
 
-        has_remote = self.git.has_remote(workspace)
+        has_remote = await self.git.ahas_remote(workspace)
 
         if has_remote:
-            success, error = self.git.sync_and_merge(
+            success, error = await self.git.async_and_merge(
                 workspace, task.branch_name, repo.default_branch,
                 max_retries=2,
             )
@@ -2339,20 +2339,20 @@ class Orchestrator:
                 )
                 # Recovery
                 try:
-                    self.git.recover_workspace(workspace, repo.default_branch)
+                    await self.git.arecover_workspace(workspace, repo.default_branch)
                 except Exception:
                     pass
                 return PhaseResult.STOP
         else:
-            merged = self.git.merge_branch(
+            merged = await self.git.amerge_branch(
                 workspace, task.branch_name, repo.default_branch,
             )
             if not merged:
-                rebased = self.git.rebase_onto(
+                rebased = await self.git.arebase_onto(
                     workspace, task.branch_name, repo.default_branch,
                 )
                 if rebased:
-                    merged = self.git.merge_branch(
+                    merged = await self.git.amerge_branch(
                         workspace, task.branch_name, repo.default_branch,
                     )
             if not merged:
@@ -2373,7 +2373,7 @@ class Orchestrator:
                     task.id, preferred_workspace_id=ctx.workspace_id,
                 )
                 try:
-                    self.git._run(
+                    await self.git._arun(
                         ["checkout", repo.default_branch], cwd=workspace,
                     )
                 except Exception:
@@ -2382,7 +2382,7 @@ class Orchestrator:
 
             # Clean up branch after successful local merge
             try:
-                self.git.delete_branch(
+                await self.git.adelete_branch(
                     workspace, task.branch_name, delete_remote=False,
                 )
             except Exception:
@@ -2392,7 +2392,7 @@ class Orchestrator:
 
         # Clean up branch after successful remote merge
         try:
-            self.git.delete_branch(
+            await self.git.adelete_branch(
                 workspace, task.branch_name, delete_remote=has_remote,
             )
         except Exception:
@@ -2437,7 +2437,7 @@ class Orchestrator:
             return
 
         project = await self.db.get_project(task.project_id)
-        default_branch = self._get_default_branch(project, ws.workspace_path)
+        default_branch = await self._get_default_branch(project, ws.workspace_path)
         has_repo = bool(project and project.repo_url)
         if not has_repo:
             return
@@ -2616,7 +2616,7 @@ class Orchestrator:
             return
 
         try:
-            merged = self.git.check_pr_merged(checkout_path, task.pr_url)
+            merged = await self.git.acheck_pr_merged(checkout_path, task.pr_url)
         except Exception as e:
             logger.warning("Error checking PR for task %s: %s", task.id, e)
             return
@@ -2635,7 +2635,7 @@ class Orchestrator:
             # Clean up the task branch (remote may already be deleted by GitHub)
             if task.branch_name:
                 try:
-                    self.git.delete_branch(
+                    await self.git.adelete_branch(
                         checkout_path, task.branch_name, delete_remote=True,
                     )
                 except Exception:
@@ -3132,7 +3132,7 @@ class Orchestrator:
             # Build pipeline context
             ws = await self.db.get_workspace_for_task(task.id)
             project = await self.db.get_project(task.project_id)
-            default_branch = self._get_default_branch(project, ws.workspace_path if ws else workspace)
+            default_branch = await self._get_default_branch(project, ws.workspace_path if ws else workspace)
             has_repo = bool(project and project.repo_url)
 
             repo = RepoConfig(

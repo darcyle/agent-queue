@@ -10,7 +10,7 @@ Now that CLONE repos delegate to ``sync_and_merge()``, these tests verify:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -68,6 +68,7 @@ class TestMergeAndPushClone:
     def git(self):
         g = MagicMock(spec=GitManager)
         g.has_remote.return_value = True
+        g.ahas_remote = AsyncMock(return_value=True)
         return g
 
     @pytest.fixture
@@ -77,17 +78,18 @@ class TestMergeAndPushClone:
     @pytest.mark.asyncio
     async def test_successful_merge_and_push(self, orch, git):
         """Happy path: sync_and_merge succeeds, branch is cleaned up."""
-        git.sync_and_merge.return_value = (True, "")
+        git.async_and_merge = AsyncMock(return_value=(True, ""))
+        git.adelete_branch = AsyncMock()
         task = _make_task()
         repo = _make_repo()
 
         await orch._merge_and_push(task, repo, "/workspace")
 
         # Default _max_retries=3 → max_retries=2 passed to sync_and_merge
-        git.sync_and_merge.assert_called_once_with(
+        git.async_and_merge.assert_called_once_with(
             "/workspace", "task/test-branch", "main", max_retries=2,
         )
-        git.delete_branch.assert_called_once_with(
+        git.adelete_branch.assert_called_once_with(
             "/workspace", "task/test-branch", delete_remote=True,
         )
         assert not orch._notifications
@@ -95,13 +97,15 @@ class TestMergeAndPushClone:
     @pytest.mark.asyncio
     async def test_merge_conflict_notifies(self, orch, git):
         """Merge conflict should send notification suggesting manual resolution."""
-        git.sync_and_merge.return_value = (False, "merge_conflict")
+        git.async_and_merge = AsyncMock(return_value=(False, "merge_conflict"))
+        git.arecover_workspace = AsyncMock()
+        git.adelete_branch = AsyncMock()
         task = _make_task()
         repo = _make_repo()
 
         await orch._merge_and_push(task, repo, "/workspace")
 
-        git.delete_branch.assert_not_called()
+        git.adelete_branch.assert_not_called()
         assert len(orch._notifications) == 1
         assert "Merge Conflict" in orch._notifications[0]
         assert "task/test-branch" in orch._notifications[0]
@@ -110,13 +114,15 @@ class TestMergeAndPushClone:
     @pytest.mark.asyncio
     async def test_push_failed_notifies_with_details(self, orch, git):
         """Push failure should notify with details and divergence warning."""
-        git.sync_and_merge.return_value = (False, "push_failed: rejected by remote")
+        git.async_and_merge = AsyncMock(return_value=(False, "push_failed: rejected by remote"))
+        git.arecover_workspace = AsyncMock()
+        git.adelete_branch = AsyncMock()
         task = _make_task()
         repo = _make_repo()
 
         await orch._merge_and_push(task, repo, "/workspace")
 
-        git.delete_branch.assert_not_called()
+        git.adelete_branch.assert_not_called()
         assert len(orch._notifications) == 1
         msg = orch._notifications[0]
         assert "Push Failed" in msg
@@ -126,7 +132,8 @@ class TestMergeAndPushClone:
     @pytest.mark.asyncio
     async def test_push_failed_includes_attempt_count(self, orch, git):
         """Notification should include total attempt count from _max_retries."""
-        git.sync_and_merge.return_value = (False, "push_failed: timeout")
+        git.async_and_merge = AsyncMock(return_value=(False, "push_failed: timeout"))
+        git.arecover_workspace = AsyncMock()
         task = _make_task()
         repo = _make_repo()
 
@@ -135,88 +142,95 @@ class TestMergeAndPushClone:
         assert len(orch._notifications) == 1
         assert "5 attempts" in orch._notifications[0]
         # max_retries = 5 - 1 = 4
-        git.sync_and_merge.assert_called_once_with(
+        git.async_and_merge.assert_called_once_with(
             "/workspace", "task/test-branch", "main", max_retries=4,
         )
 
     @pytest.mark.asyncio
     async def test_max_retries_maps_correctly(self, orch, git):
         """_max_retries=N should pass max_retries=N-1 to sync_and_merge."""
-        git.sync_and_merge.return_value = (True, "")
+        git.async_and_merge = AsyncMock(return_value=(True, ""))
+        git.adelete_branch = AsyncMock()
         task = _make_task()
         repo = _make_repo()
 
         await orch._merge_and_push(task, repo, "/workspace", _max_retries=1)
 
-        git.sync_and_merge.assert_called_once_with(
+        git.async_and_merge.assert_called_once_with(
             "/workspace", "task/test-branch", "main", max_retries=0,
         )
 
     @pytest.mark.asyncio
     async def test_max_retries_zero_clamps(self, orch, git):
         """_max_retries=0 should clamp max_retries to 0 (no negative)."""
-        git.sync_and_merge.return_value = (True, "")
+        git.async_and_merge = AsyncMock(return_value=(True, ""))
+        git.adelete_branch = AsyncMock()
         task = _make_task()
         repo = _make_repo()
 
         await orch._merge_and_push(task, repo, "/workspace", _max_retries=0)
 
-        git.sync_and_merge.assert_called_once_with(
+        git.async_and_merge.assert_called_once_with(
             "/workspace", "task/test-branch", "main", max_retries=0,
         )
 
     @pytest.mark.asyncio
     async def test_sync_and_merge_not_called_for_link(self, orch, git):
         """LINK repos should never call sync_and_merge."""
-        git.has_remote.return_value = False
-        git.merge_branch.return_value = True
+        git.ahas_remote = AsyncMock(return_value=False)
+        git.amerge_branch = AsyncMock(return_value=True)
+        git.adelete_branch = AsyncMock()
         task = _make_task()
         repo = _make_repo(source_type=RepoSourceType.LINK)
 
         await orch._merge_and_push(task, repo, "/workspace")
 
-        git.sync_and_merge.assert_not_called()
+        git.async_and_merge = AsyncMock()
+        git.async_and_merge.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_merge_conflict_resets_workspace(self, orch, git):
         """After merge conflict, workspace should be reset to origin state."""
-        git.sync_and_merge.return_value = (False, "merge_conflict")
+        git.async_and_merge = AsyncMock(return_value=(False, "merge_conflict"))
+        git.arecover_workspace = AsyncMock()
         task = _make_task()
         repo = _make_repo()
 
         await orch._merge_and_push(task, repo, "/workspace")
 
         # Recovery via recover_workspace
-        git.recover_workspace.assert_called_once_with("/workspace", "main")
+        git.arecover_workspace.assert_called_once_with("/workspace", "main")
 
     @pytest.mark.asyncio
     async def test_push_failed_resets_workspace(self, orch, git):
         """After push failure, workspace should be reset to origin state."""
-        git.sync_and_merge.return_value = (False, "push_failed: rejected")
+        git.async_and_merge = AsyncMock(return_value=(False, "push_failed: rejected"))
+        git.arecover_workspace = AsyncMock()
         task = _make_task()
         repo = _make_repo()
 
         await orch._merge_and_push(task, repo, "/workspace")
 
         # Recovery via recover_workspace
-        git.recover_workspace.assert_called_once_with("/workspace", "main")
+        git.arecover_workspace.assert_called_once_with("/workspace", "main")
 
     @pytest.mark.asyncio
     async def test_recovery_uses_repo_default_branch(self, orch, git):
         """Recovery should use the repo's configured default branch, not 'main'."""
-        git.sync_and_merge.return_value = (False, "push_failed: rejected")
+        git.async_and_merge = AsyncMock(return_value=(False, "push_failed: rejected"))
+        git.arecover_workspace = AsyncMock()
         task = _make_task()
         repo = _make_repo(default_branch="develop")
 
         await orch._merge_and_push(task, repo, "/workspace")
 
-        git.recover_workspace.assert_called_once_with("/workspace", "develop")
+        git.arecover_workspace.assert_called_once_with("/workspace", "develop")
 
     @pytest.mark.asyncio
     async def test_recovery_failure_silently_ignored(self, orch, git):
         """Recovery errors should be silently swallowed (best-effort)."""
-        git.sync_and_merge.return_value = (False, "push_failed: rejected")
-        git.recover_workspace.side_effect = Exception("recovery failed")
+        git.async_and_merge = AsyncMock(return_value=(False, "push_failed: rejected"))
+        git.arecover_workspace = AsyncMock(side_effect=Exception("recovery failed"))
         task = _make_task()
         repo = _make_repo()
 
@@ -229,14 +243,16 @@ class TestMergeAndPushClone:
     @pytest.mark.asyncio
     async def test_success_does_not_trigger_recovery(self, orch, git):
         """Successful merge-and-push should NOT invoke recovery."""
-        git.sync_and_merge.return_value = (True, "")
+        git.async_and_merge = AsyncMock(return_value=(True, ""))
+        git.adelete_branch = AsyncMock()
+        git._arun = AsyncMock()
         task = _make_task()
         repo = _make_repo()
 
         await orch._merge_and_push(task, repo, "/workspace")
 
-        # _run should not be called (recovery is only on failure)
-        git._run.assert_not_called()
+        # _arun should not be called (recovery is only on failure)
+        git._arun.assert_not_called()
 
 
 class TestMergeAndPushLink:
@@ -246,6 +262,7 @@ class TestMergeAndPushLink:
     def git(self):
         g = MagicMock(spec=GitManager)
         g.has_remote.return_value = False
+        g.ahas_remote = AsyncMock(return_value=False)
         return g
 
     @pytest.fixture
@@ -255,18 +272,20 @@ class TestMergeAndPushLink:
     @pytest.mark.asyncio
     async def test_link_repo_merges_locally(self, orch, git):
         """LINK repos should merge locally without pushing or retrying."""
-        git.merge_branch.return_value = True
+        git.amerge_branch = AsyncMock(return_value=True)
+        git.adelete_branch = AsyncMock()
+        git.async_and_merge = AsyncMock()
         task = _make_task()
         repo = _make_repo(source_type=RepoSourceType.LINK)
 
         await orch._merge_and_push(task, repo, "/workspace")
 
-        git.merge_branch.assert_called_once_with(
+        git.amerge_branch.assert_called_once_with(
             "/workspace", "task/test-branch", "main",
         )
-        git.sync_and_merge.assert_not_called()
+        git.async_and_merge.assert_not_called()
         # Branch cleanup with delete_remote=False for LINK repos
-        git.delete_branch.assert_called_once_with(
+        git.adelete_branch.assert_called_once_with(
             "/workspace", "task/test-branch", delete_remote=False,
         )
         assert not orch._notifications
@@ -274,13 +293,16 @@ class TestMergeAndPushLink:
     @pytest.mark.asyncio
     async def test_link_repo_merge_conflict_notifies(self, orch, git):
         """LINK repo merge conflict should send notification."""
-        git.merge_branch.return_value = False
+        git.amerge_branch = AsyncMock(return_value=False)
+        git.arebase_onto = AsyncMock(return_value=False)
+        git.adelete_branch = AsyncMock()
+        git._arun = AsyncMock()
         task = _make_task()
         repo = _make_repo(source_type=RepoSourceType.LINK)
 
         await orch._merge_and_push(task, repo, "/workspace")
 
-        git.delete_branch.assert_not_called()
+        git.adelete_branch.assert_not_called()
         assert len(orch._notifications) == 1
         assert "Merge Conflict" in orch._notifications[0]
         assert "task/test-branch" in orch._notifications[0]
@@ -289,8 +311,8 @@ class TestMergeAndPushLink:
     @pytest.mark.asyncio
     async def test_link_repo_delete_branch_failure_ignored(self, orch, git):
         """Branch cleanup failure on LINK repos should be silently ignored."""
-        git.merge_branch.return_value = True
-        git.delete_branch.side_effect = Exception("branch not found")
+        git.amerge_branch = AsyncMock(return_value=True)
+        git.adelete_branch = AsyncMock(side_effect=Exception("branch not found"))
         task = _make_task()
         repo = _make_repo(source_type=RepoSourceType.LINK)
 
@@ -302,17 +324,19 @@ class TestMergeAndPushLink:
     @pytest.mark.asyncio
     async def test_link_repo_conflict_recovery_checks_out_default(self, orch, git):
         """LINK repo merge conflict recovery should checkout default branch."""
-        git.merge_branch.return_value = False
+        git.amerge_branch = AsyncMock(return_value=False)
+        git.arebase_onto = AsyncMock(return_value=False)
+        git._arun = AsyncMock()
         task = _make_task()
         repo = _make_repo(source_type=RepoSourceType.LINK)
 
         await orch._merge_and_push(task, repo, "/workspace")
 
         # Recovery: checkout default branch (no hard reset — LINK has no origin)
-        git._run.assert_any_call(["checkout", "main"], cwd="/workspace")
+        git._arun.assert_any_call(["checkout", "main"], cwd="/workspace")
         # Should NOT attempt hard reset to origin (LINK repos have no remote)
         reset_calls = [
-            c for c in git._run.call_args_list
+            c for c in git._arun.call_args_list
             if c[0][0][:2] == ["reset", "--hard"]
         ]
         assert len(reset_calls) == 0
@@ -320,8 +344,9 @@ class TestMergeAndPushLink:
     @pytest.mark.asyncio
     async def test_link_repo_conflict_recovery_failure_ignored(self, orch, git):
         """LINK repo recovery errors should be silently swallowed."""
-        git.merge_branch.return_value = False
-        git._run.side_effect = Exception("checkout failed")
+        git.amerge_branch = AsyncMock(return_value=False)
+        git.arebase_onto = AsyncMock(return_value=False)
+        git._arun = AsyncMock(side_effect=Exception("checkout failed"))
         task = _make_task()
         repo = _make_repo(source_type=RepoSourceType.LINK)
 
@@ -334,11 +359,13 @@ class TestMergeAndPushLink:
     @pytest.mark.asyncio
     async def test_link_repo_success_does_not_trigger_recovery(self, orch, git):
         """Successful LINK merge should NOT invoke recovery."""
-        git.merge_branch.return_value = True
+        git.amerge_branch = AsyncMock(return_value=True)
+        git.adelete_branch = AsyncMock()
+        git._arun = AsyncMock()
         task = _make_task()
         repo = _make_repo(source_type=RepoSourceType.LINK)
 
         await orch._merge_and_push(task, repo, "/workspace")
 
-        # _run should not be called (no recovery needed on success)
-        git._run.assert_not_called()
+        # _arun should not be called (no recovery needed on success)
+        git._arun.assert_not_called()

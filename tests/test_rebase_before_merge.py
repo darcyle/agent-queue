@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pathlib
 import subprocess
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -480,6 +480,7 @@ class TestLinkRepoRebaseFallback:
     def git(self):
         g = MagicMock(spec=GitManager)
         g.has_remote.return_value = False
+        g.ahas_remote = AsyncMock(return_value=False)
         return g
 
     @pytest.fixture
@@ -492,40 +493,42 @@ class TestLinkRepoRebaseFallback:
         from src.models import RepoSourceType
 
         # First merge fails, rebase succeeds, second merge succeeds
-        git.merge_branch.side_effect = [False, True]
-        git.rebase_onto.return_value = True
+        git.amerge_branch = AsyncMock(side_effect=[False, True])
+        git.arebase_onto = AsyncMock(return_value=True)
+        git.adelete_branch = AsyncMock()
 
         task = _make_task()
         repo = _make_repo(source_type=RepoSourceType.LINK)
 
         await orch._merge_and_push(task, repo, "/workspace")
 
-        git.rebase_onto.assert_called_once_with(
+        git.arebase_onto.assert_called_once_with(
             "/workspace", "task/test-branch", "main",
         )
-        # merge_branch called twice: initial + retry
-        assert git.merge_branch.call_count == 2
+        # amerge_branch called twice: initial + retry
+        assert git.amerge_branch.call_count == 2
         # No conflict notification (rebase resolved it)
         assert not orch._notifications
         # Branch cleanup happens
-        git.delete_branch.assert_called_once()
+        git.adelete_branch.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_link_rebase_fails_still_notifies(self, orch, git):
         """LINK repo: if rebase also fails, conflict notification is sent."""
         from src.models import RepoSourceType
 
-        git.merge_branch.return_value = False
-        git.rebase_onto.return_value = False
+        git.amerge_branch = AsyncMock(return_value=False)
+        git.arebase_onto = AsyncMock(return_value=False)
+        git._arun = AsyncMock()
 
         task = _make_task()
         repo = _make_repo(source_type=RepoSourceType.LINK)
 
         await orch._merge_and_push(task, repo, "/workspace")
 
-        git.rebase_onto.assert_called_once()
+        git.arebase_onto.assert_called_once()
         # Only one merge attempt (rebase failed, so no retry)
-        assert git.merge_branch.call_count == 1
+        assert git.amerge_branch.call_count == 1
         # Conflict notification sent
         assert len(orch._notifications) == 1
         assert "Merge Conflict" in orch._notifications[0]
@@ -535,14 +538,16 @@ class TestLinkRepoRebaseFallback:
         """LINK repo: no rebase when direct merge succeeds."""
         from src.models import RepoSourceType
 
-        git.merge_branch.return_value = True
+        git.amerge_branch = AsyncMock(return_value=True)
+        git.arebase_onto = AsyncMock()
+        git.adelete_branch = AsyncMock()
 
         task = _make_task()
         repo = _make_repo(source_type=RepoSourceType.LINK)
 
         await orch._merge_and_push(task, repo, "/workspace")
 
-        git.rebase_onto.assert_not_called()
+        git.arebase_onto.assert_not_called()
         assert not orch._notifications
 
     @pytest.mark.asyncio
@@ -551,8 +556,9 @@ class TestLinkRepoRebaseFallback:
         from src.models import RepoSourceType
 
         # Both merges fail, rebase succeeds
-        git.merge_branch.return_value = False
-        git.rebase_onto.return_value = True
+        git.amerge_branch = AsyncMock(return_value=False)
+        git.arebase_onto = AsyncMock(return_value=True)
+        git._arun = AsyncMock()
 
         task = _make_task()
         repo = _make_repo(source_type=RepoSourceType.LINK)
@@ -560,7 +566,7 @@ class TestLinkRepoRebaseFallback:
         await orch._merge_and_push(task, repo, "/workspace")
 
         # Both merge attempts fail
-        assert git.merge_branch.call_count == 2
+        assert git.amerge_branch.call_count == 2
         # Notification sent for persistent conflict
         assert len(orch._notifications) == 1
         assert "Merge Conflict" in orch._notifications[0]
@@ -570,18 +576,20 @@ class TestLinkRepoRebaseFallback:
         """CLONE repo: rebase fallback is handled inside sync_and_merge, not orchestrator."""
         from src.models import RepoSourceType
 
-        git.has_remote.return_value = True
-        git.sync_and_merge.return_value = (True, "")
+        git.ahas_remote = AsyncMock(return_value=True)
+        git.async_and_merge = AsyncMock(return_value=(True, ""))
+        git.adelete_branch = AsyncMock()
+        git.arebase_onto = AsyncMock()
 
         task = _make_task()
         repo = _make_repo(source_type=RepoSourceType.CLONE)
 
         await orch._merge_and_push(task, repo, "/workspace")
 
-        # CLONE path uses sync_and_merge (which internally handles rebase)
-        git.sync_and_merge.assert_called_once()
-        # rebase_onto should NOT be called by orchestrator for CLONE repos
-        git.rebase_onto.assert_not_called()
+        # CLONE path uses async_and_merge (which internally handles rebase)
+        git.async_and_merge.assert_called_once()
+        # arebase_onto should NOT be called by orchestrator for CLONE repos
+        git.arebase_onto.assert_not_called()
 
 
 # ===========================================================================
