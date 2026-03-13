@@ -517,21 +517,12 @@ class HookEngine:
             )
             await self.db.update_hook_run(run.id, prompt_sent=prompt)
 
-            # 4. Invoke LLM — with progress reporting to Discord
+            # 4. Invoke LLM — track tool calls for the completion summary
             tool_names: list[str] = []
 
             async def _on_hook_progress(event: str, detail: str | None) -> None:
                 if event == "tool_use" and detail:
                     tool_names.append(detail)
-                    if orchestrator:
-                        steps = " → ".join(f"`{t}`" for t in tool_names)
-                        try:
-                            await orchestrator._notify_channel(
-                                f"🪝 Hook **{hook.name}** 🔧 {steps}",
-                                project_id=hook.project_id,
-                            )
-                        except Exception:
-                            pass
 
             response, tokens = await self._invoke_llm(
                 hook, prompt, on_progress=_on_hook_progress,
