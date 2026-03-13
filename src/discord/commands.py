@@ -5693,6 +5693,386 @@ def setup_commands(bot: commands.Bot) -> None:
             )
 
     # ===================================================================
+    # FILE BROWSER & EDITOR
+    # ===================================================================
+
+    def _format_file_size(size: int) -> str:
+        """Format bytes into a human-readable string."""
+        if size < 1024:
+            return f"{size} B"
+        elif size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        else:
+            return f"{size / (1024 * 1024):.1f} MB"
+
+    class _FileBrowserView(discord.ui.View):
+        """Interactive view for browsing repository files and directories."""
+
+        def __init__(
+            self,
+            handler,
+            project_id: str,
+            current_path: str,
+            directories: list[str],
+            files: list[dict],
+            workspace_path: str,
+        ):
+            super().__init__(timeout=300)
+            self._handler = handler
+            self._project_id = project_id
+            self._current_path = current_path
+            self._workspace_path = workspace_path
+            self._directories = directories
+            self._files = files
+            self._dir_page = 0
+            self._file_page = 0
+            self._items_per_page = 20
+            self._build_buttons()
+
+        def _build_buttons(self):
+            self.clear_items()
+
+            # Parent directory button (row 0)
+            if self._current_path and self._current_path != "/":
+                parent = discord.ui.Button(
+                    label="⬆ Parent Directory",
+                    style=discord.ButtonStyle.secondary,
+                    row=0,
+                )
+                parent.callback = self._go_parent
+                self.add_item(parent)
+
+            # Directory select menu (row 1) — show up to 25 dirs per page
+            dir_start = self._dir_page * self._items_per_page
+            dir_end = dir_start + self._items_per_page
+            page_dirs = self._directories[dir_start:dir_end]
+            if page_dirs:
+                dir_select = discord.ui.Select(
+                    placeholder=f"📁 Navigate to directory... (page {self._dir_page + 1})",
+                    options=[
+                        discord.SelectOption(label=d[:100], value=d[:100], emoji="📁")
+                        for d in page_dirs
+                    ],
+                    row=1,
+                )
+                dir_select.callback = self._navigate_dir
+                self.add_item(dir_select)
+
+            # File select menu (row 2) — show up to 25 files per page
+            file_start = self._file_page * self._items_per_page
+            file_end = file_start + self._items_per_page
+            page_files = self._files[file_start:file_end]
+            if page_files:
+                file_select = discord.ui.Select(
+                    placeholder=f"📄 View/edit file... (page {self._file_page + 1})",
+                    options=[
+                        discord.SelectOption(
+                            label=f["name"][:100],
+                            value=f["name"][:100],
+                            description=_format_file_size(f.get("size", 0)),
+                            emoji="📄",
+                        )
+                        for f in page_files
+                    ],
+                    row=2,
+                )
+                file_select.callback = self._view_file
+                self.add_item(file_select)
+
+            # Pagination buttons (row 3)
+            total_dir_pages = max(1, -(-len(self._directories) // self._items_per_page))
+            total_file_pages = max(1, -(-len(self._files) // self._items_per_page))
+
+            if total_dir_pages > 1:
+                if self._dir_page > 0:
+                    prev_dir = discord.ui.Button(
+                        label="◀ Prev Dirs", style=discord.ButtonStyle.secondary, row=3,
+                    )
+                    prev_dir.callback = self._prev_dir_page
+                    self.add_item(prev_dir)
+                if self._dir_page < total_dir_pages - 1:
+                    next_dir = discord.ui.Button(
+                        label="Next Dirs ▶", style=discord.ButtonStyle.secondary, row=3,
+                    )
+                    next_dir.callback = self._next_dir_page
+                    self.add_item(next_dir)
+
+            if total_file_pages > 1:
+                if self._file_page > 0:
+                    prev_file = discord.ui.Button(
+                        label="◀ Prev Files", style=discord.ButtonStyle.secondary, row=3,
+                    )
+                    prev_file.callback = self._prev_file_page
+                    self.add_item(prev_file)
+                if self._file_page < total_file_pages - 1:
+                    next_file = discord.ui.Button(
+                        label="Next Files ▶", style=discord.ButtonStyle.secondary, row=3,
+                    )
+                    next_file.callback = self._next_file_page
+                    self.add_item(next_file)
+
+        def _build_embed(self) -> discord.Embed:
+            path_display = self._current_path or "/"
+            embed = discord.Embed(
+                title=f"📂 {path_display}",
+                description=f"**Project:** `{self._project_id}`",
+                color=0x3498DB,
+            )
+            dir_count = len(self._directories)
+            file_count = len(self._files)
+            embed.add_field(
+                name="Contents",
+                value=f"📁 {dir_count} director{'y' if dir_count == 1 else 'ies'}, "
+                      f"📄 {file_count} file{'s' if file_count != 1 else ''}",
+                inline=False,
+            )
+            return embed
+
+        async def _refresh(self, interaction: discord.Interaction):
+            result = await self._handler.execute(
+                "list_directory",
+                {"project_id": self._project_id, "path": self._current_path},
+            )
+            if "error" in result:
+                await interaction.response.edit_message(
+                    content=f"❌ {result['error']}", embed=None, view=None,
+                )
+                return
+            self._directories = result["directories"]
+            self._files = result["files"]
+            self._dir_page = 0
+            self._file_page = 0
+            self._build_buttons()
+            await interaction.response.edit_message(
+                content=None, embed=self._build_embed(), view=self,
+            )
+
+        async def _go_parent(self, interaction: discord.Interaction):
+            if self._current_path and self._current_path != "/":
+                parts = self._current_path.rstrip("/").rsplit("/", 1)
+                self._current_path = parts[0] if len(parts) > 1 else ""
+            else:
+                self._current_path = ""
+            await self._refresh(interaction)
+
+        async def _navigate_dir(self, interaction: discord.Interaction):
+            selected = interaction.data["values"][0]
+            if self._current_path and self._current_path != "/":
+                self._current_path = f"{self._current_path}/{selected}"
+            else:
+                self._current_path = selected
+            await self._refresh(interaction)
+
+        async def _view_file(self, interaction: discord.Interaction):
+            selected = interaction.data["values"][0]
+            if self._current_path and self._current_path != "/":
+                file_rel = f"{self._current_path}/{selected}"
+            else:
+                file_rel = selected
+            file_full = f"{self._workspace_path}/{file_rel}"
+
+            result = await self._handler.execute(
+                "read_file", {"path": file_full, "max_lines": 100},
+            )
+            if "error" in result:
+                await interaction.response.send_message(
+                    embed=error_embed("Error", description=result["error"]),
+                    ephemeral=True,
+                )
+                return
+
+            content = result.get("content", "")
+            # Show file content with an Edit button
+            view = _FileViewActions(
+                handler=self._handler,
+                file_path=file_full,
+                file_rel=file_rel,
+                project_id=self._project_id,
+            )
+            # Truncate for display
+            display = content[:3800]
+            if len(content) > 3800:
+                display += "\n... (truncated)"
+            await interaction.response.send_message(
+                f"### 📄 `{file_rel}`\n```\n{display}\n```",
+                view=view,
+                ephemeral=True,
+            )
+
+        async def _prev_dir_page(self, interaction: discord.Interaction):
+            self._dir_page = max(0, self._dir_page - 1)
+            self._build_buttons()
+            await interaction.response.edit_message(embed=self._build_embed(), view=self)
+
+        async def _next_dir_page(self, interaction: discord.Interaction):
+            self._dir_page += 1
+            self._build_buttons()
+            await interaction.response.edit_message(embed=self._build_embed(), view=self)
+
+        async def _prev_file_page(self, interaction: discord.Interaction):
+            self._file_page = max(0, self._file_page - 1)
+            self._build_buttons()
+            await interaction.response.edit_message(embed=self._build_embed(), view=self)
+
+        async def _next_file_page(self, interaction: discord.Interaction):
+            self._file_page += 1
+            self._build_buttons()
+            await interaction.response.edit_message(embed=self._build_embed(), view=self)
+
+    class _FileViewActions(discord.ui.View):
+        """View shown when a file is selected — offers an Edit button."""
+
+        def __init__(self, handler, file_path: str, file_rel: str, project_id: str):
+            super().__init__(timeout=300)
+            self._handler = handler
+            self._file_path = file_path
+            self._file_rel = file_rel
+            self._project_id = project_id
+
+        @discord.ui.button(label="✏️ Edit File", style=discord.ButtonStyle.primary)
+        async def edit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            # Read the current content for the modal
+            result = await self._handler.execute(
+                "read_file", {"path": self._file_path, "max_lines": 4000},
+            )
+            if "error" in result:
+                await interaction.response.send_message(
+                    embed=error_embed("Error", description=result["error"]),
+                    ephemeral=True,
+                )
+                return
+            content = result.get("content", "")
+            # Discord modal text inputs have a 4000 char limit
+            if len(content) > 4000:
+                content = content[:4000]
+            modal = _FileEditModal(
+                handler=self._handler,
+                file_path=self._file_path,
+                file_rel=self._file_rel,
+                current_content=content,
+            )
+            await interaction.response.send_modal(modal)
+
+    class _FileEditModal(discord.ui.Modal, title="Edit File"):
+        """Modal dialog for editing a text file's contents."""
+
+        content_input = discord.ui.TextInput(
+            label="File Content",
+            style=discord.TextStyle.long,
+            required=True,
+            max_length=4000,
+        )
+
+        def __init__(self, handler, file_path: str, file_rel: str, current_content: str):
+            super().__init__()
+            self._handler = handler
+            self._file_path = file_path
+            self._file_rel = file_rel
+            self.content_input.default = current_content
+            self.title = f"Edit: {file_rel[-40:]}" if len(file_rel) > 45 else f"Edit: {file_rel}"
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True)
+            new_content = self.content_input.value
+            result = await self._handler.execute(
+                "write_file",
+                {"path": self._file_path, "content": new_content},
+            )
+            if "error" in result:
+                await interaction.followup.send(
+                    embed=error_embed("Save Failed", description=result["error"]),
+                    ephemeral=True,
+                )
+                return
+            written = result.get("written", 0)
+            await interaction.followup.send(
+                embed=success_embed(
+                    "File Saved ✅",
+                    description=f"**`{self._file_rel}`** saved successfully.\n"
+                                f"Wrote {written:,} characters.",
+                ),
+                ephemeral=True,
+            )
+
+    @bot.tree.command(
+        name="browse",
+        description="Browse project repository files and directories",
+    )
+    @app_commands.describe(
+        path="Subdirectory to start browsing from (default: root)",
+    )
+    async def browse_command(
+        interaction: discord.Interaction,
+        path: str | None = None,
+    ):
+        project_id = await _resolve_project_from_context(interaction, None)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        handler.set_active_project(project_id)
+        await interaction.response.defer()
+
+        args: dict = {"project_id": project_id}
+        if path:
+            args["path"] = path
+        result = await handler.execute("list_directory", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        view = _FileBrowserView(
+            handler=handler,
+            project_id=project_id,
+            current_path=result["path"] if result["path"] != "/" else "",
+            directories=result["directories"],
+            files=result["files"],
+            workspace_path=result["workspace_path"],
+        )
+        await interaction.followup.send(embed=view._build_embed(), view=view)
+
+    @bot.tree.command(
+        name="edit-file",
+        description="Open a text editor dialog for any file in the project",
+    )
+    @app_commands.describe(
+        path="Relative file path within the project workspace (e.g. src/main.py)",
+    )
+    async def edit_file_command(
+        interaction: discord.Interaction,
+        path: str,
+    ):
+        project_id = await _resolve_project_from_context(interaction, None)
+        if not project_id:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+        handler.set_active_project(project_id)
+
+        ws_path = await handler.db.get_project_workspace_path(project_id)
+        if not ws_path:
+            await _send_error(interaction, f"Project '{project_id}' has no workspaces.")
+            return
+
+        file_full = f"{ws_path}/{path}"
+        result = await handler.execute(
+            "read_file", {"path": file_full, "max_lines": 4000},
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+
+        content = result.get("content", "")
+        if len(content) > 4000:
+            content = content[:4000]
+
+        modal = _FileEditModal(
+            handler=handler,
+            file_path=file_full,
+            file_rel=path,
+            current_content=content,
+        )
+        await interaction.response.send_modal(modal)
+
+    # ===================================================================
     # INTERACTIVE MENU
     # ===================================================================
 

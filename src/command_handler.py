@@ -4809,6 +4809,76 @@ class CommandHandler:
         except subprocess.TimeoutExpired:
             return {"error": "Search timed out"}
 
+    async def _cmd_list_directory(self, args: dict) -> dict:
+        """List files and directories at a given path within the workspace."""
+        project_id = args.get("project_id") or self._active_project_id
+        if not project_id:
+            return {"error": "project_id is required (no active project set)"}
+
+        ws_path = await self.db.get_project_workspace_path(project_id)
+        if not ws_path:
+            return {"error": f"Project '{project_id}' has no workspaces."}
+
+        rel_path = args.get("path", "")
+        if rel_path:
+            full_path = os.path.join(ws_path, rel_path)
+        else:
+            full_path = ws_path
+
+        validated = await self._validate_path(full_path)
+        if not validated:
+            return {"error": "Access denied: path is outside allowed directories"}
+        if not os.path.isdir(validated):
+            return {"error": f"Directory not found: {full_path}"}
+
+        try:
+            entries = sorted(os.listdir(validated))
+        except PermissionError:
+            return {"error": f"Permission denied: {rel_path or '/'}"}
+
+        dirs = []
+        files = []
+        for entry in entries:
+            entry_path = os.path.join(validated, entry)
+            if os.path.isdir(entry_path):
+                dirs.append(entry)
+            else:
+                try:
+                    size = os.path.getsize(entry_path)
+                except OSError:
+                    size = 0
+                files.append({"name": entry, "size": size})
+
+        return {
+            "project_id": project_id,
+            "path": rel_path or "/",
+            "workspace_path": ws_path,
+            "directories": dirs,
+            "files": files,
+        }
+
+    async def _cmd_write_file(self, args: dict) -> dict:
+        """Write content to a file within the workspace (for the file editor)."""
+        path = args.get("path", "")
+        content = args.get("content", "")
+        if not path:
+            return {"error": "path is required"}
+
+        if not os.path.isabs(path):
+            path = os.path.join(self.config.workspace_dir, path)
+        validated = await self._validate_path(path)
+        if not validated:
+            return {"error": "Access denied: path is outside allowed directories"}
+
+        try:
+            with open(validated, "w") as f:
+                f.write(content)
+            return {"path": validated, "written": len(content)}
+        except PermissionError:
+            return {"error": f"Permission denied: {path}"}
+        except OSError as e:
+            return {"error": f"Write failed: {e}"}
+
     # -----------------------------------------------------------------------
     # Agent Profile commands -- CRUD for capability bundles that configure
     # agents with specific tools, MCP servers, and system prompt overrides.
