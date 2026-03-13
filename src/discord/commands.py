@@ -2935,7 +2935,7 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(
         name="reopen-with-feedback",
-        description="Reopen a task with QA feedback appended to its description",
+        description="Reopen a completed/failed task with feedback for rework",
     )
     @app_commands.describe(
         task_id="Task ID to reopen",

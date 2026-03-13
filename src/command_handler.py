@@ -2180,13 +2180,17 @@ class CommandHandler:
         }
 
     async def _cmd_reopen_with_feedback(self, args: dict) -> dict:
-        """Reopen a task with QA feedback appended to its description.
+        """Reopen a completed/failed task with feedback appended to its description.
 
-        Used when a completed or failed task needs to be retried because QA
-        found issues.  The feedback is appended to the task description so the
-        agent sees it on re-execution, and the task is reset to READY.
+        Used when a completed or failed task needs to be retried because issues
+        were found.  The feedback is appended to the task description so the
+        agent sees it on re-execution, stored as a structured task_context
+        entry for programmatic access, and the task is reset to READY.
 
-        Required args: task_id, feedback (the QA feedback text).
+        The PR URL is cleared so the agent can create a fresh PR on the next
+        execution, and retry_count is reset to 0.
+
+        Required args: task_id, feedback (the feedback text).
         """
         task_id = args.get("task_id")
         feedback = args.get("feedback", "").strip()
@@ -2203,9 +2207,9 @@ class CommandHandler:
 
         old_status = task.status.value
 
-        # Append QA feedback to the task description so the agent sees it
+        # Append feedback to the task description so the agent sees it
         # when the task is re-executed.
-        separator = "\n\n---\n**QA Feedback:**\n"
+        separator = "\n\n---\n**Reopen Feedback:**\n"
         updated_description = task.description + separator + feedback
 
         await self.db.transition_task(
@@ -2215,7 +2219,18 @@ class CommandHandler:
             description=updated_description,
             retry_count=0,
             assigned_agent_id=None,
+            pr_url=None,
         )
+
+        # Store feedback as a structured task_context entry so agents and
+        # tooling can access individual reopen comments programmatically.
+        await self.db.add_task_context(
+            task_id,
+            type="reopen_feedback",
+            label="Reopen Feedback",
+            content=feedback,
+        )
+
         await self.db.log_event(
             "reopen_with_feedback",
             project_id=task.project_id,
@@ -2227,6 +2242,7 @@ class CommandHandler:
             "title": task.title,
             "previous_status": old_status,
             "status": "READY",
+            "feedback_added": True,
         }
 
     async def _cmd_delete_task(self, args: dict) -> dict:

@@ -649,9 +649,11 @@ TOOLS = [
     {
         "name": "reopen_with_feedback",
         "description": (
-            "Reopen a task with QA feedback. Use this when a fix failed QA or "
-            "needs rework — the feedback is appended to the task description so "
-            "the agent sees it on re-execution, and the task is reset to READY."
+            "Reopen a completed or failed task with feedback. Use this when a "
+            "task needs rework — the feedback is appended to the task "
+            "description and stored as a structured context entry so the agent "
+            "sees it on re-execution. The task is reset to READY, retry count "
+            "is cleared, and the PR URL is removed so a fresh PR can be created."
         ),
         "input_schema": {
             "type": "object",
@@ -660,8 +662,9 @@ TOOLS = [
                 "feedback": {
                     "type": "string",
                     "description": (
-                        "QA feedback explaining what went wrong or what needs "
-                        "to be fixed (appended to task description)"
+                        "Feedback explaining what went wrong or what needs "
+                        "to be fixed (appended to task description and stored "
+                        "as a task context entry)"
                     ),
                 },
             },
