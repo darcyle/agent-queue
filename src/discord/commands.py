@@ -5826,12 +5826,14 @@ def setup_commands(bot: commands.Bot) -> None:
             directories: list[str],
             files: list[dict],
             workspace_path: str,
+            workspace_name: str = "",
         ):
             super().__init__(timeout=300)
             self._handler = handler
             self._project_id = project_id
             self._current_path = current_path
             self._workspace_path = workspace_path
+            self._workspace_name = workspace_name
             self._directories = directories
             self._files = files
             self._dir_page = 0
@@ -5923,9 +5925,10 @@ def setup_commands(bot: commands.Bot) -> None:
 
         def _build_embed(self) -> discord.Embed:
             path_display = self._current_path or "/"
+            ws_label = f" | **Workspace:** `{self._workspace_name}`" if self._workspace_name else ""
             embed = discord.Embed(
                 title=f"📂 {path_display}",
-                description=f"**Project:** `{self._project_id}`",
+                description=f"**Project:** `{self._project_id}`{ws_label}",
                 color=0x3498DB,
             )
             dir_count = len(self._directories)
@@ -6194,10 +6197,12 @@ def setup_commands(bot: commands.Bot) -> None:
     )
     @app_commands.describe(
         path="Subdirectory to start browsing from (default: root)",
+        workspace="Workspace name or ID to browse (default: first workspace)",
     )
     async def browse_command(
         interaction: discord.Interaction,
         path: str | None = None,
+        workspace: str | None = None,
     ):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
@@ -6209,6 +6214,8 @@ def setup_commands(bot: commands.Bot) -> None:
         args: dict = {"project_id": project_id}
         if path:
             args["path"] = path
+        if workspace:
+            args["workspace"] = workspace
         result = await handler.execute("list_directory", args)
         if "error" in result:
             await _send_error(interaction, result["error"], followup=True)
@@ -6221,8 +6228,31 @@ def setup_commands(bot: commands.Bot) -> None:
             directories=result["directories"],
             files=result["files"],
             workspace_path=result["workspace_path"],
+            workspace_name=result.get("workspace_name", ""),
         )
         await interaction.followup.send(embed=view._build_embed(), view=view)
+
+    @browse_command.autocomplete("workspace")
+    async def _browse_workspace_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        project_id = await _resolve_project_from_context(interaction, None)
+        if not project_id:
+            return []
+        workspaces = await handler.db.list_workspaces(project_id)
+        choices = []
+        for ws in workspaces:
+            label = ws.name or ws.id
+            if current and current.lower() not in label.lower():
+                continue
+            locked = " 🔒" if ws.locked_by_agent_id else ""
+            choices.append(
+                app_commands.Choice(name=f"{label}{locked}", value=ws.name or ws.id)
+            )
+            if len(choices) >= 25:
+                break
+        return choices
 
     @bot.tree.command(
         name="edit-file",

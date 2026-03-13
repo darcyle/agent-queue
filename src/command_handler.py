@@ -5071,7 +5071,26 @@ class CommandHandler:
         if not project_id:
             return {"error": "project_id is required (no active project set)"}
 
-        ws_path = await self.db.get_project_workspace_path(project_id)
+        workspace_name = args.get("workspace")
+        if workspace_name:
+            # Look up by name first, then by id
+            ws = await self.db.get_workspace_by_name(project_id, workspace_name)
+            if not ws:
+                # Try treating it as a workspace id
+                workspaces = await self.db.list_workspaces(project_id)
+                ws = next((w for w in workspaces if w.id == workspace_name), None)
+            if not ws:
+                return {"error": f"Workspace '{workspace_name}' not found for project '{project_id}'."}
+            ws_path = ws.workspace_path
+            ws_name = ws.name or ws.id
+        else:
+            workspaces = await self.db.list_workspaces(project_id)
+            if not workspaces:
+                return {"error": f"Project '{project_id}' has no workspaces."}
+            ws = workspaces[0]
+            ws_path = ws.workspace_path
+            ws_name = ws.name or ws.id
+
         if not ws_path:
             return {"error": f"Project '{project_id}' has no workspaces."}
 
@@ -5109,6 +5128,7 @@ class CommandHandler:
             "project_id": project_id,
             "path": rel_path or "/",
             "workspace_path": ws_path,
+            "workspace_name": ws_name,
             "directories": dirs,
             "files": files,
         }
