@@ -44,6 +44,49 @@ from src.task_names import generate_task_id
 logger = logging.getLogger(__name__)
 
 
+async def _run_subprocess(
+    *args: str,
+    cwd: str | None = None,
+    timeout: float = 30,
+) -> tuple[int, str, str]:
+    """Run a subprocess asynchronously, returning (returncode, stdout, stderr)."""
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
+    )
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        raise
+    return proc.returncode, stdout_b.decode() if stdout_b else "", stderr_b.decode() if stderr_b else ""
+
+
+async def _run_subprocess_shell(
+    command: str,
+    *,
+    cwd: str | None = None,
+    timeout: float = 30,
+) -> tuple[int, str, str]:
+    """Run a shell command asynchronously."""
+    proc = await asyncio.create_subprocess_shell(
+        command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
+    )
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        raise
+    return proc.returncode, stdout_b.decode() if stdout_b else "", stderr_b.decode() if stderr_b else ""
+
+
 def _count_by(items, key_fn) -> dict[str, int]:
     counts: dict[str, int] = {}
     for item in items:
@@ -3114,51 +3157,51 @@ class CommandHandler:
 
             try:
                 # Fetch latest remote state
-                await asyncio.to_thread(subprocess.run,
-                    ["git", "fetch", "origin", "--prune", "--quiet"],
-                    cwd=ws_path, capture_output=True, timeout=30,
+                await _run_subprocess(
+                    "git", "fetch", "origin", "--prune", "--quiet",
+                    cwd=ws_path, timeout=30,
                 )
 
                 main_ref = f"origin/{default_branch}"
 
                 # Verify main exists
-                check = await asyncio.to_thread(subprocess.run,
-                    ["git", "rev-parse", main_ref],
-                    cwd=ws_path, capture_output=True, timeout=10,
+                check_rc, _, _ = await _run_subprocess(
+                    "git", "rev-parse", main_ref,
+                    cwd=ws_path, timeout=10,
                 )
-                if check.returncode != 0:
+                if check_rc != 0:
                     continue
 
                 # Get current branch
-                current_branch_result = await asyncio.to_thread(subprocess.run,
-                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                    cwd=ws_path, capture_output=True, text=True, timeout=10,
+                cb_rc, cb_stdout, _ = await _run_subprocess(
+                    "git", "rev-parse", "--abbrev-ref", "HEAD",
+                    cwd=ws_path, timeout=10,
                 )
-                current_branch = current_branch_result.stdout.strip() if current_branch_result.returncode == 0 else "unknown"
+                current_branch = cb_stdout.strip() if cb_rc == 0 else "unknown"
 
                 # Check for uncommitted merge conflict markers in working tree
                 has_working_tree_conflict = False
-                status_result = await asyncio.to_thread(subprocess.run,
-                    ["git", "status", "--porcelain"],
-                    cwd=ws_path, capture_output=True, text=True, timeout=10,
+                status_rc, status_stdout, _ = await _run_subprocess(
+                    "git", "status", "--porcelain",
+                    cwd=ws_path, timeout=10,
                 )
-                if status_result.returncode == 0:
-                    for line in status_result.stdout.splitlines():
+                if status_rc == 0:
+                    for line in status_stdout.splitlines():
                         if line.startswith("UU ") or line.startswith("AA ") or line.startswith("DD "):
                             has_working_tree_conflict = True
                             break
 
                 # List remote branches and check each for merge conflicts
-                branch_result = await asyncio.to_thread(subprocess.run,
-                    ["git", "branch", "-r", "--list", "origin/*"],
-                    cwd=ws_path, capture_output=True, text=True, timeout=10,
+                br_rc, br_stdout, _ = await _run_subprocess(
+                    "git", "branch", "-r", "--list", "origin/*",
+                    cwd=ws_path, timeout=10,
                 )
-                if branch_result.returncode != 0:
+                if br_rc != 0:
                     continue
 
                 branch_conflicts: list[dict] = []
 
-                for line in branch_result.stdout.splitlines():
+                for line in br_stdout.splitlines():
                     branch_ref = line.strip()
                     if not branch_ref:
                         continue
@@ -3172,20 +3215,20 @@ class CommandHandler:
                         continue
 
                     # Find merge base
-                    mb_result = await asyncio.to_thread(subprocess.run,
-                        ["git", "merge-base", main_ref, branch_ref],
-                        cwd=ws_path, capture_output=True, text=True, timeout=10,
+                    mb_rc, mb_stdout, _ = await _run_subprocess(
+                        "git", "merge-base", main_ref, branch_ref,
+                        cwd=ws_path, timeout=10,
                     )
-                    if mb_result.returncode != 0:
+                    if mb_rc != 0:
                         continue
-                    merge_base = mb_result.stdout.strip()
+                    merge_base = mb_stdout.strip()
 
                     # Use merge-tree to check for conflicts
-                    mt_result = await asyncio.to_thread(subprocess.run,
-                        ["git", "merge-tree", merge_base, main_ref, branch_ref],
-                        cwd=ws_path, capture_output=True, text=True, timeout=10,
+                    _, mt_stdout, _ = await _run_subprocess(
+                        "git", "merge-tree", merge_base, main_ref, branch_ref,
+                        cwd=ws_path, timeout=10,
                     )
-                    merge_output = mt_result.stdout
+                    merge_output = mt_stdout
 
                     if "+<<<<<<< " in merge_output:
                         # Extract conflicting files
@@ -3201,11 +3244,11 @@ class CommandHandler:
                             task_id_part = branch_name
 
                         # Commits behind main
-                        behind_result = await asyncio.to_thread(subprocess.run,
-                            ["git", "rev-list", "--count", f"{branch_ref}..{main_ref}"],
-                            cwd=ws_path, capture_output=True, text=True, timeout=10,
+                        behind_rc, behind_stdout, _ = await _run_subprocess(
+                            "git", "rev-list", "--count", f"{branch_ref}..{main_ref}",
+                            cwd=ws_path, timeout=10,
                         )
-                        behind_count = behind_result.stdout.strip() if behind_result.returncode == 0 else "?"
+                        behind_count = behind_stdout.strip() if behind_rc == 0 else "?"
 
                         branch_conflicts.append({
                             "branch": branch_name,
@@ -3226,7 +3269,7 @@ class CommandHandler:
                         "branch_conflicts": branch_conflicts,
                     })
 
-            except (subprocess.TimeoutExpired, OSError) as e:
+            except (asyncio.TimeoutError, OSError) as e:
                 logging.getLogger(__name__).warning(
                     "Error scanning workspace %s for conflicts: %s", ws_path, e,
                 )
@@ -3348,24 +3391,24 @@ class CommandHandler:
             # Step 3: Check for uncommitted changes
             has_uncommitted = False
             try:
-                result = await asyncio.to_thread(subprocess.run,
-                    ["git", "status", "--porcelain"],
-                    cwd=ws_path, capture_output=True, text=True, timeout=10,
+                rc, stdout, _ = await _run_subprocess(
+                    "git", "status", "--porcelain",
+                    cwd=ws_path, timeout=10,
                 )
-                if result.returncode == 0 and result.stdout.strip():
+                if rc == 0 and stdout.strip():
                     has_uncommitted = True
                     ws_info["had_uncommitted_changes"] = True
-            except (subprocess.TimeoutExpired, OSError):
+            except (asyncio.TimeoutError, OSError):
                 pass
 
             # Step 4: Check for active merge/rebase conflicts
             try:
-                status_result = await asyncio.to_thread(subprocess.run,
-                    ["git", "status", "--porcelain"],
-                    cwd=ws_path, capture_output=True, text=True, timeout=10,
+                status_rc, status_stdout, _ = await _run_subprocess(
+                    "git", "status", "--porcelain",
+                    cwd=ws_path, timeout=10,
                 )
-                if status_result.returncode == 0:
-                    for line in status_result.stdout.splitlines():
+                if status_rc == 0:
+                    for line in status_stdout.splitlines():
                         if line.startswith(("UU ", "AA ", "DD ")):
                             return {
                                 **ws_info,
@@ -3373,7 +3416,7 @@ class CommandHandler:
                                 "reason": "active merge conflict in working tree — "
                                           "needs manual resolution",
                             }
-            except (subprocess.TimeoutExpired, OSError):
+            except (asyncio.TimeoutError, OSError):
                 pass
 
             if current_branch == default_branch:
@@ -4896,25 +4939,23 @@ class CommandHandler:
         repo_dir = str(Path(__file__).resolve().parent.parent)
 
         # git pull
-        pull = await asyncio.to_thread(subprocess.run,
-            ["git", "pull", "--ff-only"],
-            capture_output=True, text=True, timeout=30,
-            cwd=repo_dir,
+        pull_rc, pull_stdout, pull_stderr = await _run_subprocess(
+            "git", "pull", "--ff-only",
+            cwd=repo_dir, timeout=30,
         )
-        if pull.returncode != 0:
-            stderr = pull.stderr.strip() or pull.stdout.strip()
+        if pull_rc != 0:
+            stderr = pull_stderr.strip() or pull_stdout.strip()
             return {"error": f"git pull failed: {stderr}"}
 
-        pull_output = pull.stdout.strip()
+        pull_output = pull_stdout.strip()
 
         # pip install -e . to pick up any dependency changes
-        pip = await asyncio.to_thread(subprocess.run,
-            ["pip", "install", "-e", "."],
-            capture_output=True, text=True, timeout=120,
-            cwd=repo_dir,
+        pip_rc, pip_stdout, pip_stderr = await _run_subprocess(
+            "pip", "install", "-e", ".",
+            cwd=repo_dir, timeout=120,
         )
-        if pip.returncode != 0:
-            stderr = pip.stderr.strip() or pip.stdout.strip()
+        if pip_rc != 0:
+            stderr = pip_stderr.strip() or pip_stdout.strip()
             return {"error": f"pip install failed: {stderr}"}
 
         # Log the update/restart reason to the notification channel
@@ -4980,23 +5021,19 @@ class CommandHandler:
             return {"error": f"Directory not found: {working_dir}"}
 
         try:
-            result = await asyncio.to_thread(
-                subprocess.run,
+            rc, stdout, stderr = await _run_subprocess_shell(
                 command,
-                shell=True,
                 cwd=validated,
-                capture_output=True,
-                text=True,
                 timeout=timeout,
             )
-            stdout = result.stdout[:4000] if result.stdout else ""
-            stderr = result.stderr[:2000] if result.stderr else ""
+            stdout = stdout[:4000] if stdout else ""
+            stderr = stderr[:2000] if stderr else ""
             return {
-                "returncode": result.returncode,
+                "returncode": rc,
                 "stdout": stdout,
                 "stderr": stderr,
             }
-        except subprocess.TimeoutExpired:
+        except asyncio.TimeoutError:
             return {"error": f"Command timed out after {timeout}s"}
 
     async def _cmd_search_files(self, args: dict) -> dict:
@@ -5014,20 +5051,18 @@ class CommandHandler:
 
         try:
             if mode == "grep":
-                result = await asyncio.to_thread(
-                    subprocess.run,
-                    ["grep", "-rn", "--include=*", "-m", "50", pattern, validated],
-                    capture_output=True, text=True, timeout=30,
+                _, stdout, _ = await _run_subprocess(
+                    "grep", "-rn", "--include=*", "-m", "50", pattern, validated,
+                    timeout=30,
                 )
             else:
-                result = await asyncio.to_thread(
-                    subprocess.run,
-                    ["find", validated, "-name", pattern, "-type", "f"],
-                    capture_output=True, text=True, timeout=30,
+                _, stdout, _ = await _run_subprocess(
+                    "find", validated, "-name", pattern, "-type", "f",
+                    timeout=30,
                 )
-            output = result.stdout[:4000] if result.stdout else "(no matches)"
+            output = stdout[:4000] if stdout else "(no matches)"
             return {"results": output, "mode": mode}
-        except subprocess.TimeoutExpired:
+        except asyncio.TimeoutError:
             return {"error": "Search timed out"}
 
     async def _cmd_list_directory(self, args: dict) -> dict:
