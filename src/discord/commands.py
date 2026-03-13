@@ -5832,7 +5832,8 @@ def setup_commands(bot: commands.Bot) -> None:
             self._handler = handler
             self._project_id = project_id
             self._current_path = current_path
-            self._workspace_path = workspace_path
+            # Always resolve to absolute path to prevent CWD-relative issues
+            self._workspace_path = os.path.realpath(workspace_path) if workspace_path else workspace_path
             self._workspace_name = workspace_name
             self._directories = directories
             self._files = files
@@ -5925,7 +5926,7 @@ def setup_commands(bot: commands.Bot) -> None:
 
         def _build_embed(self) -> discord.Embed:
             path_display = self._current_path or "/"
-            ws_label = f" | **Workspace:** `{self._workspace_name}`" if self._workspace_name else ""
+            ws_label = f"\n**Workspace:** `{self._workspace_name}`" if self._workspace_name else ""
             embed = discord.Embed(
                 title=f"📂 {path_display}",
                 description=f"**Project:** `{self._project_id}`{ws_label}",
@@ -5939,46 +5940,32 @@ def setup_commands(bot: commands.Bot) -> None:
                       f"📄 {file_count} file{'s' if file_count != 1 else ''}",
                 inline=False,
             )
+            # Show the resolved workspace path for transparency
+            if self._workspace_path:
+                embed.set_footer(text=self._workspace_path)
             return embed
 
         async def _refresh(self, interaction: discord.Interaction):
             await interaction.response.defer()
 
-            # List directory contents directly to avoid handler/DB overhead.
-            def _list_dir_sync():
-                rel_path = self._current_path or ""
-                if rel_path:
-                    full_path = os.path.join(self._workspace_path, rel_path)
-                else:
-                    full_path = self._workspace_path
-                real = os.path.realpath(full_path)
-                if not os.path.isdir(real):
-                    return {"error": f"Directory not found: {rel_path or '/'}"}
-                try:
-                    entries = sorted(os.listdir(real))
-                except PermissionError:
-                    return {"error": f"Permission denied: {rel_path or '/'}"}
-                dirs = []
-                files = []
-                for entry in entries:
-                    entry_path = os.path.join(real, entry)
-                    if os.path.isdir(entry_path):
-                        dirs.append(entry)
-                    else:
-                        try:
-                            size = os.path.getsize(entry_path)
-                        except OSError:
-                            size = 0
-                        files.append({"name": entry, "size": size})
-                return {"directories": dirs, "files": files}
+            # Use the command handler for consistent workspace resolution.
+            args: dict = {
+                "project_id": self._project_id,
+                "path": self._current_path or "",
+            }
+            if self._workspace_name:
+                args["workspace"] = self._workspace_name
 
-            result = await asyncio.to_thread(_list_dir_sync)
+            result = await self._handler.execute("list_directory", args)
 
             if "error" in result:
                 await interaction.edit_original_response(
                     content=f"❌ {result['error']}", embed=None, view=None,
                 )
                 return
+            # Update workspace path from the resolved result to stay in sync
+            if result.get("workspace_path"):
+                self._workspace_path = result["workspace_path"]
             self._directories = result["directories"]
             self._files = result["files"]
             self._dir_page = 0

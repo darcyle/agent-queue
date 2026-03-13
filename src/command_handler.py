@@ -5094,6 +5094,19 @@ class CommandHandler:
         if not ws_path:
             return {"error": f"Project '{project_id}' has no workspaces."}
 
+        # Resolve to absolute path to avoid CWD-relative resolution issues.
+        raw_ws_path = ws_path
+        ws_path = os.path.realpath(ws_path)
+        if raw_ws_path != ws_path:
+            logger.debug(
+                "list_directory: resolved workspace path %r -> %r for project %s",
+                raw_ws_path, ws_path, project_id,
+            )
+        logger.debug(
+            "list_directory: project=%s workspace=%s path=%s",
+            project_id, ws_name, ws_path,
+        )
+
         rel_path = args.get("path", "")
         if rel_path:
             full_path = os.path.join(ws_path, rel_path)
