@@ -93,7 +93,7 @@ class AgentQueueBot(commands.Bot):
         self._notes_threads_path = os.path.join(
             os.path.dirname(config.database_path), "notes_threads.json"
         )
-        self._load_notes_threads()
+        self._load_notes_threads_sync()
         self._guild: discord.Guild | None = None
         # Notes auto-refresh tracking
         self._note_viewers: dict[int, dict[str, int]] = {}  # thread_id -> {filename: msg_id}
@@ -101,7 +101,8 @@ class AgentQueueBot(commands.Bot):
         # Wire up the note-written callback
         self.agent.handler.on_note_written = self._handle_note_written
 
-    def _load_notes_threads(self) -> None:
+    def _load_notes_threads_sync(self) -> None:
+        """Synchronous load — safe for use in __init__ (before the event loop)."""
         try:
             if os.path.isfile(self._notes_threads_path):
                 with open(self._notes_threads_path) as f:
@@ -114,7 +115,12 @@ class AgentQueueBot(commands.Bot):
         except Exception as e:
             print(f"Warning: could not load notes threads: {e}")
 
-    def _save_notes_threads(self) -> None:
+    async def _load_notes_threads(self) -> None:
+        """Non-blocking load — offloads file I/O to a thread."""
+        await asyncio.to_thread(self._load_notes_threads_sync)
+
+    def _save_notes_threads_sync(self) -> None:
+        """Synchronous save — used from sync callback paths (e.g. clear_project_channels)."""
         try:
             data = {
                 "threads": {str(k): v for k, v in self._notes_threads.items()},
@@ -125,9 +131,13 @@ class AgentQueueBot(commands.Bot):
         except Exception as e:
             print(f"Warning: could not save notes threads: {e}")
 
-    def register_notes_thread(self, thread_id: int, project_id: str) -> None:
+    async def _save_notes_threads(self) -> None:
+        """Non-blocking save — offloads file I/O to a thread."""
+        await asyncio.to_thread(self._save_notes_threads_sync)
+
+    async def register_notes_thread(self, thread_id: int, project_id: str) -> None:
         self._notes_threads[thread_id] = project_id
-        self._save_notes_threads()
+        await self._save_notes_threads()
 
     async def _handle_note_written(
         self, project_id: str, note_filename: str, note_path: str,
@@ -280,7 +290,7 @@ class AgentQueueBot(commands.Bot):
             for tid in stale_thread_ids:
                 stale_channel_ids.add(tid)
                 del self._notes_threads[tid]
-            self._save_notes_threads()
+            self._save_notes_threads_sync()
 
         # Purge channel-level caches keyed by Discord channel/thread ID.
         for cid in stale_channel_ids:

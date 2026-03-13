@@ -365,7 +365,7 @@ class _NotesCloseButton(discord.ui.Button):
             toc_messages.pop(thread.id, None)
             # Unregister and archive
             bot._notes_threads.pop(thread.id, None)
-            bot._save_notes_threads()
+            await bot._save_notes_threads()
             await thread.edit(archived=True)
             # Delete the TOC message (the /notes response with buttons)
             try:
@@ -5402,13 +5402,13 @@ def setup_commands(bot: commands.Bot) -> None:
             f"💬 Type ideas and I'll organize them into notes for **{project_name}**.\n"
             f"Click a note button above to view its content."
         )
-        bot.register_notes_thread(thread.id, project_id)
+        await bot.register_notes_thread(thread.id, project_id)
 
         # Track TOC message for view persistence
         toc_messages = getattr(bot, "_notes_toc_messages", {})
         toc_messages[thread.id] = msg.id
         bot._notes_toc_messages = toc_messages
-        bot._save_notes_threads()
+        await bot._save_notes_threads()
 
     @bot.tree.command(name="write-note", description="Create or update a project note")
     @app_commands.describe(

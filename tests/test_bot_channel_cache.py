@@ -114,7 +114,7 @@ class TestClearProjectChannels:
                 self._summarization_tasks = {}
                 self._notes_threads_path = "/dev/null"
 
-            def _save_notes_threads(self):
+            def _save_notes_threads_sync(self):
                 pass  # No-op for tests
 
         return BotCaches()
