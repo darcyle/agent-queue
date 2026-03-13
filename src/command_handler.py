@@ -824,6 +824,200 @@ class CommandHandler:
             "summary": "; ".join(parts) if parts else "No changes.",
         }
 
+    async def _cmd_claude_usage(self, args: dict) -> dict:
+        """Get Claude Code subscription usage stats and rate-limit status.
+
+        Reads local stats from ``~/.claude/stats-cache.json`` (session counts,
+        token usage by model, daily activity) and probes the Anthropic API for
+        current rate-limit utilisation via the ``anthropic-ratelimit-unified-*``
+        response headers.
+        """
+        import json as _json
+        from pathlib import Path as _Path
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+        result: dict = {}
+
+        # --- 1. Local stats from Claude Code's stats cache ---
+        stats_path = _Path.home() / ".claude" / "stats-cache.json"
+        if stats_path.exists():
+            try:
+                stats = _json.loads(stats_path.read_text())
+                result["total_sessions"] = stats.get("totalSessions", 0)
+                result["total_messages"] = stats.get("totalMessages", 0)
+
+                # Model token usage (cumulative)
+                model_usage = {}
+                for model, data in (stats.get("modelUsage") or {}).items():
+                    # Shorten model names for readability
+                    short = model.replace("claude-", "").split("-202")[0]
+                    inp = data.get("inputTokens", 0)
+                    out = data.get("outputTokens", 0)
+                    cache_read = data.get("cacheReadInputTokens", 0)
+                    cache_create = data.get("cacheCreationInputTokens", 0)
+                    model_usage[short] = {
+                        "input": inp,
+                        "output": out,
+                        "cache_read": cache_read,
+                        "cache_create": cache_create,
+                        "total": inp + out + cache_read + cache_create,
+                    }
+                result["model_usage"] = model_usage
+
+                # Weekly activity (last 7 days)
+                today = _dt.now(_tz.utc).date()
+                week_ago = today - _td(days=7)
+                daily = stats.get("dailyActivity") or []
+                week_messages = 0
+                week_sessions = 0
+                week_tool_calls = 0
+                for day in daily:
+                    try:
+                        d = _dt.strptime(day["date"], "%Y-%m-%d").date()
+                    except (ValueError, KeyError):
+                        continue
+                    if d >= week_ago:
+                        week_messages += day.get("messageCount", 0)
+                        week_sessions += day.get("sessionCount", 0)
+                        week_tool_calls += day.get("toolCallCount", 0)
+                result["week"] = {
+                    "messages": week_messages,
+                    "sessions": week_sessions,
+                    "tool_calls": week_tool_calls,
+                }
+
+                # Weekly token usage by model (last 7 days)
+                daily_tokens = stats.get("dailyModelTokens") or []
+                week_tokens_by_model: dict[str, int] = {}
+                for day in daily_tokens:
+                    try:
+                        d = _dt.strptime(day["date"], "%Y-%m-%d").date()
+                    except (ValueError, KeyError):
+                        continue
+                    if d >= week_ago:
+                        for model, count in (day.get("tokensByModel") or {}).items():
+                            short = model.replace("claude-", "").split("-202")[0]
+                            week_tokens_by_model[short] = week_tokens_by_model.get(short, 0) + count
+                result["week_tokens_by_model"] = week_tokens_by_model
+
+            except Exception as e:
+                result["stats_error"] = str(e)
+        else:
+            result["stats_error"] = "~/.claude/stats-cache.json not found"
+
+        # --- 2. Subscription info from credentials ---
+        creds_path = _Path.home() / ".claude" / ".credentials.json"
+        if creds_path.exists():
+            try:
+                creds = _json.loads(creds_path.read_text())
+                oauth = creds.get("claudeAiOauth", {})
+                result["subscription"] = oauth.get("subscriptionType", "unknown")
+                result["rate_limit_tier"] = oauth.get("rateLimitTier", "unknown")
+            except Exception:
+                pass
+
+        # --- 3. Probe rate-limit status via a minimal API call ---
+        try:
+            rate_limit = await self._probe_claude_rate_limit()
+            result["rate_limit"] = rate_limit
+        except Exception as e:
+            result["rate_limit_error"] = str(e)
+
+        return result
+
+    async def _probe_claude_rate_limit(self) -> dict:
+        """Send a minimal 1-token API request to read rate-limit headers.
+
+        This replicates what the Claude Code CLI does internally to check
+        quota status.  Uses the OAuth token from ``~/.claude/.credentials.json``
+        or falls back to ``ANTHROPIC_API_KEY``.
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        # Get auth token
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        auth_header = {}
+        creds_path = _Path.home() / ".claude" / ".credentials.json"
+        if not api_key and creds_path.exists():
+            try:
+                creds = _json.loads(creds_path.read_text())
+                oauth = creds.get("claudeAiOauth", {})
+                token = oauth.get("accessToken")
+                if token:
+                    auth_header = {"Authorization": f"Bearer {token}"}
+            except Exception:
+                pass
+
+        if not api_key and not auth_header:
+            return {"error": "No API key or OAuth token available"}
+
+        if api_key:
+            auth_header = {"x-api-key": api_key}
+
+        import aiohttp
+        headers = {
+            **auth_header,
+            "content-type": "application/json",
+            "anthropic-version": "2023-06-01",
+        }
+        body = {
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "q"}],
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers=headers,
+                    json=body,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    rate_info: dict = {}
+                    # Extract all unified rate-limit headers
+                    for key, val in resp.headers.items():
+                        lk = key.lower()
+                        if "ratelimit-unified" in lk:
+                            # Simplify header names
+                            short_key = lk.replace("anthropic-ratelimit-unified-", "")
+                            rate_info[short_key] = val
+
+                    # Parse utilisation into a percentage
+                    for k, v in list(rate_info.items()):
+                        if "utilization" in k:
+                            try:
+                                rate_info[k + "_pct"] = f"{float(v) * 100:.1f}%"
+                            except ValueError:
+                                pass
+
+                    # Parse reset timestamp
+                    reset_ts = rate_info.get("reset")
+                    if reset_ts:
+                        try:
+                            from datetime import datetime, timezone
+                            reset_dt = datetime.fromtimestamp(
+                                float(reset_ts), tz=timezone.utc
+                            )
+                            rate_info["reset_human"] = reset_dt.strftime(
+                                "%Y-%m-%d %H:%M UTC"
+                            )
+                            # Time until reset
+                            now = datetime.now(timezone.utc)
+                            delta = reset_dt - now
+                            if delta.total_seconds() > 0:
+                                hours = int(delta.total_seconds() // 3600)
+                                mins = int((delta.total_seconds() % 3600) // 60)
+                                rate_info["resets_in"] = f"{hours}h {mins}m"
+                        except (ValueError, OSError):
+                            pass
+
+                    rate_info["http_status"] = resp.status
+                    return rate_info
+        except Exception as e:
+            return {"error": f"API probe failed: {e}"}
+
     # -----------------------------------------------------------------------
     # Project commands -- CRUD, pause/resume, and Discord channel management.
     # Projects are the top-level grouping: each project has its own workspace

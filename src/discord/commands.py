@@ -2093,6 +2093,94 @@ def setup_commands(bot: commands.Bot) -> None:
             lines.append(f"• **{pid}**: {tokens:,} tokens")
         await interaction.response.send_message("\n".join(lines))
 
+    @bot.tree.command(
+        name="claude-usage",
+        description="Show Claude Code subscription usage and rate-limit status",
+    )
+    async def claude_usage_command(interaction: discord.Interaction):
+        await interaction.response.defer()
+        result = await handler.execute("claude_usage", {})
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        lines = ["## 📊 Claude Code Usage"]
+
+        # Subscription info
+        sub = result.get("subscription", "unknown")
+        tier = result.get("rate_limit_tier", "unknown")
+        lines.append(f"**Plan:** {sub} — **Tier:** `{tier}`")
+
+        # Rate-limit status (from API probe)
+        rl = result.get("rate_limit", {})
+        if rl and "error" not in rl:
+            status = rl.get("status", "unknown")
+            status_emoji = {"allowed": "🟢", "allowed_warning": "🟡", "rejected": "🔴"}.get(
+                status, "⚪"
+            )
+            lines.append(f"\n### Rate Limit Status: {status_emoji} {status}")
+
+            # Find utilisation percentages
+            for k, v in sorted(rl.items()):
+                if k.endswith("_pct"):
+                    claim = k.replace("_pct", "").replace("-", " ").title()
+                    try:
+                        pct_val = float(v.rstrip("%"))
+                        bar = progress_bar(int(pct_val), 100, width=12)
+                        lines.append(f"{bar} **{v}** — {claim}")
+                    except ValueError:
+                        lines.append(f"• **{claim}:** {v}")
+
+            # Reset info
+            reset_human = rl.get("reset_human")
+            resets_in = rl.get("resets_in")
+            if reset_human:
+                reset_line = f"⏰ **Resets:** {reset_human}"
+                if resets_in:
+                    reset_line += f" (in {resets_in})"
+                lines.append(reset_line)
+        elif rl_err := result.get("rate_limit_error"):
+            lines.append(f"\n⚠️ Rate limit probe failed: {rl_err}")
+
+        # Weekly activity
+        week = result.get("week", {})
+        if week:
+            lines.append(f"\n### This Week (last 7 days)")
+            lines.append(
+                f"• **Sessions:** {week.get('sessions', 0):,}  "
+                f"**Messages:** {week.get('messages', 0):,}  "
+                f"**Tool calls:** {week.get('tool_calls', 0):,}"
+            )
+
+        # Weekly token usage by model
+        wtm = result.get("week_tokens_by_model", {})
+        if wtm:
+            parts = [f"{m}: {t:,}" for m, t in sorted(wtm.items(), key=lambda x: -x[1])]
+            lines.append(f"• **Tokens:** {' · '.join(parts)}")
+
+        # Cumulative model usage
+        mu = result.get("model_usage", {})
+        if mu:
+            lines.append(f"\n### All-Time Token Usage")
+            for model, data in sorted(mu.items(), key=lambda x: -x[1]["total"]):
+                total = data["total"]
+                lines.append(
+                    f"• **{model}:** {total:,} total "
+                    f"({data['input']:,} in · {data['output']:,} out · "
+                    f"{data['cache_read']:,} cache-read)"
+                )
+
+        lines.append(f"\n• **Total sessions:** {result.get('total_sessions', '?')} "
+                      f"· **Total messages:** {result.get('total_messages', '?')}")
+
+        if stats_err := result.get("stats_error"):
+            lines.append(f"\n⚠️ Stats: {stats_err}")
+
+        msg = "\n".join(lines)
+        if len(msg) > 2000:
+            msg = msg[:1997] + "..."
+        await interaction.followup.send(msg)
+
     @bot.tree.command(name="events", description="Show recent system events")
     @app_commands.describe(limit="Number of events to show (default 10)")
     async def events_command(interaction: discord.Interaction, limit: int = 10):
