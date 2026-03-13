@@ -5829,12 +5829,13 @@ def setup_commands(bot: commands.Bot) -> None:
             return embed
 
         async def _refresh(self, interaction: discord.Interaction):
+            await interaction.response.defer()
             result = await self._handler.execute(
                 "list_directory",
                 {"project_id": self._project_id, "path": self._current_path},
             )
             if "error" in result:
-                await interaction.response.edit_message(
+                await interaction.edit_original_response(
                     content=f"❌ {result['error']}", embed=None, view=None,
                 )
                 return
@@ -5843,7 +5844,7 @@ def setup_commands(bot: commands.Bot) -> None:
             self._dir_page = 0
             self._file_page = 0
             self._build_buttons()
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=None, embed=self._build_embed(), view=self,
             )
 
@@ -5871,11 +5872,13 @@ def setup_commands(bot: commands.Bot) -> None:
                 file_rel = selected
             file_full = f"{self._workspace_path}/{file_rel}"
 
+            await interaction.response.defer(ephemeral=True)
+
             result = await self._handler.execute(
                 "read_file", {"path": file_full, "max_lines": 100},
             )
             if "error" in result:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     embed=error_embed("Error", description=result["error"]),
                     ephemeral=True,
                 )
@@ -5893,7 +5896,7 @@ def setup_commands(bot: commands.Bot) -> None:
             display = content[:3800]
             if len(content) > 3800:
                 display += "\n... (truncated)"
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"### 📄 `{file_rel}`\n```\n{display}\n```",
                 view=view,
                 ephemeral=True,
@@ -5902,22 +5905,26 @@ def setup_commands(bot: commands.Bot) -> None:
         async def _prev_dir_page(self, interaction: discord.Interaction):
             self._dir_page = max(0, self._dir_page - 1)
             self._build_buttons()
-            await interaction.response.edit_message(embed=self._build_embed(), view=self)
+            await interaction.response.defer()
+            await interaction.edit_original_response(embed=self._build_embed(), view=self)
 
         async def _next_dir_page(self, interaction: discord.Interaction):
             self._dir_page += 1
             self._build_buttons()
-            await interaction.response.edit_message(embed=self._build_embed(), view=self)
+            await interaction.response.defer()
+            await interaction.edit_original_response(embed=self._build_embed(), view=self)
 
         async def _prev_file_page(self, interaction: discord.Interaction):
             self._file_page = max(0, self._file_page - 1)
             self._build_buttons()
-            await interaction.response.edit_message(embed=self._build_embed(), view=self)
+            await interaction.response.defer()
+            await interaction.edit_original_response(embed=self._build_embed(), view=self)
 
         async def _next_file_page(self, interaction: discord.Interaction):
             self._file_page += 1
             self._build_buttons()
-            await interaction.response.edit_message(embed=self._build_embed(), view=self)
+            await interaction.response.defer()
+            await interaction.edit_original_response(embed=self._build_embed(), view=self)
 
     class _FileViewActions(discord.ui.View):
         """View shown when a file is selected — offers an Edit button."""
