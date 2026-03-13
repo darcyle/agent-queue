@@ -504,6 +504,11 @@ class HookEngine:
                     completed_at=time.time(),
                 )
                 logger.info("Hook %s skipped: %s", hook.name, skip_reason)
+                if orchestrator:
+                    await orchestrator._notify_channel(
+                        f"🪝 Hook **{hook.name}** skipped: {skip_reason}",
+                        project_id=hook.project_id,
+                    )
                 return
 
             # 3. Render prompt
@@ -512,8 +517,25 @@ class HookEngine:
             )
             await self.db.update_hook_run(run.id, prompt_sent=prompt)
 
-            # 4. Invoke LLM
-            response, tokens = await self._invoke_llm(hook, prompt)
+            # 4. Invoke LLM — with progress reporting to Discord
+            tool_names: list[str] = []
+
+            async def _on_hook_progress(event: str, detail: str | None) -> None:
+                if event == "tool_use" and detail:
+                    tool_names.append(detail)
+                    if orchestrator:
+                        steps = " → ".join(f"`{t}`" for t in tool_names)
+                        try:
+                            await orchestrator._notify_channel(
+                                f"🪝 Hook **{hook.name}** 🔧 {steps}",
+                                project_id=hook.project_id,
+                            )
+                        except Exception:
+                            pass
+
+            response, tokens = await self._invoke_llm(
+                hook, prompt, on_progress=_on_hook_progress,
+            )
 
             await self.db.update_hook_run(
                 run.id,
@@ -526,6 +548,21 @@ class HookEngine:
                 "Hook %s completed, tokens=%d", hook.name, tokens
             )
 
+            # Notify completion with tool calls and response summary
+            if orchestrator:
+                parts = [f"🪝 Hook **{hook.name}** completed."]
+                if tool_names:
+                    steps = " → ".join(f"`{t}`" for t in tool_names)
+                    parts.append(f"🔧 {steps}")
+                if response:
+                    # Truncate long responses for the notification
+                    summary = response if len(response) <= 200 else response[:200] + "…"
+                    parts.append(f"> {summary}")
+                await orchestrator._notify_channel(
+                    "\n".join(parts),
+                    project_id=hook.project_id,
+                )
+
         except Exception as e:
             logger.error("Hook %s failed: %s", hook.name, e)
             await self.db.update_hook_run(
@@ -534,6 +571,14 @@ class HookEngine:
                 llm_response=str(e),
                 completed_at=time.time(),
             )
+            if orchestrator:
+                try:
+                    await orchestrator._notify_channel(
+                        f"🪝 Hook **{hook.name}** failed: {e}",
+                        project_id=hook.project_id,
+                    )
+                except Exception:
+                    pass
 
     async def _run_context_steps(
         self,
@@ -1220,7 +1265,8 @@ class HookEngine:
         return placeholder
 
     async def _invoke_llm(
-        self, hook: Hook, prompt: str
+        self, hook: Hook, prompt: str,
+        on_progress=None,
     ) -> tuple[str, int]:
         """Invoke the LLM with the rendered prompt using ChatAgent's full tool set.
 
@@ -1290,6 +1336,7 @@ class HookEngine:
         response = await chat_agent.chat(
             text=prompt,
             user_name="hook:" + hook.name,
+            on_progress=on_progress,
         )
 
         # Estimate tokens (we don't have exact count from chat())
