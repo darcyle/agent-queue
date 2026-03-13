@@ -856,9 +856,35 @@ Pauses, resumes, or queries the orchestrator's scheduling state.
 Status response shows current state (PAUSED or RUNNING) and number of running tasks.
 
 #### `/restart`
-Signals the daemon to restart. Sets `bot._restart_requested = True` and calls `handler.execute("restart_daemon", {})`.
+Signals the daemon to restart. Gathers git context (current commit hash, commits behind origin) before initiating the restart.
 
-No parameters.
+| Parameter | Type | Description |
+|---|---|---|
+| `reason` | str (required) | Why the restart is being requested |
+
+**Behavior:**
+1. Constructs a `full_reason` string including the user's display name and their stated reason.
+2. Gathers git info for the restart message via `asyncio.to_thread(subprocess.run, ...)`:
+   - Gets the short commit hash via `git rev-parse --short HEAD`.
+   - Fetches remote and counts commits behind upstream via `git rev-list --count HEAD..@{u}`.
+3. Sends a warning embed showing the reason and git context (commit hash, how many commits behind origin if any).
+4. Calls `handler.execute("restart_daemon", {"reason": full_reason})`.
+
+---
+
+#### `/update`
+Pulls latest source, installs dependencies, and restarts the daemon.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `reason` | str (optional) | Why the update is being requested (auto-filled if omitted) |
+
+**Behavior:**
+1. Defers the interaction (non-ephemeral).
+2. Records the current commit hash before pulling.
+3. Calls `handler.execute("update_and_restart", {"reason": full_reason})`.
+4. On error, sends an error embed.
+5. On success, records the new commit hash, shows a summary of what changed (`{before_hash} → {after_hash}` or "Already up to date"), and sends a success embed with abbreviated pull output.
 
 ---
 

@@ -1046,6 +1046,105 @@ Per-repo errors are embedded as `{"repo_id": <str>, "error": <str>}` entries rat
 
 ---
 
+### Workspace Maintenance Commands
+
+These commands operate across all workspaces for a project and are intended for the chat agent to diagnose and fix workspace issues. All git operations use `asyncio.to_thread(subprocess.run, ...)` or `git._arun()` to avoid blocking the event loop.
+
+---
+
+#### `find_merge_conflict_workspaces`
+
+Scans all workspaces for a project to detect branches with merge conflicts against the default branch without modifying any working tree.
+
+**Parameters:**
+- `project_id` (optional): Falls back to `_active_project_id`.
+
+**Behavior:** For each workspace, fetches from origin, then iterates all remote branches. For each branch (excluding the default branch, HEAD, and `dependabot/*`), runs `git merge-base` to find the common ancestor, then `git merge-tree` to simulate a three-way merge. If the merge-tree output contains conflict markers (`+<<<<<<< `), the branch is flagged as conflicting. Also checks for active working tree conflicts via `git status --porcelain` (looking for `UU`, `AA`, `DD` status codes).
+
+All git operations are run via `asyncio.to_thread(subprocess.run, ...)` since they are one-off diagnostic commands not covered by `GitManager` methods.
+
+**Returns on success:**
+```python
+{
+    "project_id": <str>,
+    "workspaces_scanned": <int>,
+    "workspaces_with_conflicts": <int>,
+    "conflicts": [
+        {
+            "workspace_id": <str>,
+            "workspace_name": <str>,
+            "workspace_path": <str>,
+            "current_branch": <str>,
+            "locked_by_task_id": <str | None>,
+            "locked_by_agent_id": <str | None>,
+            "has_working_tree_conflict": <bool>,
+            "branch_conflicts": [
+                {
+                    "branch": <str>,
+                    "task_id": <str>,
+                    "conflicting_files": [<str>, ...],
+                    "commits_behind_main": <str>,
+                },
+                ...
+            ],
+        },
+        ...
+    ],
+}
+```
+
+**Errors:**
+- `project_id` not provided and no active project set.
+- Project not found.
+- No workspaces found for the project.
+
+---
+
+#### `sync_workspaces`
+
+Synchronizes all workspaces for a project to the latest main branch.
+
+**Parameters:**
+- `project_id` (optional): Falls back to `_active_project_id`.
+- `skip_locked` (optional, default `True`): Skip workspaces locked by an agent.
+
+**Behavior:** Delegates to `_sync_single_workspace` for each workspace. Uses a mix of `git._arun()` for standard git operations and `asyncio.to_thread(subprocess.run, ...)` for status checks.
+
+Per-workspace sync logic:
+1. Validates the workspace is a valid git repo directory.
+2. Skips workspaces locked by an agent (unless `skip_locked=False`).
+3. Fetches latest from origin via `git._arun(["fetch", "origin", "--prune"])`.
+4. Gets current branch via `git.aget_current_branch()`.
+5. Checks for uncommitted changes and active merge conflicts via `git status --porcelain`.
+6. **If on the default branch:** stashes uncommitted changes if present, then hard-resets to `origin/<default_branch>`.
+7. **If on a feature branch:**
+   - Auto-commits uncommitted changes via `git.acommit_all()`.
+   - Pushes the branch to origin via `git.apush_branch(force_with_lease=True)`.
+   - Updates the local default branch reference (in worktrees, uses `git update-ref`; in normal repos, checks out default, hard-resets, then returns to the feature branch).
+   - Attempts to rebase the feature branch onto `origin/<default_branch>`. If rebase conflicts, aborts and leaves the branch as-is.
+
+**Returns on success:**
+```python
+{
+    "project_id": <str>,
+    "default_branch": <str>,
+    "total_workspaces": <int>,
+    "synced": <int>,
+    "skipped": <int>,
+    "errors": <int>,
+    "workspaces": [<per-workspace result dicts>, ...],
+}
+```
+
+Per-workspace result dicts include `workspace_id`, `workspace_name`, `workspace_path`, `status` (`"synced"`, `"skipped"`, `"conflict"`, or `"error"`), and additional fields depending on the action taken.
+
+**Errors:**
+- `project_id` not provided and no active project set.
+- Project not found.
+- No workspaces found for the project.
+
+---
+
 ### Git Low-Level Commands
 
 These commands use `_resolve_repo_path` for path lookup. The first group (`git_commit`, `git_push`, `git_create_branch`, `git_merge`, `git_create_pr`, `git_changed_files`) use `repo_id` as the primary key and require it. The second group (`git_log`, `git_branch`, `git_checkout`, `git_diff`) use `project_id` as the primary key with `repo_id` as an optional filter.
@@ -1727,16 +1826,35 @@ Pauses, resumes, or checks the status of the orchestrator loop.
 
 #### `restart_daemon`
 
-Sends `SIGTERM` to the current process, causing the daemon to shut down (and presumably restart via a process manager).
+Logs a restart notification to the notification channel, then sends `SIGTERM` to the current process, causing the daemon to shut down (and presumably restart via a process manager). Sets `orchestrator._restart_requested = True` before sending the signal.
 
-**Parameters:** None.
+**Parameters:**
+- `reason` (optional, default `"No reason provided"`): Human-readable reason for the restart. Logged to the notification channel as `"🔄 **Daemon restart initiated** — {reason}"`.
 
 **Returns on success:**
 ```python
-{"status": "restarting", "message": "Daemon restart initiated"}
+{"status": "restarting", "message": "Daemon restart initiated", "reason": <str>}
 ```
 
 **Errors:** None expected.
+
+---
+
+#### `update_and_restart`
+
+Pulls the latest source from git and restarts the daemon. Determines the repo root from the source file location. Runs `git pull --ff-only` followed by `pip install -e .` to pick up dependency changes. Both commands are run in a thread via `asyncio.to_thread(subprocess.run, ...)` to avoid blocking the event loop. On success, logs a notification and triggers a restart via `SIGTERM`.
+
+**Parameters:**
+- `reason` (optional, default `"No reason provided"`): Human-readable reason for the update.
+
+**Returns on success:**
+```python
+{"status": "updating", "message": "Update pulled and daemon restart initiated", "pull_output": <str>, "reason": <str>}
+```
+
+**Errors:**
+- `git pull` failed (non-zero exit code).
+- `pip install` failed (non-zero exit code).
 
 ---
 
@@ -1771,7 +1889,7 @@ Executes a shell command in a validated working directory. Intended for the chat
 - `working_dir` (required): Directory to run the command in. If not an absolute path, the handler first tries to look it up as a project ID; if that fails, it joins with `config.workspace_dir`.
 - `timeout` (optional, default `30`, max `120`): Execution timeout in seconds.
 
-**Behavior:** Validates the working directory via `_validate_path`. Runs the command in a thread using `subprocess.run`. Stdout is truncated to 4000 characters; stderr to 2000 characters.
+**Behavior:** Validates the working directory via `_validate_path`. Runs the command in a thread via `asyncio.to_thread(subprocess.run, command, shell=True, ...)` to avoid blocking the event loop. Stdout is truncated to 4000 characters; stderr to 2000 characters.
 
 **Returns on success:**
 ```python
@@ -1798,7 +1916,7 @@ Searches for patterns in files within a validated directory. Intended for the ch
 - `path` (required): Directory to search. If not absolute, joined with `config.workspace_dir`.
 - `mode` (optional, default `"grep"`): Either `"grep"` (recursive regex search, up to 50 matches) or `"find"` (filename glob search).
 
-**Behavior:** Validates the directory via `_validate_path`. Runs `grep -rn --include=* -m 50 <pattern> <path>` in `grep` mode, or `find <path> -name <pattern> -type f` in `find` mode. Output is truncated to 4000 characters.
+**Behavior:** Validates the directory via `_validate_path`. Runs the search command in a thread via `asyncio.to_thread(subprocess.run, ...)`. In `grep` mode: `grep -rn --include=* -m 50 <pattern> <path>`. In `find` mode: `find <path> -name <pattern> -type f`. Output is truncated to 4000 characters.
 
 **Returns on success:**
 ```python
