@@ -4674,6 +4674,42 @@ class CommandHandler:
         os.kill(os.getpid(), signal.SIGTERM)
         return {"status": "restarting", "message": "Daemon restart initiated"}
 
+    async def _cmd_update_and_restart(self, args: dict) -> dict:
+        """Pull the latest source from git and restart the daemon."""
+        # Determine the repo root (where this source lives)
+        repo_dir = str(Path(__file__).resolve().parent.parent)
+
+        # git pull
+        pull = subprocess.run(
+            ["git", "pull", "--ff-only"],
+            capture_output=True, text=True, timeout=30,
+            cwd=repo_dir,
+        )
+        if pull.returncode != 0:
+            stderr = pull.stderr.strip() or pull.stdout.strip()
+            return {"error": f"git pull failed: {stderr}"}
+
+        pull_output = pull.stdout.strip()
+
+        # pip install -e . to pick up any dependency changes
+        pip = subprocess.run(
+            ["pip", "install", "-e", "."],
+            capture_output=True, text=True, timeout=120,
+            cwd=repo_dir,
+        )
+        if pip.returncode != 0:
+            stderr = pip.stderr.strip() or pip.stdout.strip()
+            return {"error": f"pip install failed: {stderr}"}
+
+        # Trigger restart
+        self.orchestrator._restart_requested = True
+        os.kill(os.getpid(), signal.SIGTERM)
+        return {
+            "status": "updating",
+            "message": "Update pulled and daemon restart initiated",
+            "pull_output": pull_output,
+        }
+
     # -----------------------------------------------------------------------
     # File / shell commands -- sandboxed filesystem and shell access for the
     # chat agent.  These have no Discord slash command equivalent; they exist

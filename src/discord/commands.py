@@ -13,6 +13,7 @@ import io
 import re
 import subprocess
 import traceback
+from pathlib import Path
 
 import discord
 from discord import app_commands
@@ -5576,6 +5577,58 @@ def setup_commands(bot: commands.Bot) -> None:
 
         await _send_warning(interaction, "Restarting", description=desc)
         await handler.execute("restart_daemon", {})
+
+    @bot.tree.command(
+        name="update",
+        description="Pull latest source, install deps, and restart the daemon",
+    )
+    async def update_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=False)
+
+        # Show current commit before pulling
+        repo_dir = str(Path(__file__).resolve().parent.parent.parent)
+        before_hash = ""
+        try:
+            before_hash = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=5, cwd=repo_dir,
+            ).stdout.strip()
+        except Exception:
+            pass
+
+        result = await handler.execute("update_and_restart", {})
+
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        pull_output = result.get("pull_output", "")
+        after_hash = ""
+        try:
+            after_hash = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=5, cwd=repo_dir,
+            ).stdout.strip()
+        except Exception:
+            pass
+
+        desc_parts = ["Pulled latest changes and restarting…"]
+        if before_hash and after_hash and before_hash != after_hash:
+            desc_parts.append(f"`{before_hash}` → `{after_hash}`")
+        elif before_hash and after_hash:
+            desc_parts.append(f"Already up to date at `{after_hash}`")
+        if pull_output and "Already up to date" not in pull_output:
+            # Show abbreviated pull output
+            lines = pull_output.splitlines()
+            if len(lines) > 6:
+                lines = lines[:6] + [f"… and {len(lines) - 6} more lines"]
+            desc_parts.append("```\n" + "\n".join(lines) + "\n```")
+
+        await _send_warning(
+            interaction, "Updating & Restarting",
+            description="\n".join(desc_parts),
+            followup=True,
+        )
 
     # ===================================================================
     # CHANNEL MANAGEMENT
