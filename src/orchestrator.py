@@ -2099,6 +2099,37 @@ class Orchestrator:
 
         logger.info("Auto-task: found %d steps in plan file %s for task %s", len(plan.steps), plan_path, task.id)
 
+        # Deduplication: check if tasks with the same titles already exist
+        # for this project (from a previous plan generation).  This prevents
+        # duplicate subtask chains when the plan file persists on the default
+        # branch and is re-discovered by a subsequent parent task.
+        if task.project_id:
+            step_titles = {s.title for s in plan.steps}
+            existing_tasks = await self.db.list_tasks(project_id=task.project_id)
+            existing_active_titles = {
+                t.title for t in existing_tasks
+                if t.is_plan_subtask
+                and t.status not in (TaskStatus.FAILED, TaskStatus.BLOCKED)
+                and t.title in step_titles
+            }
+            if existing_active_titles:
+                overlap = existing_active_titles & step_titles
+                logger.info(
+                    "Auto-task: skipping plan for task %s — %d/%d step titles "
+                    "already exist as active subtasks in project %s: %s",
+                    task.id, len(overlap), len(step_titles),
+                    task.project_id, overlap,
+                )
+                # Still archive the plan file so it won't be found again
+                try:
+                    plans_dir = os.path.join(workspace, ".claude", "plans")
+                    os.makedirs(plans_dir, exist_ok=True)
+                    archived_path = os.path.join(plans_dir, f"{task.id}-plan.md")
+                    os.rename(plan_path, archived_path)
+                except OSError:
+                    pass
+                return []
+
         # Archive the plan file for traceability (so it won't be re-processed
         # if the workspace is reused for another task).
         archived_path = None
@@ -2206,8 +2237,11 @@ class Orchestrator:
 
     # ── Completion pipeline ────────────────────────────────────────────────
     #
-    # The completion pipeline replaces the inline post-completion logic with
-    # an ordered sequence of phases: commit → merge → plan_generate.
+    # The completion pipeline runs: commit → plan_generate → merge.
+    # Plan generation runs BEFORE merge so the plan file is archived
+    # (and the archival committed) before the branch is merged to the
+    # default branch.  This prevents the plan file from persisting on
+    # main and being re-discovered by subsequent tasks.
     # Each phase receives a PipelineContext and returns a PhaseResult.
 
     async def _run_completion_pipeline(
@@ -2216,8 +2250,8 @@ class Orchestrator:
         """Run the post-completion pipeline. Returns (pr_url, completed_ok)."""
         phases = [
             ("commit", self._phase_commit),
-            ("merge", self._phase_merge),
             ("plan_generate", self._phase_plan_generate),
+            ("merge", self._phase_merge),
         ]
 
         for name, handler in phases:
@@ -2401,10 +2435,24 @@ class Orchestrator:
         return PhaseResult.CONTINUE
 
     async def _phase_plan_generate(self, ctx: PipelineContext) -> PhaseResult:
-        """Pipeline phase: generate subtasks from plan files."""
+        """Pipeline phase: generate subtasks from plan files.
+
+        Runs BEFORE merge so the plan file archival is committed to the
+        branch before it reaches the default branch.  After archiving the
+        plan file, a cleanup commit is made to ensure the deletion of the
+        original plan file is in git history.
+        """
         if not ctx.workspace_path:
             return PhaseResult.CONTINUE
-        await self._generate_tasks_from_plan(ctx.task, ctx.workspace_path)
+        created = await self._generate_tasks_from_plan(ctx.task, ctx.workspace_path)
+        # If tasks were generated, the plan file was archived (renamed).
+        # Commit the archival so the merge won't carry the plan file to main.
+        if created and ctx.task.branch_name:
+            if await self.git.avalidate_checkout(ctx.workspace_path):
+                await self.git.acommit_all(
+                    ctx.workspace_path,
+                    f"chore: archive plan file\n\nTask-Id: {ctx.task.id}",
+                )
         return PhaseResult.CONTINUE
 
     async def _retry_merge_for_task(self, original_task_id: str) -> None:

@@ -2045,3 +2045,182 @@ class TestPlanSubtaskWorkspaceAffinity:
         deps = await orch.db.get_dependencies("t-downstream")
         dep_ids = {d for d in deps}
         assert final_id in dep_ids
+
+
+# ── Duplicate Plan Subtask Prevention ──────────────────────────────────
+
+
+class TestDuplicatePlanSubtaskPrevention:
+    """Verify that plan-generated subtasks are not duplicated when multiple
+    parent tasks produce identical plans.
+
+    Root cause being tested: when parent task A completes, the completion
+    pipeline runs commit → merge → plan_generate. The plan file is committed
+    and merged to main BEFORE plan_generate archives it. Any subsequent
+    parent task B that branches from main finds the plan file and generates
+    a duplicate set of subtasks.
+    """
+
+    @pytest.fixture
+    async def plan_orch(self, tmp_path):
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(tmp_path / "workspaces"),
+        )
+        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        await o.initialize()
+        ws_path = str(tmp_path / "workspaces" / "ws1")
+        os.makedirs(ws_path, exist_ok=True)
+        await o.db.create_project(Project(id="p-1", name="alpha"))
+        await o.db.create_workspace(Workspace(
+            id="ws-1", project_id="p-1",
+            workspace_path=ws_path,
+            source_type=RepoSourceType.LINK,
+        ))
+        await o.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        yield o
+        await _drain_running_tasks(o)
+        await o.shutdown()
+
+    async def test_second_parent_with_same_plan_does_not_create_duplicates(
+        self, plan_orch
+    ):
+        """When two parent tasks produce identical plan files, the second
+        should not create duplicate subtasks for the same project."""
+        orch = plan_orch
+
+        # --- First parent task generates subtasks from plan ---
+        parent_a = Task(
+            id="t-parent-a", project_id="p-1", title="Parent A",
+            description="First parent task", status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(parent_a)
+        await orch.db.acquire_workspace("p-1", "a-1", "t-parent-a")
+
+        ws = await orch.db.get_workspace_for_task("t-parent-a")
+        plan_dir = os.path.join(ws.workspace_path, ".claude")
+        os.makedirs(plan_dir, exist_ok=True)
+
+        plan_content = (
+            "# Implementation Plan\n\n"
+            "## Add database models\n\n"
+            "Create the User and Post models in models.py.\n\n"
+            "## Build API endpoints\n\n"
+            "Add REST endpoints for CRUD operations.\n\n"
+            "## Write tests\n\n"
+            "Add comprehensive test suite.\n"
+        )
+        with open(os.path.join(plan_dir, "plan.md"), "w") as f:
+            f.write(plan_content)
+
+        generated_a = await orch._generate_tasks_from_plan(
+            parent_a, ws.workspace_path
+        )
+        assert len(generated_a) == 3
+
+        # Release workspace so second parent can use it
+        await orch.db.release_workspace(ws.id)
+
+        # --- Second parent task with the SAME plan file ---
+        # (Simulates the plan file persisting on main branch and being
+        # picked up by a new parent task.)
+        parent_b = Task(
+            id="t-parent-b", project_id="p-1", title="Parent B",
+            description="Second parent task", status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(parent_b)
+        await orch.db.acquire_workspace("p-1", "a-1", "t-parent-b")
+
+        ws_b = await orch.db.get_workspace_for_task("t-parent-b")
+        plan_dir_b = os.path.join(ws_b.workspace_path, ".claude")
+        os.makedirs(plan_dir_b, exist_ok=True)
+
+        # Same plan content appears again (from git main branch)
+        with open(os.path.join(plan_dir_b, "plan.md"), "w") as f:
+            f.write(plan_content)
+
+        generated_b = await orch._generate_tasks_from_plan(
+            parent_b, ws_b.workspace_path
+        )
+
+        # The second parent should NOT create duplicate subtasks —
+        # identical titles already exist for the same project.
+        assert len(generated_b) == 0, (
+            f"Expected 0 duplicate subtasks from second parent, "
+            f"got {len(generated_b)}: {[t.title for t in generated_b]}"
+        )
+
+    async def test_plan_file_archived_before_merge_in_pipeline(
+        self, plan_orch
+    ):
+        """The completion pipeline should archive plan files BEFORE
+        merging, so the plan file is never committed to the default branch.
+
+        The bug: pipeline runs commit → merge → plan_generate.  The plan
+        file is committed by `commit_all` (git add -A) and then merged to
+        main.  Only afterwards does plan_generate archive the file.  Any
+        subsequent task branching from main finds the plan file and
+        generates duplicate subtasks.
+        """
+        orch = plan_orch
+        from src.models import PipelineContext
+
+        task = Task(
+            id="t-pipe", project_id="p-1", title="Pipeline Test",
+            description="test", branch_name="feature-pipe",
+            status=TaskStatus.VERIFYING,
+        )
+        await orch.db.create_task(task)
+        await orch.db.acquire_workspace("p-1", "a-1", "t-pipe")
+        ws = await orch.db.get_workspace_for_task("t-pipe")
+
+        # Create plan file in workspace
+        plan_dir = os.path.join(ws.workspace_path, ".claude")
+        os.makedirs(plan_dir, exist_ok=True)
+        plan_path = os.path.join(plan_dir, "plan.md")
+        with open(plan_path, "w") as f:
+            f.write("## Step A\n\nDo step A\n\n## Step B\n\nDo step B\n")
+
+        # Track whether the plan file exists at the moment merge is called.
+        # If the pipeline archives the plan BEFORE merging, the file will
+        # already be gone when sync_and_merge runs.
+        plan_existed_at_merge_time = None
+
+        async def merge_side_effect(workspace, branch, default_branch, **kwargs):
+            nonlocal plan_existed_at_merge_time
+            plan_existed_at_merge_time = os.path.exists(plan_path)
+            return (True, "")
+
+        mock_git = AsyncMock()
+        mock_git.avalidate_checkout.return_value = True
+        mock_git.acommit_all.return_value = True
+        mock_git.ahas_remote.return_value = True
+        mock_git.async_and_merge.side_effect = merge_side_effect
+        mock_git.adelete_branch.return_value = None
+        mock_git.ahas_non_plan_changes.return_value = False
+        orch.git = mock_git
+
+        output = AgentOutput(result=AgentResult.COMPLETED, tokens_used=100)
+
+        ctx = PipelineContext(
+            task=task,
+            agent=Agent(id="a-1", name="claude-1", agent_type="claude"),
+            output=output,
+            workspace_path=ws.workspace_path, workspace_id=ws.id,
+            repo=RepoConfig(
+                id="r-1", project_id="p-1",
+                source_type=RepoSourceType.LINK, default_branch="main",
+            ),
+            default_branch="main",
+        )
+
+        pr_url, ok = await orch._run_completion_pipeline(ctx)
+        assert ok is True
+
+        # The plan file should NOT exist when merge runs — it should
+        # have been archived (and the archival committed) before merge.
+        assert plan_existed_at_merge_time is False, (
+            "Plan file still existed at merge time — it will be committed "
+            "to the default branch and cause duplicate subtask generation "
+            "for any future task that branches from main"
+        )

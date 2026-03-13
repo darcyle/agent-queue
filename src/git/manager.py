@@ -707,6 +707,16 @@ class GitManager:
         except GitError:
             return []
 
+    # Plan file paths that should never be committed to target repos.
+    # These are working files used by the orchestrator's auto-task system;
+    # committing them causes duplicate subtask generation when they
+    # persist on the default branch.
+    _PLAN_FILE_EXCLUDES = [
+        ".claude/plan.md",
+        ".claude/plans/",
+        "plan.md",
+    ]
+
     def commit_all(self, checkout_path: str, message: str) -> bool:
         """Stage all changes and commit. Returns True if a commit was made, False if nothing to commit.
 
@@ -715,8 +725,18 @@ class GitManager:
         ``git diff --cached --quiet`` checks whether anything is actually
         staged.  This avoids the race condition of checking status before
         staging.
+
+        Plan files (``.claude/plan.md``, ``plan.md``, ``.claude/plans/``)
+        are automatically unstaged to prevent them from being committed to
+        target repos.
         """
         self._run(["add", "-A"], cwd=checkout_path)
+        # Unstage plan files so they never reach target repo history.
+        for pattern in self._PLAN_FILE_EXCLUDES:
+            try:
+                self._run(["reset", "HEAD", "--", pattern], cwd=checkout_path)
+            except GitError:
+                pass  # Not staged or doesn't exist — fine
         # git diff --cached --quiet exits 1 if there are staged changes
         result = subprocess.run(
             ["git", "diff", "--cached", "--quiet"],
@@ -1342,6 +1362,11 @@ class GitManager:
     async def acommit_all(self, checkout_path: str, message: str) -> bool:
         """Async version of :meth:`commit_all`."""
         await self._arun(["add", "-A"], cwd=checkout_path)
+        for pattern in self._PLAN_FILE_EXCLUDES:
+            try:
+                await self._arun(["reset", "HEAD", "--", pattern], cwd=checkout_path)
+            except GitError:
+                pass
         result = await self._arun_subprocess(
             ["git", "diff", "--cached", "--quiet"],
             cwd=checkout_path,
