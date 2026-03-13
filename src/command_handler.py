@@ -21,7 +21,6 @@ import datetime
 import json
 import os
 import signal
-import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -3113,52 +3112,56 @@ class CommandHandler:
                 continue
 
             try:
+                git = self.orchestrator.git
+
                 # Fetch latest remote state
-                await asyncio.to_thread(subprocess.run,
-                    ["git", "fetch", "origin", "--prune", "--quiet"],
-                    cwd=ws_path, capture_output=True, timeout=30,
-                )
+                try:
+                    await git._arun(["fetch", "origin", "--prune", "--quiet"], cwd=ws_path, timeout=30)
+                except GitError:
+                    continue
 
                 main_ref = f"origin/{default_branch}"
 
                 # Verify main exists
-                check = await asyncio.to_thread(subprocess.run,
-                    ["git", "rev-parse", main_ref],
-                    cwd=ws_path, capture_output=True, timeout=10,
-                )
-                if check.returncode != 0:
+                try:
+                    await git._arun(["rev-parse", main_ref], cwd=ws_path, timeout=10)
+                except GitError:
                     continue
 
                 # Get current branch
-                current_branch_result = await asyncio.to_thread(subprocess.run,
-                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                    cwd=ws_path, capture_output=True, text=True, timeout=10,
-                )
-                current_branch = current_branch_result.stdout.strip() if current_branch_result.returncode == 0 else "unknown"
+                try:
+                    current_branch = await git._arun(
+                        ["rev-parse", "--abbrev-ref", "HEAD"], cwd=ws_path, timeout=10,
+                    )
+                except GitError:
+                    current_branch = "unknown"
 
                 # Check for uncommitted merge conflict markers in working tree
                 has_working_tree_conflict = False
-                status_result = await asyncio.to_thread(subprocess.run,
-                    ["git", "status", "--porcelain"],
-                    cwd=ws_path, capture_output=True, text=True, timeout=10,
-                )
-                if status_result.returncode == 0:
-                    for line in status_result.stdout.splitlines():
-                        if line.startswith("UU ") or line.startswith("AA ") or line.startswith("DD "):
-                            has_working_tree_conflict = True
-                            break
+                try:
+                    status_result = await git._arun_subprocess(
+                        ["git", "status", "--porcelain"],
+                        cwd=ws_path, timeout=10,
+                    )
+                    if status_result.returncode == 0:
+                        for line in status_result.stdout.splitlines():
+                            if line.startswith("UU ") or line.startswith("AA ") or line.startswith("DD "):
+                                has_working_tree_conflict = True
+                                break
+                except (GitError, OSError):
+                    pass
 
                 # List remote branches and check each for merge conflicts
-                branch_result = await asyncio.to_thread(subprocess.run,
-                    ["git", "branch", "-r", "--list", "origin/*"],
-                    cwd=ws_path, capture_output=True, text=True, timeout=10,
-                )
-                if branch_result.returncode != 0:
+                try:
+                    branch_output = await git._arun(
+                        ["branch", "-r", "--list", "origin/*"], cwd=ws_path, timeout=10,
+                    )
+                except GitError:
                     continue
 
                 branch_conflicts: list[dict] = []
 
-                for line in branch_result.stdout.splitlines():
+                for line in branch_output.splitlines():
                     branch_ref = line.strip()
                     if not branch_ref:
                         continue
@@ -3172,18 +3175,18 @@ class CommandHandler:
                         continue
 
                     # Find merge base
-                    mb_result = await asyncio.to_thread(subprocess.run,
-                        ["git", "merge-base", main_ref, branch_ref],
-                        cwd=ws_path, capture_output=True, text=True, timeout=10,
-                    )
-                    if mb_result.returncode != 0:
+                    try:
+                        merge_base = await git._arun(
+                            ["merge-base", main_ref, branch_ref],
+                            cwd=ws_path, timeout=10,
+                        )
+                    except GitError:
                         continue
-                    merge_base = mb_result.stdout.strip()
 
                     # Use merge-tree to check for conflicts
-                    mt_result = await asyncio.to_thread(subprocess.run,
+                    mt_result = await git._arun_subprocess(
                         ["git", "merge-tree", merge_base, main_ref, branch_ref],
-                        cwd=ws_path, capture_output=True, text=True, timeout=10,
+                        cwd=ws_path, timeout=10,
                     )
                     merge_output = mt_result.stdout
 
@@ -3201,11 +3204,13 @@ class CommandHandler:
                             task_id_part = branch_name
 
                         # Commits behind main
-                        behind_result = await asyncio.to_thread(subprocess.run,
-                            ["git", "rev-list", "--count", f"{branch_ref}..{main_ref}"],
-                            cwd=ws_path, capture_output=True, text=True, timeout=10,
-                        )
-                        behind_count = behind_result.stdout.strip() if behind_result.returncode == 0 else "?"
+                        try:
+                            behind_count = await git._arun(
+                                ["rev-list", "--count", f"{branch_ref}..{main_ref}"],
+                                cwd=ws_path, timeout=10,
+                            )
+                        except GitError:
+                            behind_count = "?"
 
                         branch_conflicts.append({
                             "branch": branch_name,
@@ -3226,7 +3231,7 @@ class CommandHandler:
                         "branch_conflicts": branch_conflicts,
                     })
 
-            except (subprocess.TimeoutExpired, OSError) as e:
+            except (GitError, OSError) as e:
                 logging.getLogger(__name__).warning(
                     "Error scanning workspace %s for conflicts: %s", ws_path, e,
                 )
@@ -3345,26 +3350,19 @@ class CommandHandler:
             current_branch = await git.aget_current_branch(ws_path)
             ws_info["current_branch"] = current_branch
 
-            # Step 3: Check for uncommitted changes
+            # Step 3 & 4: Check for uncommitted changes and active conflicts
+            # (single porcelain status call handles both)
             has_uncommitted = False
             try:
-                result = await asyncio.to_thread(subprocess.run,
+                status_result = await git._arun_subprocess(
                     ["git", "status", "--porcelain"],
-                    cwd=ws_path, capture_output=True, text=True, timeout=10,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    has_uncommitted = True
-                    ws_info["had_uncommitted_changes"] = True
-            except (subprocess.TimeoutExpired, OSError):
-                pass
-
-            # Step 4: Check for active merge/rebase conflicts
-            try:
-                status_result = await asyncio.to_thread(subprocess.run,
-                    ["git", "status", "--porcelain"],
-                    cwd=ws_path, capture_output=True, text=True, timeout=10,
+                    cwd=ws_path, timeout=10,
                 )
                 if status_result.returncode == 0:
+                    status_output = status_result.stdout.strip()
+                    if status_output:
+                        has_uncommitted = True
+                        ws_info["had_uncommitted_changes"] = True
                     for line in status_result.stdout.splitlines():
                         if line.startswith(("UU ", "AA ", "DD ")):
                             return {
@@ -3373,7 +3371,7 @@ class CommandHandler:
                                 "reason": "active merge conflict in working tree — "
                                           "needs manual resolution",
                             }
-            except (subprocess.TimeoutExpired, OSError):
+            except (GitError, OSError):
                 pass
 
             if current_branch == default_branch:
@@ -4895,11 +4893,10 @@ class CommandHandler:
         # Determine the repo root (where this source lives)
         repo_dir = str(Path(__file__).resolve().parent.parent)
 
-        # git pull
-        pull = await asyncio.to_thread(subprocess.run,
+        # git pull (async subprocess to avoid blocking event loop)
+        pull = await self.orchestrator.git._arun_subprocess(
             ["git", "pull", "--ff-only"],
-            capture_output=True, text=True, timeout=30,
-            cwd=repo_dir,
+            cwd=repo_dir, timeout=30,
         )
         if pull.returncode != 0:
             stderr = pull.stderr.strip() or pull.stdout.strip()
@@ -4908,10 +4905,9 @@ class CommandHandler:
         pull_output = pull.stdout.strip()
 
         # pip install -e . to pick up any dependency changes
-        pip = await asyncio.to_thread(subprocess.run,
+        pip = await self.orchestrator.git._arun_subprocess(
             ["pip", "install", "-e", "."],
-            capture_output=True, text=True, timeout=120,
-            cwd=repo_dir,
+            cwd=repo_dir, timeout=120,
         )
         if pip.returncode != 0:
             stderr = pip.stderr.strip() or pip.stdout.strip()
@@ -4980,24 +4976,29 @@ class CommandHandler:
             return {"error": f"Directory not found: {working_dir}"}
 
         try:
-            result = await asyncio.to_thread(
-                subprocess.run,
+            proc = await asyncio.create_subprocess_shell(
                 command,
-                shell=True,
                 cwd=validated,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-            stdout = result.stdout[:4000] if result.stdout else ""
-            stderr = result.stderr[:2000] if result.stderr else ""
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return {"error": f"Command timed out after {timeout}s"}
+            stdout = stdout_bytes.decode(errors="replace")[:4000] if stdout_bytes else ""
+            stderr = stderr_bytes.decode(errors="replace")[:2000] if stderr_bytes else ""
             return {
-                "returncode": result.returncode,
+                "returncode": proc.returncode,
                 "stdout": stdout,
                 "stderr": stderr,
             }
-        except subprocess.TimeoutExpired:
-            return {"error": f"Command timed out after {timeout}s"}
+        except OSError as e:
+            return {"error": f"Command failed to start: {e}"}
 
     async def _cmd_search_files(self, args: dict) -> dict:
         pattern = args["pattern"]
@@ -5014,21 +5015,26 @@ class CommandHandler:
 
         try:
             if mode == "grep":
-                result = await asyncio.to_thread(
-                    subprocess.run,
-                    ["grep", "-rn", "--include=*", "-m", "50", pattern, validated],
-                    capture_output=True, text=True, timeout=30,
-                )
+                cmd = ["grep", "-rn", "--include=*", "-m", "50", pattern, validated]
             else:
-                result = await asyncio.to_thread(
-                    subprocess.run,
-                    ["find", validated, "-name", pattern, "-type", "f"],
-                    capture_output=True, text=True, timeout=30,
+                cmd = ["find", validated, "-name", pattern, "-type", "f"]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout_bytes, _ = await asyncio.wait_for(
+                    proc.communicate(), timeout=30,
                 )
-            output = result.stdout[:4000] if result.stdout else "(no matches)"
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return {"error": "Search timed out"}
+            output = stdout_bytes.decode(errors="replace")[:4000] if stdout_bytes else "(no matches)"
             return {"results": output, "mode": mode}
-        except subprocess.TimeoutExpired:
-            return {"error": "Search timed out"}
+        except OSError as e:
+            return {"error": f"Search failed: {e}"}
 
     async def _cmd_list_directory(self, args: dict) -> dict:
         """List files and directories at a given path within the workspace."""
