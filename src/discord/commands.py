@@ -5901,54 +5901,29 @@ def setup_commands(bot: commands.Bot) -> None:
                 file_rel = selected
             file_full = f"{self._workspace_path}/{file_rel}"
 
-            await interaction.response.defer(ephemeral=True)
+            # Get file size synchronously — fast stat call, no need for thread.
+            try:
+                file_size = os.path.getsize(os.path.realpath(file_full))
+            except OSError:
+                file_size = 0
 
-            # Read the file directly to avoid handler/DB overhead that
-            # caused timeouts on larger files.
-            def _read_file_sync():
-                max_lines = 100
-                real = os.path.realpath(file_full)
-                if not os.path.isfile(real):
-                    return {"error": f"File not found: {file_rel}"}
-                try:
-                    with open(real, "r") as f:
-                        lines = []
-                        for i, line in enumerate(f):
-                            if i >= max_lines:
-                                lines.append(f"\n... truncated at {max_lines} lines")
-                                break
-                            lines.append(line.rstrip("\n"))
-                    return {"content": "\n".join(lines)}
-                except UnicodeDecodeError:
-                    return {"error": "Binary file — cannot display contents"}
-                except OSError as exc:
-                    return {"error": str(exc)}
+            # Respond immediately with file info and action buttons.
+            # No file I/O happens here — just metadata we already have.
+            embed = discord.Embed(
+                title=f"📄 {selected}",
+                color=0x3498DB,
+            )
+            embed.add_field(name="Path", value=f"`{file_rel}`", inline=False)
+            embed.add_field(name="Size", value=_format_file_size(file_size), inline=True)
 
-            result = await asyncio.to_thread(_read_file_sync)
-
-            if "error" in result:
-                await interaction.followup.send(
-                    embed=error_embed("Error", description=result["error"]),
-                    ephemeral=True,
-                )
-                return
-
-            content = result.get("content", "")
-            # Show file content with an Edit button
-            view = _FileViewActions(
+            view = _FileInfoView(
                 handler=self._handler,
                 file_path=file_full,
                 file_rel=file_rel,
                 project_id=self._project_id,
             )
-            # Truncate for display
-            display = content[:3800]
-            if len(content) > 3800:
-                display += "\n... (truncated)"
-            await interaction.followup.send(
-                f"### 📄 `{file_rel}`\n```\n{display}\n```",
-                view=view,
-                ephemeral=True,
+            await interaction.response.send_message(
+                embed=embed, view=view, ephemeral=True,
             )
 
         async def _prev_dir_page(self, interaction: discord.Interaction):
@@ -5975,8 +5950,8 @@ def setup_commands(bot: commands.Bot) -> None:
             await interaction.response.defer()
             await interaction.edit_original_response(embed=self._build_embed(), view=self)
 
-    class _FileViewActions(discord.ui.View):
-        """View shown when a file is selected — offers an Edit button."""
+    class _FileInfoView(discord.ui.View):
+        """View shown when a file is selected — offers View Content and Edit buttons."""
 
         def __init__(self, handler, file_path: str, file_rel: str, project_id: str):
             super().__init__(timeout=300)
@@ -5985,12 +5960,70 @@ def setup_commands(bot: commands.Bot) -> None:
             self._file_rel = file_rel
             self._project_id = project_id
 
+        @discord.ui.button(label="👁️ View Content", style=discord.ButtonStyle.secondary)
+        async def view_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await interaction.response.defer(ephemeral=True)
+
+            def _read_file_sync():
+                real = os.path.realpath(self._file_path)
+                if not os.path.isfile(real):
+                    return {"error": f"File not found: {self._file_rel}"}
+                try:
+                    with open(real, "r") as f:
+                        content = f.read(64_000)  # ~64 KB max
+                    return {"content": content}
+                except UnicodeDecodeError:
+                    return {"error": "Binary file — cannot display contents"}
+                except OSError as exc:
+                    return {"error": str(exc)}
+
+            result = await asyncio.to_thread(_read_file_sync)
+
+            if "error" in result:
+                await interaction.followup.send(
+                    embed=error_embed("Error", description=result["error"]),
+                    ephemeral=True,
+                )
+                return
+
+            content = result["content"]
+            # Determine file extension for syntax highlighting
+            ext = os.path.splitext(self._file_rel)[1].lstrip(".")
+
+            # Send as a file attachment — works for any size, no truncation issues
+            buf = io.BytesIO(content.encode("utf-8"))
+            filename = os.path.basename(self._file_rel)
+            file = discord.File(buf, filename=filename)
+
+            # Also include a short inline preview
+            preview = content[:1800]
+            if len(content) > 1800:
+                preview += "\n… (full content attached above)"
+            lang = ext if ext else ""
+            await interaction.followup.send(
+                f"### 📄 `{self._file_rel}`\n```{lang}\n{preview}\n```",
+                file=file,
+                ephemeral=True,
+            )
+
         @discord.ui.button(label="✏️ Edit File", style=discord.ButtonStyle.primary)
         async def edit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-            # Read the current content for the modal
-            result = await self._handler.execute(
-                "read_file", {"path": self._file_path, "max_lines": 4000},
-            )
+            # Read the current content for the modal directly — skip handler overhead
+            def _read_for_edit():
+                real = os.path.realpath(self._file_path)
+                if not os.path.isfile(real):
+                    return {"error": f"File not found: {self._file_rel}"}
+                try:
+                    with open(real, "r") as f:
+                        content = f.read(4000)  # Modal limit is 4000 chars
+                    return {"content": content}
+                except UnicodeDecodeError:
+                    return {"error": "Binary file — cannot edit"}
+                except OSError as exc:
+                    return {"error": str(exc)}
+
+            result = await asyncio.to_thread(_read_for_edit)
+
             if "error" in result:
                 await interaction.response.send_message(
                     embed=error_embed("Error", description=result["error"]),
@@ -5998,9 +6031,6 @@ def setup_commands(bot: commands.Bot) -> None:
                 )
                 return
             content = result.get("content", "")
-            # Discord modal text inputs have a 4000 char limit
-            if len(content) > 4000:
-                content = content[:4000]
             modal = _FileEditModal(
                 handler=self._handler,
                 file_path=self._file_path,
