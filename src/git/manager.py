@@ -1,8 +1,9 @@
 """GitManager -- wraps git CLI commands for the orchestrator's workspace management.
 
-All operations are synchronous subprocess calls.  Git is fast enough for the
-operations we need (clone, branch, commit, push) that async would add
-complexity without meaningful benefit.
+Provides both synchronous and async APIs.  Synchronous methods use
+``subprocess.run()`` for use in non-async contexts.  Async methods
+(prefixed with ``a``, e.g. ``acreate_checkout``, ``aget_status``) use
+``asyncio.create_subprocess_exec()`` so they don't block the event loop.
 
 Key workflows:
   - **Clone repos:** ``create_checkout`` clones a project's repository.
@@ -61,6 +62,7 @@ See specs/git/git.md for the full behavioral specification.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -106,6 +108,82 @@ class GitManager:
         if result.returncode != 0:
             raise GitError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
         return result.stdout.strip()
+
+    async def _arun(self, args: list[str], cwd: str | None = None,
+                    timeout: int | None = None) -> str:
+        """Async version of _run() using asyncio.create_subprocess_exec().
+
+        Uses asyncio subprocess to avoid blocking the event loop during git
+        operations.  All async public methods delegate to this instead of
+        the synchronous _run().
+        """
+        effective_timeout = timeout or self._GIT_TIMEOUT
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", *args,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._SUBPROCESS_ENV,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=effective_timeout,
+            )
+        except asyncio.TimeoutError:
+            # Kill the process on timeout to avoid orphaned git processes
+            try:
+                proc.kill()
+                await proc.wait()
+            except (ProcessLookupError, OSError):
+                pass
+            raise GitError(
+                f"git {' '.join(args)} timed out after "
+                f"{effective_timeout}s (possible credential prompt)"
+            )
+        stdout_text = stdout.decode() if stdout else ""
+        stderr_text = stderr.decode() if stderr else ""
+        if proc.returncode != 0:
+            raise GitError(f"git {' '.join(args)} failed: {stderr_text.strip()}")
+        return stdout_text.strip()
+
+    async def _arun_subprocess(
+        self, cmd: list[str], cwd: str | None = None,
+        timeout: int | None = None,
+    ) -> subprocess.CompletedProcess:
+        """Async helper for non-git commands (e.g. ``gh`` CLI).
+
+        Returns a ``CompletedProcess``-compatible result with returncode,
+        stdout, and stderr attributes so callers can inspect exit codes
+        without raising on non-zero return.
+        """
+        effective_timeout = timeout or self._GIT_TIMEOUT
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._SUBPROCESS_ENV,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=effective_timeout,
+            )
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except (ProcessLookupError, OSError):
+                pass
+            raise GitError(
+                f"{' '.join(cmd)} timed out after "
+                f"{effective_timeout}s (possible credential prompt)"
+            )
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=proc.returncode or 0,
+            stdout=(stdout.decode() if stdout else ""),
+            stderr=(stderr.decode() if stderr else ""),
+        )
 
     def create_checkout(self, repo_url: str, checkout_path: str) -> None:
         os.makedirs(os.path.dirname(checkout_path), exist_ok=True)
@@ -939,3 +1017,557 @@ class GitManager:
         and the slug suffix provides human-readable context.
         """
         return f"{task_id}/{GitManager.slugify(title)}"
+
+    # ------------------------------------------------------------------
+    # Async public API
+    #
+    # Each async method mirrors its synchronous counterpart but uses
+    # _arun() / _arun_subprocess() so the event loop is never blocked.
+    # Callers running inside an asyncio event loop (command_handler,
+    # chat_agent, discord bot) should prefer these.  The synchronous
+    # methods above are kept for backward compatibility in non-async
+    # contexts (e.g. orchestrator task-execution subprocesses).
+    # ------------------------------------------------------------------
+
+    async def acreate_checkout(self, repo_url: str, checkout_path: str) -> None:
+        os.makedirs(os.path.dirname(checkout_path), exist_ok=True)
+        await self._arun(["clone", repo_url, checkout_path])
+
+    async def avalidate_checkout(self, checkout_path: str) -> bool:
+        if not os.path.isdir(checkout_path):
+            return False
+        try:
+            await self._arun(["rev-parse", "--git-dir"], cwd=checkout_path)
+            return True
+        except GitError:
+            return False
+
+    async def _ais_worktree(self, checkout_path: str) -> bool:
+        """Async check if the given path is a git worktree."""
+        try:
+            git_dir = await self._arun(["rev-parse", "--git-dir"], cwd=checkout_path)
+            return "worktrees" in git_dir
+        except GitError:
+            return False
+
+    async def ahas_remote(self, checkout_path: str, remote: str = "origin") -> bool:
+        try:
+            await self._arun(["remote", "get-url", remote], cwd=checkout_path)
+            return True
+        except GitError:
+            return False
+
+    async def acreate_branch(self, checkout_path: str, branch_name: str) -> None:
+        try:
+            await self._arun(["checkout", "-b", branch_name], cwd=checkout_path)
+        except GitError:
+            await self._arun(["checkout", branch_name], cwd=checkout_path)
+
+    async def acheckout_branch(self, checkout_path: str, branch_name: str) -> None:
+        await self._arun(["checkout", branch_name], cwd=checkout_path)
+
+    async def alist_branches(self, checkout_path: str) -> list[str]:
+        try:
+            output = await self._arun(["branch", "--list"], cwd=checkout_path)
+            return [line.strip() for line in output.split("\n") if line.strip()]
+        except GitError:
+            return []
+
+    async def apull_latest_main(
+        self, checkout_path: str, default_branch: str = "main",
+    ) -> None:
+        await self._arun(["fetch", "origin"], cwd=checkout_path)
+        await self._arun(
+            ["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path
+        )
+
+    async def _arebase_onto_default(
+        self, checkout_path: str, default_branch: str = "main",
+    ) -> None:
+        try:
+            await self._arun(
+                ["rebase", f"origin/{default_branch}"], cwd=checkout_path
+            )
+        except GitError:
+            try:
+                await self._arun(["rebase", "--abort"], cwd=checkout_path)
+            except GitError:
+                pass
+
+    async def aprepare_for_task(
+        self, checkout_path: str, branch_name: str,
+        default_branch: str = "main",
+    ) -> None:
+        """Async version of prepare_for_task."""
+        is_worktree = await self._ais_worktree(checkout_path)
+        await self._arun(["fetch", "origin"], cwd=checkout_path)
+
+        if is_worktree:
+            try:
+                await self._arun(
+                    ["checkout", "-b", branch_name, f"origin/{default_branch}"],
+                    cwd=checkout_path,
+                )
+            except GitError:
+                await self._arun(["checkout", branch_name], cwd=checkout_path)
+                await self._arebase_onto_default(checkout_path, default_branch)
+        else:
+            try:
+                await self._arun(["checkout", default_branch], cwd=checkout_path)
+            except GitError:
+                detected = await self.aget_default_branch(checkout_path)
+                if detected != default_branch:
+                    default_branch = detected
+                    await self._arun(["checkout", default_branch], cwd=checkout_path)
+                else:
+                    raise
+            await self._arun(
+                ["reset", "--hard", f"origin/{default_branch}"],
+                cwd=checkout_path,
+            )
+            try:
+                await self._arun(["checkout", "-b", branch_name], cwd=checkout_path)
+            except GitError:
+                await self._arun(["checkout", branch_name], cwd=checkout_path)
+                await self._arebase_onto_default(checkout_path, default_branch)
+
+    async def aswitch_to_branch(
+        self, checkout_path: str, branch_name: str,
+        default_branch: str = "main", rebase: bool = False,
+    ) -> None:
+        """Async version of switch_to_branch."""
+        try:
+            await self._arun(["fetch", "origin"], cwd=checkout_path)
+        except GitError:
+            pass
+        try:
+            await self._arun(["checkout", branch_name], cwd=checkout_path)
+        except GitError:
+            try:
+                await self._arun(
+                    ["checkout", "-b", branch_name, f"origin/{branch_name}"],
+                    cwd=checkout_path,
+                )
+            except GitError:
+                await self._arun(["checkout", "-b", branch_name], cwd=checkout_path)
+        try:
+            await self._arun(["pull", "origin", branch_name], cwd=checkout_path)
+        except GitError:
+            pass
+        if rebase:
+            await self._arebase_onto_default(checkout_path, default_branch)
+
+    async def amid_chain_sync(
+        self, checkout_path: str, branch_name: str,
+        default_branch: str = "main",
+    ) -> bool:
+        """Async version of mid_chain_sync."""
+        try:
+            await self._arun(["push", "origin", branch_name], cwd=checkout_path)
+        except GitError:
+            try:
+                await self._arun(
+                    ["push", "--force-with-lease", "origin", branch_name],
+                    cwd=checkout_path,
+                )
+            except GitError:
+                pass
+
+        await self._arun(["fetch", "origin"], cwd=checkout_path)
+
+        try:
+            await self._arun(
+                ["rebase", f"origin/{default_branch}"], cwd=checkout_path,
+            )
+        except GitError:
+            try:
+                await self._arun(["rebase", "--abort"], cwd=checkout_path)
+            except GitError:
+                pass
+            return False
+
+        try:
+            await self._arun(
+                ["push", "--force-with-lease", "origin", branch_name],
+                cwd=checkout_path,
+            )
+        except GitError:
+            pass
+
+        return True
+
+    async def apull_branch(
+        self, checkout_path: str, branch_name: str | None = None,
+    ) -> str:
+        if not branch_name:
+            branch_name = await self.aget_current_branch(checkout_path)
+            if not branch_name:
+                raise GitError("Could not determine current branch")
+        await self._arun(["pull", "origin", branch_name], cwd=checkout_path)
+        return branch_name
+
+    async def apush_branch(
+        self, checkout_path: str, branch_name: str, *,
+        force_with_lease: bool = False,
+    ) -> None:
+        args = ["push", "origin", branch_name]
+        if force_with_lease:
+            args.insert(2, "--force-with-lease")
+        await self._arun(args, cwd=checkout_path)
+
+    async def arebase_onto(
+        self, checkout_path: str, branch_name: str,
+        target_branch: str = "main",
+    ) -> bool:
+        """Async version of rebase_onto."""
+        original = await self._arun(
+            ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout_path,
+        )
+        await self._arun(["checkout", branch_name], cwd=checkout_path)
+        rebase_target = target_branch
+        try:
+            await self._arun(["rebase", rebase_target], cwd=checkout_path)
+            await self._arun(["checkout", original], cwd=checkout_path)
+            return True
+        except GitError:
+            try:
+                await self._arun(["rebase", "--abort"], cwd=checkout_path)
+            except GitError:
+                pass
+            try:
+                await self._arun(["checkout", original], cwd=checkout_path)
+            except GitError:
+                pass
+            return False
+
+    async def amerge_branch(
+        self, checkout_path: str, branch_name: str,
+        default_branch: str = "main",
+    ) -> bool:
+        """Async version of merge_branch."""
+        await self._arun(["checkout", default_branch], cwd=checkout_path)
+        try:
+            await self._arun(["fetch", "origin"], cwd=checkout_path)
+            await self._arun(
+                ["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path
+            )
+        except GitError:
+            pass
+        try:
+            await self._arun(["merge", branch_name], cwd=checkout_path)
+            return True
+        except GitError:
+            await self._arun(["merge", "--abort"], cwd=checkout_path)
+            return False
+
+    async def async_and_merge(
+        self, checkout_path: str, branch_name: str,
+        default_branch: str = "main", max_retries: int = 1,
+    ) -> tuple[bool, str]:
+        """Async version of sync_and_merge."""
+        await self._arun(["fetch", "origin"], cwd=checkout_path)
+        await self._arun(["checkout", default_branch], cwd=checkout_path)
+        await self._arun(
+            ["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path
+        )
+
+        try:
+            await self._arun(["merge", branch_name], cwd=checkout_path)
+        except GitError:
+            await self._arun(["merge", "--abort"], cwd=checkout_path)
+
+            rebased = await self.arebase_onto(
+                checkout_path, branch_name, default_branch,
+            )
+            if not rebased:
+                await self._arun(["checkout", default_branch], cwd=checkout_path)
+                return (False, "merge_conflict")
+
+            await self._arun(["checkout", default_branch], cwd=checkout_path)
+            await self._arun(
+                ["reset", "--hard", f"origin/{default_branch}"],
+                cwd=checkout_path,
+            )
+            try:
+                await self._arun(["merge", branch_name], cwd=checkout_path)
+            except GitError:
+                await self._arun(["merge", "--abort"], cwd=checkout_path)
+                return (False, "merge_conflict")
+
+        for attempt in range(max_retries + 1):
+            try:
+                await self._arun(
+                    ["push", "origin", default_branch], cwd=checkout_path
+                )
+                return (True, "")
+            except GitError as e:
+                if attempt < max_retries:
+                    await self._arun(
+                        ["pull", "--rebase", "origin", default_branch],
+                        cwd=checkout_path,
+                    )
+                else:
+                    return (False, f"push_failed: {e}")
+
+        return (False, "push_failed_exhausted")  # pragma: no cover
+
+    async def arecover_workspace(
+        self, checkout_path: str, default_branch: str = "main",
+    ) -> None:
+        await self._arun(["checkout", default_branch], cwd=checkout_path)
+        await self._arun(
+            ["reset", "--hard", f"origin/{default_branch}"],
+            cwd=checkout_path,
+        )
+
+    async def adelete_branch(
+        self, checkout_path: str, branch_name: str, *, delete_remote: bool = True,
+    ) -> None:
+        try:
+            await self._arun(["branch", "-d", branch_name], cwd=checkout_path)
+        except GitError:
+            try:
+                await self._arun(["branch", "-D", branch_name], cwd=checkout_path)
+            except GitError:
+                pass
+        if delete_remote:
+            try:
+                await self._arun(
+                    ["push", "origin", "--delete", branch_name], cwd=checkout_path
+                )
+            except GitError:
+                pass
+
+    async def acreate_worktree(
+        self, source_path: str, worktree_path: str, branch: str,
+    ) -> None:
+        os.makedirs(os.path.dirname(worktree_path), exist_ok=True)
+        await self._arun(
+            ["worktree", "add", "-b", branch, worktree_path], cwd=source_path
+        )
+
+    async def aremove_worktree(
+        self, source_path: str, worktree_path: str,
+    ) -> None:
+        try:
+            await self._arun(
+                ["worktree", "remove", worktree_path], cwd=source_path
+            )
+        except GitError:
+            await self._arun(
+                ["worktree", "remove", "--force", worktree_path], cwd=source_path
+            )
+
+    async def ainit_repo(self, path: str) -> None:
+        os.makedirs(path, exist_ok=True)
+        await self._arun(["init"], cwd=path)
+        await self._arun(
+            ["commit", "--allow-empty", "-m", "Initial commit"], cwd=path
+        )
+
+    async def aget_diff(self, checkout_path: str, base_branch: str = "main") -> str:
+        try:
+            return await self._arun(["diff", base_branch], cwd=checkout_path)
+        except GitError:
+            return ""
+
+    async def aget_changed_files(
+        self, checkout_path: str, base_branch: str = "main",
+    ) -> list[str]:
+        try:
+            output = await self._arun(
+                ["diff", "--name-only", base_branch], cwd=checkout_path
+            )
+            return output.split("\n") if output else []
+        except GitError:
+            return []
+
+    async def acommit_all(self, checkout_path: str, message: str) -> bool:
+        """Async version of commit_all."""
+        await self._arun(["add", "-A"], cwd=checkout_path)
+        result = await self._arun_subprocess(
+            ["git", "diff", "--cached", "--quiet"], cwd=checkout_path,
+        )
+        if result.returncode == 0:
+            return False
+        await self._arun(["commit", "-m", message], cwd=checkout_path)
+        return True
+
+    async def acreate_pr(
+        self, checkout_path: str, branch: str, title: str, body: str,
+        base: str = "main",
+    ) -> str:
+        """Async version of create_pr using ``gh`` CLI."""
+        result = await self._arun_subprocess(
+            ["gh", "pr", "create", "--title", title, "--body", body,
+             "--base", base, "--head", branch],
+            cwd=checkout_path,
+        )
+        if result.returncode != 0:
+            raise GitError(f"gh pr create failed: {result.stderr.strip()}")
+        return result.stdout.strip()
+
+    async def acheck_pr_merged(
+        self, checkout_path: str, pr_url: str,
+    ) -> bool | None:
+        """Async version of check_pr_merged."""
+        result = await self._arun_subprocess(
+            ["gh", "pr", "view", pr_url, "--json", "state,mergedAt"],
+            cwd=checkout_path,
+        )
+        if result.returncode != 0:
+            raise GitError(f"gh pr view failed: {result.stderr.strip()}")
+        data = json.loads(result.stdout)
+        state = data.get("state", "").upper()
+        if state == "MERGED" or data.get("mergedAt"):
+            return True
+        if state == "OPEN":
+            return False
+        return None
+
+    async def aget_status(self, checkout_path: str) -> str:
+        try:
+            return await self._arun(["status"], cwd=checkout_path)
+        except GitError:
+            return ""
+
+    async def aget_current_branch(self, checkout_path: str) -> str:
+        try:
+            return await self._arun(
+                ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout_path
+            )
+        except GitError:
+            return ""
+
+    async def ahas_non_plan_changes(
+        self,
+        checkout_path: str,
+        default_branch: str = "main",
+        min_files: int = 3,
+        min_lines: int = 50,
+    ) -> bool:
+        """Async version of has_non_plan_changes."""
+        try:
+            merge_base = await self._arun(
+                ["merge-base", f"origin/{default_branch}", "HEAD"],
+                cwd=checkout_path,
+            )
+        except GitError:
+            return False
+
+        try:
+            stat_output = await self._arun(
+                [
+                    "diff", "--stat", f"{merge_base}..HEAD",
+                    "--", ".",
+                    ":!.claude/plan.md",
+                    ":!plan.md",
+                    ":!.claude/plans/",
+                ],
+                cwd=checkout_path,
+            )
+        except GitError:
+            return False
+
+        if not stat_output:
+            return False
+
+        lines = stat_output.strip().split("\n")
+        summary = lines[-1] if lines else ""
+
+        files_match = re.search(r"(\d+)\s+files?\s+changed", summary)
+        insertions_match = re.search(r"(\d+)\s+insertions?", summary)
+        deletions_match = re.search(r"(\d+)\s+deletions?", summary)
+
+        files_changed = int(files_match.group(1)) if files_match else 0
+        insertions = int(insertions_match.group(1)) if insertions_match else 0
+        deletions = int(deletions_match.group(1)) if deletions_match else 0
+        total_lines = insertions + deletions
+
+        return files_changed >= min_files or total_lines >= min_lines
+
+    async def aget_default_branch(self, checkout_path: str) -> str:
+        """Async version of get_default_branch."""
+        try:
+            remote_head = await self._arun(
+                ["symbolic-ref", "refs/remotes/origin/HEAD"],
+                cwd=checkout_path,
+            )
+            if remote_head.startswith("refs/remotes/origin/"):
+                return remote_head.replace("refs/remotes/origin/", "")
+        except GitError:
+            pass
+
+        for branch in ["main", "master", "develop", "trunk"]:
+            try:
+                await self._arun(
+                    ["rev-parse", "--verify", branch], cwd=checkout_path
+                )
+                return branch
+            except GitError:
+                continue
+
+        try:
+            remote_branches = await self._arun(
+                ["ls-remote", "--heads", "origin"], cwd=checkout_path
+            )
+            for branch in ["main", "master", "develop", "trunk"]:
+                if f"refs/heads/{branch}" in remote_branches:
+                    return branch
+        except GitError:
+            pass
+
+        current = await self.aget_current_branch(checkout_path)
+        return current if current else "main"
+
+    async def aget_recent_commits(
+        self, checkout_path: str, count: int = 5,
+    ) -> str:
+        try:
+            return await self._arun(
+                ["log", "--oneline", f"-{count}"], cwd=checkout_path
+            )
+        except GitError:
+            return ""
+
+    async def acheck_gh_auth(self) -> bool:
+        """Async version of check_gh_auth."""
+        try:
+            result = await self._arun_subprocess(
+                ["gh", "auth", "status"], timeout=30,
+            )
+            return result.returncode == 0
+        except (GitError, FileNotFoundError):
+            return False
+
+    async def acreate_github_repo(
+        self, name: str, *, private: bool = True,
+        org: str | None = None, description: str = "",
+    ) -> str:
+        """Async version of create_github_repo."""
+        full_name = f"{org}/{name}" if org else name
+        cmd = ["gh", "repo", "create", full_name]
+        cmd.append("--private" if private else "--public")
+        if description:
+            cmd.extend(["--description", description])
+        result = await self._arun_subprocess(cmd, timeout=60)
+        if result.returncode != 0:
+            raise GitError(f"gh repo create failed: {result.stderr.strip()}")
+        url = ""
+        for line in result.stdout.strip().splitlines():
+            line = line.strip()
+            if line.startswith("https://") or line.startswith("http://"):
+                url = line
+                break
+        if not url:
+            for line in reversed(result.stderr.strip().splitlines()):
+                line = line.strip()
+                if line.startswith("https://") or line.startswith("http://"):
+                    url = line
+                    break
+        if not url:
+            raise GitError(
+                "gh repo create succeeded but no repository URL was found "
+                f"in output: {result.stdout.strip()}"
+            )
+        return url
