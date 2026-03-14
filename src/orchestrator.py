@@ -117,7 +117,7 @@ logger = logging.getLogger(__name__)
 # lets the callback route to per-project channels instead of the global one.
 # When an ``embed`` kwarg is provided, the callback should prefer it over
 # the plain-text message for Discord display.
-NotifyCallback = Callable[..., Awaitable[None]]
+NotifyCallback = Callable[..., Awaitable[Any]]
 
 # Sends a single message into an already-created Discord thread.
 ThreadSendCallback = Callable[[str], Awaitable[None]]
@@ -187,6 +187,10 @@ class Orchestrator:
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._notify: NotifyCallback | None = None
         self._create_thread: CreateThreadCallback | None = None
+        # Discord message objects for task-started notifications, keyed by
+        # task_id.  Stored so we can delete the message when the task finishes
+        # to keep the chat window clean.
+        self._task_started_messages: dict[str, Any] = {}
         self._paused: bool = False
         self._restart_requested: bool = False
         # Throttle: approval polling runs at most once per 60s.
@@ -493,6 +497,14 @@ class Orchestrator:
             f"**Task Stopped:** `{task_id}` — {task.title}",
             project_id=task.project_id,
         )
+        # Delete the task-started message to reduce chat clutter
+        started_msg = self._task_started_messages.pop(task_id, None)
+        if started_msg is not None:
+            try:
+                await started_msg.delete()
+            except Exception as e:
+                logger.debug("Could not delete task-started message for %s: %s",
+                             task_id, e)
         # Check if stopping this task blocks a dependency chain
         await self._notify_stuck_chain(task)
         return None
@@ -504,7 +516,7 @@ class Orchestrator:
         *,
         embed: Any = None,
         view: Any = None,
-    ) -> None:
+    ) -> Any:
         """Send a notification via the injected callback (typically Discord).
 
         This is the orchestrator's single notification gateway — all outbound
@@ -521,6 +533,9 @@ class Orchestrator:
 
         When *view* is provided, interactive buttons are attached to the embed
         message (e.g. Retry/Skip buttons on failed task notifications).
+
+        Returns the sent message object (e.g. ``discord.Message``) when
+        available, so callers can track or delete it later.
         """
         if self._notify:
             try:
@@ -532,11 +547,12 @@ class Orchestrator:
                 if view is not None:
                     kwargs["view"] = view
                 if kwargs:
-                    await self._notify(message, project_id, **kwargs)
+                    return await self._notify(message, project_id, **kwargs)
                 else:
-                    await self._notify(message, project_id)
+                    return await self._notify(message, project_id)
             except Exception as e:
                 logger.error("Notification error: %s", e)
+        return None
 
     async def _notify_agent_question(
         self,
@@ -2803,12 +2819,15 @@ class Orchestrator:
         # Notify that work is starting
         start_msg = format_task_started(task, agent, workspace=ws_obj)
         handler_ref = self._get_handler()
-        await self._notify_channel(
+        started_discord_msg = await self._notify_channel(
             start_msg,
             project_id=action.project_id,
             embed=format_task_started_embed(task, agent, workspace=ws_obj),
             view=TaskStartedView(task.id, handler=handler_ref),
         )
+        # Store the message so we can delete it when the task finishes
+        if started_discord_msg is not None:
+            self._task_started_messages[task.id] = started_discord_msg
 
         # Create a thread for streaming agent output
         thread_send: ThreadSendCallback | None = None
@@ -3472,3 +3491,13 @@ class Orchestrator:
         # Remove adapter reference — the adapter's subprocess has already
         # exited by this point (wait() returned), so this is just cleanup.
         self._adapters.pop(action.agent_id, None)
+
+        # Delete the task-started notification from Discord to reduce chat
+        # clutter — the completion/failure message provides the relevant info.
+        started_msg = self._task_started_messages.pop(action.task_id, None)
+        if started_msg is not None:
+            try:
+                await started_msg.delete()
+            except Exception as e:
+                logger.debug("Could not delete task-started message for %s: %s",
+                             action.task_id, e)

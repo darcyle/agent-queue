@@ -585,7 +585,7 @@ class AgentQueueBot(commands.Bot):
         *,
         embed: discord.Embed | None = None,
         view: discord.ui.View | None = None,
-    ) -> None:
+    ) -> discord.Message | None:
         """Send a message to the project's channel (or the global channel).
 
         When *embed* is provided the message is sent as a rich embed; the
@@ -594,6 +594,9 @@ class AgentQueueBot(commands.Bot):
         When the message is routed to the **global** channel (because the
         project has no dedicated channel), a ``[project-id]`` tag is prepended
         to the text version so users can tell which project it belongs to.
+
+        Returns the sent ``discord.Message`` (or ``None`` if no channel was
+        available) so callers can track/delete it later.
         """
         channel = self._get_channel(project_id)
         if channel:
@@ -603,9 +606,10 @@ class AgentQueueBot(commands.Bot):
                 kwargs = {"embed": embed}
                 if view is not None:
                     kwargs["view"] = view
-                await channel.send(**kwargs)
+                return await channel.send(**kwargs)
             else:
-                await self._send_long_message(channel, text)
+                return await self._send_long_message(channel, text)
+        return None
 
     async def _create_task_thread(
         self, thread_name: str, initial_message: str, project_id: str | None = None
