@@ -878,88 +878,25 @@ class CommandHandler:
         }
 
     async def _cmd_claude_usage(self, args: dict) -> dict:
-        """Get Claude Code subscription usage stats and rate-limit status.
+        """Get Claude Code usage stats from live session data.
 
-        Reads local stats from ``~/.claude/stats-cache.json`` (session counts,
-        token usage by model, daily activity) and probes the Anthropic API for
-        current rate-limit utilisation via the ``anthropic-ratelimit-unified-*``
-        response headers.
+        Computes real token usage by scanning active session JSONL files
+        in ``~/.claude/projects/``.  Also reads subscription info from
+        ``~/.claude/.credentials.json``.
         """
         import json as _json
+        import glob as _glob
         from pathlib import Path as _Path
-        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        from datetime import datetime as _dt, timezone as _tz
 
         result: dict = {}
 
-        # --- 1. Local stats from Claude Code's stats cache ---
-        stats_path = _Path.home() / ".claude" / "stats-cache.json"
-        if stats_path.exists():
-            try:
-                stats = _json.loads(stats_path.read_text())
-                result["total_sessions"] = stats.get("totalSessions", 0)
-                result["total_messages"] = stats.get("totalMessages", 0)
+        claude_dir = _Path.home() / ".claude"
+        sessions_dir = claude_dir / "sessions"
+        projects_dir = claude_dir / "projects"
 
-                # Model token usage (cumulative)
-                model_usage = {}
-                for model, data in (stats.get("modelUsage") or {}).items():
-                    # Shorten model names for readability
-                    short = model.replace("claude-", "").split("-202")[0]
-                    inp = data.get("inputTokens", 0)
-                    out = data.get("outputTokens", 0)
-                    cache_read = data.get("cacheReadInputTokens", 0)
-                    cache_create = data.get("cacheCreationInputTokens", 0)
-                    model_usage[short] = {
-                        "input": inp,
-                        "output": out,
-                        "cache_read": cache_read,
-                        "cache_create": cache_create,
-                        "total": inp + out + cache_read + cache_create,
-                    }
-                result["model_usage"] = model_usage
-
-                # Weekly activity (last 7 days)
-                today = _dt.now(_tz.utc).date()
-                week_ago = today - _td(days=7)
-                daily = stats.get("dailyActivity") or []
-                week_messages = 0
-                week_sessions = 0
-                week_tool_calls = 0
-                for day in daily:
-                    try:
-                        d = _dt.strptime(day["date"], "%Y-%m-%d").date()
-                    except (ValueError, KeyError):
-                        continue
-                    if d >= week_ago:
-                        week_messages += day.get("messageCount", 0)
-                        week_sessions += day.get("sessionCount", 0)
-                        week_tool_calls += day.get("toolCallCount", 0)
-                result["week"] = {
-                    "messages": week_messages,
-                    "sessions": week_sessions,
-                    "tool_calls": week_tool_calls,
-                }
-
-                # Weekly token usage by model (last 7 days)
-                daily_tokens = stats.get("dailyModelTokens") or []
-                week_tokens_by_model: dict[str, int] = {}
-                for day in daily_tokens:
-                    try:
-                        d = _dt.strptime(day["date"], "%Y-%m-%d").date()
-                    except (ValueError, KeyError):
-                        continue
-                    if d >= week_ago:
-                        for model, count in (day.get("tokensByModel") or {}).items():
-                            short = model.replace("claude-", "").split("-202")[0]
-                            week_tokens_by_model[short] = week_tokens_by_model.get(short, 0) + count
-                result["week_tokens_by_model"] = week_tokens_by_model
-
-            except Exception as e:
-                result["stats_error"] = str(e)
-        else:
-            result["stats_error"] = "~/.claude/stats-cache.json not found"
-
-        # --- 2. Subscription info from credentials ---
-        creds_path = _Path.home() / ".claude" / ".credentials.json"
+        # --- 1. Subscription info from credentials ---
+        creds_path = claude_dir / ".credentials.json"
         if creds_path.exists():
             try:
                 creds = _json.loads(creds_path.read_text())
@@ -969,7 +906,90 @@ class CommandHandler:
             except Exception:
                 pass
 
-        # --- 3. Probe rate-limit status via a minimal API call ---
+        # --- 2. Active sessions with live token usage from session JSONLs ---
+        active_sessions: list[dict] = []
+        if sessions_dir.exists():
+            for sf in sessions_dir.iterdir():
+                try:
+                    sess = _json.loads(sf.read_text())
+                except Exception:
+                    continue
+                pid = sess.get("pid")
+                # Check if process is still alive
+                if not pid or not os.path.exists(f"/proc/{pid}"):
+                    continue
+                sid = sess.get("sessionId", "")
+                cwd = sess.get("cwd", "")
+                started_ms = sess.get("startedAt", 0)
+                started = _dt.fromtimestamp(started_ms / 1000, tz=_tz.utc) if started_ms else None
+
+                # Scan for the session JSONL in projects/
+                usage = {"input": 0, "output": 0, "cache_read": 0, "cache_create": 0}
+                msg_count = 0
+                jsonl_path = None
+                for pd in projects_dir.iterdir():
+                    candidate = pd / f"{sid}.jsonl"
+                    if candidate.exists():
+                        jsonl_path = candidate
+                        break
+                if jsonl_path:
+                    try:
+                        with open(jsonl_path) as fh:
+                            for line in fh:
+                                data = _json.loads(line)
+                                msg = data.get("message", {})
+                                if isinstance(msg, dict) and "usage" in msg:
+                                    u = msg["usage"]
+                                    usage["input"] += u.get("input_tokens", 0)
+                                    usage["output"] += u.get("output_tokens", 0)
+                                    usage["cache_read"] += u.get("cache_read_input_tokens", 0)
+                                    usage["cache_create"] += u.get("cache_creation_input_tokens", 0)
+                                    msg_count += 1
+                    except Exception:
+                        pass
+
+                total = sum(usage.values())
+                # Derive project name from cwd
+                project_name = os.path.basename(cwd) if cwd else "unknown"
+                active_sessions.append({
+                    "session_id": sid[:12],
+                    "project": project_name,
+                    "cwd": cwd,
+                    "started": started.strftime("%H:%M") if started else "?",
+                    "messages": msg_count,
+                    "usage": usage,
+                    "total_tokens": total,
+                })
+
+        result["active_sessions"] = active_sessions
+        result["active_session_count"] = len(active_sessions)
+        result["active_total_tokens"] = sum(s["total_tokens"] for s in active_sessions)
+
+        # --- 3. Aggregate model usage from stats-cache (cumulative) ---
+        stats_path = claude_dir / "stats-cache.json"
+        if stats_path.exists():
+            try:
+                stats = _json.loads(stats_path.read_text())
+                result["total_sessions"] = stats.get("totalSessions", 0)
+                result["total_messages"] = stats.get("totalMessages", 0)
+                model_usage = {}
+                for model, data in (stats.get("modelUsage") or {}).items():
+                    short = model.replace("claude-", "").split("-202")[0]
+                    inp = data.get("inputTokens", 0)
+                    out = data.get("outputTokens", 0)
+                    cache_read = data.get("cacheReadInputTokens", 0)
+                    cache_create = data.get("cacheCreationInputTokens", 0)
+                    model_usage[short] = {
+                        "input": inp, "output": out,
+                        "cache_read": cache_read, "cache_create": cache_create,
+                        "total": inp + out + cache_read + cache_create,
+                    }
+                result["model_usage"] = model_usage
+                result["stats_date"] = stats.get("lastComputedDate", "unknown")
+            except Exception as e:
+                result["stats_error"] = str(e)
+
+        # --- 4. Probe rate-limit status via a minimal API call ---
         try:
             rate_limit = await self._probe_claude_rate_limit()
             result["rate_limit"] = rate_limit

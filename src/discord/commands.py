@@ -2115,25 +2115,11 @@ def setup_commands(bot: commands.Bot) -> None:
             lines.append(f"• **{a['name']}** (`{a['id']}`) — {a['state']}{task_info}")
         await interaction.response.send_message("\n".join(lines))
 
-    @bot.tree.command(name="budget", description="Show token budget usage")
-    async def budget_command(interaction: discord.Interaction):
-        result = await handler.execute("get_token_usage", {})
-        breakdown = result.get("breakdown", [])
-        if not breakdown:
-            await _send_info(interaction, "No Usage", description="No token usage recorded.")
-            return
-        lines = []
-        for entry in breakdown:
-            pid = entry.get("project_id", "unknown")
-            tokens = entry.get("tokens", 0)
-            lines.append(f"• **{pid}**: {tokens:,} tokens")
-        await interaction.response.send_message("\n".join(lines))
-
     @bot.tree.command(
-        name="claude-usage",
-        description="Show Claude Code subscription usage and rate-limit status",
+        name="usage",
+        description="Show Claude Code usage — active sessions, tokens, rate limits",
     )
-    async def claude_usage_command(interaction: discord.Interaction):
+    async def usage_command(interaction: discord.Interaction):
         await interaction.response.defer()
         result = await handler.execute("claude_usage", {})
         if "error" in result:
@@ -2154,9 +2140,8 @@ def setup_commands(bot: commands.Bot) -> None:
             status_emoji = {"allowed": "🟢", "allowed_warning": "🟡", "rejected": "🔴"}.get(
                 status, "⚪"
             )
-            lines.append(f"\n### Rate Limit Status: {status_emoji} {status}")
+            lines.append(f"\n### Rate Limit: {status_emoji} {status}")
 
-            # Find utilisation percentages
             for k, v in sorted(rl.items()):
                 if k.endswith("_pct"):
                     claim = k.replace("_pct", "").replace("-", " ").title()
@@ -2167,7 +2152,6 @@ def setup_commands(bot: commands.Bot) -> None:
                     except ValueError:
                         lines.append(f"• **{claim}:** {v}")
 
-            # Reset info
             reset_human = rl.get("reset_human")
             resets_in = rl.get("resets_in")
             if reset_human:
@@ -2178,26 +2162,26 @@ def setup_commands(bot: commands.Bot) -> None:
         elif rl_err := result.get("rate_limit_error"):
             lines.append(f"\n⚠️ Rate limit probe failed: {rl_err}")
 
-        # Weekly activity
-        week = result.get("week", {})
-        if week:
-            lines.append(f"\n### This Week (last 7 days)")
-            lines.append(
-                f"• **Sessions:** {week.get('sessions', 0):,}  "
-                f"**Messages:** {week.get('messages', 0):,}  "
-                f"**Tool calls:** {week.get('tool_calls', 0):,}"
-            )
+        # Active sessions with live token counts
+        sessions = result.get("active_sessions", [])
+        if sessions:
+            total_active = result.get("active_total_tokens", 0)
+            lines.append(f"\n### Active Sessions ({len(sessions)})"
+                         f" — {total_active:,} tokens total")
+            for s in sorted(sessions, key=lambda x: -x["total_tokens"]):
+                u = s["usage"]
+                lines.append(
+                    f"• **{s['project']}** (since {s['started']}) — "
+                    f"{s['total_tokens']:,} tokens "
+                    f"({u['input']:,} in · {u['output']:,} out · "
+                    f"{u['cache_read']:,} cache · {u['cache_create']:,} create)"
+                )
 
-        # Weekly token usage by model
-        wtm = result.get("week_tokens_by_model", {})
-        if wtm:
-            parts = [f"{m}: {t:,}" for m, t in sorted(wtm.items(), key=lambda x: -x[1])]
-            lines.append(f"• **Tokens:** {' · '.join(parts)}")
-
-        # Cumulative model usage
+        # Cumulative model usage from stats-cache
         mu = result.get("model_usage", {})
         if mu:
-            lines.append(f"\n### All-Time Token Usage")
+            stats_date = result.get("stats_date", "?")
+            lines.append(f"\n### All-Time Token Usage (as of {stats_date})")
             for model, data in sorted(mu.items(), key=lambda x: -x[1]["total"]):
                 total = data["total"]
                 lines.append(
@@ -2205,9 +2189,6 @@ def setup_commands(bot: commands.Bot) -> None:
                     f"({data['input']:,} in · {data['output']:,} out · "
                     f"{data['cache_read']:,} cache-read)"
                 )
-
-        lines.append(f"\n• **Total sessions:** {result.get('total_sessions', '?')} "
-                      f"· **Total messages:** {result.get('total_messages', '?')}")
 
         if stats_err := result.get("stats_error"):
             lines.append(f"\n⚠️ Stats: {stats_err}")
