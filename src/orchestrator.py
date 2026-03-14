@@ -199,6 +199,7 @@ class Orchestrator:
         # chat provider calls and agent sessions) to JSONL files for cost
         # analysis and prompt optimization.  See ``src/llm_logger.py``.
         self.llm_logger = LLMLogger(
+            base_dir=os.path.join(config.data_dir, "logs", "llm"),
             enabled=config.llm_logging.enabled,
             retention_days=config.llm_logging.retention_days,
         )
@@ -237,7 +238,7 @@ class Orchestrator:
             try:
                 from src.memory import MemoryManager
                 self.memory_manager = MemoryManager(
-                    config.memory, storage_root=config.workspace_dir
+                    config.memory, storage_root=config.data_dir
                 )
             except Exception as e:
                 logger.warning("Memory manager initialization failed: %s", e)
@@ -2885,7 +2886,6 @@ class Orchestrator:
         context_lines = [
             "## System Context",
             f"- Workspace directory: {workspace}",
-            f"- Global workspaces root: {self.config.workspace_dir}",
             f"- Project: {project.name} (id: {project.id})",
         ]
         if task.branch_name:

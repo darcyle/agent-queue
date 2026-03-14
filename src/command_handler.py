@@ -4509,16 +4509,16 @@ class CommandHandler:
     # Notes commands -- markdown documents stored in project workspaces.
     # Notes are a lightweight knowledge base: users and hooks can write
     # specs, brainstorms, or analysis, and later turn them into tasks.
-    # Stored as plain .md files under <workspace_dir>/notes/<project_id>/.
+    # Stored as plain .md files under <data_dir>/notes/<project_id>/.
     # -----------------------------------------------------------------------
 
     def _get_notes_dir(self, project_id: str) -> str:
         """Return the central notes directory for a project.
 
-        Notes are stored under ``{workspace_dir}/notes/{project_id}/`` to
-        avoid polluting linked workspace directories (project repos).
+        Notes are stored under ``{data_dir}/notes/{project_id}/`` to
+        keep all persistent data under ``~/.agent-queue``.
         """
-        return os.path.join(self.config.workspace_dir, "notes", project_id)
+        return os.path.join(self.config.data_dir, "notes", project_id)
 
     def _resolve_note_path(self, notes_dir: str, title: str) -> str | None:
         """Resolve a note file path from a title, filename, or slug.

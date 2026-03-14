@@ -37,9 +37,8 @@ class MemoryManager:
     so memories are fully isolated between projects. Instances are created
     lazily on first access.
 
-    Memory files are stored centrally under ``{workspace_dir}/memory/{project_id}/``
-    to avoid polluting linked workspace directories (project repos) with
-    uncommitted memory files.
+    Memory files are stored centrally under ``{data_dir}/memory/{project_id}/``
+    to keep all persistent data under ``~/.agent-queue``.
 
     When memsearch is not installed or the config has ``enabled=False``,
     every public method degrades gracefully (returns empty lists, None, etc.)
@@ -49,7 +48,7 @@ class MemoryManager:
     def __init__(self, config: MemoryConfig, storage_root: str = "") -> None:
         self.config = config
         self._storage_root = os.path.expanduser(
-            storage_root or "~/agent-queue-workspaces"
+            storage_root or "~/.agent-queue"
         )
         self._instances: dict[str, Any] = {}  # project_id -> MemSearch
         self._watchers: dict[str, Any] = {}
@@ -66,18 +65,16 @@ class MemoryManager:
     def _project_memory_dir(self, project_id: str) -> str:
         """Central memory storage directory for a project.
 
-        Returns ``{workspace_dir}/memory/{project_id}/``. This keeps memory
-        files out of linked workspace directories (project repos).
+        Returns ``{data_dir}/memory/{project_id}/``.
         """
         return os.path.join(self._storage_root, "memory", project_id)
 
     def _memory_paths(self, project_id: str, workspace_path: str) -> list[str]:
         """Directories to index for a project.
 
-        Always includes the central ``{workspace_dir}/memory/{project_id}/``
-        directory (created if absent). Optionally includes the workspace's
-        ``notes/`` directory when ``index_notes`` is enabled and the
-        directory exists.
+        Always includes the central ``{data_dir}/memory/{project_id}/``
+        directory (created if absent). Optionally includes the project's
+        ``notes/`` directory when ``index_notes`` is enabled.
         """
         paths = [self._project_memory_dir(project_id)]
         if self.config.index_notes:
@@ -167,7 +164,7 @@ class MemoryManager:
     async def remember(self, task: Any, output: Any, workspace_path: str) -> str | None:
         """Save a task result as a structured markdown memory file.
 
-        Writes the file to ``{workspace_dir}/memory/{project_id}/tasks/{task_id}.md``
+        Writes the file to ``{data_dir}/memory/{project_id}/tasks/{task_id}.md``
         and indexes it via ``memsearch.index_file()``. Returns the file path
         on success, ``None`` otherwise.
         """

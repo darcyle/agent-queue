@@ -399,6 +399,9 @@ class AppConfig:
     non-critical settings updated from disk for hot-reloading.
     """
 
+    data_dir: str = field(
+        default_factory=lambda: os.path.expanduser("~/.agent-queue")
+    )
     workspace_dir: str = field(
         default_factory=lambda: os.path.expanduser("~/agent-queue-workspaces")
     )
@@ -550,7 +553,7 @@ HOT_RELOADABLE_SECTIONS = {
 """Config sections that can be safely updated at runtime without restart."""
 
 RESTART_REQUIRED_SECTIONS = {
-    "discord", "workspace_dir", "database_path", "chat_provider",
+    "discord", "data_dir", "workspace_dir", "database_path", "chat_provider",
     "memory", "health_check",
 }
 """Config sections that require a full restart to take effect."""
@@ -558,7 +561,7 @@ RESTART_REQUIRED_SECTIONS = {
 # Mapping from AppConfig field names to the section names used in diff output.
 # Most fields map to themselves; these are the exceptions.
 _SECTION_FIELDS = {
-    "workspace_dir", "database_path", "profile", "env",
+    "data_dir", "workspace_dir", "database_path", "profile", "env",
     "discord", "agents_config", "scheduling", "pause_retry",
     "chat_provider", "hook_engine", "health_check", "logging",
     "monitoring", "archive", "auto_task", "memory", "llm_logging",
@@ -849,6 +852,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     config.profile = resolved_profile
     config.env = env
 
+    if "data_dir" in raw:
+        config.data_dir = raw["data_dir"]
     if "workspace_dir" in raw:
         config.workspace_dir = raw["workspace_dir"]
     if "database_path" in raw:
