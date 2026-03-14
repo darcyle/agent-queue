@@ -3404,8 +3404,8 @@ class CommandHandler:
         6. If on a feature branch:
            a. Commit any uncommitted changes.
            b. Push the branch to origin (save work).
-           c. Switch to default branch, hard-reset to origin.
-           d. Switch back to the feature branch (leave it as-is).
+           c. Switch to default branch and hard-reset to origin.
+              (workspace ends up on the default branch, not the feature branch)
         7. Handle conflicts gracefully.
         """
         ws_path = ws.workspace_path
@@ -3515,55 +3515,57 @@ class CommandHandler:
                     # Push failed — might not have remote tracking, that's OK
                     actions.append("push_skipped")
 
-                # Now update the local default branch to match origin
-                # We need to be careful: if this is a worktree we can't
-                # checkout the default branch. Use update-ref instead.
+                # Switch workspace back to the default branch.
+                # For worktrees, checkout may fail if another worktree has
+                # the default branch checked out — fall back to update-ref.
                 is_worktree = await git._ais_worktree(ws_path)
-
                 if is_worktree:
-                    # In a worktree, update the local ref without checkout
+                    # In a worktree, update the ref to point at origin/default
                     try:
                         origin_sha = await git._arun(
                             ["rev-parse", f"origin/{default_branch}"], cwd=ws_path,
                         )
+                        # Switch the worktree to the default branch
                         await git._arun(
-                            ["update-ref", f"refs/heads/{default_branch}", origin_sha],
+                            ["checkout", default_branch], cwd=ws_path,
+                        )
+                        await git._arun(
+                            ["reset", "--hard", f"origin/{default_branch}"],
                             cwd=ws_path,
                         )
-                        actions.append("updated_default_ref")
+                        actions.append("switched_to_default")
                     except GitError:
-                        pass  # Non-critical — default branch update is best-effort
+                        # Worktree checkout may fail if another worktree has
+                        # the default branch checked out; fall back to update-ref
+                        try:
+                            origin_sha = await git._arun(
+                                ["rev-parse", f"origin/{default_branch}"],
+                                cwd=ws_path,
+                            )
+                            await git._arun(
+                                ["update-ref", f"refs/heads/{default_branch}",
+                                 origin_sha],
+                                cwd=ws_path,
+                            )
+                            actions.append("updated_default_ref")
+                        except GitError:
+                            pass  # Non-critical
                 else:
-                    # Normal repo: checkout default, reset, then go back
+                    # Normal repo: checkout default branch and reset to origin
                     try:
                         await git._arun(["checkout", default_branch], cwd=ws_path)
                         await git._arun(
                             ["reset", "--hard", f"origin/{default_branch}"],
                             cwd=ws_path,
                         )
-                        actions.append("updated_default_branch")
-                        # Switch back to the feature branch
-                        await git._arun(["checkout", current_branch], cwd=ws_path)
-                    except GitError:
-                        # Try to get back to the feature branch
+                        actions.append("switched_to_default")
+                    except GitError as e:
+                        # Try to get back to where we were if checkout failed
                         try:
                             await git._arun(["checkout", current_branch], cwd=ws_path)
                         except GitError:
                             pass
-
-                # Optionally rebase the feature branch onto latest main
-                try:
-                    await git._arun(
-                        ["rebase", f"origin/{default_branch}"], cwd=ws_path,
-                    )
-                    actions.append("rebased_onto_main")
-                except GitError:
-                    # Rebase failed — abort and leave branch as-is
-                    try:
-                        await git._arun(["rebase", "--abort"], cwd=ws_path)
-                    except GitError:
-                        pass
-                    actions.append("rebase_skipped_conflicts")
+                        actions.append(f"switch_to_default_failed")
 
                 return {
                     **ws_info,
