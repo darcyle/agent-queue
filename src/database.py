@@ -490,16 +490,22 @@ class Database:
             logger.debug("Agent-workspaces-to-workspaces migration (benign): %s", e)
 
     async def _normalize_workspace_paths(self) -> None:
-        """Normalize any relative workspace_path entries to absolute paths.
+        """Normalize workspace paths and remove cross-project duplicates.
 
-        Idempotent: only updates rows whose workspace_path differs after
-        os.path.realpath() resolution.
+        1. Resolve any relative workspace_path entries to absolute paths.
+        2. Remove link workspaces whose path duplicates a workspace belonging
+           to a different project (e.g. bogus link entries pointing to the
+           wrong project directory).
+
+        Idempotent — safe to run on every startup.
         """
         try:
             cursor = await self._db.execute(
-                "SELECT id, workspace_path FROM workspaces"
+                "SELECT id, project_id, workspace_path, source_type FROM workspaces"
             )
             rows = await cursor.fetchall()
+
+            # Phase 1: normalize relative paths to absolute
             updated = 0
             for row in rows:
                 raw = row["workspace_path"]
@@ -516,6 +522,37 @@ class Database:
                     updated += 1
             if updated:
                 logger.info("Normalized %d workspace paths to absolute", updated)
+
+            # Phase 2: remove link workspaces that duplicate another project's path.
+            # Build a map of path -> set of project_ids.  If a link workspace's path
+            # belongs to a different project (clone workspace), it's bogus.
+            path_owners: dict[str, str] = {}  # path -> first project_id with a clone
+            for row in rows:
+                ws_path = os.path.realpath(row["workspace_path"])
+                if row["source_type"] == "clone" and ws_path not in path_owners:
+                    path_owners[ws_path] = row["project_id"]
+
+            removed = 0
+            for row in rows:
+                if row["source_type"] != "link":
+                    continue
+                ws_path = os.path.realpath(row["workspace_path"])
+                owner = path_owners.get(ws_path)
+                if owner and owner != row["project_id"]:
+                    await self._db.execute(
+                        "DELETE FROM workspaces WHERE id = ?", (row["id"],)
+                    )
+                    logger.warning(
+                        "Removed bogus workspace %s: path %s belongs to project "
+                        "'%s' but was linked to project '%s'",
+                        row["id"], ws_path, owner, row["project_id"],
+                    )
+                    removed += 1
+            if removed:
+                logger.info("Removed %d cross-project duplicate workspaces", removed)
+
+            if updated or removed:
+                await self._db.commit()
         except Exception as e:
             logger.debug("Workspace path normalization (benign): %s", e)
 
@@ -1412,12 +1449,19 @@ class Database:
     async def list_workspaces(
         self, project_id: str | None = None,
     ) -> list[Workspace]:
+        # Order: clone before link (clones are always project-specific),
+        # then by rowid for deterministic results.
         if project_id:
             cursor = await self._db.execute(
-                "SELECT * FROM workspaces WHERE project_id = ?", (project_id,)
+                "SELECT * FROM workspaces WHERE project_id = ? "
+                "ORDER BY CASE source_type WHEN 'clone' THEN 0 ELSE 1 END, rowid",
+                (project_id,),
             )
         else:
-            cursor = await self._db.execute("SELECT * FROM workspaces")
+            cursor = await self._db.execute(
+                "SELECT * FROM workspaces ORDER BY "
+                "CASE source_type WHEN 'clone' THEN 0 ELSE 1 END, rowid"
+            )
         rows = await cursor.fetchall()
         return [self._row_to_workspace(r) for r in rows]
 
@@ -1584,10 +1628,13 @@ class Database:
 
         This is a non-locking read used by notes, archive, repo status, and
         other commands that need a project directory without acquiring a lock.
-        Returns ``None`` if the project has no workspaces.
+        Prefers clone workspaces over link workspaces since clones are always
+        project-specific.  Returns ``None`` if the project has no workspaces.
         """
         cursor = await self._db.execute(
-            "SELECT workspace_path FROM workspaces WHERE project_id = ? LIMIT 1",
+            "SELECT workspace_path FROM workspaces WHERE project_id = ? "
+            "ORDER BY CASE source_type WHEN 'clone' THEN 0 ELSE 1 END, rowid "
+            "LIMIT 1",
             (project_id,),
         )
         row = await cursor.fetchone()

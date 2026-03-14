@@ -3040,6 +3040,14 @@ class CommandHandler:
             path = os.path.realpath(path)
             if not os.path.isdir(path):
                 return {"error": f"Path '{path}' does not exist or is not a directory"}
+            # Reject if path is already a workspace for a different project
+            all_ws = await self.db.list_workspaces()
+            for ws in all_ws:
+                if os.path.realpath(ws.workspace_path) == path and ws.project_id != project_id:
+                    return {
+                        "error": f"Path '{path}' is already a workspace for "
+                                 f"project '{ws.project_id}'"
+                    }
         elif source_type == RepoSourceType.CLONE:
             if not path:
                 # Auto-generate path under workspace_dir/{project_id}/
