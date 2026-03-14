@@ -211,6 +211,7 @@ specs/
 ## Code Conventions
 
 - All async functions use `async/await` (asyncio-based)
+- **Async-first I/O:** All production code uses non-blocking I/O. Git operations use `GitManager`'s async API (`a`-prefixed methods) which use `asyncio.create_subprocess_exec()`. No production code calls synchronous `subprocess.run()` — sync methods are retained only for tests.
 - Database operations return dicts or dataclass instances from `models.py`
 - Commands return structured dicts with `success` boolean and data/error fields
 - Notifications go through `_notify_channel()` for project-aware Discord routing
