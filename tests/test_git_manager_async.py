@@ -85,6 +85,16 @@ class TestArun:
         async def mock_create(*args, **kwargs):
             proc = await original_create(*args, **kwargs)
             proc.communicate = _slow_communicate
+            # Wrap kill() to tolerate the process already being gone
+            original_kill = proc.kill
+
+            def safe_kill():
+                try:
+                    original_kill()
+                except ProcessLookupError:
+                    pass
+
+            proc.kill = safe_kill
             return proc
 
         with mock.patch("asyncio.create_subprocess_exec", side_effect=mock_create):

@@ -1,5 +1,6 @@
 """Test cases for git tools: get_git_status, git_commit, git_push, git_create_branch,
-git_merge, git_create_pr, git_changed_files, git_log, git_diff, checkout_branch.
+git_merge, git_create_pr, git_changed_files, git_log, git_diff, checkout_branch,
+set_default_branch.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty
@@ -615,6 +616,61 @@ CASES: list[TestCase] = [
                 user_message="what code changes are pending?",
                 # git_diff or get_git_status both answer this question
                 not_expected_tools=["create_task", "delete_task", "git_commit"],
+            ),
+        ],
+    ),
+    # --- set_default_branch ---
+    TestCase(
+        id="git-set-default-branch-explicit",
+        description="Set the default branch for a project",
+        category="git",
+        difficulty=Difficulty.EASY,
+        tags=["set_default_branch"],
+        turns=[
+            Turn(
+                user_message="set the default branch for project p-1 to develop",
+                expected_tools=[
+                    ExpectedTool(
+                        name="set_default_branch",
+                        args={"project_id": "p-1", "branch": "develop"},
+                    ),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="git-set-default-branch-change",
+        description="Change the default branch using 'change' phrasing",
+        category="git",
+        difficulty=Difficulty.EASY,
+        tags=["set_default_branch", "natural-language"],
+        turns=[
+            Turn(
+                user_message="change the default branch of project p-2 to dev",
+                expected_tools=[
+                    ExpectedTool(
+                        name="set_default_branch",
+                        args={"project_id": "p-2", "branch": "dev"},
+                    ),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="git-set-default-branch-natural",
+        description="Switch default branch using natural phrasing",
+        category="git",
+        difficulty=Difficulty.MEDIUM,
+        tags=["set_default_branch", "natural-language"],
+        turns=[
+            Turn(
+                user_message="I want project p-3 to use the staging branch instead of main",
+                expected_tools=[
+                    ExpectedTool(
+                        name="set_default_branch",
+                        args={"project_id": "p-3", "branch": "staging"},
+                    ),
+                ],
             ),
         ],
     ),
