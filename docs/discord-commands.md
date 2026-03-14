@@ -273,6 +273,62 @@ Marks a BLOCKED or FAILED task as COMPLETED without actually doing the work. Use
 
 Bypasses the normal state machine — use to unstick tasks or force a status change when normal commands don't apply.
 
+### Task Dependencies
+
+Dependencies control execution order — a task in DEFINED state won't promote to READY until all its dependencies are COMPLETED. The orchestrator checks dependencies every cycle (~5 seconds).
+
+| Command | Description |
+|---------|-------------|
+| `/add-dependency` | Add a dependency between two tasks |
+| `/remove-dependency` | Remove a dependency between two tasks |
+| `/chain-health` | Diagnose stuck dependency chains |
+| `/skip-task` | Skip a blocked task to unblock its dependents |
+
+#### `/add-dependency`
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `task_id` | Yes | The task that should wait |
+| `depends_on` | Yes | The task it should wait for |
+
+Creates a dependency edge: `task_id` won't start until `depends_on` is COMPLETED. Circular dependencies are rejected — the system validates the DAG before adding the edge.
+
+**Via chat:**
+
+```
+Make task bold-falcon depend on quiet-owl
+Add a dependency: swift-brook needs calm-river to finish first
+```
+
+#### `/remove-dependency`
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `task_id` | Yes | The waiting task |
+| `depends_on` | Yes | The dependency to remove |
+
+Removes a dependency edge. Idempotent — succeeds silently if the edge doesn't exist. After removal, if the task has no remaining unmet dependencies, it promotes to READY on the next orchestrator cycle.
+
+#### Dependency workflow: skip to unblock
+
+When a task in a dependency chain fails or gets blocked, all downstream tasks stay stuck in DEFINED. You have two options:
+
+1. **Fix and retry** — Use `/restart-task` to re-queue the blocked task
+2. **Skip and unblock** — Use `/skip-task` to mark it COMPLETED without doing the work, which unblocks all downstream dependents
+
+The `/chain-health` command helps you diagnose these situations by showing which blocked or failed task is holding up the chain and how many downstream tasks are affected.
+
+```
+Example workflow:
+  task-A (BLOCKED) → task-B (DEFINED) → task-C (DEFINED)
+
+  /skip-task task_id: task-A
+  ✓ Skipped task-A. 1 downstream task unblocked.
+
+  Next cycle: task-B promotes to READY → gets assigned → starts working
+  When task-B completes: task-C promotes to READY
+```
+
 ---
 
 ## Repository & Agent Setup

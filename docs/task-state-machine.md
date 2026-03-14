@@ -138,9 +138,38 @@ events, transitions, and the rules governing task lifecycle progression.
 4. **FAILED → READY/BLOCKED**: On failure, if `retry_count < max_retries`,
    the task goes back to READY. Otherwise it becomes BLOCKED.
 
+## Dependency Chains
+
+Tasks can declare dependencies on other tasks, forming a directed acyclic graph (DAG). A task in DEFINED state only promotes to READY when **all** its dependencies are in COMPLETED state. The orchestrator checks this every cycle (~5 seconds) via `db.are_dependencies_met(task_id)`.
+
+### Cycle detection
+
+Before adding a new dependency edge, the system validates the DAG using `validate_dag_with_new_edge()`. If the edge would create a cycle, the operation is rejected. This prevents deadlock scenarios where tasks would wait for each other indefinitely.
+
+### Stuck chain detection
+
+The orchestrator automatically monitors for tasks stuck in DEFINED state beyond a configurable threshold. When detected, it traces the dependency graph to identify the root cause — typically a BLOCKED or FAILED upstream task — and sends a Discord notification with the "blast radius" (how many downstream tasks are affected).
+
+Key methods:
+- `_check_stuck_defined_tasks()` — Periodic scan for stuck tasks
+- `_find_stuck_downstream()` — BFS walk to find all tasks blocked by a given task
+- `_notify_stuck_chain()` — Rate-limited Discord notifications
+
+### The skip workflow
+
+When a task in a dependency chain fails or gets blocked and the work is no longer needed, the **ADMIN_SKIP** event provides an escape hatch:
+
+1. The blocked/failed task is marked as COMPLETED (via ADMIN_SKIP)
+2. The orchestrator's next cycle checks all DEFINED tasks
+3. Tasks whose only remaining unmet dependency was the skipped task now promote to READY
+4. The chain resumes execution
+
+This is a deliberate design choice: there is no separate SKIPPED state. Skipped tasks become COMPLETED so the dependency resolution logic works uniformly — downstream tasks only need to check if dependencies are COMPLETED, regardless of how they got there.
+
 ## Important Notes
 
 - **State machine is advisory**: Transitions are NOT enforced in production.
   The orchestrator writes directly via `db.update_task()`.
 - **PAUSED never stalls**: Every PAUSED task has a `resume_after` timestamp.
 - **DAG validation**: Cycle detection prevents circular dependency chains.
+- **No SKIPPED state**: The ADMIN_SKIP event transitions to COMPLETED, not a separate state. This keeps dependency resolution simple.
