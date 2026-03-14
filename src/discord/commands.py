@@ -3480,6 +3480,34 @@ def setup_commands(bot: commands.Bot) -> None:
         )
 
     @bot.tree.command(
+        name="remove-workspace",
+        description="Delete a workspace from a project (must not be locked)",
+    )
+    @app_commands.describe(workspace_id="Workspace ID or name to delete")
+    async def remove_workspace_command(
+        interaction: discord.Interaction,
+        workspace_id: str,
+    ):
+        project_id = await _resolve_project_from_context(interaction, None)
+        args: dict = {"workspace_id": workspace_id}
+        if project_id:
+            args["project_id"] = project_id
+        result = await handler.execute("remove_workspace", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        embed = success_embed(
+            "Workspace Deleted",
+            fields=[
+                ("ID", f"`{result['deleted']}`", True),
+                ("Name", result.get("name") or "—", True),
+                ("Project", f"`{result.get('project_id', '')}`", True),
+                ("Path", f"`{result.get('workspace_path', '')}`", False),
+            ],
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @bot.tree.command(
         name="sync-workspaces",
         description="Sync all project workspaces to the latest main branch",
     )

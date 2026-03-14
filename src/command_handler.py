@@ -3132,18 +3132,34 @@ class CommandHandler:
         }
 
     async def _cmd_remove_workspace(self, args: dict) -> dict:
-        """Delete a workspace."""
-        workspace_id = args["workspace_id"]
-        ws = await self.db.get_workspace(workspace_id)
+        """Delete a workspace by ID or name."""
+        workspace_ref = args.get("workspace_id") or args.get("workspace")
+        if not workspace_ref:
+            return {"error": "workspace_id or workspace is required"}
+
+        # Try by ID first
+        ws = await self.db.get_workspace(workspace_ref)
+
+        # If not found by ID, try by name within a project
         if not ws:
-            return {"error": f"Workspace '{workspace_id}' not found"}
+            project_id = args.get("project_id") or self._active_project_id
+            if project_id:
+                ws = await self.db.get_workspace_by_name(project_id, workspace_ref)
+
+        if not ws:
+            return {"error": f"Workspace '{workspace_ref}' not found"}
         if ws.locked_by_agent_id:
             return {
-                "error": f"Workspace '{workspace_id}' is locked by agent "
+                "error": f"Workspace '{ws.id}' is locked by agent "
                          f"'{ws.locked_by_agent_id}'. Release it first."
             }
-        await self.db.delete_workspace(workspace_id)
-        return {"deleted": workspace_id}
+        await self.db.delete_workspace(ws.id)
+        return {
+            "deleted": ws.id,
+            "name": ws.name,
+            "project_id": ws.project_id,
+            "workspace_path": ws.workspace_path,
+        }
 
     async def _cmd_release_workspace(self, args: dict) -> dict:
         """Admin force-release a stuck workspace lock."""

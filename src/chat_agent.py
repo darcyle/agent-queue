@@ -457,6 +457,28 @@ TOOLS = [
         },
     },
     {
+        "name": "remove_workspace",
+        "description": (
+            "Delete a workspace from a project. The workspace must not be locked by an agent. "
+            "Accepts a workspace ID or name. Does not delete files on disk — only removes the "
+            "workspace record from the database."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID or name to delete",
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID (used for name lookup; optional if active project is set)",
+                },
+            },
+            "required": ["workspace_id"],
+        },
+    },
+    {
         "name": "sync_workspaces",
         "description": (
             "Synchronize all project workspaces to the latest main branch. "
@@ -1799,7 +1821,7 @@ You can directly (using your tools):
 - List tasks with dependency annotations using `list_tasks` with show_dependencies=true
 - Create tasks in the active project without explicitly specifying a project_id
 - Register and list agents
-- Manage project workspaces with `add_workspace`, `list_workspaces`, and `release_workspace`
+- Manage project workspaces with `add_workspace`, `list_workspaces`, `remove_workspace`, and `release_workspace`
 - Monitor agent status, task progress, and recent events
 - Pause/resume projects
 - Retrieve task results (summary, files changed, errors, tokens) with `get_task_result`
@@ -1835,6 +1857,7 @@ the user says to "link", "connect", "use", or "point to" an existing directory/r
 - Each project can have multiple workspaces for parallel agent execution.
 - Agents dynamically acquire a workspace lock when assigned a task and release it on completion.
 - Use `list_workspaces` to see workspace status and lock information.
+- Use `remove_workspace` to delete a workspace from a project (must not be locked). Only removes the DB record, not files on disk.
 - Use `release_workspace` to force-release a stuck lock (e.g., dead agent, stale task).
 - Use `sync_workspaces` to pull and push all workspaces to the latest main branch. This fetches \
 latest changes, pushes unpushed local commits, and rebases feature branches onto main. Locked \
