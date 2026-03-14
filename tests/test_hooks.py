@@ -308,6 +308,97 @@ class TestPeriodicScheduling:
         assert hook.id not in engine._running
 
 
+# --- Periodic hook timing context ---
+
+
+class TestPeriodicTimingContext:
+    @pytest.mark.asyncio
+    async def test_periodic_hook_passes_timing_event_data(self, db, engine):
+        """Periodic hooks should receive last_run_time and current_time in event_data."""
+        await _create_project(db)
+        hook = await _create_hook(
+            db,
+            trigger='{"type": "periodic", "interval_seconds": 10}',
+            cooldown_seconds=0,
+            context_steps='[{"type": "shell", "command": "echo test", "skip_llm_if_exit_zero": true}]',
+        )
+
+        # Set a previous run time
+        previous_run = time.time() - 100
+        engine._last_run_time[hook.id] = previous_run
+
+        # Capture what _launch_hook receives
+        captured = {}
+        original_launch = engine._launch_hook
+
+        def capturing_launch(h, reason, event_data=None):
+            captured["event_data"] = event_data
+            captured["hook"] = h
+            original_launch(h, reason, event_data=event_data)
+
+        engine._launch_hook = capturing_launch
+
+        # Force the interval to have elapsed
+        engine._last_run_time[hook.id] = time.time() - 20
+        await engine.tick()
+
+        assert "event_data" in captured
+        ed = captured["event_data"]
+        assert "current_time" in ed
+        assert "current_time_epoch" in ed
+        assert "last_run_time" in ed
+        assert "last_run_time_epoch" in ed
+        assert "seconds_since_last_run" in ed
+        # ISO format check
+        assert "T" in ed["current_time"]
+        assert "T" in ed["last_run_time"]
+
+    @pytest.mark.asyncio
+    async def test_periodic_first_run_no_last_run_time(self, db, engine):
+        """First periodic run should have current_time but no last_run_time."""
+        await _create_project(db)
+        hook = await _create_hook(
+            db,
+            trigger='{"type": "periodic", "interval_seconds": 10}',
+            cooldown_seconds=0,
+            context_steps='[{"type": "shell", "command": "echo test", "skip_llm_if_exit_zero": true}]',
+        )
+
+        # No previous run
+        engine._last_run_time.pop(hook.id, None)
+
+        captured = {}
+        original_launch = engine._launch_hook
+
+        def capturing_launch(h, reason, event_data=None):
+            captured["event_data"] = event_data
+            original_launch(h, reason, event_data=event_data)
+
+        engine._launch_hook = capturing_launch
+        await engine.tick()
+
+        assert "event_data" in captured
+        ed = captured["event_data"]
+        assert "current_time" in ed
+        assert "last_run_time" not in ed
+        assert "seconds_since_last_run" not in ed
+
+    def test_timing_available_in_prompt_template(self, engine):
+        """Timing data should be resolvable as {{event.current_time}} in prompts."""
+        event_data = {
+            "current_time": "2026-03-14T00:00:00+00:00",
+            "last_run_time": "2026-03-13T23:50:00+00:00",
+            "seconds_since_last_run": 600,
+        }
+        result = engine._render_prompt(
+            "Check for changes since {{event.last_run_time}} (now: {{event.current_time}})",
+            [],
+            event_data,
+        )
+        assert "2026-03-13T23:50:00+00:00" in result
+        assert "2026-03-14T00:00:00+00:00" in result
+
+
 # --- Event-driven firing ---
 
 

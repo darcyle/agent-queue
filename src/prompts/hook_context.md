@@ -24,6 +24,9 @@ variables:
   - name: default_branch
     description: The project's default git branch
     required: false
+  - name: timing_context
+    description: Timing info for periodic hooks (current time, last run time, elapsed)
+    required: false
 tags: [hooks, system, context]
 version: 1
 ---
@@ -32,7 +35,7 @@ version: 1
 
 You are executing as hook **{{hook_name}}** for project **{{project_name}}** (`{{project_id}}`).
 Trigger: `{{trigger_reason}}`
-{{workspace_dir}}{{repo_url}}{{default_branch}}
+{{workspace_dir}}{{repo_url}}{{default_branch}}{{timing_context}}
 
 ## Your Role
 

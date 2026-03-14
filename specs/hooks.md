@@ -175,7 +175,20 @@ iterates and applies the following checks in order:
 4. Elapsed time since last run `>= interval_seconds` (default `3600` if omitted).
 5. Cooldown check (see 3.3).
 
-If all checks pass, the hook is launched with `trigger_reason = "periodic"`.
+If all checks pass, the hook is launched with `trigger_reason = "periodic"` and
+an `event_data` dict containing timing context:
+
+| Key | Type | Description |
+|---|---|---|
+| `current_time` | `str` (ISO 8601) | Current UTC timestamp |
+| `current_time_epoch` | `float` | Current time as Unix epoch |
+| `last_run_time` | `str` (ISO 8601) | Previous run UTC timestamp (omitted on first run) |
+| `last_run_time_epoch` | `float` | Previous run as Unix epoch (omitted on first run) |
+| `seconds_since_last_run` | `float` | Seconds elapsed since previous run (omitted on first run) |
+
+This timing data is available in prompt templates as `{{event.current_time}}`,
+`{{event.last_run_time}}`, etc., and is also rendered into the context preamble
+so the LLM can scope its work to changes since the last execution.
 
 ### 3.2 Execution Entry Point
 
@@ -561,6 +574,20 @@ defaults to produce a `ChatProviderConfig`:
 Any keys absent from `hook.llm_config` fall back to the corresponding value in
 `config.chat_provider`. If `hook.llm_config` is `None`, the global
 `config.chat_provider` is used without modification.
+
+### Context Preamble
+
+Before invoking the LLM, `_invoke_llm` calls `_build_hook_context` to generate a
+preamble prepended to the rendered prompt. The preamble includes:
+
+- Hook name, project name, project ID, workspace path
+- Trigger reason (periodic, event, manual)
+- Repository URL and default branch (if available)
+- **Timing context** (periodic hooks only): current time, last run time, and elapsed
+  seconds since the previous run. On the first run, only current time is shown.
+
+The preamble is rendered from the `hook-context` prompt template
+(`src/prompts/hook_context.md`).
 
 ### Invocation Mechanism
 

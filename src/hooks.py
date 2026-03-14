@@ -66,6 +66,7 @@ import re
 import subprocess
 import time
 import uuid
+from datetime import datetime, timezone
 
 from src.chat_providers import ChatProvider, LoggedChatProvider, create_chat_provider
 from src.config import AppConfig, ChatProviderConfig
@@ -307,7 +308,22 @@ class HookEngine:
                 last = self._last_run_time.get(hook.id, 0)
                 if now - last >= interval:
                     if self._check_cooldown(hook, now):
-                        self._launch_hook(hook, "periodic")
+                        now_iso = datetime.fromtimestamp(
+                            now, tz=timezone.utc
+                        ).isoformat()
+                        timing_data: dict = {
+                            "current_time": now_iso,
+                            "current_time_epoch": now,
+                        }
+                        if last:
+                            timing_data["last_run_time"] = datetime.fromtimestamp(
+                                last, tz=timezone.utc
+                            ).isoformat()
+                            timing_data["last_run_time_epoch"] = last
+                            timing_data["seconds_since_last_run"] = now - last
+                        self._launch_hook(
+                            hook, "periodic", event_data=timing_data
+                        )
 
         # Phase 3: Poll file watcher for filesystem changes.
         # The file watcher emits file.changed / folder.changed events on
@@ -528,6 +544,7 @@ class HookEngine:
             response, tokens = await self._invoke_llm(
                 hook, prompt, trigger_reason=trigger_reason,
                 on_progress=_on_hook_progress,
+                event_data=event_data,
             )
 
             await self.db.update_hook_run(
@@ -1259,6 +1276,7 @@ class HookEngine:
 
     async def _build_hook_context(
         self, hook: Hook, trigger_reason: str,
+        event_data: dict | None = None,
     ) -> str:
         """Build a dynamic context preamble for the hook's LLM prompt.
 
@@ -1270,6 +1288,9 @@ class HookEngine:
         - **Why it fired** (periodic, event, manual, cron)
         - **Its role**: a dispatcher that should create tasks for code work
         - **What tools** it has (task management, git, notes, memory, etc.)
+
+        For periodic hooks, timing context (current time, last run time) is
+        included so the LLM can scope its work to changes since the last run.
 
         The preamble is prepended to the rendered hook prompt so it always
         appears at the top of the LLM's context, regardless of what the
@@ -1296,6 +1317,25 @@ class HookEngine:
             if project and project.repo_default_branch else ""
         )
 
+        # Build timing context for periodic hooks
+        timing_line = ""
+        if event_data and trigger_reason == "periodic":
+            parts = []
+            if event_data.get("current_time"):
+                parts.append(f"Current time: `{event_data['current_time']}`")
+            if event_data.get("last_run_time"):
+                parts.append(
+                    f"Last run: `{event_data['last_run_time']}`"
+                )
+                secs = event_data.get("seconds_since_last_run")
+                if secs is not None:
+                    parts.append(
+                        f"Elapsed since last run: {int(secs)}s"
+                    )
+            else:
+                parts.append("Last run: *first run*")
+            timing_line = "\n".join(parts) + "\n"
+
         return _prompt_registry.render(
             "hook-context",
             {
@@ -1306,6 +1346,7 @@ class HookEngine:
                 "repo_url": repo_line,
                 "default_branch": branch_line,
                 "trigger_reason": trigger_reason,
+                "timing_context": timing_line,
             },
         )
 
@@ -1313,6 +1354,7 @@ class HookEngine:
         self, hook: Hook, prompt: str,
         trigger_reason: str = "unknown",
         on_progress=None,
+        event_data: dict | None = None,
     ) -> tuple[str, int]:
         """Invoke the LLM with the rendered prompt using ChatAgent's full tool set.
 
@@ -1391,7 +1433,7 @@ class HookEngine:
 
         # Build dynamic context preamble with project info and role guidance
         context_preamble = await self._build_hook_context(
-            hook, trigger_reason,
+            hook, trigger_reason, event_data=event_data,
         )
 
         # Prepend context to the hook's rendered prompt
