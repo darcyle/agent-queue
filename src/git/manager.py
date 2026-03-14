@@ -131,7 +131,10 @@ class GitManager:
                     proc.communicate(), timeout=effective_timeout,
                 )
             except asyncio.TimeoutError:
-                proc.kill()
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass  # Process already exited before we could kill it
                 await proc.wait()
                 raise GitError(
                     f"git {' '.join(args)} timed out after "
@@ -168,7 +171,10 @@ class GitManager:
                     proc.communicate(), timeout=effective_timeout,
                 )
             except asyncio.TimeoutError:
-                proc.kill()
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass  # Process already exited before we could kill it
                 await proc.wait()
                 raise subprocess.TimeoutExpired(cmd, effective_timeout)
         except FileNotFoundError:
