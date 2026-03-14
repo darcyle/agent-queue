@@ -74,6 +74,7 @@ from src.event_bus import EventBus
 from src.file_watcher import FileWatcher, WatchRule
 from src.logging_config import CorrelationContext
 from src.models import Hook, HookRun, Task, TaskStatus
+from src.prompt_registry import registry as _prompt_registry
 
 logger = logging.getLogger(__name__)
 
@@ -525,7 +526,8 @@ class HookEngine:
                     tool_names.append(detail)
 
             response, tokens = await self._invoke_llm(
-                hook, prompt, on_progress=_on_hook_progress,
+                hook, prompt, trigger_reason=trigger_reason,
+                on_progress=_on_hook_progress,
             )
 
             await self.db.update_hook_run(
@@ -1255,8 +1257,61 @@ class HookEngine:
 
         return placeholder
 
+    async def _build_hook_context(
+        self, hook: Hook, trigger_reason: str,
+    ) -> str:
+        """Build a dynamic context preamble for the hook's LLM prompt.
+
+        Fetches project metadata (name, workspace path, repo URL, default
+        branch) and renders the ``hook-context`` prompt template with these
+        values.  This gives the hook's LLM a clear understanding of:
+
+        - **Which project** it's operating on (name, ID, workspace path)
+        - **Why it fired** (periodic, event, manual, cron)
+        - **Its role**: a dispatcher that should create tasks for code work
+        - **What tools** it has (task management, git, notes, memory, etc.)
+
+        The preamble is prepended to the rendered hook prompt so it always
+        appears at the top of the LLM's context, regardless of what the
+        hook author wrote in the prompt template.
+        """
+        # Fetch project details for richer context
+        project = await self.db.get_project(hook.project_id)
+        project_name = project.name if project else hook.project_id
+
+        workspace_dir = await self.db.get_project_workspace_path(
+            hook.project_id
+        )
+
+        # Build optional context lines (only include if available)
+        ws_line = (
+            f"Workspace: `{workspace_dir}`\n" if workspace_dir else ""
+        )
+        repo_line = (
+            f"Repository: `{project.repo_url}`\n"
+            if project and project.repo_url else ""
+        )
+        branch_line = (
+            f"Default branch: `{project.repo_default_branch}`\n"
+            if project and project.repo_default_branch else ""
+        )
+
+        return _prompt_registry.render(
+            "hook-context",
+            {
+                "hook_name": hook.name,
+                "project_id": hook.project_id,
+                "project_name": project_name,
+                "workspace_dir": ws_line,
+                "repo_url": repo_line,
+                "default_branch": branch_line,
+                "trigger_reason": trigger_reason,
+            },
+        )
+
     async def _invoke_llm(
         self, hook: Hook, prompt: str,
+        trigger_reason: str = "unknown",
         on_progress=None,
     ) -> tuple[str, int]:
         """Invoke the LLM with the rendered prompt using ChatAgent's full tool set.
@@ -1285,6 +1340,12 @@ class HookEngine:
           under the ``hook_engine`` caller tag.
         - **User identity**: ``user_name`` is set to ``"hook:<hook_name>"``
           for audit trails in the event log and Discord notifications.
+        - **Active project**: sets the ChatAgent's active project so the
+          system prompt includes the ``ACTIVE PROJECT`` context and all
+          tool calls default to this project.
+        - **Dynamic context preamble**: prepends a rendered context block to
+          the hook prompt that tells the LLM which project it's in, what its
+          role is, and that it should spawn tasks for code work.
         - **Token estimation**: token counts are *estimated* from string
           length (÷4) since ChatAgent's ``chat()`` doesn't return exact usage.
           For accurate cost tracking, rely on the LLM logger's per-call data.
@@ -1310,6 +1371,11 @@ class HookEngine:
         # This is passed through the config, but we need to store it
         orchestrator = self._orchestrator
         chat_agent = ChatAgent(orchestrator, self.config)
+
+        # Set the active project so the system prompt includes project context
+        # and all tool calls default to this project
+        chat_agent.set_active_project(hook.project_id)
+
         provider = create_chat_provider(provider_config)
         # Wrap with logging if the orchestrator has an LLM logger
         if provider and hasattr(orchestrator, 'llm_logger') and orchestrator.llm_logger._enabled:
@@ -1323,15 +1389,23 @@ class HookEngine:
                 f"Failed to create LLM provider: {provider_config.provider}"
             )
 
-        # Use the chat method with the hook prompt
+        # Build dynamic context preamble with project info and role guidance
+        context_preamble = await self._build_hook_context(
+            hook, trigger_reason,
+        )
+
+        # Prepend context to the hook's rendered prompt
+        full_prompt = context_preamble + prompt
+
+        # Use the chat method with the enriched hook prompt
         response = await chat_agent.chat(
-            text=prompt,
+            text=full_prompt,
             user_name="hook:" + hook.name,
             on_progress=on_progress,
         )
 
         # Estimate tokens (we don't have exact count from chat())
-        tokens = len(prompt) // 4 + len(response) // 4
+        tokens = len(full_prompt) // 4 + len(response) // 4
 
         return response, tokens
 
