@@ -535,11 +535,11 @@ class HookEngine:
             await self.db.update_hook_run(run.id, prompt_sent=prompt)
 
             # 4. Invoke LLM — track tool calls for the completion summary
-            tool_names: list[str] = []
+            tool_labels: list[str] = []
 
             async def _on_hook_progress(event: str, detail: str | None) -> None:
                 if event == "tool_use" and detail:
-                    tool_names.append(detail)
+                    tool_labels.append(detail)
 
             response, tokens = await self._invoke_llm(
                 hook, prompt, trigger_reason=trigger_reason,
@@ -561,8 +561,8 @@ class HookEngine:
             # Notify completion with tool calls and response summary
             if orchestrator:
                 parts = [f"🪝 Hook **{hook.name}** completed."]
-                if tool_names:
-                    steps = " → ".join(f"`{t}`" for t in tool_names)
+                if tool_labels:
+                    steps = " → ".join(f"`{t}`" for t in tool_labels)
                     parts.append(f"🔧 {steps}")
                 if response:
                     # Truncate long responses for the notification

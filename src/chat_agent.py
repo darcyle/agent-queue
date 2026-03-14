@@ -2073,6 +2073,56 @@ tool in sequence. Do not stop after the first tool — complete the full request
 """
 
 
+def _tool_label(name: str, input_data: dict) -> str:
+    """Return a short descriptive label for a tool call.
+
+    Instead of just ``run_command`` this produces something like
+    ``run_command(pytest tests/)``, giving observers a quick sense of
+    what the agent is actually doing at each step.
+    """
+    detail: str | None = None
+
+    if name == "run_command":
+        detail = input_data.get("command")
+    elif name == "search_files":
+        mode = input_data.get("mode", "grep")
+        pattern = input_data.get("pattern", "")
+        detail = f"{mode}: {pattern}" if pattern else mode
+    elif name == "create_task":
+        detail = input_data.get("title")
+    elif name == "update_task":
+        detail = input_data.get("task_id")
+    elif name == "git_log":
+        detail = input_data.get("project_id")
+    elif name == "git_diff":
+        detail = input_data.get("project_id")
+    elif name == "git_status":
+        detail = input_data.get("project_id")
+    elif name == "git_commit":
+        detail = input_data.get("message")
+    elif name == "git_push":
+        detail = input_data.get("branch")
+    elif name == "git_pull":
+        detail = input_data.get("branch")
+    elif name == "git_checkout":
+        detail = input_data.get("branch")
+    elif name == "read_file":
+        detail = input_data.get("path")
+    elif name == "write_file":
+        detail = input_data.get("path")
+    elif name == "list_tasks":
+        detail = input_data.get("status")
+    elif name == "assign_task":
+        detail = input_data.get("task_id")
+
+    if detail:
+        # Truncate long details (e.g. long shell commands)
+        if len(detail) > 60:
+            detail = detail[:57] + "..."
+        return f"{name}({detail})"
+    return name
+
+
 class ChatAgent:
     """Platform-agnostic LLM chat agent for managing the AgentQueue system.
 
@@ -2207,10 +2257,11 @@ class ChatAgent:
 
             tool_results = []
             for tool_use in resp.tool_uses:
+                label = _tool_label(tool_use.name, tool_use.input)
                 if on_progress:
-                    await on_progress("tool_use", tool_use.name)
+                    await on_progress("tool_use", label)
                 result = await self._execute_tool(tool_use.name, tool_use.input)
-                tool_actions.append(tool_use.name)
+                tool_actions.append(label)
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_use.id,
