@@ -2570,48 +2570,19 @@ def setup_commands(bot: commands.Bot) -> None:
     # ===================================================================
 
     @bot.tree.command(name="tasks", description="List tasks for a project")
-    @app_commands.describe(
-        show_completed="Include completed tasks (default: hide completed)",
-        view="Display format: list (default interactive), tree (hierarchy), compact (summary)",
-    )
-    @app_commands.choices(view=[
-        app_commands.Choice(name="list",    value="list"),
-        app_commands.Choice(name="tree",    value="tree"),
-        app_commands.Choice(name="compact", value="compact"),
-    ])
     async def tasks_command(
         interaction: discord.Interaction,
-        show_completed: bool = False,
-        view: app_commands.Choice[str] | None = None,
     ):
         await interaction.response.defer()
         try:
-            view_mode = view.value if view else "list"
             project_id = await _resolve_project_from_context(interaction, None)
 
-            # Map slash-command view names to command handler display_mode values
-            _VIEW_TO_DISPLAY_MODE = {"list": "flat", "tree": "tree", "compact": "compact"}
-            display_mode = _VIEW_TO_DISPLAY_MODE[view_mode]
-
             args: dict = {
-                "include_completed": show_completed,
-                "display_mode": display_mode,
+                "include_completed": True,
+                "display_mode": "flat",
             }
             if project_id:
                 args["project_id"] = project_id
-
-            # tree/compact modes require a project_id; warn if missing
-            if display_mode in ("tree", "compact") and not project_id:
-                await interaction.followup.send(
-                    embed=error_embed(
-                        "Project Required",
-                        description=(
-                            "Tree and compact views require a project context. "
-                            "Set an active project with `/set-project` first."
-                        ),
-                    ),
-                )
-                return
 
             result = await handler.execute("list_tasks", args)
 
@@ -2621,38 +2592,11 @@ def setup_commands(bot: commands.Bot) -> None:
                 )
                 return
 
-            # ── Tree / Compact display modes ──────────────────────────
-            if display_mode in ("tree", "compact"):
-                await _send_tree_or_compact(
-                    interaction, result, show_completed, display_mode,
-                )
-                return
-
-            # ── Flat / list display mode (default) ────────────────────
             tasks = result.get("tasks", [])
             if not tasks:
-                if not show_completed:
-                    # Check if there are completed/terminal tasks being hidden
-                    check_args = {**args, "include_completed": True}
-                    # Always use flat mode for the hidden-tasks check
-                    check_args.pop("display_mode", None)
-                    check_result = await handler.execute("list_tasks", check_args)
-                    total_count = check_result.get("total", 0)
-                    if total_count > 0:
-                        await interaction.followup.send(
-                            embed=success_embed(
-                                "All Tasks Completed",
-                                description=(
-                                    f"All {total_count} task(s) are completed. "
-                                    f"Use `/tasks show_completed:True` to view them."
-                                ),
-                            ),
-                        )
-                        return
                 desc = "No tasks found"
                 if project_id:
                     desc += f" for project `{project_id}`"
-                    # Hint about cross-project view
                     desc += ". Check `/status` for a cross-project overview."
                 else:
                     desc += "."
@@ -2661,24 +2605,12 @@ def setup_commands(bot: commands.Bot) -> None:
                 )
                 return
 
-            # ----- Default list view (interactive grouped report) ---------------
-            # Group tasks by status
+            # Group tasks by status for the interactive report view
             tasks_by_status: dict[str, list] = {}
             for t in tasks:
                 tasks_by_status.setdefault(t["status"], []).append(t)
             total = result.get("total", len(tasks))
-            # Fetch all tasks (including completed) for the full-view report widget
-            if not show_completed:
-                all_result = await handler.execute(
-                    "list_tasks",
-                    {**args, "display_mode": "flat", "include_completed": True},
-                )
-                all_tasks = all_result.get("tasks", [])
-                if not isinstance(all_tasks, list):
-                    all_tasks = []
-            else:
-                all_tasks = tasks
-            view_widget = TaskReportView(tasks_by_status, total, all_tasks=all_tasks)
+            view_widget = TaskReportView(tasks_by_status, total, all_tasks=tasks)
             content = view_widget.build_content()
             await interaction.followup.send(content, view=view_widget)
         except Exception as e:
@@ -2689,151 +2621,6 @@ def setup_commands(bot: commands.Bot) -> None:
                 )
             except Exception:
                 pass  # interaction may have expired
-
-    async def _send_tree_or_compact(
-        interaction: discord.Interaction,
-        result: dict,
-        show_completed: bool,
-        display_mode: str,
-    ):
-        """Render tree or compact task list with pagination for Discord limits.
-
-        The command handler returns pre-formatted text for each root task
-        tree.  This helper stitches them together into Discord messages,
-        splitting across multiple messages when the output exceeds the
-        2,000-char message limit or using an embed for longer content.
-        """
-        trees = result.get("trees", [])
-        total_root = result.get("total_root_tasks", 0)
-        total_tasks = result.get("total_tasks", 0)
-
-        if not trees:
-            # No tasks — check for hidden completed tasks
-            if not show_completed:
-                hint = " Use `/tasks show_completed:True` to include completed."
-            else:
-                hint = ""
-            await interaction.followup.send(
-                embed=info_embed(
-                    "No Tasks",
-                    description=f"No tasks found for this project.{hint}",
-                ),
-            )
-            return
-
-        mode_label = "Tree View" if display_mode == "tree" else "Compact View"
-
-        # Build header line with aggregated status breakdown
-        header = f"**{mode_label}** — {total_root} root task(s), {total_tasks} total"
-
-        # Aggregate subtask status counts across all trees for an overview line
-        agg_by_status: dict[str, int] = {}
-        for entry in trees:
-            for st, cnt in entry.get("subtask_by_status", {}).items():
-                agg_by_status[st] = agg_by_status.get(st, 0) + cnt
-        if agg_by_status:
-            _STAT_ORDER: list[tuple[str, str]] = [
-                ("COMPLETED", "done"),
-                ("IN_PROGRESS", "in progress"),
-                ("VERIFYING", "verifying"),
-                ("ASSIGNED", "assigned"),
-                ("AWAITING_APPROVAL", "awaiting approval"),
-                ("WAITING_INPUT", "waiting input"),
-                ("PAUSED", "paused"),
-                ("FAILED", "failed"),
-                ("BLOCKED", "blocked"),
-                ("READY", "ready"),
-                ("DEFINED", "defined"),
-            ]
-            stat_parts: list[str] = []
-            for st_val, label in _STAT_ORDER:
-                cnt = agg_by_status.get(st_val, 0)
-                if cnt > 0:
-                    stat_parts.append(f"{cnt} {label}")
-            if stat_parts:
-                header += "\n" + " · ".join(stat_parts)
-
-        # Assemble all formatted tree blocks
-        blocks: list[str] = []
-        for entry in trees:
-            formatted = entry.get("formatted", "")
-            # In compact mode, append the progress bar inline if available
-            bar = entry.get("progress_bar")
-            if bar and display_mode == "compact":
-                formatted += f"\n  {bar}"
-            blocks.append(formatted)
-
-        # Tree mode uses a code block for monospace alignment of
-        # box-drawing characters; compact mode uses regular markdown.
-        if display_mode == "tree":
-            body = "\n\n".join(blocks)
-            # Wrap in a code block for monospace alignment
-            full_text = f"{header}\n```\n{body}\n```"
-        else:
-            # Compact mode — regular markdown
-            body = "\n".join(blocks)
-            full_text = f"{header}\n\n{body}"
-
-        # ── Pagination: split into chunks respecting Discord limits ──
-        # Discord message limit is 2,000 chars.  If the full text fits,
-        # send as a single message.  Otherwise split into pages.
-        if len(full_text) <= 2000:
-            await interaction.followup.send(full_text)
-            return
-
-        # Strategy: send header + as many tree blocks as fit per message,
-        # then continue with followup messages for the rest.
-        _MSG_LIMIT = 1950  # leave margin for safety
-        pages: list[str] = []
-        current_page = header
-
-        for i, block in enumerate(blocks):
-            if display_mode == "tree":
-                # Each page wraps its content in a code block
-                # Check if adding this block (with code fences) fits
-                candidate = current_page + ("\n\n" if i > 0 or current_page != header else "\n```\n") + block
-                test_text = candidate + "\n```" if "```" in candidate else candidate
-                if len(test_text) > _MSG_LIMIT and current_page != header:
-                    # Close current page and start new one
-                    if "```\n" in current_page and not current_page.endswith("```"):
-                        current_page += "\n```"
-                    pages.append(current_page)
-                    current_page = f"```\n{block}"
-                else:
-                    if current_page == header:
-                        current_page += f"\n```\n{block}"
-                    else:
-                        current_page += f"\n\n{block}"
-            else:
-                # Compact mode — plain text
-                candidate = current_page + "\n" + block
-                if len(candidate) > _MSG_LIMIT and current_page != header:
-                    pages.append(current_page)
-                    current_page = block
-                else:
-                    current_page = candidate
-
-        # Close final code block for tree mode
-        if display_mode == "tree" and "```\n" in current_page and not current_page.endswith("```"):
-            current_page += "\n```"
-        pages.append(current_page)
-
-        # Send first page as the interaction response, rest as followups
-        await interaction.followup.send(pages[0])
-        for page in pages[1:]:
-            await interaction.followup.send(page)
-
-        # If total output is very large (>6000), also attach a text file
-        total_len = sum(len(p) for p in pages)
-        if total_len > 6000:
-            raw = header + "\n\n" + "\n\n".join(blocks)
-            file = discord.File(
-                fp=io.BytesIO(raw.encode("utf-8")),
-                filename="task_tree.txt",
-            )
-            await interaction.followup.send(
-                "_Full task tree attached below._", file=file,
-            )
 
     @bot.tree.command(
         name="active-tasks",
