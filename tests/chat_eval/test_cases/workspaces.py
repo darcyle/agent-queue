@@ -1,4 +1,4 @@
-"""Test cases for workspace management tools: add_workspace, list_workspaces, release_workspace."""
+"""Test cases for workspace management tools: add_workspace, list_workspaces, release_workspace, remove_workspace."""
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty
 
@@ -225,6 +225,56 @@ CASES: list[TestCase] = [
                 user_message="sync the workspaces for project p-1",
                 expected_tools=[
                     ExpectedTool(name="sync_workspaces", args={"project_id": "p-1"}),
+                ],
+            ),
+        ],
+    ),
+    # --- remove_workspace ---
+    TestCase(
+        id="ws-remove-explicit",
+        description="Remove a workspace by ID",
+        category="workspaces",
+        difficulty=Difficulty.EASY,
+        tags=["remove_workspace"],
+        turns=[
+            Turn(
+                user_message="remove workspace ws-3",
+                expected_tools=[
+                    ExpectedTool(name="remove_workspace", args={"workspace_id": "ws-3"}),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="ws-remove-delete-phrasing",
+        description="Delete a workspace using the 'delete' verb",
+        category="workspaces",
+        difficulty=Difficulty.EASY,
+        tags=["remove_workspace", "natural-language"],
+        turns=[
+            Turn(
+                user_message="delete workspace ws-5 from project p-1",
+                expected_tools=[
+                    ExpectedTool(
+                        name="remove_workspace",
+                        args={"workspace_id": "ws-5", "project_id": "p-1"},
+                    ),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="ws-remove-natural",
+        description="Remove a workspace using natural phrasing",
+        category="workspaces",
+        difficulty=Difficulty.MEDIUM,
+        tags=["remove_workspace", "natural-language"],
+        active_project="p-2",
+        turns=[
+            Turn(
+                user_message="I don't need workspace ws-4 anymore, please get rid of it",
+                expected_tools=[
+                    ExpectedTool(name="remove_workspace", args={"workspace_id": "ws-4"}),
                 ],
             ),
         ],
