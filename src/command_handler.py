@@ -804,7 +804,11 @@ class CommandHandler:
         self._active_project_id = project_id
 
     async def _validate_path(self, path: str) -> str | None:
-        """Validate that a path resolves within workspace_dir or a registered repo source_path."""
+        """Validate that a path resolves within an allowed directory.
+
+        Allowed roots: workspace_dir, any registered repo source_path,
+        and any registered workspace path.
+        """
         real = os.path.realpath(path)
         workspace_real = os.path.realpath(self.config.workspace_dir)
         if real.startswith(workspace_real + os.sep) or real == workspace_real:
@@ -815,6 +819,12 @@ class CommandHandler:
                 repo_real = os.path.realpath(repo.source_path)
                 if real.startswith(repo_real + os.sep) or real == repo_real:
                     return real
+        # Also allow paths within any registered workspace
+        workspaces = await self.db.list_workspaces()
+        for ws in workspaces:
+            ws_real = os.path.realpath(ws.workspace_path)
+            if real.startswith(ws_real + os.sep) or real == ws_real:
+                return real
         return None
 
     async def execute(self, name: str, args: dict) -> dict:
