@@ -1,6 +1,6 @@
 # Hook Engine Specification
 
-**Source file:** `src/hooks.py`
+**Source files:** `src/hooks.py`, `src/file_watcher.py`
 **Related models:** `src/models.py` (`Hook`, `HookRun`)
 **Related config:** `src/config.py` (`HookEngineConfig`, `ChatProviderConfig`)
 
@@ -17,7 +17,7 @@ The pipeline for every hook execution follows four stages:
 
 ```mermaid
 flowchart TD
-    A[Trigger<br/><i>event or periodic</i>] --> B[Context Gathering<br/><i>shell, read_file, http, db_query, git_diff</i>]
+    A[Trigger<br/><i>event, periodic, or file watch</i>] --> B[Context Gathering<br/><i>shell, read_file, http, db_query, git_diff,<br/>run_tests, memory_search, create_task, list_files, file_diff</i>]
     B --> C{Short-Circuit<br/>condition met?}
     C -- Yes --> D[Record as skipped<br/><i>zero tokens</i>]
     C -- No --> E[Render Prompt<br/><i>substitute step_N, event vars</i>]
@@ -33,7 +33,8 @@ All orchestration is synchronous and deterministic — no LLM tokens are spent o
 deciding whether to run a hook.
 
 ## Source Files
-- `src/hooks.py`
+- `src/hooks.py` — hook engine, context steps, LLM invocation, Discord notifications
+- `src/file_watcher.py` — mtime-based file/folder change detection, debouncing
 
 ---
 
@@ -68,7 +69,7 @@ A hook's `trigger` field is a JSON object with a `type` key. Two types are suppo
 ```json
 {
     "type": "event",
-    "event_type": "task_completed"
+    "event_type": "task.completed"
 }
 ```
 
@@ -79,13 +80,80 @@ queries all enabled hooks and checks each one in order:
 1. Skip hooks already in-flight (`hook.id in self._running`).
 2. Skip hooks whose trigger type is not `"event"`.
 3. Skip hooks whose `event_type` does not match the incoming `_event_type` field.
-4. Apply the cooldown check (see 3.3).
-5. Apply the global concurrency cap (see 3.4) — if the cap is reached, stop examining
+4. **Project-scoped filtering:** if the event payload contains a `project_id` and it
+   does not match the hook's `project_id`, skip the hook. This ensures hooks only fire
+   for events in their owning project.
+5. Apply the cooldown check (see 3.3).
+6. Apply the global concurrency cap (see 3.4) — if the cap is reached, stop examining
    further hooks (`break`).
-6. If all checks pass, launch the hook with `trigger_reason = "event:<event_type>"`.
+7. If all checks pass, launch the hook with `trigger_reason = "event:<event_type>"`.
 
 The full event payload dict is passed through as `event_data` and made available
 inside context steps and the prompt template.
+
+**Available event types:**
+
+| Event | Emitted by | Payload fields |
+|---|---|---|
+| `task.completed` | Orchestrator | `task_id`, `project_id`, `title`, `status` |
+| `task.failed` | Orchestrator | `task_id`, `project_id`, `title`, `error` |
+| `note.created` | CommandHandler | `project_id`, `note_name`, `note_path`, `title`, `operation` |
+| `note.updated` | CommandHandler | `project_id`, `note_name`, `note_path`, `title`, `operation` |
+| `note.deleted` | CommandHandler | `project_id`, `note_name`, `note_path`, `title`, `operation` |
+| `file.changed` | FileWatcher | `path`, `relative_path`, `project_id`, `operation`, `old_mtime`, `new_mtime`, `size`, `watch_id` |
+| `folder.changed` | FileWatcher | `path`, `project_id`, `changes` (list of `{path, operation}`), `count`, `watch_id` |
+
+#### File and Folder Watch Triggers
+
+For `file.changed` and `folder.changed` events, the trigger includes a `watch`
+configuration block that registers a `WatchRule` with the `FileWatcher`:
+
+```json
+{
+    "type": "event",
+    "event_type": "file.changed",
+    "watch": {
+        "paths": ["pyproject.toml", "src/config.py"],
+        "project_id": "my-project"
+    }
+}
+```
+
+```json
+{
+    "type": "event",
+    "event_type": "folder.changed",
+    "watch": {
+        "paths": ["docs/", "specs/"],
+        "recursive": true,
+        "extensions": [".md", ".rst"],
+        "project_id": "my-project"
+    }
+}
+```
+
+| Watch config key | Type | Default | Description |
+|---|---|---|---|
+| `paths` | `list[str]` | required | Files or directories to watch |
+| `project_id` | `str` | hook's project | Override the project scope |
+| `base_dir` | `str` | project workspace | Base directory for relative paths |
+| `recursive` | `bool` | `false` | Descend into subdirectories (folder watches only) |
+| `extensions` | `list[str]` | all | Filter by file extension (folder watches only) |
+
+The `FileWatcher` uses mtime-based polling (configurable interval, default 10s).
+Folder changes are debounced over a configurable window (default 5s) to prevent
+event storms from bulk operations like `git checkout`. Change deduplication logic:
+created then modified = report "created"; created then deleted = cancel out (no event);
+modified then deleted = report "deleted".
+
+Watch rules are synchronized from hook configs at `initialize()` and whenever hooks
+are added/removed. Watches for disabled or deleted hooks are automatically cleaned up.
+
+#### Trigger-Level Flags
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `skip_llm` | `bool` | `false` | Run context steps only; do not invoke the LLM. Run is recorded as `completed` with no LLM response. |
 
 #### Periodic (`type: "periodic"`)
 
@@ -250,6 +318,9 @@ before the query runs (using `_resolve_placeholder`).
 | `task_detail` | Single task detail by `:task_id` parameter |
 | `recent_events` | Last 50 rows from the `events` table |
 | `hook_runs` | Last 10 hook runs for a given `:hook_id` parameter |
+| `failed_tasks` | Last 20 failed tasks with error messages |
+| `project_tasks_by_status` | Tasks for `:project_id` filtered by `:status`, ordered by priority |
+| `recent_hook_activity` | Last 20 hook runs with hook names and timing |
 
 Raw SQL is not accepted; any unrecognised `query` name returns `{"error": "Unknown query: ..."}`.
 
@@ -281,6 +352,142 @@ Runs `git diff <base_branch>...HEAD` in a given workspace directory.
 | `error` | Present on exception (e.g., not a git repo) |
 
 Timeout is hardcoded at 30 seconds.
+
+### 4.6 Step Type: `run_tests`
+
+Runs a test command and parses structured results. Extends `shell` with test
+framework-aware failure extraction.
+
+**Inputs:**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `command` | `str` | `"pytest"` | Test command to execute |
+| `timeout` | `int` | `300` | Seconds before the process is killed (longer default for test suites) |
+| `workspace` | `str` | `"."` | Working directory |
+| `framework` | `str` | `"auto"` | Parser hint: `"pytest"`, `"jest"`, or `"auto"` |
+
+**Output dict:**
+
+| Key | Description |
+|---|---|
+| `stdout` | Captured stdout, truncated to 100,000 characters |
+| `stderr` | Captured stderr, truncated to 50,000 characters |
+| `exit_code` | Process return code, or `-1` on timeout |
+| `passed` | `true` if `exit_code == 0` |
+| `failures` | List of individual failing test names (capped at 50), e.g. `["tests/test_foo.py::test_bar"]` |
+| `test_count` | Total number of tests parsed from output |
+| `framework` | The framework value used |
+
+**Failure parsing:** extracts test names from pytest (`FAILED tests/test_foo.py::test_bar`),
+jest/mocha (`✕ test description`), and generic (`FAIL test_file`) output formats.
+
+**Test count parsing:** extracts from pytest (`5 passed, 2 failed`) and jest
+(`Tests: 2 failed, 5 passed, 7 total`) summary lines.
+
+Combine with `skip_llm_if_exit_zero: true` to skip the LLM when all tests pass —
+the hook only invokes the LLM when tests fail, with failures available via
+`{{step_N.failures}}`.
+
+### 4.7 Step Type: `memory_search`
+
+Performs semantic search against a project's memory index.
+
+**Inputs:**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `project_id` | `str` | `""` | Target project (supports `{{event.project_id}}`) |
+| `query` | `str` | `""` | Semantic search query (supports template placeholders) |
+| `top_k` | `int` | `3` | Maximum results to return |
+
+**Output dict:**
+
+| Key | Description |
+|---|---|
+| `content` | Formatted results with source, heading, content, and similarity score |
+| `count` | Number of results returned |
+| `error` | Present if memory subsystem is unavailable or query fails |
+
+Degrades gracefully when the memory subsystem is not configured — returns empty
+`content` rather than an error.
+
+### 4.8 Step Type: `create_task`
+
+Creates a task directly from step configuration, resolving `{{event.field}}`
+placeholders in all template fields.
+
+**Inputs:**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `title_template` | `str` | `"Hook-created task"` | Task title with placeholder support |
+| `description_template` | `str` | `""` | Task description with placeholder support |
+| `project_id` | `str` | `""` | Target project (supports placeholders) |
+| `parent_task_id` | `str \| null` | `null` | Optional parent task |
+| `profile_id` | `str \| null` | `null` | Agent profile to use |
+| `preferred_workspace_id` | `str \| null` | `null` | Workspace affinity |
+| `branch_name` | `str \| null` | `null` | Git branch name |
+| `priority` | `int` | `100` | Task priority |
+| `context_entries` | `list[dict]` | `[]` | Task context entries (`{type, label, content}`) with placeholder support |
+
+**Output dict:**
+
+| Key | Description |
+|---|---|
+| `task_id` | ID of the created task |
+| `created` | `true` on success |
+| `error` | Present on failure |
+
+### 4.9 Step Type: `list_files`
+
+Lists files in a directory, optionally filtered by extension. Useful for docs
+hooks and folder watch automation.
+
+**Inputs:**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `path` | `str` | `"."` | Directory to list (supports `{{event.path}}`) |
+| `recursive` | `bool` | `false` | Descend into subdirectories |
+| `extensions` | `list[str]` | all | Filter by extension, e.g. `[".md", ".txt"]` |
+| `max_files` | `int` | `200` | Maximum files to return |
+
+**Output dict:**
+
+| Key | Description |
+|---|---|
+| `files` | List of `{path, size, mtime}` dicts |
+| `count` | Number of files returned |
+| `directory` | Resolved directory path |
+| `content` | Newline-joined file paths (for use in prompt templates) |
+| `error` | Present on failure |
+
+Skips hidden files and directories (names starting with `.`).
+
+### 4.10 Step Type: `file_diff`
+
+Gets the git diff of a specific file against its last committed version. Useful
+for file change hooks to see exactly what changed.
+
+**Inputs:**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `path` | `str` | `""` | File path (supports `{{event.path}}`) |
+| `workspace` | `str` | `"."` | Git workspace root (supports `{{event.workspace}}`) |
+
+**Output dict:**
+
+| Key | Description |
+|---|---|
+| `diff` | Diff output, truncated to 50,000 characters |
+| `path` | Resolved file path |
+| `exit_code` | Git process return code |
+| `error` | Present on failure |
+
+Runs `git diff HEAD -- <path>`, falling back to `git diff --cached` if no diff
+is found. Timeout is 30 seconds.
 
 ---
 
@@ -365,6 +572,12 @@ message via `chat_agent.chat(text=prompt, user_name="hook:<hook_name>")`.
 This means the LLM has access to all tools registered in `ChatAgent` — the same set
 available to a human operator typing in Discord. The hook can therefore issue
 commands, create tasks, update projects, etc.
+
+### Progress Tracking
+
+An `on_progress` callback is passed to `chat_agent.chat()` to track tool calls made
+by the hook's LLM. The callback collects tool names and sends live updates to the
+project's Discord channel as tools are called (see Section 13).
 
 ### Token Counting
 
@@ -488,7 +701,58 @@ final `update_hook_run` call.
 
 ---
 
-## 12. Configuration Reference
+## 12. FileWatcher
+
+The `FileWatcher` class (`src/file_watcher.py`) monitors files and directories for
+changes using mtime-based polling. It is created by the `HookEngine` at
+`initialize()` when `file_watcher_enabled` is `True`.
+
+### Architecture
+
+```
+HookEngine.initialize()
+├── Creates FileWatcher(bus, debounce_seconds, poll_interval)
+├── _sync_file_watches() — scans hook triggers for watch configs
+│   └── Registers WatchRule for each file.changed / folder.changed trigger
+└── tick() calls file_watcher.check() each cycle
+    ├── File watches: compare mtime, emit file.changed immediately
+    └── Folder watches: accumulate changes, emit folder.changed after debounce window
+```
+
+### File Watches
+
+Compare file mtime on each poll. Detect creation, modification, and deletion.
+Emit `file.changed` event immediately when a change is detected.
+
+### Folder Watches
+
+Scan directory contents (optionally recursive via `os.walk()`). Accumulate
+changes over a debounce window (default 5s) to prevent event storms. Apply
+deduplication: created+modified = "created"; created+deleted = cancelled;
+modified+deleted = "deleted". Emit `folder.changed` with aggregated change list
+after the debounce window expires.
+
+---
+
+## 13. Discord Notifications
+
+Hook execution progress is reported to the project's Discord channel via
+`orchestrator._notify_channel()`. Four notification types are sent:
+
+| Phase | Format |
+|---|---|
+| **Start** | `🪝 Hook **{name}** is running (trigger: \`{reason}\`).` |
+| **Tool use** (live) | `🪝 Hook **{name}** 🔧 \`tool1\` → \`tool2\`` |
+| **Completed** | `🪝 Hook **{name}** completed.` + tool chain + response summary (truncated to 200 chars) |
+| **Skipped** | `🪝 Hook **{name}** skipped: {reason}` |
+| **Failed** | `🪝 Hook **{name}** failed: {error}` |
+
+This mirrors the tool call visibility that chat agent interactions have in Discord,
+where users can see `💭 Thinking...` → `🔧 Working... tool1 → tool2` → `✅ Done`.
+
+---
+
+## 14. Configuration Reference
 
 `HookEngineConfig` (from `src/config.py`):
 
@@ -496,6 +760,9 @@ final `update_hook_run` call.
 |---|---|---|---|
 | `enabled` | `bool` | `True` | Master switch; if `False` the orchestrator does not call `tick()` |
 | `max_concurrent_hooks` | `int` | `2` | Maximum number of hooks that may execute simultaneously |
+| `file_watcher_enabled` | `bool` | `True` | Enable/disable the FileWatcher for file/folder change events |
+| `file_watcher_poll_interval` | `float` | `10.0` | Seconds between file system polls |
+| `file_watcher_debounce_seconds` | `float` | `5.0` | Debounce window for folder change aggregation |
 
 YAML config path: `hook_engine` top-level key.
 
@@ -503,4 +770,7 @@ YAML config path: `hook_engine` top-level key.
 hook_engine:
   enabled: true
   max_concurrent_hooks: 3
+  file_watcher_enabled: true
+  file_watcher_poll_interval: 10
+  file_watcher_debounce_seconds: 5
 ```
