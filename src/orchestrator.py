@@ -1949,17 +1949,22 @@ class Orchestrator:
                 except GitError:
                     return False
 
-            # Get diff stat excluding plan files
+            # Get diff stat excluding plan files and non-code artifacts
             stat_output = await self.git._arun(
                 [
                     "diff", "--stat", f"{merge_base}..HEAD",
                     "--", ".",
+                    # Exclude plan files
                     ":!.claude/plan.md",
                     ":!plan.md",
                     ":!.claude/plans/",
                     ":!docs/plans/",
                     ":!docs/plan.md",
                     ":!plans/",
+                    # Exclude non-code artifacts (notes, logs, test results)
+                    ":!notes/",
+                    ":!*.log",
+                    ":!test-results*",
                 ],
                 cwd=workspace,
             )

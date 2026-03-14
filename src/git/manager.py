@@ -1448,9 +1448,17 @@ class GitManager:
                 [
                     "diff", "--stat", f"{merge_base}..HEAD",
                     "--", ".",
+                    # Exclude plan files
                     ":!.claude/plan.md",
                     ":!plan.md",
                     ":!.claude/plans/",
+                    ":!docs/plans/",
+                    ":!docs/plan.md",
+                    ":!plans/",
+                    # Exclude non-code artifacts (notes, logs, test results)
+                    ":!notes/",
+                    ":!*.log",
+                    ":!test-results*",
                 ],
                 cwd=checkout_path,
             )
