@@ -4982,6 +4982,67 @@ class CommandHandler:
                 "running_tasks": running,
             }
 
+    async def _cmd_shutdown(self, args: dict) -> dict:
+        """Shut down the bot and all running agents.
+
+        Supports two modes:
+        - graceful (default): waits for current tasks to complete before exiting
+        - force: immediately stops all running agents and exits
+
+        The process exits with code 0 (no restart) rather than SIGTERM
+        which the daemon supervisor would interpret as a restart request.
+        """
+        reason = args.get("reason", "No reason provided")
+        force = args.get("force", False)
+        mode = "force" if force else "graceful"
+
+        # Log the shutdown event
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        )
+        shutdown_msg = (
+            f"🛑 **Daemon shutdown initiated** ({mode})\n"
+            f"**Reason:** {reason}\n"
+            f"**Time:** {timestamp}"
+        )
+        await self.orchestrator._notify_channel(shutdown_msg)
+
+        orch = self.orchestrator
+
+        if force:
+            # Force-stop all running tasks immediately
+            running_task_ids = list(orch._running_tasks.keys())
+            for task_id in running_task_ids:
+                try:
+                    await orch.stop_task(task_id)
+                except Exception as e:
+                    logger.warning("Error force-stopping task %s: %s", task_id, e)
+        else:
+            # Graceful: pause orchestrator so no new tasks are started,
+            # then wait for running tasks to finish
+            orch._paused = True
+            await orch.wait_for_running_tasks(timeout=300)
+
+        # Note: bot status is set to offline by the slash command caller
+        # before invoking this handler.
+
+        # Exit without restart — use os._exit(0) after a brief delay
+        # to allow the Discord response to be sent
+        async def _delayed_exit():
+            await asyncio.sleep(2)
+            # Don't set _restart_requested — this is a full shutdown, not restart
+            os._exit(0)
+
+        asyncio.ensure_future(_delayed_exit())
+
+        return {
+            "status": "shutting_down",
+            "mode": mode,
+            "reason": reason,
+            "timestamp": timestamp,
+            "tasks_stopped": len(orch._running_tasks) if force else 0,
+        }
+
     async def _cmd_restart_daemon(self, args: dict) -> dict:
         reason = args.get("reason", "No reason provided")
         # Log the restart reason to the notification channel before restarting

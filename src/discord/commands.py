@@ -5496,6 +5496,55 @@ def setup_commands(bot: commands.Bot) -> None:
         await handler.execute("restart_daemon", {"reason": full_reason})
 
     @bot.tree.command(
+        name="shutdown",
+        description="Shut down the bot and all running agents",
+    )
+    @app_commands.describe(
+        reason="Why are you shutting down? (required)",
+        force="Force-stop all running agents immediately (default: graceful)",
+    )
+    async def shutdown_command(
+        interaction: discord.Interaction,
+        reason: str,
+        force: bool = False,
+    ):
+        user_name = interaction.user.display_name
+        full_reason = f"User {user_name} requested shutdown: {reason}"
+        mode = "force" if force else "graceful"
+
+        # Count running tasks for the confirmation message
+        running_count = len(handler.orchestrator._running_tasks)
+
+        # Build description
+        desc_parts = [
+            f"Agent-queue daemon is shutting down ({mode})…",
+            f"**Reason:** {full_reason}",
+        ]
+        if running_count > 0:
+            if force:
+                desc_parts.append(
+                    f"⚠️ **{running_count}** running task(s) will be force-stopped."
+                )
+            else:
+                desc_parts.append(
+                    f"⏳ Waiting for **{running_count}** running task(s) to complete…"
+                )
+        else:
+            desc_parts.append("No tasks currently running.")
+
+        await _send_warning(
+            interaction, "Shutting Down", description="\n".join(desc_parts)
+        )
+
+        # Set bot status to invisible/offline before shutting down
+        try:
+            await bot.change_presence(status=discord.Status.invisible)
+        except Exception:
+            pass
+
+        await handler.execute("shutdown", {"reason": full_reason, "force": force})
+
+    @bot.tree.command(
         name="update",
         description="Pull latest source, install deps, and restart the daemon",
     )
