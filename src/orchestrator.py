@@ -2306,7 +2306,6 @@ class Orchestrator:
 
         # Notify about created subtasks
         if created_tasks:
-            from src.discord.notifications import format_auto_task_generated_embed
             task_lines = "\n".join(
                 f"  {i+1}. `{t.id}` — {t.title}"
                 for i, t in enumerate(created_tasks)
