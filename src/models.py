@@ -35,6 +35,7 @@ class TaskStatus(Enum):
     PAUSED = "PAUSED"
     VERIFYING = "VERIFYING"
     AWAITING_APPROVAL = "AWAITING_APPROVAL"
+    AWAITING_PLAN_APPROVAL = "AWAITING_PLAN_APPROVAL"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     BLOCKED = "BLOCKED"
@@ -73,6 +74,10 @@ class TaskEvent(Enum):
     ADMIN_STOP = "ADMIN_STOP"
     ADMIN_RESTART = "ADMIN_RESTART"
     PR_CLOSED = "PR_CLOSED"
+    PLAN_FOUND = "PLAN_FOUND"
+    PLAN_APPROVED = "PLAN_APPROVED"
+    PLAN_REJECTED = "PLAN_REJECTED"
+    PLAN_DELETED = "PLAN_DELETED"
     TIMEOUT = "TIMEOUT"
     EXECUTION_ERROR = "EXECUTION_ERROR"
     RECOVERY = "RECOVERY"
@@ -427,3 +432,4 @@ class PipelineContext:
     default_branch: str = "main"
     project: Project | None = None
     pr_url: str | None = None
+    plan_needs_approval: bool = False

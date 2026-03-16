@@ -90,6 +90,7 @@ STATUS_COLORS: dict[str, int] = {
     TaskStatus.PAUSED.value:             0x7F8C8D,  # Dark gray
     TaskStatus.VERIFYING.value:          0x2980B9,  # Dark blue
     TaskStatus.AWAITING_APPROVAL.value:  0xE67E22,  # Orange
+    TaskStatus.AWAITING_PLAN_APPROVAL.value: 0xF39C12,  # Amber
     TaskStatus.COMPLETED.value:          0x2ECC71,  # Green
     TaskStatus.FAILED.value:             0xE74C3C,  # Red
     TaskStatus.BLOCKED.value:            0x992D22,  # Dark red
@@ -104,6 +105,7 @@ STATUS_EMOJIS: dict[str, str] = {
     TaskStatus.PAUSED.value:             "\u23F8\uFE0F",  # pause button
     TaskStatus.VERIFYING.value:          "\U0001F50D",    # magnifying glass
     TaskStatus.AWAITING_APPROVAL.value:  "\u231B",        # hourglass
+    TaskStatus.AWAITING_PLAN_APPROVAL.value: "\U0001F4CB",  # clipboard
     TaskStatus.COMPLETED.value:          "\U0001F7E2",    # green circle
     TaskStatus.FAILED.value:             "\U0001F534",    # red circle
     TaskStatus.BLOCKED.value:            "\u26D4",        # no entry
@@ -783,6 +785,7 @@ def tree_view_embed(
         ("VERIFYING", "verifying"),
         ("ASSIGNED", "assigned"),
         ("AWAITING_APPROVAL", "awaiting approval"),
+        ("AWAITING_PLAN_APPROVAL", "awaiting plan approval"),
         ("WAITING_INPUT", "waiting input"),
         ("PAUSED", "paused"),
         ("FAILED", "failed"),

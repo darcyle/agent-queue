@@ -335,6 +335,7 @@ def _format_status_summary(status_counts: dict[str, int], total: int) -> str:
         ("VERIFYING", "verifying"),
         ("ASSIGNED", "assigned"),
         ("AWAITING_APPROVAL", "awaiting approval"),
+        ("AWAITING_PLAN_APPROVAL", "awaiting plan approval"),
         ("WAITING_INPUT", "waiting input"),
         ("PAUSED", "paused"),
         ("FAILED", "failed"),
@@ -2804,6 +2805,123 @@ class CommandHandler:
             task_id=task.id,
         )
         return {"approved": args["task_id"], "title": task.title}
+
+    async def _cmd_approve_plan(self, args: dict) -> dict:
+        """Approve a plan and create subtasks from it.
+
+        The task must be in AWAITING_PLAN_APPROVAL status.  The stored plan
+        data (from task_context) is used to create subtasks, and the task
+        is transitioned to COMPLETED.
+        """
+        task = await self.db.get_task(args["task_id"])
+        if not task:
+            return {"error": f"Task '{args['task_id']}' not found"}
+        if task.status != TaskStatus.AWAITING_PLAN_APPROVAL:
+            return {"error": f"Task is not awaiting plan approval (status: {task.status.value})"}
+
+        # Create subtasks from the stored plan data
+        created = await self.orchestrator._create_subtasks_from_stored_plan(task)
+
+        # Transition to COMPLETED
+        await self.db.transition_task(
+            args["task_id"],
+            TaskStatus.COMPLETED,
+            context="plan_approved",
+        )
+        await self.db.log_event(
+            "plan_approved",
+            project_id=task.project_id,
+            task_id=task.id,
+            payload=f"Created {len(created)} subtask(s)",
+        )
+        return {
+            "approved": args["task_id"],
+            "title": task.title,
+            "subtask_count": len(created),
+            "subtasks": [{"id": t.id, "title": t.title} for t in created],
+        }
+
+    async def _cmd_reject_plan(self, args: dict) -> dict:
+        """Reject a plan and reopen the task with feedback for revision.
+
+        The task must be in AWAITING_PLAN_APPROVAL status.  The feedback is
+        appended to the task description so the agent sees it on re-execution
+        and can revise the plan accordingly.
+        """
+        task_id = args["task_id"]
+        feedback = args.get("feedback", "")
+        if not feedback:
+            return {"error": "Feedback is required when rejecting a plan"}
+
+        task = await self.db.get_task(task_id)
+        if not task:
+            return {"error": f"Task '{task_id}' not found"}
+        if task.status != TaskStatus.AWAITING_PLAN_APPROVAL:
+            return {"error": f"Task is not awaiting plan approval (status: {task.status.value})"}
+
+        # Append feedback to description (similar to reopen_with_feedback)
+        separator = "\n\n---\n\n**Plan Revision Requested:**\n"
+        updated_description = task.description + separator + feedback
+
+        await self.db.transition_task(
+            task_id,
+            TaskStatus.READY,
+            context="plan_rejected",
+            description=updated_description,
+            retry_count=0,
+            assigned_agent_id=None,
+            pr_url=None,
+        )
+
+        # Store feedback as a structured task_context entry
+        await self.db.add_task_context(
+            task_id,
+            type="plan_revision_feedback",
+            label="Plan Revision Feedback",
+            content=feedback,
+        )
+
+        await self.db.log_event(
+            "plan_rejected",
+            project_id=task.project_id,
+            task_id=task_id,
+            payload=feedback[:500],
+        )
+        return {
+            "rejected": task_id,
+            "title": task.title,
+            "status": "READY",
+            "feedback_added": True,
+        }
+
+    async def _cmd_delete_plan(self, args: dict) -> dict:
+        """Delete a plan and complete the task without creating subtasks.
+
+        The task must be in AWAITING_PLAN_APPROVAL status.  The task is
+        transitioned to COMPLETED and no subtasks are created.
+        """
+        task = await self.db.get_task(args["task_id"])
+        if not task:
+            return {"error": f"Task '{args['task_id']}' not found"}
+        if task.status != TaskStatus.AWAITING_PLAN_APPROVAL:
+            return {"error": f"Task is not awaiting plan approval (status: {task.status.value})"}
+
+        await self.db.transition_task(
+            args["task_id"],
+            TaskStatus.COMPLETED,
+            context="plan_deleted",
+        )
+        await self.db.log_event(
+            "plan_deleted",
+            project_id=task.project_id,
+            task_id=task.id,
+            payload="Plan deleted by user — no subtasks created",
+        )
+        return {
+            "deleted": args["task_id"],
+            "title": task.title,
+            "status": "COMPLETED",
+        }
 
     async def _cmd_set_task_status(self, args: dict) -> dict:
         task_id = args["task_id"]

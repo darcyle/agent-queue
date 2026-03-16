@@ -391,4 +391,130 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
+
+    # -----------------------------------------------------------------------
+    # approve_plan — TRIVIAL / MEDIUM
+    # -----------------------------------------------------------------------
+    TestCase(
+        id="workflow-approve-plan-direct",
+        description="Approve a plan by task ID",
+        category="task_workflow",
+        difficulty=Difficulty.TRIVIAL,
+        tags=["approve_plan", "write"],
+        setup_commands=[
+            ("create_project", {"name": "PlanProj"}),
+            ("create_task", {"project_id": "p-1", "title": "Plan Task", "description": "Has a plan"}),
+        ],
+        turns=[
+            Turn(
+                user_message="approve the plan for t-1",
+                expected_tools=[
+                    ExpectedTool(name="approve_plan", args={"task_id": "t-1"}),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="workflow-approve-plan-lgtm",
+        description="Approve plan using natural language",
+        category="task_workflow",
+        difficulty=Difficulty.MEDIUM,
+        tags=["approve_plan", "write", "natural-language"],
+        setup_commands=[
+            ("create_project", {"name": "PlanLGTM"}),
+            ("create_task", {"project_id": "p-1", "title": "Plan Review", "description": "Plan awaiting review"}),
+        ],
+        turns=[
+            Turn(
+                user_message="the plan for t-1 looks good, go ahead and create the subtasks",
+                expected_tools=[
+                    ExpectedTool(name="approve_plan", args={"task_id": "t-1"}),
+                ],
+            ),
+        ],
+    ),
+
+    # -----------------------------------------------------------------------
+    # reject_plan — TRIVIAL / MEDIUM
+    # -----------------------------------------------------------------------
+    TestCase(
+        id="workflow-reject-plan-direct",
+        description="Reject a plan with feedback",
+        category="task_workflow",
+        difficulty=Difficulty.TRIVIAL,
+        tags=["reject_plan", "write"],
+        setup_commands=[
+            ("create_project", {"name": "RejectProj"}),
+            ("create_task", {"project_id": "p-1", "title": "Plan Task", "description": "Has a plan"}),
+        ],
+        turns=[
+            Turn(
+                user_message="reject the plan for t-1, it needs to include error handling in phase 2",
+                expected_tools=[
+                    ExpectedTool(name="reject_plan", args={"task_id": "t-1"}),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="workflow-reject-plan-changes",
+        description="Request changes to a plan",
+        category="task_workflow",
+        difficulty=Difficulty.MEDIUM,
+        tags=["reject_plan", "write", "natural-language"],
+        setup_commands=[
+            ("create_project", {"name": "ChangesProj"}),
+            ("create_task", {"project_id": "p-1", "title": "Plan Review", "description": "Plan needs changes"}),
+        ],
+        turns=[
+            Turn(
+                user_message="t-1's plan needs work. Add a testing phase and consolidate phases 3 and 4",
+                expected_tools=[
+                    ExpectedTool(name="reject_plan", args={"task_id": "t-1"}),
+                ],
+            ),
+        ],
+    ),
+
+    # -----------------------------------------------------------------------
+    # delete_plan — TRIVIAL / MEDIUM
+    # -----------------------------------------------------------------------
+    TestCase(
+        id="workflow-delete-plan-direct",
+        description="Delete a plan by task ID",
+        category="task_workflow",
+        difficulty=Difficulty.TRIVIAL,
+        tags=["delete_plan", "write"],
+        setup_commands=[
+            ("create_project", {"name": "DeleteProj"}),
+            ("create_task", {"project_id": "p-1", "title": "Plan Task", "description": "Has a plan"}),
+        ],
+        turns=[
+            Turn(
+                user_message="delete the plan for t-1",
+                expected_tools=[
+                    ExpectedTool(name="delete_plan", args={"task_id": "t-1"}),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="workflow-delete-plan-cancel",
+        description="Cancel plan execution using natural language",
+        category="task_workflow",
+        difficulty=Difficulty.MEDIUM,
+        tags=["delete_plan", "write", "natural-language"],
+        setup_commands=[
+            ("create_project", {"name": "CancelProj"}),
+            ("create_task", {"project_id": "p-1", "title": "Plan Task", "description": "Has a plan"}),
+        ],
+        turns=[
+            Turn(
+                user_message="actually, nevermind t-1's plan, just scrap it and don't create any subtasks",
+                expected_tools=[
+                    ExpectedTool(name="delete_plan", args={"task_id": "t-1"}),
+                ],
+            ),
+        ],
+    ),
 ]

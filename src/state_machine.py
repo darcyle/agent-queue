@@ -53,6 +53,11 @@ VALID_TASK_TRANSITIONS: dict[tuple[TaskStatus, TaskEvent], TaskStatus] = {
     (TaskStatus.VERIFYING, TaskEvent.MERGE_FAILED): TaskStatus.VERIFYING,
     (TaskStatus.VERIFYING, TaskEvent.MERGE_SUCCEEDED): TaskStatus.COMPLETED,
     (TaskStatus.AWAITING_APPROVAL, TaskEvent.PR_MERGED): TaskStatus.COMPLETED,
+    # --- Plan approval lifecycle ---
+    (TaskStatus.VERIFYING, TaskEvent.PLAN_FOUND): TaskStatus.AWAITING_PLAN_APPROVAL,
+    (TaskStatus.AWAITING_PLAN_APPROVAL, TaskEvent.PLAN_APPROVED): TaskStatus.COMPLETED,
+    (TaskStatus.AWAITING_PLAN_APPROVAL, TaskEvent.PLAN_REJECTED): TaskStatus.READY,
+    (TaskStatus.AWAITING_PLAN_APPROVAL, TaskEvent.PLAN_DELETED): TaskStatus.COMPLETED,
     (TaskStatus.FAILED, TaskEvent.RETRY): TaskStatus.READY,
     (TaskStatus.FAILED, TaskEvent.MAX_RETRIES): TaskStatus.BLOCKED,
     # --- Direct shortcuts (skip intermediate FAILED state) ---
@@ -70,6 +75,7 @@ VALID_TASK_TRANSITIONS: dict[tuple[TaskStatus, TaskEvent], TaskStatus] = {
     (TaskStatus.DEFINED, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
     (TaskStatus.ASSIGNED, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
     (TaskStatus.AWAITING_APPROVAL, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
+    (TaskStatus.AWAITING_PLAN_APPROVAL, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
     (TaskStatus.VERIFYING, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
     (TaskStatus.WAITING_INPUT, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
     # --- PR lifecycle ---

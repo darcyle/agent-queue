@@ -10,7 +10,7 @@ class TestTaskStatus:
         expected = {
             "DEFINED", "READY", "ASSIGNED", "IN_PROGRESS",
             "WAITING_INPUT", "PAUSED", "VERIFYING",
-            "AWAITING_APPROVAL",
+            "AWAITING_APPROVAL", "AWAITING_PLAN_APPROVAL",
             "COMPLETED", "FAILED", "BLOCKED",
         }
         assert {s.value for s in TaskStatus} == expected
@@ -28,7 +28,9 @@ class TestTaskEvent:
             "MERGE_FAILED", "MERGE_SUCCEEDED",
             # Administrative / recovery events
             "ADMIN_SKIP", "ADMIN_STOP", "ADMIN_RESTART",
-            "PR_CLOSED", "TIMEOUT", "EXECUTION_ERROR", "RECOVERY",
+            "PR_CLOSED", "PLAN_FOUND", "PLAN_APPROVED",
+            "PLAN_REJECTED", "PLAN_DELETED",
+            "TIMEOUT", "EXECUTION_ERROR", "RECOVERY",
         }
         assert {e.value for e in TaskEvent} == expected
 

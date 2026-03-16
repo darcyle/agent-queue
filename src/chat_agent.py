@@ -798,6 +798,40 @@ TOOLS = [
         },
     },
     {
+        "name": "approve_plan",
+        "description": "Approve a plan for a task in AWAITING_PLAN_APPROVAL status. Creates subtasks from the stored plan and marks the task completed.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID whose plan to approve"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "reject_plan",
+        "description": "Reject a plan for a task in AWAITING_PLAN_APPROVAL status with feedback. Reopens the task so the agent can revise the plan.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID whose plan to reject"},
+                "feedback": {"type": "string", "description": "Feedback describing what changes are needed in the plan"},
+            },
+            "required": ["task_id", "feedback"],
+        },
+    },
+    {
+        "name": "delete_plan",
+        "description": "Delete a plan for a task in AWAITING_PLAN_APPROVAL status. Completes the task without creating any subtasks.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID whose plan to delete"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
         "name": "skip_task",
         "description": "Skip a BLOCKED or FAILED task to unblock its dependency chain. Marks the task as COMPLETED so downstream dependents can proceed.",
         "input_schema": {

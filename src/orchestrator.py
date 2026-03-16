@@ -33,7 +33,7 @@ Key method call hierarchy (read these to understand the full lifecycle)::
                 ├── _complete_workspace() #   Commit/merge/PR post-completion
                 │   ├── _merge_and_push() #     Direct merge path
                 │   └── _create_pr_for_task() # PR-based approval path
-                ├── _generate_tasks_from_plan()  # Auto-task from plan files
+                ├── _discover_and_store_plan()   # Plan discovery + approval flow
                 └── cleanup               #   Release workspace + free agent
 
 Workspace locking lifecycle::
@@ -1994,40 +1994,29 @@ class Orchestrator:
             logger.debug("_task_has_code_changes failed (will proceed normally): %s", e)
             return False
 
-    async def _generate_tasks_from_plan(
+    async def _discover_and_store_plan(
         self, task: Task, workspace: str
-    ) -> list[Task]:
-        """The auto-task pipeline: discover a plan file, parse it, and create subtasks.
+    ) -> bool:
+        """Discover a plan file, parse it, and store the parsed data for approval.
 
         Called after a task completes successfully.  Searches the workspace
         for a plan file (e.g. ``.claude/plan.md``) using configurable glob
-        patterns, parses it with either a regex parser or an LLM-based
-        parser, and creates one new task per plan step.
-
-        When ``chain_dependencies`` is enabled (the default), each subtask
-        depends on the previous one, forming a serial execution chain on a
-        shared git branch.  Only the final subtask in the chain inherits
-        the parent's ``requires_approval`` flag, so intermediate steps
-        don't block the chain waiting for human review.
+        patterns, parses it, and stores the parsed plan data as task_context
+        entries so the plan can be presented to the user for approval.
 
         The plan file is archived to ``.claude/plans/<task_id>-plan.md``
-        after processing to prevent re-processing if the workspace is
-        reused.
+        after processing to prevent re-processing if the workspace is reused.
 
-        Subtasks cannot themselves generate further sub-plans (guarded by
-        ``is_plan_subtask``) to prevent recursive plan explosion.
-
-        Returns the list of created tasks (empty if no plan was found or
-        auto-task generation is disabled).
+        Returns True if a plan was found, parsed, and stored for approval.
         """
         config = self.config.auto_task
         if not config.enabled:
-            return []
+            return False
 
         # Prevent recursive plan explosion: subtasks must not generate
         # further sub-plans.
         if task.is_plan_subtask:
-            return []
+            return False
 
         # Git-diff heuristic: if the task already made substantial code
         # changes (beyond the plan file itself), the plan was likely
@@ -2038,12 +2027,12 @@ class Orchestrator:
                 default_branch = await self._get_default_branch(project, workspace)
                 if await self.git.ahas_non_plan_changes(workspace, default_branch):
                     logger.info(
-                        "Auto-task: skipping task generation for task %s — "
+                        "Auto-task: skipping plan approval for task %s — "
                         "branch has substantial code changes beyond the plan file, "
                         "indicating the plan was already implemented",
                         task.id,
                     )
-                    return []
+                    return False
             except Exception as e:
                 # On any error, fall through to normal behaviour
                 logger.debug(
@@ -2054,13 +2043,13 @@ class Orchestrator:
         plan_path = find_plan_file(workspace, config.plan_file_patterns)
         if not plan_path:
             logger.debug("Auto-task: no plan file found for task %s in workspace %s (searched patterns: %s)", task.id, workspace, config.plan_file_patterns)
-            return []
+            return False
 
         try:
             raw = read_plan_file(plan_path)
         except Exception as e:
             logger.warning("Auto-task: failed to read plan file %s: %s", plan_path, e)
-            return []
+            return False
 
         if config.use_llm_parser and self._chat_provider:
             try:
@@ -2088,12 +2077,6 @@ class Orchestrator:
         # of steps look non-actionable).  For plans with many steps (> 5),
         # this is a strong signal that the regex parser misidentified
         # section headings as implementation steps.
-        #
-        # In this case, we retry with the LLM parser which can semantically
-        # distinguish "Phase 3: Implement caching" (actionable) from
-        # "Background: System Architecture" (informational).  The LLM
-        # parser result replaces the regex result only if it produces steps;
-        # otherwise we keep the regex result as a best-effort fallback.
         if (
             plan.steps
             and not config.use_llm_parser
@@ -2117,14 +2100,12 @@ class Orchestrator:
 
         if not plan.steps:
             logger.info("Auto-task: plan file %s parsed but contained no steps", plan_path)
-            return []
+            return False
 
         logger.info("Auto-task: found %d steps in plan file %s for task %s", len(plan.steps), plan_path, task.id)
 
         # Deduplication: check if tasks with the same titles already exist
-        # for this project (from a previous plan generation).  This prevents
-        # duplicate subtask chains when the plan file persists on the default
-        # branch and is re-discovered by a subsequent parent task.
+        # for this project (from a previous plan generation).
         if task.project_id:
             step_titles = {s.title for s in plan.steps}
             existing_tasks = await self.db.list_tasks(project_id=task.project_id)
@@ -2150,7 +2131,7 @@ class Orchestrator:
                     os.rename(plan_path, archived_path)
                 except OSError:
                     pass
-                return []
+                return False
 
         # Archive the plan file for traceability (so it won't be re-processed
         # if the workspace is reused for another task).
@@ -2163,14 +2144,90 @@ class Orchestrator:
         except OSError:
             pass
 
-        # Extract any preamble text before the first step as shared context
+        # Store the raw plan content and parsed step data as task_context
+        # so it can be used later when the user approves the plan.
+        import json as _json
+        steps_data = [
+            {
+                "title": s.title,
+                "description": s.description,
+                "priority_hint": s.priority_hint,
+                "raw_title": s.raw_title,
+            }
+            for s in plan.steps
+        ]
+        await self.db.add_task_context(
+            task.id,
+            type="plan_raw",
+            label="Plan Raw Content",
+            content=raw,
+        )
+        await self.db.add_task_context(
+            task.id,
+            type="plan_steps",
+            label="Plan Parsed Steps",
+            content=_json.dumps(steps_data),
+        )
+        if archived_path:
+            await self.db.add_task_context(
+                task.id,
+                type="plan_archived_path",
+                label="Plan Archived Path",
+                content=archived_path,
+            )
+
+        logger.info(
+            "Auto-task: stored plan with %d steps for task %s — awaiting user approval",
+            len(plan.steps), task.id,
+        )
+        return True
+
+    async def _create_subtasks_from_stored_plan(
+        self, task: Task
+    ) -> list[Task]:
+        """Create subtasks from a previously stored and approved plan.
+
+        Called when the user approves a plan via the plan approval UI.
+        Reads the plan data from task_context entries and creates subtasks
+        just as ``_generate_tasks_from_plan`` previously did.
+
+        Returns the list of created tasks.
+        """
+        import json as _json
+        from src.plan_parser import PlanStep, build_task_description
+
+        config = self.config.auto_task
+        contexts = await self.db.get_task_contexts(task.id)
+
+        # Retrieve stored plan data
+        steps_ctx = next((c for c in contexts if c["type"] == "plan_steps"), None)
+        archived_ctx = next((c for c in contexts if c["type"] == "plan_archived_path"), None)
+        raw_ctx = next((c for c in contexts if c["type"] == "plan_raw"), None)
+
+        if not steps_ctx:
+            logger.warning("Plan approval: no stored plan steps for task %s", task.id)
+            return []
+
+        steps_data = _json.loads(steps_ctx["content"])
+        plan_steps = [
+            PlanStep(
+                title=s["title"],
+                description=s["description"],
+                priority_hint=s.get("priority_hint", 0),
+                raw_title=s.get("raw_title", ""),
+            )
+            for s in steps_data
+        ]
+        archived_path = archived_ctx["content"] if archived_ctx else None
+
+        # Extract plan context from raw content (preamble before first step)
         plan_context = ""
-        if plan.steps and plan.raw_content:
-            first_step_title = plan.steps[0].title
-            idx = plan.raw_content.find(first_step_title)
+        if raw_ctx and plan_steps:
+            raw_content = raw_ctx["content"]
+            first_step_title = plan_steps[0].title
+            idx = raw_content.find(first_step_title)
             if idx > 0:
-                plan_context = plan.raw_content[:idx].strip()
-                # Remove the document title heading if present
+                plan_context = raw_content[:idx].strip()
                 import re
                 plan_context = re.sub(
                     r"^#\s+.+$\n?", "", plan_context, count=1, flags=re.MULTILINE
@@ -2180,12 +2237,17 @@ class Orchestrator:
         # on the same workspace to avoid merge conflicts between siblings.
         ws = await self.db.get_workspace_for_task(task.id)
         workspace_id = ws.id if ws else None
+        # If the workspace was already released, try finding one for the project
+        if not workspace_id and task.project_id:
+            workspaces = await self.db.list_workspaces(project_id=task.project_id)
+            if workspaces:
+                workspace_id = workspaces[0].id
 
         created_tasks: list[Task] = []
         prev_task_id: str | None = None
-        total_steps = len(plan.steps)
+        total_steps = len(plan_steps)
 
-        for step_idx, step in enumerate(plan.steps):
+        for step_idx, step in enumerate(plan_steps):
             new_id = await generate_task_id(self.db)
             description = build_task_description(
                 step, parent_task=task, plan_context=plan_context
@@ -2242,18 +2304,21 @@ class Orchestrator:
                         dep_task_id, final_subtask_id, e,
                     )
 
-        # Notify about auto-created subtasks so operators have visibility,
-        # especially when the project is paused and tasks won't be assigned yet.
+        # Notify about created subtasks
         if created_tasks:
+            from src.discord.notifications import format_auto_task_generated_embed
             task_lines = "\n".join(
                 f"  {i+1}. `{t.id}` — {t.title}"
                 for i, t in enumerate(created_tasks)
             )
             await self._notify_channel(
-                f"**Auto-task:** Created {len(created_tasks)} subtask(s) from "
+                f"**Plan Approved:** Created {len(created_tasks)} subtask(s) from "
                 f"`{task.id}` plan:\n{task_lines}",
                 project_id=task.project_id,
             )
+
+        # Re-check DEFINED tasks so newly created subtasks get promoted
+        await self._check_defined_tasks()
 
         return created_tasks
 
@@ -2457,24 +2522,30 @@ class Orchestrator:
         return PhaseResult.CONTINUE
 
     async def _phase_plan_generate(self, ctx: PipelineContext) -> PhaseResult:
-        """Pipeline phase: generate subtasks from plan files.
+        """Pipeline phase: discover plan files and store for approval.
 
         Runs BEFORE merge so the plan file archival is committed to the
         branch before it reaches the default branch.  After archiving the
         plan file, a cleanup commit is made to ensure the deletion of the
         original plan file is in git history.
+
+        Instead of auto-creating subtasks, this phase stores the parsed plan
+        data in ``task_context`` and sets ``ctx.plan_needs_approval = True``
+        so the caller can transition the task to AWAITING_PLAN_APPROVAL
+        and present the plan to the user for approval.
         """
         if not ctx.workspace_path:
             return PhaseResult.CONTINUE
-        created = await self._generate_tasks_from_plan(ctx.task, ctx.workspace_path)
-        # If tasks were generated, the plan file was archived (renamed).
+        plan_stored = await self._discover_and_store_plan(ctx.task, ctx.workspace_path)
+        # If a plan was stored, the plan file was archived (renamed).
         # Commit the archival so the merge won't carry the plan file to main.
-        if created and ctx.task.branch_name:
+        if plan_stored and ctx.task.branch_name:
             if await self.git.avalidate_checkout(ctx.workspace_path):
                 await self.git.acommit_all(
                     ctx.workspace_path,
                     f"chore: archive plan file\n\nTask-Id: {ctx.task.id}",
                 )
+            ctx.plan_needs_approval = True
         return PhaseResult.CONTINUE
 
     async def _retry_merge_for_task(self, original_task_id: str) -> None:
@@ -2753,7 +2824,7 @@ class Orchestrator:
         7. **Token accounting** — record tokens used, check budget warnings.
         8. **Result handling** — branch on the ``AgentResult`` enum:
            - COMPLETED: run ``_complete_workspace`` (commit/merge/PR), then
-             ``_generate_tasks_from_plan`` to create follow-up subtasks,
+             ``_discover_and_store_plan`` to detect plan files for approval,
              then save to memory for future task context.
            - FAILED: increment retry count; if exhausted, mark BLOCKED and
              notify about orphaned downstream tasks.
@@ -3226,10 +3297,55 @@ class Orchestrator:
                 project=project,
             )
 
-            # Run completion pipeline (commit → merge → plan_generate)
+            # Run completion pipeline (commit → plan_generate → merge)
             pr_url, completed_ok = await self._run_completion_pipeline(ctx)
 
-            if pr_url:
+            if ctx.plan_needs_approval and completed_ok:
+                # Plan was discovered — present it to the user for approval
+                # instead of auto-creating subtasks.
+                await self.db.transition_task(
+                    action.task_id,
+                    TaskStatus.AWAITING_PLAN_APPROVAL,
+                    context="plan_found",
+                )
+                await self.db.log_event(
+                    "plan_found",
+                    project_id=action.project_id,
+                    task_id=action.task_id,
+                    agent_id=action.agent_id,
+                )
+                from src.discord.notifications import (
+                    PlanApprovalView,
+                    format_plan_approval_embed,
+                )
+                plan_view = PlanApprovalView(
+                    task.id, handler=self._get_handler()
+                )
+                # Retrieve the stored plan steps for the embed
+                plan_contexts = await self.db.get_task_contexts(task.id)
+                steps_ctx = next(
+                    (c for c in plan_contexts if c["type"] == "plan_steps"),
+                    None,
+                )
+                raw_ctx = next(
+                    (c for c in plan_contexts if c["type"] == "plan_raw"),
+                    None,
+                )
+                plan_embed = format_plan_approval_embed(
+                    task,
+                    steps_json=steps_ctx["content"] if steps_ctx else "[]",
+                    raw_content=raw_ctx["content"] if raw_ctx else "",
+                )
+                await self._notify_channel(
+                    f"📋 **Plan Awaiting Approval:** Task `{task.id}` — {task.title}\n"
+                    f"A plan has been generated and needs your review before subtasks are created.",
+                    project_id=action.project_id,
+                    embed=plan_embed,
+                    view=plan_view,
+                )
+                brief = f"📋 Plan awaiting approval: {task.title} (`{task.id}`)"
+                await _notify_brief(brief)
+            elif pr_url:
                 # PR-based approval workflow
                 await self.db.transition_task(
                     action.task_id,

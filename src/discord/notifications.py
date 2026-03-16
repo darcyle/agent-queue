@@ -1212,3 +1212,212 @@ class AgentQuestionView(discord.ui.View):
             for child in self.children:
                 child.disabled = True
             await interaction.message.edit(view=self)
+
+
+# ---------------------------------------------------------------------------
+# Plan approval views
+# ---------------------------------------------------------------------------
+
+
+class PlanChangesModal(discord.ui.Modal, title="Request Plan Changes"):
+    """Modal dialog for providing feedback to revise a plan.
+
+    Opens a text input where the user can type their requested changes.
+    On submit, the feedback is forwarded via
+    ``CommandHandler.execute("reject_plan", …)`` to reopen the task
+    with the feedback appended.
+    """
+
+    feedback_input = discord.ui.TextInput(
+        label="What changes do you want?",
+        style=discord.TextStyle.long,
+        placeholder="Describe the changes you'd like to the plan…",
+        required=True,
+        max_length=2000,
+    )
+
+    def __init__(self, task_id: str, handler=None) -> None:
+        super().__init__()
+        self.task_id = task_id
+        self._handler = handler
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not self._handler:
+            await interaction.response.send_message(
+                "Handler not available.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute(
+            "reject_plan",
+            {"task_id": self.task_id, "feedback": self.feedback_input.value},
+        )
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not request changes: {result['error']}", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"✏️ Changes requested for plan `{self.task_id}`. "
+                f"Task reopened with feedback.",
+                ephemeral=True,
+            )
+
+
+class PlanApprovalView(discord.ui.View):
+    """Action buttons attached to plan-awaiting-approval notifications.
+
+    Provides Approve, Request Changes, and Delete Plan buttons for tasks
+    in AWAITING_PLAN_APPROVAL status.
+    """
+
+    def __init__(self, task_id: str, handler=None) -> None:
+        super().__init__(timeout=86400 * 7)  # 7 days
+        self.task_id = task_id
+        self._handler = handler
+
+    @discord.ui.button(
+        label="Approve Plan",
+        style=discord.ButtonStyle.success,
+        emoji="✅",
+    )
+    async def approve_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not self._handler:
+            await interaction.response.send_message(
+                "Handler not available.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute(
+            "approve_plan", {"task_id": self.task_id}
+        )
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not approve plan: {result['error']}", ephemeral=True
+            )
+        else:
+            count = result.get("subtask_count", 0)
+            await interaction.followup.send(
+                f"✅ Plan approved for `{self.task_id}`. "
+                f"{count} subtask(s) created.",
+                ephemeral=True,
+            )
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+
+    @discord.ui.button(
+        label="Request Changes",
+        style=discord.ButtonStyle.primary,
+        emoji="✏️",
+    )
+    async def request_changes_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        modal = PlanChangesModal(self.task_id, handler=self._handler)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(
+        label="Delete Plan",
+        style=discord.ButtonStyle.danger,
+        emoji="🗑️",
+    )
+    async def delete_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not self._handler:
+            await interaction.response.send_message(
+                "Handler not available.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute(
+            "delete_plan", {"task_id": self.task_id}
+        )
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not delete plan: {result['error']}", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"🗑️ Plan deleted for `{self.task_id}`. Task completed without subtasks.",
+                ephemeral=True,
+            )
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+
+
+def format_plan_approval_embed(
+    task: Task,
+    steps_json: str = "[]",
+    raw_content: str = "",
+) -> discord.Embed:
+    """Rich embed showing a plan awaiting user approval.
+
+    Displays the parsed plan steps and a snippet of the raw plan content
+    so the user can review before approving, requesting changes, or deleting.
+    """
+    import json
+
+    steps = json.loads(steps_json) if steps_json else []
+    count = len(steps)
+    plural = "s" if count != 1 else ""
+
+    desc_lines = [
+        f"Task `{task.id}` generated an implementation plan with "
+        f"**{count}** step{plural}.",
+        "",
+        "Review the plan below, then choose an action:",
+        "- **Approve Plan** — create subtasks and execute the plan",
+        "- **Request Changes** — reopen the task with your feedback",
+        "- **Delete Plan** — discard the plan and complete the task",
+    ]
+    description = "\n".join(desc_lines)
+
+    fields: list[tuple[str, str, bool]] = [
+        ("Task", f"`{task.id}`\n{truncate(task.title, 80)}", True),
+        ("Project", f"`{task.project_id}`", True),
+    ]
+
+    # Separator
+    fields.append(("─── Plan Steps ───", "\u200b", False))
+
+    # Per-step fields
+    for idx, step in enumerate(steps, 1):
+        title = step.get("title", "Untitled")
+        desc = step.get("description", "")
+
+        field_name = f"Step {idx}/{count}: {truncate(title, 80)}"
+
+        # Show a snippet of the step description
+        detail_parts = []
+        if desc:
+            snippet = _extract_description_snippet(desc, max_len=200)
+            if snippet:
+                detail_parts.append(f"*{snippet}*")
+
+        field_value = "\n".join(detail_parts) if detail_parts else "*No description*"
+        fields.append((field_name, truncate(field_value, 1024), False))
+
+    # Show a snippet of the raw plan content
+    if raw_content:
+        raw_snippet = raw_content[:500]
+        if len(raw_content) > 500:
+            raw_snippet += "\n... _(truncated)_"
+        fields.append(("─── Raw Plan ───", "\u200b", False))
+        fields.append(("Plan Content", f"```markdown\n{truncate(raw_snippet, 1000)}\n```", False))
+
+    _PLAN_APPROVAL_COLOR = 0xF39C12  # amber/orange to indicate "needs attention"
+
+    embed = make_embed(
+        EmbedStyle.INFO,
+        f"Plan Awaiting Approval — {count} Step{plural}",
+        description=truncate(description, LIMIT_DESCRIPTION),
+        fields=fields,
+        color_override=_PLAN_APPROVAL_COLOR,
+    )
+
+    return embed

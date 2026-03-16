@@ -1602,7 +1602,8 @@ def setup_commands(bot: commands.Bot) -> None:
 
     _STATUS_ORDER = [
         "IN_PROGRESS", "ASSIGNED", "READY", "DEFINED",
-        "PAUSED", "WAITING_INPUT", "AWAITING_APPROVAL", "VERIFYING",
+        "PAUSED", "WAITING_INPUT", "AWAITING_APPROVAL",
+        "AWAITING_PLAN_APPROVAL", "VERIFYING",
         "FAILED", "BLOCKED", "COMPLETED",
     ]
     _STATUS_DISPLAY: dict[str, str] = {
@@ -1611,11 +1612,13 @@ def setup_commands(bot: commands.Bot) -> None:
         "COMPLETED": "Completed", "PAUSED": "Paused",
         "WAITING_INPUT": "Waiting Input", "FAILED": "Failed",
         "BLOCKED": "Blocked", "AWAITING_APPROVAL": "Awaiting Approval",
+        "AWAITING_PLAN_APPROVAL": "Awaiting Plan Approval",
     }
     # Sections expanded by default (active/actionable states)
     _DEFAULT_EXPANDED = {
         "IN_PROGRESS", "ASSIGNED", "READY",
-        "FAILED", "BLOCKED", "PAUSED", "WAITING_INPUT", "AWAITING_APPROVAL",
+        "FAILED", "BLOCKED", "PAUSED", "WAITING_INPUT",
+        "AWAITING_APPROVAL", "AWAITING_PLAN_APPROVAL",
     }
     _MAX_TASKS_PER_SECTION = 15
 
@@ -1796,6 +1799,7 @@ def setup_commands(bot: commands.Bot) -> None:
                     ("VERIFYING", "Verifying"),
                     ("ASSIGNED", "Assigned"),
                     ("AWAITING_APPROVAL", "Awaiting Approval"),
+                    ("AWAITING_PLAN_APPROVAL", "Awaiting Plan Approval"),
                     ("WAITING_INPUT", "Waiting Input"),
                     ("PAUSED", "Paused"),
                     ("FAILED", "Failed"),
@@ -2032,6 +2036,7 @@ def setup_commands(bot: commands.Bot) -> None:
         paused = by_status.get('PAUSED', 0)
         verifying = by_status.get('VERIFYING', 0)
         awaiting = by_status.get('AWAITING_APPROVAL', 0)
+        awaiting_plan = by_status.get('AWAITING_PLAN_APPROVAL', 0)
         blocked = by_status.get('BLOCKED', 0)
 
         parts = []
@@ -2049,6 +2054,8 @@ def setup_commands(bot: commands.Bot) -> None:
             parts.append(f"{verifying} verifying")
         if awaiting:
             parts.append(f"{awaiting} awaiting approval")
+        if awaiting_plan:
+            parts.append(f"{awaiting_plan} awaiting plan approval")
         if completed:
             parts.append(f"{completed} completed")
         if failed:
