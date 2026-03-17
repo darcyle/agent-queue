@@ -177,15 +177,6 @@ CREATE TABLE IF NOT EXISTS system_config (
     value TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS agent_workspaces (
-    agent_id TEXT NOT NULL REFERENCES agents(id),
-    project_id TEXT NOT NULL REFERENCES projects(id),
-    workspace_path TEXT NOT NULL,
-    repo_id TEXT REFERENCES repos(id),
-    created_at REAL NOT NULL,
-    PRIMARY KEY (agent_id, project_id)
-);
-
 CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -332,100 +323,14 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_task_deps_task_id "
             "ON task_dependencies(task_id)"
         )
-        # Migrate existing agent checkout_path/repo_id into agent_workspaces
-        await self._migrate_agent_workspaces()
-        # Migrate repos -> projects and agent_workspaces -> workspaces
         await self._migrate_repos_to_projects()
-        await self._migrate_agent_workspaces_to_workspaces()
         await self._normalize_workspace_paths()
+        await self._drop_legacy_agent_workspaces()
         await self._db.commit()
 
     async def close(self) -> None:
         if self._db:
             await self._db.close()
-
-    async def _migrate_agent_workspaces(self) -> None:
-        """Migrate existing agent.checkout_path/repo_id into agent_workspaces.
-
-        Idempotent: uses INSERT OR IGNORE so it's safe to re-run on every startup.
-
-        Two strategies for determining project_id:
-        1. From the agent's current_task_id (if still set from a previous run)
-        2. From the agent's most recent task result (for IDLE agents)
-        """
-        try:
-            # Check if checkout_path column still exists
-            cursor = await self._db.execute("PRAGMA table_info(agents)")
-            columns = {row["name"] for row in await cursor.fetchall()}
-            if "checkout_path" not in columns:
-                return  # Column already dropped, nothing to migrate
-
-            cursor = await self._db.execute(
-                "SELECT id, checkout_path, repo_id, current_task_id "
-                "FROM agents "
-                "WHERE checkout_path IS NOT NULL AND checkout_path != ''"
-            )
-            agents = await cursor.fetchall()
-            for agent_row in agents:
-                agent_id = agent_row["id"]
-                checkout_path = agent_row["checkout_path"]
-                repo_id = agent_row["repo_id"]
-
-                # Strategy 1: from current_task_id
-                project_id = None
-                if agent_row["current_task_id"]:
-                    task_cursor = await self._db.execute(
-                        "SELECT project_id FROM tasks WHERE id = ?",
-                        (agent_row["current_task_id"],),
-                    )
-                    task_row = await task_cursor.fetchone()
-                    if task_row:
-                        project_id = task_row["project_id"]
-
-                # Strategy 2: from most recent task result
-                if not project_id:
-                    result_cursor = await self._db.execute(
-                        "SELECT t.project_id FROM task_results tr "
-                        "JOIN tasks t ON t.id = tr.task_id "
-                        "WHERE tr.agent_id = ? "
-                        "ORDER BY tr.created_at DESC LIMIT 1",
-                        (agent_id,),
-                    )
-                    result_row = await result_cursor.fetchone()
-                    if result_row:
-                        project_id = result_row["project_id"]
-
-                # Strategy 3: from most recent assigned task
-                if not project_id:
-                    assigned_cursor = await self._db.execute(
-                        "SELECT project_id FROM tasks "
-                        "WHERE assigned_agent_id = ? "
-                        "ORDER BY updated_at DESC LIMIT 1",
-                        (agent_id,),
-                    )
-                    assigned_row = await assigned_cursor.fetchone()
-                    if assigned_row:
-                        project_id = assigned_row["project_id"]
-
-                if not project_id:
-                    logger.debug(
-                        "Migration: skipping agent '%s' — cannot determine project_id",
-                        agent_id,
-                    )
-                    continue
-
-                await self._db.execute(
-                    "INSERT OR IGNORE INTO agent_workspaces "
-                    "(agent_id, project_id, workspace_path, repo_id, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (agent_id, project_id, checkout_path, repo_id, time.time()),
-                )
-                logger.info(
-                    "Migration: agent '%s' workspace for project '%s' -> '%s'",
-                    agent_id, project_id, checkout_path,
-                )
-        except Exception as e:
-            logger.debug("Agent workspace migration (benign if columns removed): %s", e)
 
     async def _migrate_repos_to_projects(self) -> None:
         """Copy first repo's url/default_branch into project columns (idempotent)."""
@@ -451,43 +356,12 @@ class Database:
         except Exception as e:
             logger.debug("Repos-to-projects migration (benign): %s", e)
 
-    async def _migrate_agent_workspaces_to_workspaces(self) -> None:
-        """Deduplicate (project_id, workspace_path) from agent_workspaces into workspaces."""
+    async def _drop_legacy_agent_workspaces(self) -> None:
+        """Drop the legacy agent_workspaces table if it still exists."""
         try:
-            cursor = await self._db.execute(
-                "SELECT DISTINCT aw.project_id, aw.workspace_path, aw.repo_id "
-                "FROM agent_workspaces aw"
-            )
-            rows = await cursor.fetchall()
-            for row in rows:
-                project_id = row["project_id"]
-                # Normalize to absolute path to prevent CWD-relative issues
-                workspace_path = os.path.realpath(row["workspace_path"])
-                # Determine source_type from repo if available
-                source_type = "clone"
-                if row["repo_id"]:
-                    repo_cursor = await self._db.execute(
-                        "SELECT source_type FROM repos WHERE id = ?",
-                        (row["repo_id"],),
-                    )
-                    repo_row = await repo_cursor.fetchone()
-                    if repo_row:
-                        source_type = repo_row["source_type"]
-
-                ws_id = f"ws-{project_id}-{uuid.uuid4().hex[:8]}"
-                await self._db.execute(
-                    "INSERT OR IGNORE INTO workspaces "
-                    "(id, project_id, workspace_path, source_type, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (ws_id, project_id, workspace_path, source_type, time.time()),
-                )
-            if rows:
-                logger.info(
-                    "Migration: migrated %d agent_workspace entries to workspaces table",
-                    len(rows),
-                )
+            await self._db.execute("DROP TABLE IF EXISTS agent_workspaces")
         except Exception as e:
-            logger.debug("Agent-workspaces-to-workspaces migration (benign): %s", e)
+            logger.debug("Drop agent_workspaces (benign): %s", e)
 
     async def _normalize_workspace_paths(self) -> None:
         """Normalize workspace paths and remove cross-project duplicates.
@@ -1364,19 +1238,15 @@ class Database:
         Cascading order (children before parent):
         1. token_ledger  – immutable token-usage rows
         2. task_results  – execution-history rows
-        3. agent_workspaces – per-project workspace mappings (legacy)
-        4. workspaces – release locks (don't delete — workspaces belong to projects)
-        5. tasks.assigned_agent_id – NULLify (don't delete the tasks)
-        6. agents – the agent record itself
+        3. workspaces – release locks (don't delete — workspaces belong to projects)
+        4. tasks.assigned_agent_id – NULLify (don't delete the tasks)
+        5. agents – the agent record itself
         """
         await self._db.execute(
             "DELETE FROM token_ledger WHERE agent_id = ?", (agent_id,),
         )
         await self._db.execute(
             "DELETE FROM task_results WHERE agent_id = ?", (agent_id,),
-        )
-        await self._db.execute(
-            "DELETE FROM agent_workspaces WHERE agent_id = ?", (agent_id,),
         )
         # Release workspace locks — workspaces belong to the project, not the agent
         await self._db.execute(
@@ -1764,7 +1634,6 @@ class Database:
         await self._db.execute("DELETE FROM hooks WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM token_ledger WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM tasks WHERE project_id = ?", (project_id,))
-        await self._db.execute("DELETE FROM agent_workspaces WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM workspaces WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM repos WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM events WHERE project_id = ?", (project_id,))

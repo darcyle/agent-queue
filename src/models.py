@@ -178,7 +178,7 @@ class RepoConfig:
 
     Repos are purely git config (URL, default branch, source type) — they
     no longer determine filesystem layout. Workspace paths are managed by
-    the agent_workspaces table instead.
+    the workspaces table.
     """
 
     id: str
