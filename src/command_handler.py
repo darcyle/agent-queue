@@ -2822,6 +2822,10 @@ class CommandHandler:
         # Create subtasks from the stored plan data
         created = await self.orchestrator._create_subtasks_from_stored_plan(task)
 
+        # Delete the plan file from the workspace so it isn't picked up by
+        # other tasks that may later run in the same workspace/branch.
+        await self._cleanup_plan_files_after_approval(task)
+
         # Transition to COMPLETED
         await self.db.transition_task(
             args["task_id"],
@@ -2840,6 +2844,60 @@ class CommandHandler:
             "subtask_count": len(created),
             "subtasks": [{"id": t.id, "title": t.title} for t in created],
         }
+
+    async def _cleanup_plan_files_after_approval(self, task) -> None:
+        """Delete plan files from the workspace after a plan is approved.
+
+        Removes both the archived plan file (in ``.claude/plans/``) and any
+        original plan file that may still exist (e.g. if archival failed).
+        Commits the deletion so the plan file doesn't persist on the branch
+        and get picked up by other tasks running in the same workspace.
+        """
+        logger = logging.getLogger(__name__)
+        ws = await self.db.get_workspace_for_task(task.id)
+        if not ws or not ws.path:
+            return
+
+        workspace = ws.path
+        deleted_any = False
+
+        # 1. Delete the archived plan file if it exists
+        contexts = await self.db.get_task_contexts(task.id)
+        archived_ctx = next((c for c in contexts if c["type"] == "plan_archived_path"), None)
+        if archived_ctx:
+            archived_path = archived_ctx["content"]
+            try:
+                if os.path.isfile(archived_path):
+                    os.remove(archived_path)
+                    deleted_any = True
+                    logger.info("Plan cleanup: deleted archived plan file %s", archived_path)
+            except OSError as e:
+                logger.warning("Plan cleanup: failed to delete archived plan %s: %s", archived_path, e)
+
+        # 2. Delete any original plan file that may still exist (in case
+        #    archival failed or there's a leftover copy).
+        plan_patterns = [".claude/plan.md", "plan.md"]
+        for pattern in plan_patterns:
+            plan_path = os.path.join(workspace, pattern)
+            try:
+                if os.path.isfile(plan_path):
+                    os.remove(plan_path)
+                    deleted_any = True
+                    logger.info("Plan cleanup: deleted original plan file %s", plan_path)
+            except OSError as e:
+                logger.warning("Plan cleanup: failed to delete plan %s: %s", plan_path, e)
+
+        # 3. Commit the deletions so the plan file is gone from the branch
+        if deleted_any and task.branch_name:
+            try:
+                if await self.orchestrator.git.avalidate_checkout(workspace):
+                    await self.orchestrator.git.acommit_all(
+                        workspace,
+                        f"chore: delete plan file after approval\n\nTask-Id: {task.id}",
+                    )
+                    logger.info("Plan cleanup: committed plan file deletion for task %s", task.id)
+            except Exception as e:
+                logger.warning("Plan cleanup: failed to commit deletion for task %s: %s", task.id, e)
 
     async def _cmd_reject_plan(self, args: dict) -> dict:
         """Reject a plan and reopen the task with feedback for revision.
@@ -2905,6 +2963,9 @@ class CommandHandler:
             return {"error": f"Task '{args['task_id']}' not found"}
         if task.status != TaskStatus.AWAITING_PLAN_APPROVAL:
             return {"error": f"Task is not awaiting plan approval (status: {task.status.value})"}
+
+        # Clean up plan files from the workspace
+        await self._cleanup_plan_files_after_approval(task)
 
         await self.db.transition_task(
             args["task_id"],
