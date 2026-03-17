@@ -3657,17 +3657,46 @@ class CommandHandler:
                 pass
 
             if current_branch == default_branch:
-                # On the default branch — just hard-reset to origin
+                # On the default branch — push any local commits, then reset
+                actions: list[str] = []
                 try:
+                    # Auto-commit uncommitted changes so they aren't lost
                     if has_uncommitted:
-                        # Stash uncommitted changes to avoid losing them
-                        await git._arun(["stash"], cwd=ws_path)
-                        ws_info["stashed_changes"] = True
+                        try:
+                            committed = await git.acommit_all(
+                                ws_path,
+                                "[sync-workspaces] auto-commit uncommitted changes",
+                            )
+                            if committed:
+                                actions.append("auto_committed")
+                        except GitError:
+                            pass
+
+                    # Push any unpushed local commits before resetting
+                    rc, ahead_count, _ = await _run_subprocess(
+                        "git", "rev-list", "--count",
+                        f"origin/{default_branch}..HEAD",
+                        cwd=ws_path, timeout=10,
+                    )
+                    if rc == 0 and ahead_count.strip() not in ("", "0"):
+                        await git.apush_branch(
+                            ws_path, default_branch, force_with_lease=True,
+                        )
+                        actions.append(f"pushed_{ahead_count.strip()}_commits")
+                        # Re-fetch so origin/default reflects what we just pushed
+                        await git._arun(
+                            ["fetch", "origin", default_branch], cwd=ws_path,
+                        )
+
                     await git._arun(
                         ["reset", "--hard", f"origin/{default_branch}"],
                         cwd=ws_path,
                     )
-                    return {**ws_info, "status": "synced", "action": "reset_to_origin"}
+                    actions.append("reset_to_origin")
+                    return {
+                        **ws_info, "status": "synced",
+                        "action": ", ".join(actions),
+                    }
                 except GitError as e:
                     return {**ws_info, "status": "error", "reason": f"reset failed: {e}"}
             else:
