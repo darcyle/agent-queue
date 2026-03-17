@@ -812,8 +812,8 @@ class AgentQueueBot(commands.Bot):
         if self._boot_time and message.created_at.timestamp() < self._boot_time:
             return
 
-        # Only respond in the global bot channel, per-project channels,
-        # when mentioned, or in a notes thread
+        # Only respond in the global bot channel, per-project channels
+        # (when mentioned), when mentioned elsewhere, or in a notes thread
         is_bot_channel = (
             self._channel
             and message.channel.id == self._channel.id
@@ -826,6 +826,11 @@ class AgentQueueBot(commands.Bot):
         is_notes_thread = notes_project_id is not None
 
         if not is_bot_channel and project_channel_id is None and not is_mentioned and not is_notes_thread:
+            return
+
+        # In project channels, require an @mention so collaborators can
+        # chat freely without triggering the bot on every message.
+        if project_channel_id and not is_bot_channel and not is_mentioned:
             return
 
         # Strip the bot mention from the message text
