@@ -365,6 +365,7 @@ class MemoryContext:
     """
 
     profile: str = ""  # Project profile (highest priority, always included)
+    project_docs: str = ""  # Project documentation (CLAUDE.md etc., Tier 1.5)
     notes: str = ""  # Relevant notes matched by semantic search
     recent_tasks: str = ""  # Recent task summaries for continuity
     search_results: str = ""  # Semantic search results (current behavior)
@@ -374,6 +375,8 @@ class MemoryContext:
         sections = []
         if self.profile:
             sections.append(f"## Project Profile\n{self.profile}")
+        if self.project_docs:
+            sections.append(f"## Project Documentation\n{self.project_docs}")
         if self.notes:
             sections.append(f"## Relevant Notes\n{self.notes}")
         if self.recent_tasks:
@@ -384,7 +387,7 @@ class MemoryContext:
 
     @property
     def is_empty(self) -> bool:
-        return not any([self.profile, self.notes, self.recent_tasks, self.search_results])
+        return not any([self.profile, self.project_docs, self.notes, self.recent_tasks, self.search_results])
 
 
 @dataclass
