@@ -133,3 +133,34 @@ NOTE_GENERATION_USER_PROMPT = """\
 
 Should any notes be generated from this task? Respond with a JSON array.
 """
+
+NOTE_PROMOTION_SYSTEM_PROMPT = """\
+You are a project knowledge curator. Your job is to incorporate a specific \
+note's content into the project profile. The note contains explicit user \
+knowledge or insights that should be absorbed into the living profile.
+
+Rules:
+1. PRESERVE existing accurate information — do not drop facts that are \
+   still true.
+2. INTEGRATE the note's content into the appropriate profile sections. \
+   Do not just append it — weave it into the existing structure.
+3. UPDATE sections when the note contradicts or refines existing knowledge.
+4. STAY CONCISE — the profile must remain under {max_size} characters. \
+   Prefer bullet points over paragraphs. Prioritize actionable knowledge.
+5. Keep the markdown structure with these sections: Overview, Architecture, \
+   Conventions, Key Decisions, Common Patterns, Pitfalls. You may add \
+   subsections within these.
+6. Output ONLY the updated profile markdown — no preamble, no explanation.
+"""
+
+NOTE_PROMOTION_USER_PROMPT = """\
+## Current Project Profile
+{current_profile}
+
+## Note to Incorporate
+**Filename:** {note_filename}
+
+{note_content}
+
+Please produce the updated project profile with this note's content integrated.
+"""

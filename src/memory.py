@@ -589,6 +589,72 @@ class MemoryManager:
             logger.warning(f"Note generation failed for project {project_id}: {e}")
             return []
 
+    async def promote_note(
+        self,
+        project_id: str,
+        note_filename: str,
+        note_content: str,
+        workspace_path: str,
+    ) -> str | None:
+        """Incorporate a specific note's content into the project profile.
+
+        Uses an LLM to integrate the note into the existing profile rather
+        than simply appending. Returns the updated profile content on success,
+        ``None`` on failure.
+        """
+        if not self.config.profile_enabled:
+            return None
+
+        from src.prompts.memory_revision import (
+            NOTE_PROMOTION_SYSTEM_PROMPT,
+            NOTE_PROMOTION_USER_PROMPT,
+            PROFILE_SEED_TEMPLATE,
+        )
+
+        current_profile = await self.get_profile(project_id)
+        if not current_profile:
+            current_profile = PROFILE_SEED_TEMPLATE
+
+        system_prompt = NOTE_PROMOTION_SYSTEM_PROMPT.format(
+            max_size=self.config.profile_max_size,
+        )
+        user_prompt = NOTE_PROMOTION_USER_PROMPT.format(
+            current_profile=current_profile,
+            note_filename=note_filename,
+            note_content=note_content,
+        )
+
+        try:
+            provider = self._get_revision_provider()
+            if not provider:
+                logger.warning("No LLM provider available for note promotion")
+                return None
+
+            response = await provider.create_message(
+                messages=[{"role": "user", "content": user_prompt}],
+                system=system_prompt,
+                max_tokens=2048,
+            )
+
+            new_profile = ""
+            for block in response.content:
+                if hasattr(block, "text"):
+                    new_profile += block.text
+
+            if not new_profile.strip():
+                logger.warning("LLM returned empty profile during note promotion")
+                return None
+
+            await self.update_profile(project_id, new_profile.strip(), workspace_path)
+            logger.info(
+                f"Note '{note_filename}' promoted into profile for project {project_id}"
+            )
+            return new_profile.strip()
+
+        except Exception as e:
+            logger.warning(f"Note promotion failed for project {project_id}: {e}")
+            return None
+
     # ------------------------------------------------------------------
     # Phase 4: Memory Compaction & Enhanced Context Delivery
     # ------------------------------------------------------------------

@@ -4827,6 +4827,9 @@ class CommandHandler:
                 "title": args["title"],
                 "operation": "updated" if existed else "created",
             })
+        # Notes represent explicit user knowledge — trigger profile revision
+        # so the knowledge is absorbed into the project profile.
+        await self._trigger_note_profile_revision(args["project_id"], f"{slug}.md", args["content"])
         return result
 
     async def _cmd_read_note(self, args: dict) -> dict:
@@ -4895,6 +4898,17 @@ class CommandHandler:
                 "title": args["title"],
                 "operation": status,  # "appended" or "created"
             })
+        # Notes represent explicit user knowledge — trigger profile revision
+        # so the knowledge is absorbed into the project profile.
+        # Read the full note content (append may have added to existing content).
+        try:
+            with open(fpath, "r") as f:
+                full_content = f.read()
+        except Exception:
+            full_content = args["content"]
+        await self._trigger_note_profile_revision(
+            args["project_id"], os.path.basename(fpath), full_content
+        )
         return result
 
     async def _cmd_compare_specs_notes(self, args: dict) -> dict:
@@ -4972,6 +4986,91 @@ class CommandHandler:
                 "title": args["title"],
             })
         return {"deleted": fpath, "title": args["title"]}
+
+    async def _cmd_promote_note(self, args: dict) -> dict:
+        """Explicitly incorporate a note's content into the project profile.
+
+        Reads the note, then uses an LLM to integrate its content into the
+        project profile. This is more targeted than a full profile revision —
+        it focuses on a single note's knowledge.
+        """
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+        title = args.get("title")
+        if not title:
+            return {"error": "title is required"}
+
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"error": f"Project '{project_id}' not found"}
+
+        if not self.orchestrator.memory_manager:
+            return {"error": "Memory subsystem is not enabled. Set memory.enabled=true in config."}
+
+        workspace = await self.db.get_project_workspace_path(project_id)
+        if not workspace:
+            return {"error": f"Project '{project_id}' has no workspaces."}
+
+        # Resolve and read the note
+        notes_dir = self._get_notes_dir(project_id)
+        fpath = self._resolve_note_path(notes_dir, title)
+        if not fpath:
+            return {"error": f"Note '{title}' not found"}
+
+        try:
+            with open(fpath, "r") as f:
+                note_content = f.read()
+        except Exception as e:
+            return {"error": f"Failed to read note: {e}"}
+
+        note_filename = os.path.basename(fpath)
+
+        try:
+            new_profile = await self.orchestrator.memory_manager.promote_note(
+                project_id, note_filename, note_content, workspace
+            )
+        except Exception as e:
+            return {"error": f"Note promotion failed: {e}"}
+
+        if not new_profile:
+            return {
+                "project_id": project_id,
+                "status": "no_change",
+                "message": "Could not promote note into profile. Profiles may be disabled or the LLM call failed.",
+            }
+
+        return {
+            "project_id": project_id,
+            "note": note_filename,
+            "status": "promoted",
+            "message": f"Note '{note_filename}' has been incorporated into the project profile.",
+            "profile_preview": new_profile[:500] + ("..." if len(new_profile) > 500 else ""),
+        }
+
+    async def _trigger_note_profile_revision(
+        self, project_id: str, note_filename: str, note_content: str
+    ) -> None:
+        """Trigger a profile revision after a note is written or appended.
+
+        Non-fatal — failures are logged but do not affect the note operation.
+        Only runs when the memory subsystem is available and notes_inform_profile
+        is enabled.
+        """
+        mm = self.orchestrator.memory_manager
+        if not mm or not mm.config.notes_inform_profile:
+            return
+
+        try:
+            workspace = await self.db.get_project_workspace_path(project_id)
+            if not workspace:
+                return
+            await mm.promote_note(project_id, note_filename, note_content, workspace)
+        except Exception as e:
+            logger.warning(
+                "Profile revision after note write failed for project %s: %s",
+                project_id, e,
+            )
 
     # -----------------------------------------------------------------------
     # Memory commands -- semantic search, stats, and reindex for the

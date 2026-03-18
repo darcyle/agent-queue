@@ -89,6 +89,7 @@ Notes management — use notes to build up project knowledge:
 - Use `write_note` to create or fully replace a note's content
 - Use `append_note` to add content to an existing note (or create a new one). This is the preferred tool for stream-of-consciousness input — it appends with a blank line separator without needing to read and rewrite the entire note.
 - Use `delete_note` to remove a note
+- Use `promote_note` to explicitly incorporate a note's content into the project profile (the note is integrated via LLM, not just appended). Writing or appending notes also auto-triggers profile revision when `notes_inform_profile` is enabled.
 - Use `compare_specs_notes` to list all specs and notes files side by side for gap analysis. When the user says "compare specs", "what's missing", or "gap analysis", call this tool then analyze which specs lack corresponding notes and vice versa.
 - When a user asks to "turn a note into tasks" or "create tasks from the spec", read the note, propose a list of tasks with titles and descriptions, and wait for the user to approve before calling `create_task` for each one.
 - When creating a brainstorming task for an agent, include the notes path in the task description so the agent writes its output to `<workspace>/notes/<name>.md`.
@@ -110,8 +111,10 @@ Memory system — semantic search over project history (requires memsearch integ
 - Use `edit_profile` to manually correct or enhance the project profile
 - Use `regenerate_profile` to force a full LLM regeneration of the profile from task history
 - Use `compact_memory` to trigger LLM-powered compaction of old task memories
+- Use `promote_note` to explicitly incorporate a specific note into the project profile via LLM
 - Memory is automatically populated: completed/failed tasks are saved as memories, and project notes are indexed. Agents receive relevant memories as context at task startup.
 - After each completed task, the project profile is automatically revised to incorporate new learnings.
+- Writing or appending notes also auto-triggers profile revision when `notes_inform_profile` is enabled.
 - When a user asks "what do we know about X", "find past work on Y", or "search memory for Z", use `memory_search` with the query.
 
 Hook system — hooks enable automated self-improvement by running context-gathering steps and sending prompts to an LLM that has access to all system tools:

@@ -1240,6 +1240,29 @@ TOOLS = [
         },
     },
     {
+        "name": "promote_note",
+        "description": (
+            "Explicitly incorporate a note's content into the project profile. "
+            "Uses an LLM to integrate the note's knowledge into the living profile "
+            "rather than simply appending. Use when a note contains important knowledge "
+            "that should be part of the project's core understanding."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "title": {
+                    "type": "string",
+                    "description": (
+                        "Note filename from list_notes 'name' field (e.g. 'my-note.md'), "
+                        "or the note title"
+                    ),
+                },
+            },
+            "required": ["project_id", "title"],
+        },
+    },
+    {
         "name": "compare_specs_notes",
         "description": (
             "List all spec files and note files for a project side by side. "
@@ -2006,6 +2029,9 @@ Notes management — use notes to build up project knowledge:
 This is the preferred tool for stream-of-consciousness input — it appends with \
 a blank line separator without needing to read and rewrite the entire note.
 - Use `delete_note` to remove a note
+- Use `promote_note` to explicitly incorporate a note's content into the project profile \
+(the note is integrated via LLM, not just appended). Writing or appending notes also \
+auto-triggers profile revision when `notes_inform_profile` is enabled.
 - Use `compare_specs_notes` to list all specs and notes files side by side for gap analysis. \
 When the user says "compare specs", "what's missing", or "gap analysis", call this tool \
 then analyze which specs lack corresponding notes and vice versa.
@@ -2034,9 +2060,11 @@ Memory system — semantic search over project history (requires memsearch integ
 - Use `edit_profile` to manually correct or enhance the project profile
 - Use `regenerate_profile` to force a full LLM regeneration of the profile from task history
 - Use `compact_memory` to trigger LLM-powered compaction of old task memories
+- Use `promote_note` to explicitly incorporate a specific note into the project profile via LLM
 - Memory is automatically populated: completed/failed tasks are saved as memories, \
 and project notes are indexed. Agents receive relevant memories as context at task startup.
 - After each completed task, the project profile is automatically revised to incorporate new learnings.
+- Writing or appending notes also auto-triggers profile revision when `notes_inform_profile` is enabled.
 - When a user asks "what do we know about X", "find past work on Y", or "search memory for Z", \
 use `memory_search` with the query.
 
