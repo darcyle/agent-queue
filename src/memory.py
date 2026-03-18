@@ -228,6 +228,42 @@ class MemoryManager:
     # Phase 2: Post-Task Profile Revision
     # ------------------------------------------------------------------
 
+    def _build_revision_prompt(
+        self,
+        current_profile: str,
+        task_summary: str,
+        files_changed: str,
+        *,
+        task_title: str = "",
+        task_type: str = "unknown",
+        task_status: str = "completed",
+        notes_section: str = "",
+    ) -> tuple[str, str]:
+        """Build the system and user prompts for a profile revision LLM call.
+
+        Accepts the current profile content, a task summary, and a formatted
+        list of changed files. Returns ``(system_prompt, user_prompt)`` ready
+        for the LLM provider.
+        """
+        from src.prompts.memory_revision import (
+            REVISION_SYSTEM_PROMPT,
+            REVISION_USER_PROMPT,
+        )
+
+        system_prompt = REVISION_SYSTEM_PROMPT.format(
+            max_size=self.config.profile_max_size,
+        )
+        user_prompt = REVISION_USER_PROMPT.format(
+            current_profile=current_profile,
+            task_title=task_title,
+            task_type=task_type,
+            task_status=task_status,
+            task_summary=task_summary,
+            files_changed=files_changed,
+            notes_section=notes_section,
+        )
+        return system_prompt, user_prompt
+
     async def revise_profile(
         self,
         project_id: str,
@@ -247,18 +283,14 @@ class MemoryManager:
         if not self.config.revision_enabled or not self.config.profile_enabled:
             return None
 
-        from src.prompts.memory_revision import (
-            PROFILE_SEED_TEMPLATE,
-            REVISION_SYSTEM_PROMPT,
-            REVISION_USER_PROMPT,
-        )
+        from src.prompts.memory_revision import PROFILE_SEED_TEMPLATE
 
         # Get current profile or seed
         current_profile = await self.get_profile(project_id)
         if not current_profile:
             current_profile = PROFILE_SEED_TEMPLATE
 
-        # Build the revision prompt
+        # Extract task metadata for the revision prompt
         task_type = task.task_type.value if (task.task_type and hasattr(task.task_type, "value")) else "unknown"
         status = output.result.value if hasattr(output.result, "value") else str(output.result)
         summary = output.summary or "No summary available."
@@ -271,16 +303,13 @@ class MemoryManager:
             if notes_content:
                 notes_section = f"## Recent Project Notes\n{notes_content}\n\n"
 
-        system_prompt = REVISION_SYSTEM_PROMPT.format(
-            max_size=self.config.profile_max_size,
-        )
-        user_prompt = REVISION_USER_PROMPT.format(
+        system_prompt, user_prompt = self._build_revision_prompt(
             current_profile=current_profile,
+            task_summary=summary,
+            files_changed=files_changed,
             task_title=task.title,
             task_type=task_type,
             task_status=status,
-            task_summary=summary,
-            files_changed=files_changed,
             notes_section=notes_section,
         )
 
