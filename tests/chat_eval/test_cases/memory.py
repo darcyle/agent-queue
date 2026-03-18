@@ -153,6 +153,44 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
+    # --- compact_memory ---
+    TestCase(
+        id="memory-compact-basic",
+        description="Compact memory for a specific project",
+        category="memory",
+        difficulty=Difficulty.EASY,
+        tags=["compact_memory"],
+        turns=[
+            Turn(
+                user_message="compact memory for project backend",
+                expected_tools=[
+                    ExpectedTool(
+                        name="compact_memory",
+                        args={"project_id": "backend"},
+                    ),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="memory-compact-active-project",
+        description="Compact memory using active project context",
+        category="memory",
+        difficulty=Difficulty.EASY,
+        tags=["compact_memory"],
+        active_project="my-app",
+        turns=[
+            Turn(
+                user_message="compact the memory, it's getting large",
+                expected_tools=[
+                    ExpectedTool(
+                        name="compact_memory",
+                        args={"project_id": "my-app"},
+                    ),
+                ],
+            ),
+        ],
+    ),
     # --- multi-turn memory usage ---
     TestCase(
         id="memory-search-then-stats",

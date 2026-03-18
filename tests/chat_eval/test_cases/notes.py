@@ -1,5 +1,5 @@
 """Test cases for note tools: list_notes, write_note, delete_note, read_note,
-append_note, compare_specs_notes.
+append_note, compare_specs_notes, promote_note.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty
@@ -288,6 +288,44 @@ CASES: list[TestCase] = [
                 user_message="get rid of the 'Old Roadmap' note",
                 expected_tools=[
                     ExpectedTool(name="delete_note", args={"title": "Old Roadmap"}),
+                ],
+            ),
+        ],
+    ),
+    # --- promote_note ---
+    TestCase(
+        id="notes-promote-explicit",
+        description="Promote a note into the project profile",
+        category="notes",
+        difficulty=Difficulty.EASY,
+        tags=["promote_note"],
+        active_project="p-1",
+        turns=[
+            Turn(
+                user_message="promote the 'API Design' note to the project profile",
+                expected_tools=[
+                    ExpectedTool(
+                        name="promote_note",
+                        args={"project_id": "p-1", "title": "API Design"},
+                    ),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="notes-promote-with-project",
+        description="Promote a note specifying the project explicitly",
+        category="notes",
+        difficulty=Difficulty.EASY,
+        tags=["promote_note"],
+        turns=[
+            Turn(
+                user_message="promote note 'Architecture' in project p-2 to the profile",
+                expected_tools=[
+                    ExpectedTool(
+                        name="promote_note",
+                        args={"project_id": "p-2", "title": "Architecture"},
+                    ),
                 ],
             ),
         ],

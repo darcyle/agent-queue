@@ -170,6 +170,76 @@ CASES: list[TestCase] = [
             ),
         ],
     ),
+    # --- view_profile ---
+    TestCase(
+        id="profile-view-basic",
+        description="View a project profile",
+        category="profiles",
+        difficulty=Difficulty.EASY,
+        tags=["view_profile"],
+        turns=[
+            Turn(
+                user_message="show me the profile for project backend",
+                expected_tools=[
+                    ExpectedTool(name="view_profile", args={"project_id": "backend"}),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="profile-view-active-project",
+        description="View profile using active project context",
+        category="profiles",
+        difficulty=Difficulty.EASY,
+        tags=["view_profile"],
+        active_project="my-app",
+        turns=[
+            Turn(
+                user_message="view the project profile",
+                expected_tools=[
+                    ExpectedTool(name="view_profile", args={"project_id": "my-app"}),
+                ],
+            ),
+        ],
+    ),
+    # --- regenerate_profile ---
+    TestCase(
+        id="profile-regenerate-basic",
+        description="Regenerate a project profile from task history",
+        category="profiles",
+        difficulty=Difficulty.EASY,
+        tags=["regenerate_profile"],
+        turns=[
+            Turn(
+                user_message="regenerate the profile for project backend",
+                expected_tools=[
+                    ExpectedTool(
+                        name="regenerate_profile",
+                        args={"project_id": "backend"},
+                    ),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="profile-regenerate-active-project",
+        description="Regenerate profile using active project context",
+        category="profiles",
+        difficulty=Difficulty.EASY,
+        tags=["regenerate_profile"],
+        active_project="my-app",
+        turns=[
+            Turn(
+                user_message="regenerate the project profile from scratch",
+                expected_tools=[
+                    ExpectedTool(
+                        name="regenerate_profile",
+                        args={"project_id": "my-app"},
+                    ),
+                ],
+            ),
+        ],
+    ),
     # --- list_available_tools ---
     TestCase(
         id="profile-list-tools",
