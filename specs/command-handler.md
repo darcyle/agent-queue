@@ -719,6 +719,101 @@ Returns diagnostic information about a task's most recent failure.
 
 ---
 
+### Plan Approval
+
+---
+
+#### `approve_plan`
+
+Approve a plan and create subtasks from it.
+
+**Parameters:**
+- `task_id` (required)
+
+**Behavior:** The task must be in `AWAITING_PLAN_APPROVAL` status. Calls `orchestrator._create_subtasks_from_stored_plan(task)` to create subtasks from the stored plan data (previously saved as `task_context` entries by `_discover_and_store_plan`). Then calls `_cleanup_plan_files_after_approval(task)` to delete plan files from the workspace and branch. Transitions the task to `COMPLETED` with context `"plan_approved"` and logs a `"plan_approved"` event.
+
+**Returns on success:**
+```python
+{
+    "approved": <str: task_id>,
+    "title": <str>,
+    "subtask_count": <int>,
+    "subtasks": [{"id": <str>, "title": <str>}, ...],
+}
+```
+
+**Errors:**
+- Task not found.
+- Task is not awaiting plan approval.
+
+---
+
+#### `reject_plan`
+
+Reject a plan and reopen the task with feedback for revision.
+
+**Parameters:**
+- `task_id` (required)
+- `feedback` (required): revision instructions for the agent.
+
+**Behavior:** The task must be in `AWAITING_PLAN_APPROVAL` status. Appends feedback to the task description (under a `**Plan Revision Requested:**` separator). Transitions the task back to `READY` with context `"plan_rejected"`, resetting `retry_count`, `assigned_agent_id`, and `pr_url`. Stores feedback as a `plan_revision_feedback` task context entry and logs a `"plan_rejected"` event.
+
+**Returns on success:**
+```python
+{
+    "rejected": <str: task_id>,
+    "title": <str>,
+    "status": "READY",
+    "feedback_added": True,
+}
+```
+
+**Errors:**
+- Task not found.
+- Task is not awaiting plan approval.
+- Feedback is required (empty feedback).
+
+---
+
+#### `delete_plan`
+
+Delete a plan and complete the task without creating subtasks.
+
+**Parameters:**
+- `task_id` (required)
+
+**Behavior:** The task must be in `AWAITING_PLAN_APPROVAL` status. Calls `_cleanup_plan_files_after_approval(task)` to delete plan files from the workspace. Transitions the task to `COMPLETED` with context `"plan_deleted"` and logs a `"plan_deleted"` event.
+
+**Returns on success:**
+```python
+{
+    "deleted": <str: task_id>,
+    "title": <str>,
+}
+```
+
+**Errors:**
+- Task not found.
+- Task is not awaiting plan approval.
+
+---
+
+### Plan File Cleanup Helper
+
+#### `_cleanup_plan_files_after_approval(task)`
+
+Private helper called by `approve_plan` and `delete_plan`.
+
+**Behavior:** Retrieves the workspace for the task via `db.get_workspace_for_task(task.id)`. Uses `ws.workspace_path` to locate the workspace directory.
+
+1. **Delete archived plan:** Looks up the `plan_archived_path` task context entry to find the archived file path (`.claude/plans/<task_id>-plan.md`). Removes it if it exists.
+2. **Delete original plan files:** Checks for `.claude/plan.md` and `plan.md` in the workspace root — these may still exist if archival failed or a copy was left behind.
+3. **Commit deletions:** If any files were deleted and the workspace is a valid git checkout, commits via `git.acommit_all` with a `chore: delete plan file after approval` message.
+
+All I/O errors are caught and logged as warnings — cleanup failures never propagate.
+
+---
+
 ### Agents
 
 ---
