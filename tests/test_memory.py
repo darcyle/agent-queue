@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.memory import MemoryConfig, MemoryManager, MEMSEARCH_AVAILABLE
+from src.models import MemoryContext
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +215,75 @@ class TestMemoryManager:
         )
         paths = mgr._memory_paths("test-project", str(tmp_path))
         assert len(paths) == 4  # memory dir + notes + specs + docs
+
+    # -- Project doc file indexing -----------------------------------------
+
+    @patch("src.memory.MEMSEARCH_AVAILABLE", True)
+    @patch("src.memory.MemSearch")
+    async def test_index_project_doc_files_indexes_existing(self, MockMemSearch, tmp_path):
+        """CLAUDE.md and README.md are indexed when present."""
+        (tmp_path / "CLAUDE.md").write_text("# Project\nSome content")
+        (tmp_path / "README.md").write_text("# Readme\nOther content")
+        mgr = self._make_manager(storage_root=str(tmp_path), index_project_docs=True)
+        mock_instance = AsyncMock()
+        await mgr._index_project_doc_files(mock_instance, str(tmp_path))
+        assert mock_instance.index_file.call_count == 2
+
+    @patch("src.memory.MEMSEARCH_AVAILABLE", True)
+    @patch("src.memory.MemSearch")
+    async def test_index_project_doc_files_skips_missing(self, MockMemSearch, tmp_path):
+        """Missing doc files are silently skipped."""
+        (tmp_path / "CLAUDE.md").write_text("# Project")
+        # README.md does not exist
+        mgr = self._make_manager(storage_root=str(tmp_path), index_project_docs=True)
+        mock_instance = AsyncMock()
+        await mgr._index_project_doc_files(mock_instance, str(tmp_path))
+        assert mock_instance.index_file.call_count == 1
+
+    @patch("src.memory.MEMSEARCH_AVAILABLE", True)
+    @patch("src.memory.MemSearch")
+    async def test_index_project_doc_files_disabled(self, MockMemSearch, tmp_path):
+        """No indexing when index_project_docs is False."""
+        (tmp_path / "CLAUDE.md").write_text("# Project")
+        mgr = self._make_manager(storage_root=str(tmp_path), index_project_docs=False)
+        mock_instance = AsyncMock()
+        await mgr._index_project_doc_files(mock_instance, str(tmp_path))
+        mock_instance.index_file.assert_not_called()
+
+    @patch("src.memory.MEMSEARCH_AVAILABLE", True)
+    @patch("src.memory.MemSearch")
+    async def test_index_project_doc_files_skips_unchanged(self, MockMemSearch, tmp_path):
+        """Unchanged files are not re-indexed on second call."""
+        (tmp_path / "CLAUDE.md").write_text("# Project")
+        mgr = self._make_manager(storage_root=str(tmp_path), index_project_docs=True)
+        mock_instance = AsyncMock()
+        await mgr._index_project_doc_files(mock_instance, str(tmp_path))
+        assert mock_instance.index_file.call_count == 1
+        # Second call — mtime hasn't changed, should skip
+        await mgr._index_project_doc_files(mock_instance, str(tmp_path))
+        assert mock_instance.index_file.call_count == 1  # still 1
+
+    # -- build_context project_docs tier -----------------------------------
+
+    def test_memory_context_project_docs_tier(self):
+        """project_docs field appears in context output between profile and notes."""
+        ctx = MemoryContext(
+            profile="My profile",
+            project_docs="### CLAUDE.md\nProject conventions",
+            notes="Some notes",
+        )
+        block = ctx.to_context_block()
+        # project_docs appears after profile and before notes
+        assert "## Project Documentation" in block
+        profile_pos = block.index("## Project Profile")
+        docs_pos = block.index("## Project Documentation")
+        notes_pos = block.index("## Relevant Notes")
+        assert profile_pos < docs_pos < notes_pos
+
+    def test_memory_context_is_empty_includes_project_docs(self):
+        """is_empty returns False when only project_docs is set."""
+        ctx = MemoryContext(project_docs="something")
+        assert not ctx.is_empty
 
     # -- Recall with mocked MemSearch --------------------------------------
 

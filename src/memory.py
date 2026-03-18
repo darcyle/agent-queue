@@ -69,6 +69,7 @@ class MemoryManager:
         self._instances: dict[str, Any] = {}  # project_id -> MemSearch
         self._watchers: dict[str, Any] = {}
         self._last_compact: dict[str, float] = {}  # project_id -> timestamp
+        self._doc_file_mtimes: dict[str, float] = {}  # "workspace:relpath" -> mtime
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -127,6 +128,32 @@ class MemoryManager:
                     paths.append(docs_dir)
         return paths
 
+    async def _index_project_doc_files(
+        self, instance: Any, workspace_path: str
+    ) -> None:
+        """Index individual project documentation files (CLAUDE.md, README.md, etc.).
+
+        These files live at the workspace root and aren't inside a directory
+        that ``_memory_paths()`` covers, so they need explicit ``index_file()``
+        calls.  We track modification times to avoid re-indexing unchanged files
+        across multiple ``get_instance()`` calls within the same process.
+        """
+        if not self.config.index_project_docs or not workspace_path:
+            return
+        for rel_path in self.config.project_docs_files:
+            full_path = os.path.join(workspace_path, rel_path)
+            if not os.path.isfile(full_path):
+                continue
+            try:
+                mtime = os.path.getmtime(full_path)
+                key = f"{workspace_path}:{rel_path}"
+                if self._doc_file_mtimes.get(key) == mtime:
+                    continue  # unchanged since last index
+                await instance.index_file(full_path)
+                self._doc_file_mtimes[key] = mtime
+            except Exception as e:
+                logger.debug(f"Failed to index project doc {rel_path}: {e}")
+
     def _resolve_milvus_uri(self) -> str:
         """Expand ``~`` in Milvus Lite file paths and ensure parent dir exists."""
         uri = os.path.expanduser(self.config.milvus_uri)
@@ -171,6 +198,10 @@ class MemoryManager:
                 overlap_lines=self.config.overlap_lines,
             )
             self._instances[project_id] = instance
+
+            # Index individual root-level doc files (CLAUDE.md, README.md)
+            await self._index_project_doc_files(instance, workspace_path)
+
             return instance
         except Exception as e:
             logger.error(f"Failed to create MemSearch instance for project {project_id}: {e}")
@@ -868,6 +899,7 @@ class MemoryManager:
 
         Returns a ``MemoryContext`` with fields for each priority tier:
         1. Project profile (always included, highest priority)
+        1.5. Project documentation (CLAUDE.md — foundational context)
         2. Relevant notes (semantic search matched)
         3. Recent task memories (for continuity)
         4. Semantic search results (de-duplicated against above)
@@ -881,6 +913,27 @@ class MemoryManager:
             profile = await self.get_profile(project_id)
             if profile:
                 ctx.profile = profile
+
+        # Tier 1.5: Project Documentation (CLAUDE.md, README.md)
+        # Always included as foundational context so every agent knows the
+        # project basics — conventions, architecture overview, and workflow.
+        if self.config.index_project_docs and workspace_path:
+            doc_parts: list[str] = []
+            for rel_path in self.config.project_docs_files:
+                full_path = os.path.join(workspace_path, rel_path)
+                if os.path.isfile(full_path):
+                    try:
+                        with open(full_path) as f:
+                            content = f.read().strip()
+                        # Truncate to keep context budget reasonable
+                        max_chars = 3000
+                        if len(content) > max_chars:
+                            content = content[:max_chars] + "\n\n[truncated]"
+                        doc_parts.append(f"### {rel_path}\n{content}")
+                    except Exception:
+                        pass
+            if doc_parts:
+                ctx.project_docs = "\n\n".join(doc_parts)
 
         instance = await self.get_instance(project_id, workspace_path)
         if not instance:
