@@ -88,6 +88,41 @@ async def _run_cycle_and_wait(orch):
     await orch.wait_for_running_tasks()
 
 
+async def _approve_plan_for_task(orch, task_id: str) -> list:
+    """Simulate plan approval: if the task is AWAITING_PLAN_APPROVAL,
+    create subtasks from the stored plan and transition to COMPLETED.
+
+    Returns the list of created subtasks (empty if no plan to approve).
+    """
+    task = await orch.db.get_task(task_id)
+    if not task or task.status != TaskStatus.AWAITING_PLAN_APPROVAL:
+        return []
+    created = await orch._create_subtasks_from_stored_plan(task)
+    await orch.db.transition_task(task_id, TaskStatus.COMPLETED, context="plan_approved")
+    return created
+
+
+async def _run_cycle_and_approve_plan(orch, task_id: str) -> list:
+    """Run one cycle, wait for completion, then auto-approve any plan.
+
+    Convenience wrapper for tests that expect the old behaviour where
+    plan subtasks were created automatically on task completion.
+    """
+    await _run_cycle_and_wait(orch)
+    return await _approve_plan_for_task(orch, task_id)
+
+
+async def _discover_and_create_subtasks(orch, task, workspace: str) -> list:
+    """Two-step helper: discover+store plan, then create subtasks.
+
+    Replaces direct calls to the old ``_generate_tasks_from_plan`` method.
+    """
+    stored = await orch._discover_and_store_plan(task, workspace)
+    if not stored:
+        return []
+    return await orch._create_subtasks_from_stored_plan(task)
+
+
 class TestOrchestratorLifecycle:
     async def test_full_task_lifecycle(self, orch):
         """DEFINED → READY → ASSIGNED → IN_PROGRESS → VERIFYING → COMPLETED"""
@@ -216,7 +251,7 @@ Add comprehensive test suite.
             status=TaskStatus.READY,
         ))
 
-        await _run_cycle_and_wait(orch)
+        await _run_cycle_and_approve_plan(orch, "t-1")
 
         # Original task should be completed
         task = await orch.db.get_task("t-1")
@@ -231,7 +266,7 @@ Add comprehensive test suite.
         assert "Build API endpoints" in titles
         assert "Write tests" in titles
 
-        # After plan generation, _check_defined_tasks() is called immediately
+        # After plan approval, _check_defined_tasks() is called immediately
         # so the first subtask (no unmet dependencies) is promoted to READY
         # while chained successors remain DEFINED.
         for st in subtasks:
@@ -272,7 +307,7 @@ Third step: write comprehensive tests for all components.
             description="Plan it", status=TaskStatus.READY,
         ))
 
-        await _run_cycle_and_wait(orch)
+        await _run_cycle_and_approve_plan(orch, "t-1")
 
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 3
@@ -389,7 +424,7 @@ Third step: write comprehensive tests for all components.
             description="Plan it", status=TaskStatus.READY,
         ))
 
-        await _run_cycle_and_wait(orch)
+        await _run_cycle_and_approve_plan(orch, "t-1")
 
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 1
@@ -423,7 +458,7 @@ Implement JWT-based sessions.
             status=TaskStatus.READY,
         ))
 
-        await _run_cycle_and_wait(orch)
+        await _run_cycle_and_approve_plan(orch, "t-1")
 
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 2
@@ -460,7 +495,7 @@ Implement JWT-based sessions.
             description="Plan it", status=TaskStatus.READY,
         ))
 
-        await _run_cycle_and_wait(orch)
+        await _run_cycle_and_approve_plan(orch, "t-1")
 
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 2
@@ -507,7 +542,7 @@ Implement JWT-based sessions.
         )
         await orch.db.create_task(parent)
 
-        generated = await orch._generate_tasks_from_plan(parent, str(workspace))
+        generated = await _discover_and_create_subtasks(orch, parent, str(workspace))
         assert len(generated) == 3
 
         # Sort by priority to get them in order
@@ -555,7 +590,7 @@ Implement JWT-based sessions.
         )
         await orch.db.create_task(parent)
 
-        generated = await orch._generate_tasks_from_plan(parent, str(workspace))
+        generated = await _discover_and_create_subtasks(orch, parent, str(workspace))
         assert len(generated) == 2
 
         # Both steps should inherit approval since chain is disabled
@@ -590,7 +625,7 @@ Implement JWT-based sessions.
             status=TaskStatus.READY,
         ))
 
-        await _run_cycle_and_wait(orch)
+        await _run_cycle_and_approve_plan(orch, "t-1")
 
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 3
@@ -626,8 +661,8 @@ Implement the second component with API endpoints and request handlers.
             description="Plan it", status=TaskStatus.READY,
         ))
 
-        # First cycle: execute t-1, generate subtasks
-        await _run_cycle_and_wait(orch)
+        # First cycle: execute t-1, plan stored for approval
+        await _run_cycle_and_approve_plan(orch, "t-1")
 
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 2
@@ -867,7 +902,7 @@ class TestPlanSubtaskFlags:
         )
         await orch.db.create_task(parent)
 
-        generated = await orch._generate_tasks_from_plan(parent, str(workspace))
+        generated = await _discover_and_create_subtasks(orch, parent, str(workspace))
         assert len(generated) == 1
         assert generated[0].is_plan_subtask is True
 
@@ -892,7 +927,7 @@ class TestPlanSubtaskFlags:
         )
         await orch.db.create_task(parent)
 
-        generated = await orch._generate_tasks_from_plan(parent, str(workspace))
+        generated = await _discover_and_create_subtasks(orch, parent, str(workspace))
         assert len(generated) == 1
         assert generated[0].plan_source is not None
         assert "t-1-plan.md" in generated[0].plan_source
@@ -942,7 +977,7 @@ class TestRecursionGuard:
         )
         await orch.db.create_task(subtask)
 
-        generated = await orch._generate_tasks_from_plan(subtask, str(workspace))
+        generated = await _discover_and_create_subtasks(orch, subtask, str(workspace))
         assert len(generated) == 0
 
     async def test_root_task_still_generates_tasks(self, orch_with_workspace):
@@ -964,7 +999,7 @@ class TestRecursionGuard:
         )
         await orch.db.create_task(root)
 
-        generated = await orch._generate_tasks_from_plan(root, str(workspace))
+        generated = await _discover_and_create_subtasks(orch, root, str(workspace))
         assert len(generated) == 1
 
 
@@ -2009,7 +2044,7 @@ class TestPlanSubtaskWorkspaceAffinity:
         with open(os.path.join(plan_dir, "plan.md"), "w") as f:
             f.write("# Implementation Plan\n\n1. Do thing A\n   Details for A\n\n2. Do thing B\n   Details for B\n")
 
-        generated = await orch._generate_tasks_from_plan(parent, ws.workspace_path)
+        generated = await _discover_and_create_subtasks(orch, parent, ws.workspace_path)
         assert len(generated) >= 2, f"Expected >=2 tasks, got {len(generated)}: {[t.title for t in generated]}"
 
         for subtask in generated:
@@ -2037,7 +2072,7 @@ class TestPlanSubtaskWorkspaceAffinity:
         with open(os.path.join(plan_dir, "plan.md"), "w") as f:
             f.write("# Implementation Plan\n\n1. Do first thing\n   Details for first\n\n2. Do second thing\n   Details for second\n")
 
-        generated = await orch._generate_tasks_from_plan(parent, ws.workspace_path)
+        generated = await _discover_and_create_subtasks(orch, parent, ws.workspace_path)
         assert len(generated) >= 2, f"Expected >=2 tasks, got {len(generated)}: {[t.title for t in generated]}"
 
         # The downstream task should now depend on the final subtask
@@ -2113,8 +2148,8 @@ class TestDuplicatePlanSubtaskPrevention:
         with open(os.path.join(plan_dir, "plan.md"), "w") as f:
             f.write(plan_content)
 
-        generated_a = await orch._generate_tasks_from_plan(
-            parent_a, ws.workspace_path
+        generated_a = await _discover_and_create_subtasks(
+            orch, parent_a, ws.workspace_path
         )
         assert len(generated_a) == 3
 
@@ -2139,8 +2174,8 @@ class TestDuplicatePlanSubtaskPrevention:
         with open(os.path.join(plan_dir_b, "plan.md"), "w") as f:
             f.write(plan_content)
 
-        generated_b = await orch._generate_tasks_from_plan(
-            parent_b, ws_b.workspace_path
+        generated_b = await _discover_and_create_subtasks(
+            orch, parent_b, ws_b.workspace_path
         )
 
         # The second parent should NOT create duplicate subtasks —
