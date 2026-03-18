@@ -2480,6 +2480,8 @@ class CommandHandler:
         separator = "\n\n---\n**Reopen Feedback:**\n"
         updated_description = task.description + separator + feedback
 
+        # Preserve requires_approval so the agent re-creates a PR on
+        # completion (the field must survive reopen cycles).
         await self.db.transition_task(
             task_id,
             TaskStatus.READY,
@@ -2488,6 +2490,7 @@ class CommandHandler:
             retry_count=0,
             assigned_agent_id=None,
             pr_url=None,
+            requires_approval=task.requires_approval,
         )
 
         # Store feedback as a structured task_context entry so agents and
@@ -2511,6 +2514,7 @@ class CommandHandler:
             "previous_status": old_status,
             "status": "READY",
             "feedback_added": True,
+            "requires_approval": task.requires_approval,
         }
 
     async def _cmd_delete_task(self, args: dict) -> dict:

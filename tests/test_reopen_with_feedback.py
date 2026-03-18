@@ -59,6 +59,24 @@ async def completed_task(db):
     return task
 
 
+@pytest.fixture
+async def approval_task(db):
+    """Create a completed task that requires approval."""
+    project_id = "test-proj-approval"
+    await db.create_project(Project(id=project_id, name="Approval Project"))
+    task = Task(
+        id="t-approval",
+        project_id=project_id,
+        title="Feature needing review",
+        description="Important feature.",
+        status=TaskStatus.AWAITING_APPROVAL,
+        requires_approval=True,
+        pr_url="https://github.com/org/repo/pull/99",
+    )
+    await db.create_task(task)
+    return task
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -206,3 +224,66 @@ class TestReopenWithFeedback:
         rows = await cursor.fetchall()
         assert len(rows) == 1
         assert "Audit trail test" in rows[0]["payload"]
+
+    async def test_requires_approval_preserved(self, handler, approval_task, db):
+        """requires_approval=True persists through reopen cycles."""
+        # Verify initial state
+        task = await db.get_task("t-approval")
+        assert task.requires_approval is True
+        assert task.status == TaskStatus.AWAITING_APPROVAL
+
+        result = await handler.execute(
+            "reopen_with_feedback",
+            {"task_id": "t-approval", "feedback": "Please fix the edge case"},
+        )
+        assert "error" not in result
+        assert result["requires_approval"] is True
+
+        # Verify in database
+        task = await db.get_task("t-approval")
+        assert task.status == TaskStatus.READY
+        assert task.requires_approval is True
+        assert task.pr_url is None  # PR cleared for fresh creation
+
+    async def test_requires_approval_preserved_across_multiple_reopens(
+        self, handler, approval_task, db
+    ):
+        """requires_approval stays True across multiple reopen cycles."""
+        # First reopen
+        await handler.execute(
+            "reopen_with_feedback",
+            {"task_id": "t-approval", "feedback": "First round of feedback"},
+        )
+        task = await db.get_task("t-approval")
+        assert task.requires_approval is True
+
+        # Simulate agent completing again
+        await db.update_task(
+            "t-approval",
+            status=TaskStatus.AWAITING_APPROVAL,
+            pr_url="https://github.com/org/repo/pull/100",
+        )
+
+        # Second reopen
+        result = await handler.execute(
+            "reopen_with_feedback",
+            {"task_id": "t-approval", "feedback": "Second round of feedback"},
+        )
+        assert result["requires_approval"] is True
+
+        task = await db.get_task("t-approval")
+        assert task.requires_approval is True
+        assert task.pr_url is None
+
+    async def test_requires_approval_false_stays_false(
+        self, handler, completed_task, db
+    ):
+        """A task without requires_approval keeps it as False after reopen."""
+        result = await handler.execute(
+            "reopen_with_feedback",
+            {"task_id": "t-1", "feedback": "Some feedback"},
+        )
+        assert result["requires_approval"] is False
+
+        task = await db.get_task("t-1")
+        assert task.requires_approval is False
