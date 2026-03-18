@@ -170,6 +170,51 @@ class TestMemoryManager:
         paths = mgr._memory_paths("test-project", str(tmp_path))
         assert len(paths) == 1
 
+    def test_memory_paths_includes_specs_when_enabled(self, tmp_path):
+        """specs/ in workspace is included when index_specs=True."""
+        specs_dir = tmp_path / "specs"
+        specs_dir.mkdir()
+        mgr = self._make_manager(storage_root=str(tmp_path), index_specs=True)
+        paths = mgr._memory_paths("test-project", str(tmp_path))
+        assert str(specs_dir) in paths
+
+    def test_memory_paths_excludes_specs_when_disabled(self, tmp_path):
+        (tmp_path / "specs").mkdir()
+        mgr = self._make_manager(storage_root=str(tmp_path), index_specs=False)
+        paths = mgr._memory_paths("test-project", str(tmp_path))
+        assert not any("specs" in p for p in paths)
+
+    def test_memory_paths_includes_docs_when_enabled(self, tmp_path):
+        """docs/ in workspace is included when index_docs=True."""
+        docs_dir = tmp_path / "docs"
+        docs_dir.mkdir()
+        mgr = self._make_manager(storage_root=str(tmp_path), index_docs=True)
+        paths = mgr._memory_paths("test-project", str(tmp_path))
+        assert str(docs_dir) in paths
+
+    def test_memory_paths_excludes_docs_when_disabled(self, tmp_path):
+        (tmp_path / "docs").mkdir()
+        mgr = self._make_manager(storage_root=str(tmp_path), index_docs=False)
+        paths = mgr._memory_paths("test-project", str(tmp_path))
+        assert not any("docs" in p for p in paths)
+
+    def test_memory_paths_skips_missing_specs_and_docs(self, tmp_path):
+        """specs/ and docs/ absent — not included even when enabled."""
+        mgr = self._make_manager(storage_root=str(tmp_path), index_specs=True, index_docs=True)
+        paths = mgr._memory_paths("test-project", str(tmp_path))
+        assert not any("specs" in p or "docs" in p for p in paths)
+
+    def test_memory_paths_includes_all_sources(self, tmp_path):
+        """All directories included when present and enabled."""
+        (tmp_path / "notes" / "test-project").mkdir(parents=True)
+        (tmp_path / "specs").mkdir()
+        (tmp_path / "docs").mkdir()
+        mgr = self._make_manager(
+            storage_root=str(tmp_path), index_notes=True, index_specs=True, index_docs=True
+        )
+        paths = mgr._memory_paths("test-project", str(tmp_path))
+        assert len(paths) == 4  # memory dir + notes + specs + docs
+
     # -- Recall with mocked MemSearch --------------------------------------
 
     @patch("src.memory.MEMSEARCH_AVAILABLE", True)

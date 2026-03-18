@@ -102,13 +102,29 @@ class MemoryManager:
 
         Always includes the central ``{data_dir}/memory/{project_id}/``
         directory (created if absent). Optionally includes the project's
-        ``notes/`` directory when ``index_notes`` is enabled.
+        ``notes/`` directory when ``index_notes`` is enabled, and the
+        workspace ``specs/`` and ``docs/`` directories when their respective
+        config flags are enabled. This lets agents reference project
+        specifications and documentation without duplicating files on disk —
+        MemSearch indexes the originals in-place so updates are always current.
         """
         paths = [self._project_memory_dir(project_id)]
         if self.config.index_notes:
             notes_dir = self._notes_dir(project_id)
             if os.path.isdir(notes_dir):
                 paths.append(notes_dir)
+        # Include workspace specs/ and docs/ directories for zero-duplication
+        # knowledge indexing — agents can answer questions about their own
+        # architecture, configuration, and published documentation.
+        if workspace_path:
+            if self.config.index_specs:
+                specs_dir = os.path.join(workspace_path, "specs")
+                if os.path.isdir(specs_dir):
+                    paths.append(specs_dir)
+            if self.config.index_docs:
+                docs_dir = os.path.join(workspace_path, "docs")
+                if os.path.isdir(docs_dir):
+                    paths.append(docs_dir)
         return paths
 
     def _resolve_milvus_uri(self) -> str:

@@ -260,6 +260,8 @@ class MemoryConfig:
     compact_recent_days: int = 7  # task memories younger than this are kept as-is
     compact_archive_days: int = 30  # task memories older than this are deleted after digesting
     index_notes: bool = True  # index project notes/ directory
+    index_specs: bool = True  # index workspace specs/ directory
+    index_docs: bool = True  # index workspace docs/ directory (published documentation)
     index_sessions: bool = False  # index session transcripts
     # Phase 1: Project Profile
     profile_enabled: bool = True  # toggle project profiles
