@@ -36,6 +36,7 @@ from discord.ext import commands
 from src.chat_agent import ChatAgent
 from src.config import AppConfig
 from src.discord.notifications import format_server_started, format_server_started_embed
+from src.models import TaskStatus
 from src.orchestrator import Orchestrator
 
 
@@ -98,6 +99,11 @@ class AgentQueueBot(commands.Bot):
         # Notes auto-refresh tracking
         self._note_viewers: dict[int, dict[str, int]] = {}  # thread_id -> {filename: msg_id}
         self._note_refresh_timers: dict[str, asyncio.TimerHandle] = {}  # debounce key -> timer
+        # Task thread tracking — maps thread_id ↔ task_id so the bot can
+        # detect when a user types into a task thread and route the message
+        # appropriately (reopen completed tasks, acknowledge in-progress ones).
+        self._task_threads: dict[int, str] = {}  # thread_id -> task_id
+        self._task_thread_objects: dict[str, discord.Thread] = {}  # task_id -> Thread
         # Wire up the note-written callback
         self.agent.handler.on_note_written = self._handle_note_written
 
@@ -612,7 +618,8 @@ class AgentQueueBot(commands.Bot):
         return None
 
     async def _create_task_thread(
-        self, thread_name: str, initial_message: str, project_id: str | None = None
+        self, thread_name: str, initial_message: str,
+        project_id: str | None = None, task_id: str | None = None,
     ):
         """Create a Discord thread for streaming agent output.
 
@@ -626,6 +633,10 @@ class AgentQueueBot(commands.Bot):
           a reply to the thread-root message, so the notification appears in
           the main channel feed and is visually linked to the thread.
 
+        If *task_id* is provided and an existing thread for that task is already
+        tracked (e.g. from a previous run that was reopened via thread feedback),
+        the existing thread is reused instead of creating a new one.
+
         Returns ``None`` if no notifications channel is available (the
         orchestrator checks for this before calling).
         """
@@ -633,6 +644,39 @@ class AgentQueueBot(commands.Bot):
         if not channel:
             print("Cannot create thread: no channel configured")
             return None
+
+        # Reuse an existing thread if one was already created for this task
+        # (e.g. reopened via thread feedback).
+        existing_thread = self._task_thread_objects.get(task_id) if task_id else None
+        if existing_thread:
+            try:
+                # Verify the thread is still accessible
+                await existing_thread.send(f"🔄 **Task resumed** — agent is working on your feedback.\n{initial_message}")
+                print(f"Reusing existing thread {existing_thread.id} for task {task_id}")
+                thread = existing_thread
+
+                async def send_to_thread(text: str) -> None:
+                    try:
+                        await self._send_long_message(thread, text)
+                    except Exception as e:
+                        print(f"Thread send error: {e}")
+
+                async def notify_main_channel(
+                    text: str, *, embed: discord.Embed | None = None
+                ) -> None:
+                    """Reply in thread only — no main channel noise for reopened tasks."""
+                    try:
+                        if embed is not None:
+                            await thread.send(text, embed=embed)
+                        else:
+                            await self._send_long_message(thread, text)
+                    except Exception as e:
+                        print(f"Thread notify error: {e}")
+
+                return send_to_thread, notify_main_channel
+            except Exception as e:
+                print(f"Could not reuse thread for task {task_id}: {e}, creating new one")
+                # Fall through to create a new thread
 
         # When routing to the global channel, prepend a project tag so users
         # can tell which project the thread belongs to.
@@ -654,6 +698,11 @@ class AgentQueueBot(commands.Bot):
         thread = await msg.create_thread(name=display_name[:100])
         await thread.send(initial_message)
         print(f"Thread created: {thread.id}")
+
+        # Track the thread ↔ task mapping for thread message detection
+        if task_id:
+            self._task_threads[thread.id] = task_id
+            self._task_thread_objects[task_id] = thread
 
         async def send_to_thread(text: str) -> None:
             try:
@@ -679,6 +728,103 @@ class AgentQueueBot(commands.Bot):
                     print(f"Fallback notify error: {e2}")
 
         return send_to_thread, notify_main_channel
+
+    async def _handle_task_thread_message(
+        self, message: discord.Message, task_id: str
+    ) -> None:
+        """Handle a user message posted in a task's Discord thread.
+
+        When a user types into a task thread:
+        - **Completed/failed/blocked task**: Reopen the task with the user's
+          message as feedback and let the agent address it on re-execution.
+          The status change happens silently (no main channel notification).
+        - **In-progress task**: Acknowledge that the message was received;
+          it will be stored as context for the agent.
+        - **Other statuses** (READY, ASSIGNED, etc.): Acknowledge that the
+          message was stored as feedback.
+        """
+        feedback = message.content.strip()
+        if not feedback:
+            return
+
+        try:
+            task = await self.orchestrator.db.get_task(task_id)
+        except Exception as e:
+            print(f"Task thread message: could not fetch task {task_id}: {e}")
+            return
+
+        if not task:
+            return
+
+        terminal_statuses = {
+            TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED,
+            TaskStatus.AWAITING_APPROVAL, TaskStatus.AWAITING_PLAN_APPROVAL,
+        }
+
+        if task.status in terminal_statuses:
+            # Reopen the task with the user's feedback
+            try:
+                result = await self.agent.handler.execute(
+                    "reopen_with_feedback",
+                    {"task_id": task_id, "feedback": feedback},
+                )
+                if result.get("error"):
+                    await message.reply(f"⚠️ Could not reopen task: {result['error']}")
+                else:
+                    await message.reply(
+                        f"📝 Task **reopened** with your feedback. "
+                        f"An agent will pick it up shortly."
+                    )
+            except Exception as e:
+                print(f"Task thread reopen failed for {task_id}: {e}")
+                await message.reply(f"⚠️ Error reopening task: {e}")
+
+        elif task.status == TaskStatus.IN_PROGRESS:
+            # Task is actively running — store feedback as context.
+            # We can't inject into a running SDK session, but we append
+            # to the description so the agent sees it on any re-execution.
+            try:
+                separator = "\n\n---\n**Thread Feedback:**\n"
+                updated_desc = task.description + separator + feedback
+                await self.orchestrator.db.update_task(
+                    task_id, description=updated_desc
+                )
+                await self.orchestrator.db.add_task_context(
+                    task_id,
+                    type="thread_feedback",
+                    label="User Feedback (from thread)",
+                    content=feedback,
+                )
+                await message.reply(
+                    "💬 Message received. The agent is currently working — "
+                    "your feedback has been saved and will be included if "
+                    "the task is re-executed."
+                )
+            except Exception as e:
+                print(f"Task thread context save failed for {task_id}: {e}")
+                await message.reply(f"⚠️ Error saving feedback: {e}")
+
+        else:
+            # READY, ASSIGNED, DEFINED, PAUSED, VERIFYING, WAITING_INPUT, etc.
+            # Append to description so the agent sees it when the task runs.
+            try:
+                separator = "\n\n---\n**Thread Feedback:**\n"
+                updated_desc = task.description + separator + feedback
+                await self.orchestrator.db.update_task(
+                    task_id, description=updated_desc
+                )
+                await self.orchestrator.db.add_task_context(
+                    task_id,
+                    type="thread_feedback",
+                    label="User Feedback (from thread)",
+                    content=feedback,
+                )
+                await message.reply(
+                    "💬 Feedback saved — the agent will see this when "
+                    "the task runs."
+                )
+            except Exception as e:
+                print(f"Task thread context save failed for {task_id}: {e}")
 
     # ------------------------------------------------------------------
     # Local message buffer
@@ -810,6 +956,13 @@ class AgentQueueBot(commands.Bot):
 
         # Skip messages created before the bot started (prevents reprocessing after restart)
         if self._boot_time and message.created_at.timestamp() < self._boot_time:
+            return
+
+        # Check if this is a task thread — if so, handle the message as
+        # feedback on the task (reopen if completed, acknowledge if in-progress).
+        task_thread_id = self._task_threads.get(message.channel.id)
+        if task_thread_id:
+            await self._handle_task_thread_message(message, task_thread_id)
             return
 
         # Only respond in the global bot channel, per-project channels

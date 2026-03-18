@@ -125,10 +125,10 @@ ThreadSendCallback = Callable[[str], Awaitable[None]]
 # Creates a Discord thread for streaming agent output and returns two
 # send functions: one for posting into the thread itself, and one for
 # posting a brief summary/reply to the parent notifications channel.
-# Args: (thread_name, initial_message, project_id)
+# Args: (thread_name, initial_message, project_id, task_id)
 # Returns: (send_to_thread, notify_main) or None if thread creation failed.
 CreateThreadCallback = Callable[
-    [str, str, str | None],
+    [str, str, str | None, str | None],
     Awaitable[tuple[ThreadSendCallback, ThreadSendCallback] | None],
 ]
 
@@ -2892,26 +2892,43 @@ class Orchestrator:
         # Fetch the workspace object for display in notifications
         ws_obj = await self.db.get_workspace_for_task(task.id)
 
-        # Notify that work is starting
+        # Detect whether this is a reopened task (via thread feedback) so we
+        # can suppress noisy main-channel notifications for reopened work.
+        _is_reopened = False
+        try:
+            contexts = await self.db.get_task_contexts(task.id)
+            _is_reopened = any(
+                c.get("type") in ("reopen_feedback", "thread_feedback")
+                for c in contexts
+            )
+        except Exception:
+            pass
+
+        # Notify that work is starting — skip the main-channel message
+        # for reopened tasks to avoid cluttering the channel.
         start_msg = format_task_started(task, agent, workspace=ws_obj)
-        handler_ref = self._get_handler()
-        started_discord_msg = await self._notify_channel(
-            start_msg,
-            project_id=action.project_id,
-            embed=format_task_started_embed(task, agent, workspace=ws_obj),
-            view=TaskStartedView(task.id, handler=handler_ref),
-        )
+        started_discord_msg = None
+        if not _is_reopened:
+            handler_ref = self._get_handler()
+            started_discord_msg = await self._notify_channel(
+                start_msg,
+                project_id=action.project_id,
+                embed=format_task_started_embed(task, agent, workspace=ws_obj),
+                view=TaskStartedView(task.id, handler=handler_ref),
+            )
         # Store the message so we can delete it when the task finishes
         if started_discord_msg is not None:
             self._task_started_messages[task.id] = started_discord_msg
 
-        # Create a thread for streaming agent output
+        # Create a thread for streaming agent output.  If this is a reopened
+        # task, the callback will reuse the existing thread instead of creating
+        # a new one.
         thread_send: ThreadSendCallback | None = None
         thread_main_notify: ThreadSendCallback | None = None
         if self._create_thread:
             try:
                 thread_name = f"{task.id} | {task.title}"[:100]
-                thread_result = await self._create_thread(thread_name, start_msg, action.project_id)
+                thread_result = await self._create_thread(thread_name, start_msg, action.project_id, task.id)
                 if thread_result:
                     thread_send, thread_main_notify = thread_result
                     logger.debug("Created thread for task %s", task.id)
