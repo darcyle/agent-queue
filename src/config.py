@@ -257,6 +257,8 @@ class MemoryConfig:
     compact_interval_hours: int = 24
     compact_llm_provider: str = ""  # LLM for compaction (defaults to revision_provider or chat_provider)
     compact_llm_model: str = ""  # model override for compaction
+    compact_recent_days: int = 7  # task memories younger than this are kept as-is
+    compact_archive_days: int = 30  # task memories older than this are deleted after digesting
     index_notes: bool = True  # index project notes/ directory
     index_sessions: bool = False  # index session transcripts
     # Phase 1: Project Profile

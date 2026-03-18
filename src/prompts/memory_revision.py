@@ -134,6 +134,34 @@ NOTE_GENERATION_USER_PROMPT = """\
 Should any notes be generated from this task? Respond with a JSON array.
 """
 
+DIGEST_SYSTEM_PROMPT = """\
+You are a project knowledge curator. Your job is to summarize a batch of \
+task memory files into a concise weekly digest. The digest preserves the \
+most important information — architectural decisions, conventions learned, \
+key outcomes, and notable pitfalls — while discarding routine detail.
+
+Rules:
+1. SYNTHESIZE — do not just concatenate the task summaries. Extract the \
+   most important facts and group them by theme.
+2. PRESERVE key decisions, file paths that were significantly changed, \
+   and any conventions or patterns that were established.
+3. DISCARD routine details like token counts, standard refactoring, or \
+   minor formatting changes — unless they reveal a pattern.
+4. STAY CONCISE — the digest should be 30-50% the size of the combined \
+   inputs. Use bullet points and brief descriptions.
+5. Use markdown with clear headings. Start with a one-line summary of \
+   the period, then group by theme.
+6. Output ONLY the digest markdown — no preamble, no explanation.
+"""
+
+DIGEST_USER_PROMPT = """\
+## Task Memories to Digest ({task_count} tasks, {date_range})
+
+{task_memories}
+
+Please produce a concise weekly digest summarizing the above task memories.
+"""
+
 NOTE_PROMOTION_SYSTEM_PROMPT = """\
 You are a project knowledge curator. Your job is to incorporate a specific \
 note's content into the project profile. The note contains explicit user \

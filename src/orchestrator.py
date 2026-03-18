@@ -205,6 +205,7 @@ class Orchestrator:
         )
         self._last_log_cleanup: float = 0.0
         self._last_auto_archive: float = 0.0
+        self._last_memory_compact: float = 0.0
         self._config_watcher: ConfigWatcher | None = None
         # Chat provider for LLM-based plan parsing.  Optionally used by
         # ``_generate_tasks_from_plan`` to parse agent-written plan files
@@ -974,6 +975,10 @@ class Orchestrator:
 
             # 10. Auto-archive stale terminal tasks (~once per hour).
             await self._auto_archive_tasks()
+
+            # 11. Periodic memory compaction — age out old task memories
+            # into weekly digests.  Rate-limited by compact_interval_hours.
+            await self._periodic_memory_compact()
         except Exception as e:
             logger.error("Scheduler cycle error", exc_info=True)
 
@@ -1254,6 +1259,49 @@ class Orchestrator:
                     )
                 except Exception:
                     pass
+
+    async def _periodic_memory_compact(self) -> None:
+        """Periodically compact old task memories into weekly digests.
+
+        Runs at most once per ``compact_interval_hours`` (rate-limited via
+        ``_last_memory_compact``).  Only active when ``compact_enabled`` is
+        True and the memory manager is initialized.
+
+        Iterates all known projects and runs compaction for each.  Errors
+        are logged but never block the orchestrator cycle.
+        """
+        if not self.memory_manager:
+            return
+        if not self.config.memory.compact_enabled:
+            return
+
+        now = time.time()
+        interval_seconds = self.config.memory.compact_interval_hours * 3600
+        if now - self._last_memory_compact < interval_seconds:
+            return
+        self._last_memory_compact = now
+
+        try:
+            projects = await self.db.get_all_projects()
+        except Exception as e:
+            logger.error("Memory compaction: failed to list projects: %s", e)
+            return
+
+        for project in projects:
+            try:
+                workspace = await self.db.get_project_workspace_path(project.id)
+                if not workspace:
+                    continue
+                result = await self.memory_manager.compact(project.id, workspace)
+                if result.get("digests_created", 0) > 0 or result.get("files_removed", 0) > 0:
+                    logger.info(
+                        "Memory compaction for %s: %d digests created, %d files removed",
+                        project.id,
+                        result.get("digests_created", 0),
+                        result.get("files_removed", 0),
+                    )
+            except Exception as e:
+                logger.warning("Memory compaction failed for project %s: %s", project.id, e)
 
     async def _find_stuck_downstream(self, blocked_task_id: str) -> list[Task]:
         """BFS walk of the dependency graph to find orphaned DEFINED tasks.

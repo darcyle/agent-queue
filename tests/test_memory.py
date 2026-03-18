@@ -656,3 +656,329 @@ class TestMemorySearchHookStep:
 
         assert results[0]["content"] == ""
         assert results[0]["count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Memory Compaction & Lifecycle tests
+# ---------------------------------------------------------------------------
+
+class TestMemoryCompaction:
+    """Tests for age-based memory compaction into weekly digests."""
+
+    def _make_manager(self, storage_root: str, **overrides) -> MemoryManager:
+        cfg = MemoryConfig(
+            enabled=True,
+            compact_enabled=True,
+            compact_recent_days=7,
+            compact_archive_days=30,
+            **overrides,
+        )
+        return MemoryManager(cfg, storage_root=storage_root)
+
+    def _write_task_file(self, tasks_dir: str, name: str, content: str, age_days: float = 0):
+        """Write a task file and set its mtime to age_days ago."""
+        import time as _time
+        path = os.path.join(tasks_dir, name)
+        with open(path, "w") as f:
+            f.write(content)
+        if age_days > 0:
+            mtime = _time.time() - (age_days * 86400)
+            os.utime(path, (mtime, mtime))
+        return path
+
+    async def test_compact_no_tasks_dir(self, tmp_path):
+        """Compaction with no tasks directory returns no_tasks status."""
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr.compact("proj", str(tmp_path))
+        assert result["status"] == "no_tasks"
+        assert result["tasks_inspected"] == 0
+
+    async def test_compact_all_recent(self, tmp_path):
+        """All recent files are kept as-is — no digests created."""
+        mgr = self._make_manager(str(tmp_path))
+        tasks_dir = os.path.join(str(tmp_path), "memory", "proj", "tasks")
+        os.makedirs(tasks_dir)
+
+        self._write_task_file(tasks_dir, "task-1.md", "# Recent task", age_days=1)
+        self._write_task_file(tasks_dir, "task-2.md", "# Another recent", age_days=3)
+
+        result = await mgr.compact("proj", str(tmp_path))
+        assert result["status"] == "compacted"
+        assert result["tasks_inspected"] == 2
+        assert result["recent_kept"] == 2
+        assert result["medium_digested"] == 0
+        assert result["old_removed"] == 0
+        assert result["digests_created"] == 0
+        assert result["files_removed"] == 0
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_compact_medium_creates_digest(self, mock_provider, tmp_path):
+        """Medium-age files are LLM-summarized into weekly digests."""
+        # Mock the LLM provider
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="# Weekly Digest\n- Task summaries here")]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        tasks_dir = os.path.join(str(tmp_path), "memory", "proj", "tasks")
+        os.makedirs(tasks_dir)
+
+        # Create medium-age files (10 days old)
+        self._write_task_file(tasks_dir, "task-old1.md", "# Task 1\nSome work", age_days=10)
+        self._write_task_file(tasks_dir, "task-old2.md", "# Task 2\nMore work", age_days=12)
+
+        result = await mgr.compact("proj", str(tmp_path))
+        assert result["status"] == "compacted"
+        assert result["medium_digested"] == 2
+        assert result["digests_created"] == 1
+        assert result["files_removed"] == 0  # medium files not removed
+
+        # Verify digest file was created
+        digests_dir = os.path.join(str(tmp_path), "memory", "proj", "digests")
+        digest_files = os.listdir(digests_dir)
+        assert len(digest_files) == 1
+        assert digest_files[0].startswith("week-")
+
+        # Original task files still exist (medium, not old)
+        assert os.path.isfile(os.path.join(tasks_dir, "task-old1.md"))
+        assert os.path.isfile(os.path.join(tasks_dir, "task-old2.md"))
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_compact_old_files_removed(self, mock_provider, tmp_path):
+        """Old files (> archive_days) are deleted after digesting."""
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="# Digest\nOld work summary")]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        tasks_dir = os.path.join(str(tmp_path), "memory", "proj", "tasks")
+        os.makedirs(tasks_dir)
+
+        # Create old files (45 days old)
+        self._write_task_file(tasks_dir, "task-ancient.md", "# Ancient task", age_days=45)
+
+        result = await mgr.compact("proj", str(tmp_path))
+        assert result["old_removed"] == 1
+        assert result["files_removed"] == 1
+        assert result["digests_created"] == 1
+
+        # Old file should be deleted
+        assert not os.path.isfile(os.path.join(tasks_dir, "task-ancient.md"))
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_compact_mixed_tiers(self, mock_provider, tmp_path):
+        """Mixed-age files are correctly classified and processed."""
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="# Digest\nSummary")]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        tasks_dir = os.path.join(str(tmp_path), "memory", "proj", "tasks")
+        os.makedirs(tasks_dir)
+
+        # Recent (2 days)
+        self._write_task_file(tasks_dir, "recent.md", "# Recent", age_days=2)
+        # Medium (15 days)
+        self._write_task_file(tasks_dir, "medium.md", "# Medium", age_days=15)
+        # Old (40 days)
+        self._write_task_file(tasks_dir, "old.md", "# Old", age_days=40)
+
+        result = await mgr.compact("proj", str(tmp_path))
+        assert result["tasks_inspected"] == 3
+        assert result["recent_kept"] == 1
+        assert result["medium_digested"] == 1
+        assert result["old_removed"] == 1
+
+        # Recent file still exists
+        assert os.path.isfile(os.path.join(tasks_dir, "recent.md"))
+        # Medium file still exists
+        assert os.path.isfile(os.path.join(tasks_dir, "medium.md"))
+        # Old file removed
+        assert not os.path.isfile(os.path.join(tasks_dir, "old.md"))
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_compact_skips_existing_digest(self, mock_provider, tmp_path):
+        """Existing digest files are not overwritten; old files still removed."""
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="# Digest\nNew summary")]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        tasks_dir = os.path.join(str(tmp_path), "memory", "proj", "tasks")
+        digests_dir = os.path.join(str(tmp_path), "memory", "proj", "digests")
+        os.makedirs(tasks_dir)
+        os.makedirs(digests_dir)
+
+        # Create an old file
+        import datetime as dt
+        import time as _time
+        age_days = 45
+        mtime = _time.time() - (age_days * 86400)
+        d = dt.date.fromtimestamp(mtime)
+        iso_year, iso_week, _ = d.isocalendar()
+        week_key = f"{iso_year}-W{iso_week:02d}"
+
+        self._write_task_file(tasks_dir, "old-task.md", "# Old", age_days=age_days)
+
+        # Pre-create the digest file
+        digest_path = os.path.join(digests_dir, f"week-{week_key}.md")
+        with open(digest_path, "w") as f:
+            f.write("# Existing Digest\nAlready here")
+
+        result = await mgr.compact("proj", str(tmp_path))
+
+        # LLM should NOT have been called — digest already existed
+        provider_instance.create_message.assert_not_called()
+
+        # Old file should still be removed
+        assert result["files_removed"] == 1
+        assert not os.path.isfile(os.path.join(tasks_dir, "old-task.md"))
+
+        # Existing digest should be preserved
+        with open(digest_path) as f:
+            assert "Existing Digest" in f.read()
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_summarize_batch(self, mock_provider, tmp_path):
+        """_summarize_batch calls LLM with correct prompts."""
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="# Digest\nSummarized content")]
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr._summarize_batch(
+            ["# Task 1\nDid thing A", "# Task 2\nDid thing B"],
+            "2026-W10",
+        )
+
+        assert result == "# Digest\nSummarized content"
+        provider_instance.create_message.assert_called_once()
+
+        # Verify prompt contains task count and date range
+        call_kwargs = provider_instance.create_message.call_args
+        user_msg = call_kwargs.kwargs.get("messages", call_kwargs[1].get("messages", [{}]))[0]["content"]
+        assert "2 tasks" in user_msg
+        assert "2026-W10" in user_msg
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_summarize_batch_llm_failure(self, mock_provider, tmp_path):
+        """_summarize_batch returns empty string on LLM failure."""
+        provider_instance = AsyncMock()
+        provider_instance.create_message = AsyncMock(side_effect=RuntimeError("LLM error"))
+        mock_provider.return_value = provider_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr._summarize_batch(["# Task 1"], "2026-W10")
+        assert result == ""
+
+    @patch("src.memory.MemoryManager._get_revision_provider")
+    async def test_summarize_batch_no_provider(self, mock_provider, tmp_path):
+        """_summarize_batch returns empty string when no LLM provider."""
+        mock_provider.return_value = None
+
+        mgr = self._make_manager(str(tmp_path))
+        result = await mgr._summarize_batch(["# Task 1"], "2026-W10")
+        assert result == ""
+
+    async def test_compact_updates_last_compact_timestamp(self, tmp_path):
+        """compact() updates the _last_compact tracking dict."""
+        mgr = self._make_manager(str(tmp_path))
+        tasks_dir = os.path.join(str(tmp_path), "memory", "proj", "tasks")
+        os.makedirs(tasks_dir)
+
+        assert "proj" not in mgr._last_compact
+        await mgr.compact("proj", str(tmp_path))
+        assert "proj" in mgr._last_compact
+        assert mgr._last_compact["proj"] > 0
+
+
+class TestMemoryStatsEnhanced:
+    """Tests for enhanced memory stats with age-tier breakdown."""
+
+    def _make_manager(self, storage_root: str, **overrides) -> MemoryManager:
+        cfg = MemoryConfig(enabled=True, **overrides)
+        return MemoryManager(cfg, storage_root=storage_root)
+
+    def _write_task_file(self, tasks_dir: str, name: str, age_days: float = 0):
+        import time as _time
+        path = os.path.join(tasks_dir, name)
+        with open(path, "w") as f:
+            f.write(f"# {name}")
+        if age_days > 0:
+            mtime = _time.time() - (age_days * 86400)
+            os.utime(path, (mtime, mtime))
+
+    @patch("src.memory.MEMSEARCH_AVAILABLE", True)
+    @patch("src.memory.MemSearch")
+    async def test_stats_includes_age_breakdown(self, mock_memsearch, tmp_path):
+        """stats() includes task memory age-tier counts."""
+        mock_instance = MagicMock()
+        mock_memsearch.return_value = mock_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        tasks_dir = os.path.join(str(tmp_path), "memory", "proj", "tasks")
+        digests_dir = os.path.join(str(tmp_path), "memory", "proj", "digests")
+        os.makedirs(tasks_dir)
+        os.makedirs(digests_dir)
+
+        # Create files at various ages
+        self._write_task_file(tasks_dir, "recent.md", age_days=2)
+        self._write_task_file(tasks_dir, "medium.md", age_days=15)
+        self._write_task_file(tasks_dir, "old.md", age_days=40)
+
+        # Create a digest file
+        with open(os.path.join(digests_dir, "week-2026-W05.md"), "w") as f:
+            f.write("# Digest")
+
+        stats = await mgr.stats("proj", str(tmp_path))
+
+        assert stats["task_memories"] == 3
+        assert stats["task_memories_recent"] == 1
+        assert stats["task_memories_medium"] == 1
+        assert stats["task_memories_old"] == 1
+        assert stats["digests"] == 1
+
+    @patch("src.memory.MEMSEARCH_AVAILABLE", True)
+    @patch("src.memory.MemSearch")
+    async def test_stats_no_task_files(self, mock_memsearch, tmp_path):
+        """stats() handles missing tasks directory gracefully."""
+        mock_instance = MagicMock()
+        mock_memsearch.return_value = mock_instance
+
+        mgr = self._make_manager(str(tmp_path))
+        # Don't create any directories
+
+        stats = await mgr.stats("proj", str(tmp_path))
+        assert stats["task_memories"] == 0
+        assert stats["digests"] == 0
+
+
+class TestMemoryConfigCompaction:
+    """Tests for compaction-related MemoryConfig fields."""
+
+    def test_compact_config_defaults(self):
+        cfg = MemoryConfig()
+        assert cfg.compact_enabled is False
+        assert cfg.compact_interval_hours == 24
+        assert cfg.compact_recent_days == 7
+        assert cfg.compact_archive_days == 30
+
+    def test_compact_config_custom(self):
+        cfg = MemoryConfig(
+            compact_enabled=True,
+            compact_recent_days=14,
+            compact_archive_days=60,
+        )
+        assert cfg.compact_enabled is True
+        assert cfg.compact_recent_days == 14
+        assert cfg.compact_archive_days == 60

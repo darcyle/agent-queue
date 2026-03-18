@@ -5286,8 +5286,10 @@ class CommandHandler:
     async def _cmd_compact_memory(self, args: dict) -> dict:
         """Manually trigger memory compaction for a project.
 
-        Uses memsearch's built-in compact() to LLM-summarize old task
-        memories into compressed daily summaries.
+        Groups task memories by age, LLM-summarizes medium-age memories
+        into weekly digests, and removes old individual task files.
+        Returns detailed stats on tasks inspected, digests created, and
+        files removed.
         """
         project_id = args.get("project_id")
         if not project_id:

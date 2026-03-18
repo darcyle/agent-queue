@@ -11,8 +11,9 @@ Features (phases from the memory improvement plan):
   the project profile based on what the task learned.
 - **Notes Integration** — Tasks can auto-generate categorized notes, and
   notes feed back into profile revision.
-- **Memory Compaction** — Thin wrapper around memsearch's built-in
-  ``compact()`` for periodic LLM-powered summarization.
+- **Memory Compaction** — Age-based lifecycle management that groups
+  task memories into recent/medium/old tiers, LLM-summarizes medium-age
+  memories into weekly digests, and removes old individual files.
 - **Enhanced Context Delivery** — Tiered, prioritized context injection:
   profile > notes > recent tasks > semantic search results.
 
@@ -660,38 +661,189 @@ class MemoryManager:
     # ------------------------------------------------------------------
 
     async def compact(self, project_id: str, workspace_path: str) -> dict:
-        """Run memsearch compaction for a project.
+        """Compact old task memories into weekly digest files.
 
-        Thin wrapper around ``instance.compact()``. Returns a stats dict
-        with the compaction result, or an error dict on failure.
+        Groups task memory files by age:
+        - **Recent** (< ``compact_recent_days``): kept as-is (full detail).
+        - **Medium** (``compact_recent_days`` .. ``compact_archive_days``):
+          LLM-summarized into weekly digest files under ``digests/``.
+        - **Old** (> ``compact_archive_days``): individual task files deleted
+          after their content has been included in a digest.
+
+        Returns a stats dict with counts of tasks inspected, digests
+        created, and files removed.
         """
-        instance = await self.get_instance(project_id, workspace_path)
-        if not instance:
-            return {"error": "MemSearch instance not available"}
+        tasks_dir = os.path.join(self._project_memory_dir(project_id), "tasks")
+        digests_dir = os.path.join(self._project_memory_dir(project_id), "digests")
 
-        if not hasattr(instance, "compact"):
-            return {"error": "memsearch version does not support compact()"}
+        if not os.path.isdir(tasks_dir):
+            return {
+                "status": "no_tasks",
+                "project_id": project_id,
+                "tasks_inspected": 0,
+                "digests_created": 0,
+                "files_removed": 0,
+            }
+
+        now = time.time()
+        recent_cutoff = now - (self.config.compact_recent_days * 86400)
+        archive_cutoff = now - (self.config.compact_archive_days * 86400)
+
+        # Classify task files by age tier
+        recent: list[str] = []
+        medium: list[str] = []  # candidates for digesting
+        old: list[str] = []  # candidates for deletion after digesting
+
+        task_files = glob.glob(os.path.join(tasks_dir, "*.md"))
+        for tf in task_files:
+            try:
+                mtime = os.path.getmtime(tf)
+            except OSError:
+                continue
+            if mtime >= recent_cutoff:
+                recent.append(tf)
+            elif mtime >= archive_cutoff:
+                medium.append(tf)
+            else:
+                old.append(tf)
+
+        # Combine medium + old as candidates for digesting (old files will
+        # additionally be deleted after digesting).
+        to_digest = medium + old
+        digests_created = 0
+        files_removed = 0
+
+        if to_digest:
+            # Group by ISO week for weekly digests
+            week_buckets: dict[str, list[str]] = {}
+            for tf in to_digest:
+                try:
+                    mtime = os.path.getmtime(tf)
+                    dt = time.gmtime(mtime)
+                    # ISO year-week key, e.g. "2026-W11"
+                    import datetime as _dt
+                    d = _dt.date(dt.tm_year, dt.tm_mon, dt.tm_mday)
+                    iso_year, iso_week, _ = d.isocalendar()
+                    week_key = f"{iso_year}-W{iso_week:02d}"
+                except (OSError, ValueError):
+                    week_key = "unknown"
+                week_buckets.setdefault(week_key, []).append(tf)
+
+            os.makedirs(digests_dir, exist_ok=True)
+            old_set = set(old)
+
+            for week_key, files in sorted(week_buckets.items()):
+                digest_path = os.path.join(digests_dir, f"week-{week_key}.md")
+
+                # Skip if digest already exists for this week
+                if os.path.isfile(digest_path):
+                    # Still remove old files even if digest already exists
+                    for tf in files:
+                        if tf in old_set:
+                            try:
+                                os.remove(tf)
+                                files_removed += 1
+                            except OSError as e:
+                                logger.warning(f"Failed to remove old task file {tf}: {e}")
+                    continue
+
+                # Read contents for summarization
+                contents: list[str] = []
+                for tf in sorted(files, key=os.path.getmtime):
+                    try:
+                        with open(tf) as f:
+                            contents.append(f.read().strip())
+                    except OSError:
+                        pass
+
+                if not contents:
+                    continue
+
+                # LLM-summarize into a digest
+                digest_text = await self._summarize_batch(contents, week_key)
+                if digest_text:
+                    try:
+                        with open(digest_path, "w") as f:
+                            f.write(digest_text)
+                        digests_created += 1
+
+                        # Index the new digest file
+                        instance = await self.get_instance(project_id, workspace_path)
+                        if instance:
+                            try:
+                                await instance.index_file(digest_path)
+                            except Exception as e:
+                                logger.warning(f"Digest indexing failed for {digest_path}: {e}")
+                    except OSError as e:
+                        logger.warning(f"Failed to write digest {digest_path}: {e}")
+                        continue
+
+                # Delete old (> archive_days) individual files now that they're digested
+                for tf in files:
+                    if tf in old_set:
+                        try:
+                            os.remove(tf)
+                            files_removed += 1
+                        except OSError as e:
+                            logger.warning(f"Failed to remove old task file {tf}: {e}")
+
+        self._last_compact[project_id] = now
+
+        stats = {
+            "status": "compacted",
+            "project_id": project_id,
+            "tasks_inspected": len(task_files),
+            "recent_kept": len(recent),
+            "medium_digested": len(medium),
+            "old_removed": len(old),
+            "digests_created": digests_created,
+            "files_removed": files_removed,
+        }
+        logger.info(
+            f"Memory compaction for {project_id}: "
+            f"{len(task_files)} inspected, {digests_created} digests created, "
+            f"{files_removed} files removed"
+        )
+        return stats
+
+    async def _summarize_batch(self, task_memories: list[str], date_range: str = "") -> str:
+        """LLM-summarize a batch of task memories into a digest.
+
+        Returns the digest markdown text, or empty string on failure.
+        """
+        from src.prompts.memory_revision import (
+            DIGEST_SYSTEM_PROMPT,
+            DIGEST_USER_PROMPT,
+        )
+
+        combined = "\n\n---\n\n".join(task_memories)
+        user_prompt = DIGEST_USER_PROMPT.format(
+            task_count=len(task_memories),
+            date_range=date_range or "unknown period",
+            task_memories=combined,
+        )
 
         try:
-            # Determine LLM provider for compaction
-            provider = self.config.compact_llm_provider or self.config.revision_provider or "anthropic"
-            model = self.config.compact_llm_model or self.config.revision_model or ""
+            provider = self._get_revision_provider()
+            if not provider:
+                logger.warning("No LLM provider available for memory digest")
+                return ""
 
-            kwargs: dict[str, Any] = {"provider": provider}
-            if model:
-                kwargs["model"] = model
+            response = await provider.create_message(
+                messages=[{"role": "user", "content": user_prompt}],
+                system=DIGEST_SYSTEM_PROMPT,
+                max_tokens=2048,
+            )
 
-            result = await instance.compact(**kwargs)
-            self._last_compact[project_id] = time.time()
+            digest = ""
+            for block in response.content:
+                if hasattr(block, "text"):
+                    digest += block.text
 
-            return {
-                "status": "compacted",
-                "project_id": project_id,
-                "result": str(result) if result else "ok",
-            }
+            return digest.strip()
         except Exception as e:
-            logger.warning(f"Memory compaction failed for project {project_id}: {e}")
-            return {"error": str(e)}
+            logger.warning(f"Digest summarization failed: {e}")
+            return ""
 
     async def build_context(
         self, project_id: str, task: Any, workspace_path: str
@@ -910,6 +1062,7 @@ class MemoryManager:
         """Get memory statistics for a project.
 
         Returns a dict with at least ``enabled`` and ``available`` keys.
+        Includes age-tier breakdown and digest count when task files exist.
         """
         if not self.config.enabled:
             return {"enabled": False, "available": MEMSEARCH_AVAILABLE}
@@ -924,6 +1077,37 @@ class MemoryManager:
 
         profile_exists = os.path.isfile(self._profile_path(project_id))
         last_compact = self._last_compact.get(project_id)
+
+        # Age-tier breakdown of task memory files
+        tasks_dir = os.path.join(self._project_memory_dir(project_id), "tasks")
+        digests_dir = os.path.join(self._project_memory_dir(project_id), "digests")
+
+        task_count = 0
+        recent_count = 0
+        medium_count = 0
+        old_count = 0
+
+        if os.path.isdir(tasks_dir):
+            now = time.time()
+            recent_cutoff = now - (self.config.compact_recent_days * 86400)
+            archive_cutoff = now - (self.config.compact_archive_days * 86400)
+
+            for tf in glob.glob(os.path.join(tasks_dir, "*.md")):
+                task_count += 1
+                try:
+                    mtime = os.path.getmtime(tf)
+                except OSError:
+                    continue
+                if mtime >= recent_cutoff:
+                    recent_count += 1
+                elif mtime >= archive_cutoff:
+                    medium_count += 1
+                else:
+                    old_count += 1
+
+        digest_count = 0
+        if os.path.isdir(digests_dir):
+            digest_count = len(glob.glob(os.path.join(digests_dir, "*.md")))
 
         return {
             "enabled": True,
@@ -940,6 +1124,11 @@ class MemoryManager:
             "auto_generate_notes": self.config.auto_generate_notes,
             "compact_enabled": self.config.compact_enabled,
             "last_compact": last_compact,
+            "task_memories": task_count,
+            "task_memories_recent": recent_count,
+            "task_memories_medium": medium_count,
+            "task_memories_old": old_count,
+            "digests": digest_count,
         }
 
     async def close(self) -> None:

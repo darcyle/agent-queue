@@ -1902,9 +1902,10 @@ TOOLS = [
     {
         "name": "compact_memory",
         "description": (
-            "Trigger memory compaction for a project. Uses LLM-powered "
-            "summarization to compress old task memories into daily digest "
-            "files, reducing index size while preserving key knowledge."
+            "Trigger memory compaction for a project. Groups task memories "
+            "by age: recent (kept as-is), medium (LLM-summarized into weekly "
+            "digests), old (deleted after digesting). Returns stats on tasks "
+            "inspected, digests created, and files removed."
         ),
         "input_schema": {
             "type": "object",
@@ -1983,7 +1984,7 @@ you do NOT need to specify project_id when an active project is set
 - View project profile with `view_profile` (synthesized project understanding that evolves with tasks)
 - Edit project profile with `edit_profile` (manually correct or enhance project understanding)
 - Regenerate project profile with `regenerate_profile` (force LLM regeneration from full task history)
-- Compact memory with `compact_memory` (LLM-summarize old task memories into daily digests)
+- Compact memory with `compact_memory` (age-based compaction: digests medium-age tasks, removes old files)
 
 Workspace management — use `add_workspace` to add workspace directories to projects:
 - **clone**: Auto-clones from the project's `repo_url`. Path is auto-generated under the workspace root.
@@ -2059,7 +2060,7 @@ Memory system — semantic search over project history (requires memsearch integ
 - Use `view_profile` to see a project's synthesized understanding (architecture, conventions, decisions)
 - Use `edit_profile` to manually correct or enhance the project profile
 - Use `regenerate_profile` to force a full LLM regeneration of the profile from task history
-- Use `compact_memory` to trigger LLM-powered compaction of old task memories
+- Use `compact_memory` to trigger age-based compaction (weekly digests for medium-age, delete old files)
 - Use `promote_note` to explicitly incorporate a specific note into the project profile via LLM
 - Memory is automatically populated: completed/failed tasks are saved as memories, \
 and project notes are indexed. Agents receive relevant memories as context at task startup.
