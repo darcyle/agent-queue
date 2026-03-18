@@ -2,197 +2,197 @@
 auto_tasks: true
 ---
 
-# Spec Updates Needed for Recent Code Changes
+# Plan: Improved Memory Integration for Agent Queue
 
-The following spec files need updates based on recent commits to main. Each phase
-is a self-contained spec update that can be implemented independently.
+## Background & Current State
 
-## Background
+### Current Memory System
+The memory system (`src/memory.py`) uses **memsearch** for per-project semantic indexing:
+- **Storage**: `~/.agent-queue/memory/{project_id}/tasks/{task_id}.md` — one file per completed task
+- **Content**: Each memory file is a flat record: task title, metadata, summary, files changed
+- **Recall**: At task start, semantic search over task memories returns top-k results injected as `attached_context`
+- **Remember**: On task completion/failure, saves a new memory file and indexes it
+- **Notes integration**: Notes from `~/.agent-queue/notes/{project_id}/` are optionally indexed alongside task memories (read-only; notes are never auto-generated)
 
-Recent commits on main introduced several behavioral changes that are not yet
-reflected in the specification documents:
+### Key Limitations
+1. **No project-level understanding** — Memory is just a bag of task summaries. There's no synthesized "understanding" of the project (architecture, patterns, conventions, key decisions). Each agent starts from scratch with only 5 task snippets.
+2. **Memories grow unboundedly** — 147+ task memories for agent-queue alone. Semantic search helps but relevance degrades as volume grows. No compaction or summarization.
+3. **Notes are passive** — Notes exist as a separate system. They're indexed for search but never auto-generated or updated by tasks. There's no feedback loop from task execution to project knowledge.
+4. **No memory revision** — Tasks never update or refine existing memories. The `remember()` call only creates new files; it never consolidates or corrects prior understanding.
+5. **Context is shallow** — The `attached_context` injection is a flat list of bullet points. There's no structured project context (e.g., "here's how this codebase is organized" or "these are the conventions we follow").
 
-1. **Plan approval workflow** (ae61118, c6780e4, b507422) — The orchestrator's
-   `_generate_tasks_from_plan` was refactored into a two-step plan approval flow:
-   `_discover_and_store_plan` discovers/parses the plan and stores it in
-   `task_context` for user review, then `_create_subtasks_from_stored_plan`
-   creates the subtasks after the user approves. Tasks now transition through
-   `AWAITING_PLAN_APPROVAL` status instead of auto-creating subtasks.
+### Design Goals
+- Each project should have a **living project profile** — a synthesized understanding that evolves with every task
+- Tasks should **revise** the memory system's understanding, not just append to it
+- Notes should be **tightly integrated** — tasks can generate notes, and notes inform project understanding
+- Memory should help agents work more effectively by providing rich, curated project context rather than raw search results
 
-2. **Plan file cleanup after approval** (07fcc7d) — A new
-   `_cleanup_plan_files_after_approval` method on `CommandHandler` deletes plan
-   files from the workspace after approval or deletion to prevent stale plans from
-   being re-discovered.
+---
 
-3. **Workspace sync fix for default branch** (ab0da75) — `sync_workspaces` no
-   longer stashes uncommitted changes on default-branch workspaces. Instead it
-   auto-commits them and pushes any unpushed local commits before hard-resetting.
+## Phase 1: Project Profile — A Living Project Understanding
 
-4. **Legacy table drop** (0f67cff) — The `agent_workspaces` table was dropped
-   from the schema. The migration code that populated it was removed and replaced
-   with a `_drop_legacy_agent_workspaces` migration. References in `delete_agent`
-   and `delete_project` cascades were removed.
+**Goal**: Introduce a per-project `profile.md` file that captures synthesized knowledge about the project: architecture, conventions, key patterns, recent decisions, and common pitfalls.
 
-5. **Discord @mention requirement** (c15e034) — Messages in per-project channels
-   now require an @mention to trigger the bot. Users can chat freely without every
-   message being processed.
+### Changes
 
-## Phase 1: Update models-and-state-machine.md for plan approval workflow
+**New file**: `~/.agent-queue/memory/{project_id}/profile.md`
+- Structured markdown with sections: Overview, Architecture, Conventions, Key Decisions, Common Patterns, Pitfalls
+- Seeded on project creation with basic info (repo URL, name, description)
+- Indexed by memsearch alongside task memories
 
-File: `specs/models-and-state-machine.md`
+**`src/memory.py`**:
+- Add `get_profile(project_id) -> str | None` — reads and returns the profile content
+- Add `update_profile(project_id, new_content: str)` — writes updated profile, re-indexes
+- Add `_profile_path(project_id) -> str` helper
 
-Changes needed:
+**`src/orchestrator.py`**:
+- In memory recall step, always prepend the project profile before search results
+- Format: `## Project Profile\n{profile_content}\n\n## Relevant Context from Project Memory\n{search_results}`
 
-1. **Add `AWAITING_PLAN_APPROVAL` to the `TaskStatus` enum table** (after
-   `AWAITING_APPROVAL`):
-   - Value: `AWAITING_PLAN_APPROVAL`
-   - Meaning: "The agent completed its work and produced a plan file. The plan has
-     been parsed and stored for user review. Subtasks will be created only after
-     explicit approval via the `approve_plan` command."
+**`src/config.py`** (`MemoryConfig`):
+- Add `profile_enabled: bool = True` — toggle project profiles
+- Add `profile_max_size: int = 5000` — max chars for profile (prevents unbounded growth)
 
-2. **Add three new `TaskEvent` values** to the enum table:
-   - `PLAN_FOUND` — "The orchestrator discovered a plan file in the workspace after
-     task completion. The plan was parsed and stored for approval."
-   - `PLAN_APPROVED` — "A user approved the discovered plan via the `approve_plan`
-     command. Subtasks are created and the task completes."
-   - `PLAN_REJECTED` — "A user rejected the plan via the `reject_plan` command.
-     The task returns to READY for the agent to retry with feedback."
-   - `PLAN_DELETED` — "A user dismissed the plan via the `delete_plan` command.
-     The task completes without creating subtasks."
+**`src/command_handler.py`**:
+- Add `view-profile` command — display current project profile
+- Add `edit-profile` command — manually edit/replace profile content
+- Add `regenerate-profile` command — force LLM regeneration from task history
 
-3. **Add state machine transitions** to the transition table and mermaid diagram:
-   - `(VERIFYING, PLAN_FOUND) → AWAITING_PLAN_APPROVAL` (happy path)
-   - `(AWAITING_PLAN_APPROVAL, PLAN_APPROVED) → COMPLETED`
-   - `(AWAITING_PLAN_APPROVAL, PLAN_REJECTED) → READY`
-   - `(AWAITING_PLAN_APPROVAL, PLAN_DELETED) → COMPLETED`
-   - `(AWAITING_PLAN_APPROVAL, ADMIN_RESTART) → READY` (admin override)
+---
 
-## Phase 2: Update orchestrator.md for plan approval workflow
+## Phase 2: Post-Task Memory Revision via LLM
 
-File: `specs/orchestrator.md`
+**Goal**: After each task completes, use an LLM call to revise the project profile based on what the task learned. This replaces the current append-only model with an evolve-and-refine approach.
 
-Changes needed:
+### Changes
 
-1. **Refactor Section 12 ("Plan-Generated Tasks")** to describe the two-step
-   approval workflow instead of the old single-step `_generate_tasks_from_plan`:
+**`src/memory.py`**:
+- Add `revise_profile(project_id, task, output, workspace_path) -> str | None`
+  - Reads current profile
+  - Reads the task's summary and files changed
+  - Calls LLM with a prompt: "Given the current project understanding and what this task accomplished, produce an updated project profile. Add new insights, correct outdated information, and keep it concise."
+  - Writes the updated profile back
+  - Returns the diff/delta for logging
+- Add `_build_revision_prompt(current_profile, task_summary, files_changed) -> str`
 
-   - Rename the section to "Plan Discovery and Approval Workflow" or similar.
-   - Document `_discover_and_store_plan(task, workspace)`:
-     - Same guards as before (auto_task.enabled, is_plan_subtask).
-     - Discovers plan file, reads it, parses it (LLM or regex).
-     - Archives the plan file to `.claude/plans/{task.id}-plan.md`.
-     - Stores parsed plan data in `task_context` (type: `plan_data`, containing
-       JSON with steps, source file, raw content, and plan context preamble).
-     - Also stores the archived path as `task_context` (type: `plan_archived_path`).
-     - Transitions task from VERIFYING → AWAITING_PLAN_APPROVAL.
-     - Posts a plan approval embed to Discord with plan details and
-       approve/reject/delete buttons.
-     - Returns `True` if a plan was found and stored, `False` otherwise.
-   - Document `_create_subtasks_from_stored_plan(task) -> list[Task]`:
-     - Retrieves stored plan data from `task_context`.
-     - Creates subtasks using the same logic as the old method (dependency
-       chaining, approval inheritance, etc.).
-     - Returns the created tasks.
+**`src/orchestrator.py`**:
+- After `remember()` in task completion, call `revise_profile()`
+- Non-fatal: wrap in try/except, log warnings on failure
+- Only revise for COMPLETED tasks (not FAILED — failed tasks still get `remember()` but don't revise the profile since they may contain incorrect understanding)
 
-2. **Update the COMPLETED path in Section 9 (step 15)** — line ~480:
-   - Change "call `_generate_tasks_from_plan(task, workspace)`" to
-     "call `_discover_and_store_plan(task, workspace)`. If a plan is found,
-     the task transitions to AWAITING_PLAN_APPROVAL and subtask creation is
-     deferred until the user approves the plan."
+**`src/config.py`** (`MemoryConfig`):
+- Add `revision_enabled: bool = True` — toggle post-task revision
+- Add `revision_provider: str = ""` — optional separate LLM provider for revision (defaults to main chat_provider)
+- Add `revision_model: str = ""` — optional model override (e.g., use a cheaper model for revision)
 
-## Phase 3: Update command-handler.md for plan approval commands
+**`src/prompts/`**:
+- Add `memory_revision.py` or `memory_revision.txt` — the system/user prompts for the revision LLM call
 
-File: `specs/command-handler.md`
+### Revision Prompt Design
+The prompt should instruct the LLM to:
+1. Preserve existing accurate information
+2. Add new architectural insights discovered by the task
+3. Update conventions or patterns if the task established new ones
+4. Note key decisions with rationale
+5. Remove outdated information contradicted by recent work
+6. Stay within the size limit
 
-Changes needed:
+---
 
-1. **Add `approve_plan` command documentation:**
-   - Parameters: `task_id` (required)
-   - Validates task is in AWAITING_PLAN_APPROVAL status
-   - Calls `orchestrator._create_subtasks_from_stored_plan(task)`
-   - Calls `_cleanup_plan_files_after_approval(task)` to delete plan files
-   - Transitions task to COMPLETED
-   - Returns subtask list with IDs and titles
+## Phase 3: Notes Integration — Bidirectional Flow
 
-2. **Add `reject_plan` command documentation:**
-   - Parameters: `task_id` (required), `feedback` (optional)
-   - Validates task is in AWAITING_PLAN_APPROVAL status
-   - Transitions task back to READY with retry
-   - Appends feedback to task description if provided
-   - Returns confirmation
+**Goal**: Create a bidirectional relationship between notes and memory. Tasks can auto-generate notes for significant discoveries, and notes are promoted into the project profile during revision.
 
-3. **Add `delete_plan` command documentation:**
-   - Parameters: `task_id` (required)
-   - Validates task is in AWAITING_PLAN_APPROVAL status
-   - Calls `_cleanup_plan_files_after_approval(task)` to delete plan files
-   - Transitions task to COMPLETED (no subtasks created)
-   - Returns confirmation
+### Changes
 
-4. **Document `_cleanup_plan_files_after_approval(task)` helper:**
-   - Gets workspace for the task
-   - Deletes archived plan file from `.claude/plans/` (path from task_context)
-   - Deletes any original plan files (`.claude/plan.md`, `plan.md`)
-   - Commits deletions to git
+**`src/memory.py`**:
+- Add `generate_task_notes(project_id, task, output) -> list[str]`
+  - After task completion, assess if the task produced noteworthy insights (new API patterns, architectural decisions, gotchas discovered)
+  - Uses LLM to decide if a note should be created and what it should contain
+  - Returns list of note paths created
+- Modify `revise_profile()` to also consider recent notes when updating the profile
+  - Read notes from `~/.agent-queue/notes/{project_id}/`
+  - Include them as additional context in the revision prompt
 
-5. **Update `sync_workspaces` command documentation** (line ~1119):
-   - Change step 6 ("If on the default branch: stashes uncommitted changes...")
-     to: "If on the default branch: auto-commits uncommitted changes via
-     `git.acommit_all()`, pushes any unpushed local commits to origin (with
-     `force_with_lease`), then hard-resets to `origin/<default_branch>`."
-   - Remove mention of stashing behavior.
+**`src/orchestrator.py`**:
+- After `remember()` + `revise_profile()`, call `generate_task_notes()` if enabled
+- Emit `note.created` events for any auto-generated notes (hooks can react)
 
-## Phase 4: Update discord.md for @mention requirement in project channels
+**`src/command_handler.py`**:
+- Modify `write-note` to trigger a profile revision (notes represent explicit user knowledge that should be absorbed)
+- Add `promote-note` command — explicitly incorporate a note's content into the project profile
 
-File: `specs/discord/discord.md`
+**`src/config.py`** (`MemoryConfig`):
+- Add `auto_generate_notes: bool = False` — toggle auto-note generation (off by default, can be noisy)
+- Add `notes_inform_profile: bool = True` — whether notes are included in profile revision context
 
-Changes needed:
+### Note Categories
+Auto-generated notes should be tagged with a category prefix in the filename:
+- `architecture-*.md` — structural insights about the codebase
+- `convention-*.md` — coding patterns and style decisions
+- `decision-*.md` — key technical decisions with rationale
+- `pitfall-*.md` — gotchas and things to avoid
 
-1. **Update the `on_message` routing table** (Section 2.7, line ~122):
-   - Change "Message in a per-project channel | Yes" to
-     "Message in a per-project channel (with @mention) | Yes"
-   - Add a new row: "Message in a per-project channel (without @mention) | No (silent)"
+---
 
-2. **Update the flowchart** to include the project-channel @mention check:
-   - After the "Determine channel context" step, add a decision node:
-     "Project channel without @mention?" → Yes → Ignore
+## Phase 4: Memory Compaction & Lifecycle
 
-3. **Add explanatory text** after the table:
-   - "In per-project channels, the bot requires an explicit @mention to respond.
-     This allows team members to have discussions in project channels without
-     every message being processed by the bot. The global bot channel and notes
-     threads continue to process all messages without requiring mentions."
+**Goal**: Prevent unbounded memory growth by periodically compacting old task memories into summary documents, and aging out stale information.
 
-## Phase 5: Update database.md for legacy table removal
+### Changes
 
-File: `specs/database.md`
+**`src/memory.py`**:
+- Add `compact(project_id, workspace_path) -> dict`
+  - Groups task memories by age: recent (< 7 days), medium (7-30 days), old (> 30 days)
+  - Recent: kept as-is (full detail)
+  - Medium: LLM-summarizes into weekly digest files (`~/.agent-queue/memory/{project_id}/digests/week-{date}.md`)
+  - Old: Individual task files deleted after digesting; only digests remain
+  - Returns stats: tasks compacted, digests created, files removed
+- Add `_summarize_batch(task_memories: list[str]) -> str` — LLM call to create a digest
 
-Changes needed:
+**`src/orchestrator.py`** or **`src/hooks.py`**:
+- Add periodic compaction — runs on a configurable interval (default: daily)
+- Could be implemented as a built-in hook or a direct orchestrator periodic task
 
-1. **Update the table count** in Section 3 introduction — change "All 15 tables"
-   to "All 14 tables" (agent_workspaces was dropped).
+**`src/config.py`** (`MemoryConfig`):
+- `compact_enabled: bool = False` already exists — activate it
+- `compact_interval_hours: int = 24` already exists
+- Add `compact_recent_days: int = 7` — threshold for "recent" memories
+- Add `compact_archive_days: int = 30` — threshold for archiving to digest
 
-2. **Update `delete_agent` cascade** (Section 8 area):
-   - Remove step 3 ("agent_workspaces – per-project workspace mappings (legacy)")
-   - Renumber remaining steps
+**`src/command_handler.py`**:
+- Add `compact-memory` command — manual trigger for compaction
+- Add `memory-stats` enhancement — show breakdown by age tier, digest count
 
-3. **Update `delete_project` cascade** (Section 4):
-   - Remove the `agent_workspaces` deletion step
-   - Verify the cascade order matches the current code
+---
 
-4. **Update Section 14 (Migration / Schema Evolution)**:
-   - Add the `_drop_legacy_agent_workspaces` migration that runs
-     `DROP TABLE IF EXISTS agent_workspaces`
-   - Remove documentation of `_migrate_agent_workspaces` and
-     `_migrate_agent_workspaces_to_workspaces` methods (they no longer exist)
+## Phase 5: Enhanced Context Delivery
 
-## Phase 6: Update git spec for agent_workspaces reference removal
+**Goal**: Improve how memory context is delivered to agents. Replace the flat bullet-point injection with structured, prioritized context.
 
-File: `specs/git/git.md`
+### Changes
 
-Changes needed:
+**`src/orchestrator.py`** (`_format_memory_context`):
+- Restructure the context block into tiers:
+  1. **Project Profile** (always included, top priority)
+  2. **Relevant Notes** (matched by semantic search, high signal)
+  3. **Recent Task Memories** (from last 5 tasks on this project, for continuity)
+  4. **Semantic Search Results** (current behavior, but de-duplicated against above)
+- Add token budget awareness: if total context exceeds a limit, trim lower-priority tiers
 
-1. **Update P1 (Per-Agent Workspace Isolation)** in Section 11:
-   - Change "Maintained by: `_prepare_workspace` in the orchestrator, via
-     `_compute_workspace_path` and the `agent_workspaces` SQLite cache."
-   - To: "Maintained by: `_prepare_workspace` in the orchestrator, via
-     `db.acquire_workspace` and the `workspaces` table."
+**`src/adapters/claude.py`**:
+- Change `attached_context` rendering from bullet list to proper markdown sections
+- Currently: `- {ctx}` per item → Change to: render each context block as its own section
+
+**`src/memory.py`**:
+- Add `build_context(project_id, task, workspace_path) -> MemoryContext`
+  - Returns a structured object with `profile`, `notes`, `recent_tasks`, `search_results`
+  - Each field is a string ready for injection
+  - Handles all the prioritization and dedup logic
+
+**`src/models.py`**:
+- Add `MemoryContext` dataclass with typed fields for each tier
+
+**`src/config.py`** (`MemoryConfig`):
+- Add `context_max_tokens: int = 4000` — soft budget for total memory context
+- Add `context_include_recent: int = 3` — number of recent same-project tasks to include
