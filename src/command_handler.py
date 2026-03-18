@@ -2855,10 +2855,10 @@ class CommandHandler:
         """
         logger = logging.getLogger(__name__)
         ws = await self.db.get_workspace_for_task(task.id)
-        if not ws or not ws.path:
+        if not ws or not ws.workspace_path:
             return
 
-        workspace = ws.path
+        workspace = ws.workspace_path
         deleted_any = False
 
         # 1. Delete the archived plan file if it exists

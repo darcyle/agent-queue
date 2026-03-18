@@ -1619,7 +1619,57 @@ class Orchestrator:
             await self.db.release_workspace(ws.id)
             return None
 
+        # Clean up archived plan files from previous tasks.  The main plan
+        # files (.claude/plan.md, plan.md) are not cleaned here because the
+        # sentinel-based staleness check in _discover_and_store_plan() handles
+        # them at discovery time.  Archived plans (in .claude/plans/) have task
+        # IDs in the filename so we can safely remove ones from other tasks.
+        await self._cleanup_archived_plans(workspace, task.id)
+
         return workspace
+
+    async def _cleanup_archived_plans(self, workspace: str, task_id: str) -> None:
+        """Remove archived plan files from previous tasks in the workspace.
+
+        Archived plans live in ``.claude/plans/<task_id>-plan.md`` and are
+        clearly attributable to specific tasks via their filename prefix.
+        This removes any that don't belong to the current task.
+        """
+        plans_dir = os.path.join(workspace, ".claude", "plans")
+        if not os.path.isdir(plans_dir):
+            return
+
+        deleted_any = False
+        try:
+            for entry in os.listdir(plans_dir):
+                # Skip files belonging to the current task (retry scenario)
+                if entry.startswith(task_id):
+                    continue
+                fpath = os.path.join(plans_dir, entry)
+                if os.path.isfile(fpath) and entry.endswith(".md"):
+                    os.remove(fpath)
+                    deleted_any = True
+                    logger.info(
+                        "Pre-task cleanup: removed archived plan %s (task %s)",
+                        fpath, task_id,
+                    )
+        except OSError as e:
+            logger.warning(
+                "Pre-task cleanup: failed to clean plans dir %s: %s",
+                plans_dir, e,
+            )
+
+        if deleted_any:
+            try:
+                if await self.git.avalidate_checkout(workspace):
+                    await self.git.acommit_all(
+                        workspace,
+                        f"chore: clean up stale plan files before task {task_id}",
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Pre-task cleanup: failed to commit plan deletions: %s", e,
+                )
 
     async def _complete_workspace(self, task: Task, agent) -> str | None:
         """Post-completion git workflow: commit changes, then merge or open a PR.
@@ -2044,6 +2094,7 @@ class Orchestrator:
         if not plan_path:
             logger.debug("Auto-task: no plan file found for task %s in workspace %s (searched patterns: %s)", task.id, workspace, config.plan_file_patterns)
             return False
+
 
         try:
             raw = read_plan_file(plan_path)
