@@ -367,6 +367,93 @@ class MemoryManager:
             logger.warning(f"Failed to read notes for project {project_id}: {e}")
             return ""
 
+    async def regenerate_profile(
+        self,
+        project_id: str,
+        workspace_path: str,
+    ) -> str | None:
+        """Force-regenerate the project profile from task history.
+
+        Reads all stored task memories and recent notes, then calls an LLM
+        to synthesize a brand-new profile from scratch. This replaces the
+        existing profile entirely.
+
+        Returns the new profile content on success, ``None`` on failure.
+        """
+        if not self.config.profile_enabled:
+            return None
+
+        from src.prompts.memory_revision import (
+            REGENERATION_SYSTEM_PROMPT,
+            REGENERATION_USER_PROMPT,
+        )
+
+        # Gather all task memory files
+        tasks_dir = os.path.join(self._project_memory_dir(project_id), "tasks")
+        task_summaries: list[str] = []
+        if os.path.isdir(tasks_dir):
+            task_files = sorted(
+                glob.glob(os.path.join(tasks_dir, "*.md")),
+                key=os.path.getmtime,
+            )
+            for tf in task_files:
+                try:
+                    with open(tf) as f:
+                        content = f.read().strip()
+                    if content:
+                        task_summaries.append(content)
+                except Exception:
+                    pass
+
+        if not task_summaries:
+            logger.info(f"No task history for project {project_id}, cannot regenerate profile")
+            return None
+
+        # Optionally include recent notes
+        notes_section = ""
+        if self.config.notes_inform_profile:
+            notes_content = self._read_recent_notes(project_id, max_notes=10)
+            if notes_content:
+                notes_section = f"## Recent Project Notes\n{notes_content}\n\n"
+
+        system_prompt = REGENERATION_SYSTEM_PROMPT.format(
+            max_size=self.config.profile_max_size,
+        )
+        user_prompt = REGENERATION_USER_PROMPT.format(
+            task_count=len(task_summaries),
+            task_summaries="\n\n---\n\n".join(task_summaries),
+            notes_section=notes_section,
+        )
+
+        try:
+            provider = self._get_revision_provider()
+            if not provider:
+                logger.warning("No LLM provider available for profile regeneration")
+                return None
+
+            response = await provider.create_message(
+                messages=[{"role": "user", "content": user_prompt}],
+                system=system_prompt,
+                max_tokens=2048,
+            )
+
+            new_profile = ""
+            for block in response.content:
+                if hasattr(block, "text"):
+                    new_profile += block.text
+
+            if not new_profile.strip():
+                logger.warning("LLM returned empty profile during regeneration")
+                return None
+
+            await self.update_profile(project_id, new_profile.strip(), workspace_path)
+            logger.info(f"Profile regenerated for project {project_id} from {len(task_summaries)} tasks")
+            return new_profile.strip()
+
+        except Exception as e:
+            logger.warning(f"Profile regeneration failed for project {project_id}: {e}")
+            return None
+
     # ------------------------------------------------------------------
     # Phase 3: Notes Integration
     # ------------------------------------------------------------------

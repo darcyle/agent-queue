@@ -1859,6 +1859,24 @@ TOOLS = [
         },
     },
     {
+        "name": "regenerate_profile",
+        "description": (
+            "Force LLM regeneration of the project profile from the full task "
+            "history. Use this when the profile has drifted or you want a fresh "
+            "synthesis of everything the project has learned."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to regenerate profile for",
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
         "name": "compact_memory",
         "description": (
             "Trigger memory compaction for a project. Uses LLM-powered "
@@ -1941,6 +1959,7 @@ you do NOT need to specify project_id when an active project is set
 - Force a full memory reindex with `memory_reindex`
 - View project profile with `view_profile` (synthesized project understanding that evolves with tasks)
 - Edit project profile with `edit_profile` (manually correct or enhance project understanding)
+- Regenerate project profile with `regenerate_profile` (force LLM regeneration from full task history)
 - Compact memory with `compact_memory` (LLM-summarize old task memories into daily digests)
 
 Workspace management — use `add_workspace` to add workspace directories to projects:
@@ -2013,6 +2032,7 @@ Memory system — semantic search over project history (requires memsearch integ
 - Use `memory_reindex` to force a full rebuild of the memory index (after bulk changes)
 - Use `view_profile` to see a project's synthesized understanding (architecture, conventions, decisions)
 - Use `edit_profile` to manually correct or enhance the project profile
+- Use `regenerate_profile` to force a full LLM regeneration of the profile from task history
 - Use `compact_memory` to trigger LLM-powered compaction of old task memories
 - Memory is automatically populated: completed/failed tasks are saved as memories, \
 and project notes are indexed. Agents receive relevant memories as context at task startup.

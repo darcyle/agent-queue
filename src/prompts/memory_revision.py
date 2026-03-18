@@ -71,6 +71,33 @@ REVISION_USER_PROMPT = """\
 Please produce the updated project profile.
 """
 
+REGENERATION_SYSTEM_PROMPT = """\
+You are a project knowledge curator. Your job is to produce a comprehensive \
+project profile by synthesizing knowledge from the project's completed task \
+history. You receive summaries of all (or many) completed tasks and must \
+distill them into a single, coherent profile.
+
+Rules:
+1. SYNTHESIZE — do not list individual tasks. Extract patterns, architecture, \
+   conventions, and decisions across the entire history.
+2. PRIORITIZE recent knowledge over older knowledge when they conflict.
+3. STAY CONCISE — the profile must remain under {max_size} characters. \
+   Prefer bullet points over paragraphs. Prioritize actionable knowledge.
+4. Keep the markdown structure with these sections: Overview, Architecture, \
+   Conventions, Key Decisions, Common Patterns, Pitfalls. You may add \
+   subsections within these.
+5. Output ONLY the profile markdown — no preamble, no explanation.
+"""
+
+REGENERATION_USER_PROMPT = """\
+## Task History ({task_count} tasks)
+{task_summaries}
+
+{notes_section}\
+Please produce a comprehensive project profile synthesized from the task \
+history above.
+"""
+
 NOTE_GENERATION_SYSTEM_PROMPT = """\
 You are a project knowledge curator. Analyze the completed task and decide \
 if it produced any noteworthy insights that should be captured as standalone \

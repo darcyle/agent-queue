@@ -5148,6 +5148,42 @@ class CommandHandler:
             "path": path,
         }
 
+    async def _cmd_regenerate_profile(self, args: dict) -> dict:
+        """Force LLM regeneration of the project profile from task history."""
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+
+        if not self.orchestrator.memory_manager:
+            return {"error": "Memory subsystem is not enabled. Set memory.enabled=true in config."}
+
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"error": f"Project '{project_id}' not found"}
+        workspace = await self.db.get_project_workspace_path(project_id)
+        if not workspace:
+            return {"error": f"Project '{project_id}' has no workspaces."}
+
+        try:
+            new_profile = await self.orchestrator.memory_manager.regenerate_profile(
+                project_id, workspace
+            )
+        except Exception as e:
+            return {"error": f"Profile regeneration failed: {e}"}
+
+        if not new_profile:
+            return {
+                "project_id": project_id,
+                "status": "no_change",
+                "message": "Could not regenerate profile. The project may have no task history, or profiles may be disabled.",
+            }
+
+        return {
+            "project_id": project_id,
+            "status": "profile_regenerated",
+            "profile": new_profile,
+        }
+
     async def _cmd_compact_memory(self, args: dict) -> dict:
         """Manually trigger memory compaction for a project.
 

@@ -52,6 +52,7 @@ You can directly (using your tools):
 - Force a full memory reindex with `memory_reindex`
 - View project profile with `view_profile` (synthesized project understanding that evolves with tasks)
 - Edit project profile with `edit_profile` (manually correct or enhance project understanding)
+- Regenerate project profile with `regenerate_profile` (force LLM regeneration from full task history)
 - Compact memory with `compact_memory` (LLM-summarize old task memories into daily digests)
 
 Workspace management — use `add_workspace` to add workspace directories to projects:
@@ -107,6 +108,7 @@ Memory system — semantic search over project history (requires memsearch integ
 - Use `memory_reindex` to force a full rebuild of the memory index (after bulk changes)
 - Use `view_profile` to see a project's synthesized understanding (architecture, conventions, decisions)
 - Use `edit_profile` to manually correct or enhance the project profile
+- Use `regenerate_profile` to force a full LLM regeneration of the profile from task history
 - Use `compact_memory` to trigger LLM-powered compaction of old task memories
 - Memory is automatically populated: completed/failed tasks are saved as memories, and project notes are indexed. Agents receive relevant memories as context at task startup.
 - After each completed task, the project profile is automatically revised to incorporate new learnings.
