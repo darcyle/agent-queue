@@ -255,8 +255,23 @@ class MemoryConfig:
     recall_top_k: int = 5  # number of memories to inject
     compact_enabled: bool = False  # periodic LLM compaction
     compact_interval_hours: int = 24
+    compact_llm_provider: str = ""  # LLM for compaction (defaults to revision_provider or chat_provider)
+    compact_llm_model: str = ""  # model override for compaction
     index_notes: bool = True  # index project notes/ directory
     index_sessions: bool = False  # index session transcripts
+    # Phase 1: Project Profile
+    profile_enabled: bool = True  # toggle project profiles
+    profile_max_size: int = 5000  # max chars for profile content
+    # Phase 2: Post-Task Revision
+    revision_enabled: bool = True  # toggle post-task profile revision
+    revision_provider: str = ""  # LLM provider for revision (defaults to chat_provider)
+    revision_model: str = ""  # model override for revision
+    # Phase 3: Notes Integration
+    auto_generate_notes: bool = False  # auto-note generation (off by default, can be noisy)
+    notes_inform_profile: bool = True  # include notes in profile revision context
+    # Phase 4: Enhanced Context Delivery
+    context_max_tokens: int = 4000  # soft budget for total memory context
+    context_include_recent: int = 3  # number of recent same-project tasks to include
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []

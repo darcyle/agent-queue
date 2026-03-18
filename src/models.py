@@ -355,6 +355,39 @@ class AgentOutput:
 
 
 @dataclass
+class MemoryContext:
+    """Structured memory context with tiered priority for agent injection.
+
+    Each field contains pre-formatted markdown text ready for injection into
+    the agent's context. The orchestrator assembles these tiers in priority
+    order (profile first, then notes, recent tasks, and semantic search)
+    and trims to fit the configured token budget.
+    """
+
+    profile: str = ""  # Project profile (highest priority, always included)
+    notes: str = ""  # Relevant notes matched by semantic search
+    recent_tasks: str = ""  # Recent task summaries for continuity
+    search_results: str = ""  # Semantic search results (current behavior)
+
+    def to_context_block(self) -> str:
+        """Assemble all tiers into a single markdown context block."""
+        sections = []
+        if self.profile:
+            sections.append(f"## Project Profile\n{self.profile}")
+        if self.notes:
+            sections.append(f"## Relevant Notes\n{self.notes}")
+        if self.recent_tasks:
+            sections.append(f"## Recent Tasks\n{self.recent_tasks}")
+        if self.search_results:
+            sections.append(f"## Relevant Context from Project Memory\n{self.search_results}")
+        return "\n\n".join(sections)
+
+    @property
+    def is_empty(self) -> bool:
+        return not any([self.profile, self.notes, self.recent_tasks, self.search_results])
+
+
+@dataclass
 class Hook:
     """Definition of an automated hook that runs in response to events or on a schedule.
 

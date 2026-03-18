@@ -797,6 +797,37 @@ class Orchestrator:
             lines.append("")
         return "\n".join(lines)
 
+    async def _build_memory_context_block(self, task: Any, workspace: str) -> str | None:
+        """Build a tiered memory context block for agent injection.
+
+        Uses the new ``MemoryManager.build_context()`` to produce a
+        structured context with profile, notes, recent tasks, and search
+        results.  Falls back to the legacy ``recall()`` + ``_format_memory_context()``
+        if ``build_context()`` is not available.
+
+        Returns the formatted context string, or ``None`` if no memory is available.
+        """
+        if not self.memory_manager:
+            return None
+
+        try:
+            memory_ctx = await self.memory_manager.build_context(
+                task.project_id, task, workspace
+            )
+            if not memory_ctx.is_empty:
+                return memory_ctx.to_context_block()
+        except Exception as e:
+            logger.warning("Enhanced memory context failed for task %s: %s", task.id, e)
+            # Fall back to legacy recall
+            try:
+                memories = await self.memory_manager.recall(task, workspace)
+                if memories:
+                    return self._format_memory_context(memories)
+            except Exception as e2:
+                logger.warning("Legacy memory recall also failed for task %s: %s", task.id, e2)
+
+        return None
+
     async def shutdown(self) -> None:
         """Gracefully shut down all subsystems in dependency order.
 
@@ -3161,14 +3192,13 @@ class Orchestrator:
         )
 
         # Memory recall: inject relevant historical context from memsearch.
-        # Runs before agent launch so the agent sees past task results,
-        # project notes, and knowledge-base entries that are semantically
-        # relevant to the current task.  Failures are non-fatal.
+        # Uses the enhanced tiered context (profile → notes → recent tasks →
+        # search results) when available, falling back to legacy flat recall.
+        # Failures are non-fatal.
         if self.memory_manager:
             try:
-                memories = await self.memory_manager.recall(task, workspace)
-                if memories:
-                    memory_block = self._format_memory_context(memories)
+                memory_block = await self._build_memory_context_block(task, workspace)
+                if memory_block:
                     ctx.attached_context.append(memory_block)
             except Exception as e:
                 logger.warning("Memory recall failed for task %s: %s", task.id, e)
@@ -3507,12 +3537,38 @@ class Orchestrator:
             except Exception as e:
                 logger.warning("Resolution check failed for %s: %s", task.id, e)
 
-            # Save completed task result as a memory for future recall.
+            # Save completed task result as a memory for future recall,
+            # then revise the project profile and optionally generate notes.
             if self.memory_manager and completed_ok:
                 try:
                     await self.memory_manager.remember(task, output, workspace)
                 except Exception as e:
                     logger.warning("Memory remember failed for task %s: %s", task.id, e)
+
+                # Post-task profile revision — only for COMPLETED tasks.
+                # Failed tasks still get remember() but don't revise the profile
+                # since they may contain incorrect understanding.
+                try:
+                    await self.memory_manager.revise_profile(
+                        task.project_id, task, output, workspace
+                    )
+                except Exception as e:
+                    logger.warning("Profile revision failed for task %s: %s", task.id, e)
+
+                # Auto-generate notes if enabled
+                try:
+                    note_paths = await self.memory_manager.generate_task_notes(
+                        task.project_id, task, output, workspace
+                    )
+                    if note_paths and self.bus:
+                        for note_path in note_paths:
+                            await self.bus.emit("note.created", {
+                                "project_id": task.project_id,
+                                "task_id": task.id,
+                                "note_path": note_path,
+                            })
+                except Exception as e:
+                    logger.warning("Note generation failed for task %s: %s", task.id, e)
 
         elif output.result == AgentResult.FAILED:
             new_retry = task.retry_count + 1

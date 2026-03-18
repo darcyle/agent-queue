@@ -5087,6 +5087,96 @@ class CommandHandler:
             "chunks_indexed": chunks_indexed,
         }
 
+    async def _cmd_view_profile(self, args: dict) -> dict:
+        """View the current project profile (synthesized project understanding)."""
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+
+        if not self.orchestrator.memory_manager:
+            return {"error": "Memory subsystem is not enabled. Set memory.enabled=true in config."}
+
+        try:
+            profile = await self.orchestrator.memory_manager.get_profile(project_id)
+        except Exception as e:
+            return {"error": f"Failed to read profile: {e}"}
+
+        if not profile:
+            return {
+                "project_id": project_id,
+                "profile": None,
+                "message": "No project profile exists yet. It will be created after the first completed task.",
+            }
+
+        return {
+            "project_id": project_id,
+            "profile": profile,
+        }
+
+    async def _cmd_edit_profile(self, args: dict) -> dict:
+        """Replace the project profile with new content."""
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+        content = args.get("content")
+        if not content:
+            return {"error": "content is required"}
+
+        if not self.orchestrator.memory_manager:
+            return {"error": "Memory subsystem is not enabled. Set memory.enabled=true in config."}
+
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"error": f"Project '{project_id}' not found"}
+        workspace = await self.db.get_project_workspace_path(project_id)
+        if not workspace:
+            return {"error": f"Project '{project_id}' has no workspaces."}
+
+        try:
+            path = await self.orchestrator.memory_manager.update_profile(
+                project_id, content, workspace
+            )
+        except Exception as e:
+            return {"error": f"Failed to update profile: {e}"}
+
+        if not path:
+            return {"error": "Profile update failed (profiles may be disabled)"}
+
+        return {
+            "project_id": project_id,
+            "status": "profile_updated",
+            "path": path,
+        }
+
+    async def _cmd_compact_memory(self, args: dict) -> dict:
+        """Manually trigger memory compaction for a project.
+
+        Uses memsearch's built-in compact() to LLM-summarize old task
+        memories into compressed daily summaries.
+        """
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+
+        if not self.orchestrator.memory_manager:
+            return {"error": "Memory subsystem is not enabled. Set memory.enabled=true in config."}
+
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"error": f"Project '{project_id}' not found"}
+        workspace = await self.db.get_project_workspace_path(project_id)
+        if not workspace:
+            return {"error": f"Project '{project_id}' has no workspaces."}
+
+        try:
+            result = await self.orchestrator.memory_manager.compact(
+                project_id, workspace
+            )
+        except Exception as e:
+            return {"error": f"Memory compaction failed: {e}"}
+
+        return {"project_id": project_id, **result}
+
     # -----------------------------------------------------------------------
     # Prompt template commands -- read-only browsing of prompt templates
     # stored in <workspace>/prompts/.  Templates use YAML frontmatter for

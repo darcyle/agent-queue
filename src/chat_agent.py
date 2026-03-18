@@ -1819,6 +1819,63 @@ TOOLS = [
             "required": ["project_id"],
         },
     },
+    {
+        "name": "view_profile",
+        "description": (
+            "View the project profile — a synthesized understanding of the project's "
+            "architecture, conventions, key decisions, common patterns, and pitfalls. "
+            "The profile evolves automatically as tasks complete."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to view profile for",
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "edit_profile",
+        "description": (
+            "Replace the project profile with new content. Use this to manually "
+            "correct or enhance the project's synthesized understanding."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to edit profile for",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "New profile content (markdown)",
+                },
+            },
+            "required": ["project_id", "content"],
+        },
+    },
+    {
+        "name": "compact_memory",
+        "description": (
+            "Trigger memory compaction for a project. Uses LLM-powered "
+            "summarization to compress old task memories into daily digest "
+            "files, reducing index size while preserving key knowledge."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to compact memory for",
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -1882,6 +1939,9 @@ you do NOT need to specify project_id when an active project is set
 - Search project memory with `memory_search` (semantic search over past task results, notes, knowledge)
 - View memory index stats with `memory_stats`
 - Force a full memory reindex with `memory_reindex`
+- View project profile with `view_profile` (synthesized project understanding that evolves with tasks)
+- Edit project profile with `edit_profile` (manually correct or enhance project understanding)
+- Compact memory with `compact_memory` (LLM-summarize old task memories into daily digests)
 
 Workspace management — use `add_workspace` to add workspace directories to projects:
 - **clone**: Auto-clones from the project's `repo_url`. Path is auto-generated under the workspace root.
@@ -1951,8 +2011,12 @@ Memory system — semantic search over project history (requires memsearch integ
 - Use `memory_search` to find relevant past task results, notes, and knowledge by semantic query
 - Use `memory_stats` to check memory configuration and index status for a project
 - Use `memory_reindex` to force a full rebuild of the memory index (after bulk changes)
+- Use `view_profile` to see a project's synthesized understanding (architecture, conventions, decisions)
+- Use `edit_profile` to manually correct or enhance the project profile
+- Use `compact_memory` to trigger LLM-powered compaction of old task memories
 - Memory is automatically populated: completed/failed tasks are saved as memories, \
 and project notes are indexed. Agents receive relevant memories as context at task startup.
+- After each completed task, the project profile is automatically revised to incorporate new learnings.
 - When a user asks "what do we know about X", "find past work on Y", or "search memory for Z", \
 use `memory_search` with the query.
 
