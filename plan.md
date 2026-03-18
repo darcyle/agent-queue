@@ -2,7 +2,7 @@
 auto_tasks: true
 ---
 
-# Plan: Improved Memory Integration for Agent Queue
+# Plan: Improved Memory Integration for Agent Queue (Revised)
 
 ## Background & Current State
 
@@ -14,36 +14,54 @@ The memory system (`src/memory.py`) uses **memsearch** for per-project semantic 
 - **Remember**: On task completion/failure, saves a new memory file and indexes it
 - **Notes integration**: Notes from `~/.agent-queue/notes/{project_id}/` are optionally indexed alongside task memories (read-only; notes are never auto-generated)
 
+### memsearch Capabilities (v0.1.16)
+memsearch already provides compaction and other features we should leverage:
+- **`MemSearch.compact()`** — LLM-powered chunk compression that writes summaries to daily `memory/YYYY-MM-DD.md` files. Supports OpenAI, Anthropic, and Gemini backends. Custom prompt templates and per-source filtering supported.
+- **`compact_chunks()`** — lower-level function that takes chunk dicts and returns a compressed markdown summary via LLM
+- **File watching** — `watch()` auto-indexes markdown file changes in real-time
+- **Incremental indexing** — `index_file()` for single files, stale chunk cleanup built-in
+- **No custom compaction logic needed** — agent-queue just needs a thin wrapper around memsearch's existing `compact()` method
+
 ### Key Limitations
-1. **No project-level understanding** — Memory is just a bag of task summaries. There's no synthesized "understanding" of the project (architecture, patterns, conventions, key decisions). Each agent starts from scratch with only 5 task snippets.
-2. **Memories grow unboundedly** — 147+ task memories for agent-queue alone. Semantic search helps but relevance degrades as volume grows. No compaction or summarization.
-3. **Notes are passive** — Notes exist as a separate system. They're indexed for search but never auto-generated or updated by tasks. There's no feedback loop from task execution to project knowledge.
-4. **No memory revision** — Tasks never update or refine existing memories. The `remember()` call only creates new files; it never consolidates or corrects prior understanding.
-5. **Context is shallow** — The `attached_context` injection is a flat list of bullet points. There's no structured project context (e.g., "here's how this codebase is organized" or "these are the conventions we follow").
+1. **No project-level understanding** — Memory is just a bag of task summaries. No synthesized "understanding" of the project.
+2. **Memories grow unboundedly** — memsearch has compaction built-in but agent-queue doesn't wire it up yet.
+3. **Notes are passive** — Notes are indexed for search but never auto-generated or updated by tasks. No feedback loop.
+4. **No memory revision** — Tasks never update or refine existing memories.
+5. **Context is shallow** — Flat list of bullet points, no structured project context.
+
+### Design Decisions
+
+**Q: Is `profile.md` part of the memory state, or separate?**
+**A: It IS part of the memory state.** The profile lives at `~/.agent-queue/memory/{project_id}/profile.md` — right alongside task memories. It is indexed by memsearch in the same collection. It is NOT a separate system. The profile is the crown jewel of each project's memory — it's the synthesized understanding that evolves as tasks complete.
+
+**Q: Should we build custom memory compaction?**
+**A: No — leverage memsearch.** memsearch v0.1.16 already provides `compact()` with LLM-powered summarization, daily log files, provider selection, custom prompts, and auto-reindexing. Agent-queue just needs a thin wrapper and a periodic trigger. No need for custom `_summarize_batch()` or digest directory management.
 
 ### Design Goals
 - Each project should have a **living project profile** — a synthesized understanding that evolves with every task
+- Profile is **part of memory state**, not a separate system
 - Tasks should **revise** the memory system's understanding, not just append to it
 - Notes should be **tightly integrated** — tasks can generate notes, and notes inform project understanding
-- Memory should help agents work more effectively by providing rich, curated project context rather than raw search results
+- **Leverage memsearch's existing compaction** rather than building custom compaction logic
 
 ---
 
 ## Phase 1: Project Profile — A Living Project Understanding
 
-**Goal**: Introduce a per-project `profile.md` file that captures synthesized knowledge about the project: architecture, conventions, key patterns, recent decisions, and common pitfalls.
+**Goal**: Introduce a per-project `profile.md` file that captures synthesized knowledge about the project. The profile IS part of the memory state — it lives at `~/.agent-queue/memory/{project_id}/profile.md` and is indexed by memsearch just like task memories.
 
 ### Changes
 
-**New file**: `~/.agent-queue/memory/{project_id}/profile.md`
+**File location**: `~/.agent-queue/memory/{project_id}/profile.md`
 - Structured markdown with sections: Overview, Architecture, Conventions, Key Decisions, Common Patterns, Pitfalls
-- Seeded on project creation with basic info (repo URL, name, description)
-- Indexed by memsearch alongside task memories
+- Seeded on first task completion with basic info derived from the task's context
+- Indexed by memsearch alongside task memories (already in the indexed path since it's under the memory dir)
+- Always injected into agent context as the FIRST thing, before search results
 
 **`src/memory.py`**:
 - Add `get_profile(project_id) -> str | None` — reads and returns the profile content
-- Add `update_profile(project_id, new_content: str)` — writes updated profile, re-indexes
-- Add `_profile_path(project_id) -> str` helper
+- Add `update_profile(project_id, new_content: str)` — writes updated profile, re-indexes via `instance.index_file()`
+- Add `_profile_path(project_id) -> str` helper — returns `{data_dir}/memory/{project_id}/profile.md`
 
 **`src/orchestrator.py`**:
 - In memory recall step, always prepend the project profile before search results
@@ -68,10 +86,10 @@ The memory system (`src/memory.py`) uses **memsearch** for per-project semantic 
 
 **`src/memory.py`**:
 - Add `revise_profile(project_id, task, output, workspace_path) -> str | None`
-  - Reads current profile
+  - Reads current profile (or starts from a seed template if none exists)
   - Reads the task's summary and files changed
-  - Calls LLM with a prompt: "Given the current project understanding and what this task accomplished, produce an updated project profile. Add new insights, correct outdated information, and keep it concise."
-  - Writes the updated profile back
+  - Calls LLM with a revision prompt: "Given the current project understanding and what this task accomplished, produce an updated project profile."
+  - Writes the updated profile back via `update_profile()`
   - Returns the diff/delta for logging
 - Add `_build_revision_prompt(current_profile, task_summary, files_changed) -> str`
 
@@ -86,7 +104,7 @@ The memory system (`src/memory.py`) uses **memsearch** for per-project semantic 
 - Add `revision_model: str = ""` — optional model override (e.g., use a cheaper model for revision)
 
 **`src/prompts/`**:
-- Add `memory_revision.py` or `memory_revision.txt` — the system/user prompts for the revision LLM call
+- Add `memory_revision.py` — the system/user prompts for the revision LLM call
 
 ### Revision Prompt Design
 The prompt should instruct the LLM to:
@@ -135,54 +153,48 @@ Auto-generated notes should be tagged with a category prefix in the filename:
 
 ---
 
-## Phase 4: Memory Compaction & Lifecycle
+## Phase 4: Memory Compaction via memsearch & Enhanced Context Delivery
 
-**Goal**: Prevent unbounded memory growth by periodically compacting old task memories into summary documents, and aging out stale information.
+**Goal**: Wire up memsearch's existing compaction and improve how memory context is delivered to agents. Consolidated from the old Phase 4 + Phase 5 since compaction is mostly done by memsearch already.
 
-### Changes
+### Compaction Changes (leveraging memsearch)
+
+memsearch's `MemSearch.compact()` already handles:
+- Compressing indexed chunks into LLM-generated summaries
+- Writing summaries to `memory/YYYY-MM-DD.md` daily log files
+- Configurable LLM provider/model and custom prompt templates
+- Auto-indexing the compact file after writing
+- Per-source filtering (can compact only task memories, not profile)
 
 **`src/memory.py`**:
-- Add `compact(project_id, workspace_path) -> dict`
-  - Groups task memories by age: recent (< 7 days), medium (7-30 days), old (> 30 days)
-  - Recent: kept as-is (full detail)
-  - Medium: LLM-summarizes into weekly digest files (`~/.agent-queue/memory/{project_id}/digests/week-{date}.md`)
-  - Old: Individual task files deleted after digesting; only digests remain
-  - Returns stats: tasks compacted, digests created, files removed
-- Add `_summarize_batch(task_memories: list[str]) -> str` — LLM call to create a digest
+- Add `compact(project_id, workspace_path) -> dict` — thin wrapper around `instance.compact()`
+  - Passes through the configured LLM provider/model
+  - Returns stats dict (summary length, output path)
+  - Optionally filter by source to avoid compacting the profile itself
 
 **`src/orchestrator.py`** or **`src/hooks.py`**:
-- Add periodic compaction — runs on a configurable interval (default: daily)
-- Could be implemented as a built-in hook or a direct orchestrator periodic task
+- Add periodic compaction trigger — runs on configurable interval using existing `compact_interval_hours` config
+- Could be a built-in hook or orchestrator periodic task
 
 **`src/config.py`** (`MemoryConfig`):
-- `compact_enabled: bool = False` already exists — activate it
+- `compact_enabled: bool = False` already exists — just wire it up
 - `compact_interval_hours: int = 24` already exists
-- Add `compact_recent_days: int = 7` — threshold for "recent" memories
-- Add `compact_archive_days: int = 30` — threshold for archiving to digest
+- Add `compact_llm_provider: str = ""` — LLM for compaction (defaults to revision_provider or chat_provider)
+- Add `compact_llm_model: str = ""` — model override for compaction
 
 **`src/command_handler.py`**:
 - Add `compact-memory` command — manual trigger for compaction
-- Add `memory-stats` enhancement — show breakdown by age tier, digest count
+- Enhance `memory-stats` to show compact history
 
----
-
-## Phase 5: Enhanced Context Delivery
-
-**Goal**: Improve how memory context is delivered to agents. Replace the flat bullet-point injection with structured, prioritized context.
-
-### Changes
+### Enhanced Context Delivery Changes
 
 **`src/orchestrator.py`** (`_format_memory_context`):
 - Restructure the context block into tiers:
   1. **Project Profile** (always included, top priority)
   2. **Relevant Notes** (matched by semantic search, high signal)
-  3. **Recent Task Memories** (from last 5 tasks on this project, for continuity)
-  4. **Semantic Search Results** (current behavior, but de-duplicated against above)
+  3. **Recent Task Memories** (from last N tasks on this project, for continuity)
+  4. **Semantic Search Results** (current behavior, de-duplicated against above)
 - Add token budget awareness: if total context exceeds a limit, trim lower-priority tiers
-
-**`src/adapters/claude.py`**:
-- Change `attached_context` rendering from bullet list to proper markdown sections
-- Currently: `- {ctx}` per item → Change to: render each context block as its own section
 
 **`src/memory.py`**:
 - Add `build_context(project_id, task, workspace_path) -> MemoryContext`
