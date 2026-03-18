@@ -1666,6 +1666,165 @@ def setup_commands(bot: commands.Bot) -> None:
             else:
                 await interaction.followup.send(detail, ephemeral=True)
 
+    class _TasksRefreshButton(discord.ui.Button):
+        """Refreshes the tasks report by re-fetching task data."""
+
+        def __init__(self, handler, project_id: str | None) -> None:
+            super().__init__(
+                style=discord.ButtonStyle.secondary,
+                label="Refresh",
+                emoji="🔄",
+                row=4,
+            )
+            self._handler = handler
+            self._project_id = project_id
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            await interaction.response.defer()
+            args: dict = {
+                "include_completed": True,
+                "display_mode": "flat",
+            }
+            if self._project_id:
+                args["project_id"] = self._project_id
+            result = await self._handler.execute("list_tasks", args)
+            if "error" in result:
+                return
+            tasks = result.get("tasks", [])
+            view: TaskReportView = self.view
+            # Rebuild task groupings
+            tasks_by_status: dict[str, list] = {}
+            for t in tasks:
+                tasks_by_status.setdefault(t["status"], []).append(t)
+            view.tasks_by_status = tasks_by_status
+            view.total = result.get("total", len(tasks))
+            view._all_tasks = tasks
+            # Rebuild subtask maps
+            view._subtask_ids = set()
+            view._subtask_map = {}
+            for t in tasks:
+                pid = t.get("parent_task_id")
+                if pid:
+                    view._subtask_ids.add(t["id"])
+                    view._subtask_map.setdefault(pid, []).append(t)
+            view._rebuild_components()
+            await interaction.edit_original_response(
+                content=view.build_content(), view=view,
+            )
+
+    class _StatusRefreshButton(discord.ui.Button):
+        """Refreshes the status report by re-fetching system status."""
+
+        def __init__(self, handler) -> None:
+            super().__init__(
+                style=discord.ButtonStyle.secondary,
+                label="Refresh",
+                emoji="🔄",
+                row=0,
+            )
+            self._handler = handler
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            await interaction.response.defer()
+            result = await self._handler.execute("get_status", {})
+            view: StatusReportView = self.view
+            view._result = result
+            await interaction.edit_original_response(
+                content=view.build_content(), view=view,
+            )
+
+    class StatusReportView(discord.ui.View):
+        """Status report view with a refresh button."""
+
+        def __init__(self, result: dict, handler) -> None:
+            super().__init__(timeout=600)
+            self._result = result
+            self._handler = handler
+            self.add_item(_StatusRefreshButton(handler))
+
+        def build_content(self) -> str:
+            result = self._result
+            tasks = result["tasks"]
+            by_status = tasks.get("by_status", {})
+            total = tasks.get("total", 0)
+            completed = by_status.get("COMPLETED", 0)
+            in_progress = by_status.get("IN_PROGRESS", 0)
+            failed = by_status.get("FAILED", 0)
+
+            lines = []
+            if result.get("orchestrator_paused"):
+                lines.append("⏸ **Orchestrator is PAUSED** — scheduling suspended")
+                lines.append("")
+            lines.append("## System Status")
+
+            if total > 0:
+                bar = progress_bar(completed, total, width=12)
+                lines.append(f"**Progress:** {bar}")
+
+            pending = by_status.get('DEFINED', 0)
+            ready_count = by_status.get('READY', 0)
+            assigned = by_status.get('ASSIGNED', 0)
+            active = in_progress + assigned
+            waiting = by_status.get('WAITING_INPUT', 0)
+            paused = by_status.get('PAUSED', 0)
+            verifying = by_status.get('VERIFYING', 0)
+            awaiting = by_status.get('AWAITING_APPROVAL', 0)
+            awaiting_plan = by_status.get('AWAITING_PLAN_APPROVAL', 0)
+            blocked = by_status.get('BLOCKED', 0)
+
+            parts = []
+            if pending:
+                parts.append(f"{pending} pending")
+            if active:
+                parts.append(f"{active} active")
+            if ready_count:
+                parts.append(f"{ready_count} ready")
+            if waiting:
+                parts.append(f"{waiting} waiting input")
+            if paused:
+                parts.append(f"{paused} paused")
+            if verifying:
+                parts.append(f"{verifying} verifying")
+            if awaiting:
+                parts.append(f"{awaiting} awaiting approval")
+            if awaiting_plan:
+                parts.append(f"{awaiting_plan} awaiting plan approval")
+            if completed:
+                parts.append(f"{completed} completed")
+            if failed:
+                parts.append(f"{failed} failed")
+            if blocked:
+                parts.append(f"{blocked} blocked")
+
+            lines.append(f"**Tasks:** {total} total — " + ", ".join(parts))
+            lines.append("")
+
+            agents = result.get("agents", [])
+            if agents:
+                lines.append("**Agents:**")
+                for a in agents:
+                    working_on = a.get("working_on")
+                    if working_on:
+                        lines.append(
+                            f"• **{a['name']}** ({a['state']}) → "
+                            f"working on `{working_on['task_id']}` — {working_on['title']}"
+                        )
+                    else:
+                        lines.append(f"• **{a['name']}** ({a['state']})")
+            else:
+                lines.append("**Agents:** none registered")
+
+            ready = tasks.get("ready_to_work", [])
+            if ready:
+                lines.append("")
+                lines.append(f"**Queued ({len(ready)}):**")
+                for t in ready[:5]:
+                    lines.append(f"• `{t['id']}` {t['title']}")
+                if len(ready) > 5:
+                    lines.append(f"_...and {len(ready) - 5} more_")
+
+            return "\n".join(lines)
+
     class TaskReportView(discord.ui.View):
         """Grouped task report with collapsible status sections and detail select.
 
@@ -1679,10 +1838,14 @@ def setup_commands(bot: commands.Bot) -> None:
             total: int,
             *,
             all_tasks: list | None = None,
+            handler=None,
+            project_id: str | None = None,
         ) -> None:
             super().__init__(timeout=600)
             self.tasks_by_status = tasks_by_status
             self.total = total
+            self._handler = handler
+            self._project_id = project_id
             # Build parent→subtask lookup for tree view
             self._all_tasks = all_tasks or []
             self._subtask_ids: set[str] = set()
@@ -1747,6 +1910,9 @@ def setup_commands(bot: commands.Bot) -> None:
                     break
             if options:
                 self.add_item(TaskDetailSelect(options))
+            # Add refresh button if handler is available
+            if self._handler is not None:
+                self.add_item(_TasksRefreshButton(self._handler, self._project_id))
 
         def _format_task_line(self, t: dict, *, show_children: bool = True) -> list[str]:
             """Format a task with optional tree-view subtasks."""
@@ -2008,91 +2174,8 @@ def setup_commands(bot: commands.Bot) -> None:
     @bot.tree.command(name="status", description="Show system status overview")
     async def status_command(interaction: discord.Interaction):
         result = await handler.execute("get_status", {})
-
-        tasks = result["tasks"]
-        by_status = tasks.get("by_status", {})
-        total = tasks.get("total", 0)
-        completed = by_status.get("COMPLETED", 0)
-        in_progress = by_status.get("IN_PROGRESS", 0)
-        failed = by_status.get("FAILED", 0)
-
-        lines = []
-        if result.get("orchestrator_paused"):
-            lines.append("⏸ **Orchestrator is PAUSED** — scheduling suspended")
-            lines.append("")
-        lines.append("## System Status")
-
-        # Progress bar for overall completion
-        if total > 0:
-            bar = progress_bar(completed, total, width=12)
-            lines.append(f"**Progress:** {bar}")
-        # Build task breakdown — include all statuses that have nonzero counts
-        # so the numbers always add up to the total.
-        pending = by_status.get('DEFINED', 0)
-        ready = by_status.get('READY', 0)
-        assigned = by_status.get('ASSIGNED', 0)
-        active = in_progress + assigned
-        waiting = by_status.get('WAITING_INPUT', 0)
-        paused = by_status.get('PAUSED', 0)
-        verifying = by_status.get('VERIFYING', 0)
-        awaiting = by_status.get('AWAITING_APPROVAL', 0)
-        awaiting_plan = by_status.get('AWAITING_PLAN_APPROVAL', 0)
-        blocked = by_status.get('BLOCKED', 0)
-
-        parts = []
-        if pending:
-            parts.append(f"{pending} pending")
-        if active:
-            parts.append(f"{active} active")
-        if ready:
-            parts.append(f"{ready} ready")
-        if waiting:
-            parts.append(f"{waiting} waiting input")
-        if paused:
-            parts.append(f"{paused} paused")
-        if verifying:
-            parts.append(f"{verifying} verifying")
-        if awaiting:
-            parts.append(f"{awaiting} awaiting approval")
-        if awaiting_plan:
-            parts.append(f"{awaiting_plan} awaiting plan approval")
-        if completed:
-            parts.append(f"{completed} completed")
-        if failed:
-            parts.append(f"{failed} failed")
-        if blocked:
-            parts.append(f"{blocked} blocked")
-
-        lines.append(f"**Tasks:** {total} total — " + ", ".join(parts))
-        lines.append("")
-
-        # Agent details
-        agents = result.get("agents", [])
-        if agents:
-            lines.append("**Agents:**")
-            for a in agents:
-                working_on = a.get("working_on")
-                if working_on:
-                    lines.append(
-                        f"• **{a['name']}** ({a['state']}) → "
-                        f"working on `{working_on['task_id']}` — {working_on['title']}"
-                    )
-                else:
-                    lines.append(f"• **{a['name']}** ({a['state']})")
-        else:
-            lines.append("**Agents:** none registered")
-
-        # Ready tasks
-        ready = tasks.get("ready_to_work", [])
-        if ready:
-            lines.append("")
-            lines.append(f"**Queued ({len(ready)}):**")
-            for t in ready[:5]:
-                lines.append(f"• `{t['id']}` {t['title']}")
-            if len(ready) > 5:
-                lines.append(f"_...and {len(ready) - 5} more_")
-
-        await interaction.response.send_message("\n".join(lines))
+        view = StatusReportView(result, handler)
+        await interaction.response.send_message(view.build_content(), view=view)
 
     @bot.tree.command(name="projects", description="List all projects")
     async def projects_command(interaction: discord.Interaction):
@@ -2598,7 +2681,7 @@ def setup_commands(bot: commands.Bot) -> None:
             for t in tasks:
                 tasks_by_status.setdefault(t["status"], []).append(t)
             total = result.get("total", len(tasks))
-            view_widget = TaskReportView(tasks_by_status, total, all_tasks=tasks)
+            view_widget = TaskReportView(tasks_by_status, total, all_tasks=tasks, handler=handler, project_id=project_id)
             content = view_widget.build_content()
             await interaction.followup.send(content, view=view_widget)
         except Exception as e:
