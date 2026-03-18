@@ -1236,10 +1236,11 @@ class PlanChangesModal(discord.ui.Modal, title="Request Plan Changes"):
         max_length=2000,
     )
 
-    def __init__(self, task_id: str, handler=None) -> None:
+    def __init__(self, task_id: str, handler=None, plan_message=None) -> None:
         super().__init__()
         self.task_id = task_id
         self._handler = handler
+        self._plan_message = plan_message
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not self._handler:
@@ -1262,6 +1263,12 @@ class PlanChangesModal(discord.ui.Modal, title="Request Plan Changes"):
                 f"Task reopened with feedback.",
                 ephemeral=True,
             )
+            # Delete the plan approval message from the channel
+            if self._plan_message is not None:
+                try:
+                    await self._plan_message.delete()
+                except Exception:
+                    pass
 
 
 class PlanApprovalView(discord.ui.View):
@@ -1304,9 +1311,12 @@ class PlanApprovalView(discord.ui.View):
                 f"{count} subtask(s) created.",
                 ephemeral=True,
             )
-            for child in self.children:
-                child.disabled = True
-            await interaction.message.edit(view=self)
+            # Update the message: remove buttons and mark as approved
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            if embed is not None:
+                embed.title = f"✅ Plan Approved — {count} Subtask(s) Created"
+                embed.color = 0x2ECC71  # green
+            await interaction.message.edit(embed=embed, view=None)
 
     @discord.ui.button(
         label="Request Changes",
@@ -1316,7 +1326,11 @@ class PlanApprovalView(discord.ui.View):
     async def request_changes_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        modal = PlanChangesModal(self.task_id, handler=self._handler)
+        modal = PlanChangesModal(
+            self.task_id,
+            handler=self._handler,
+            plan_message=interaction.message,
+        )
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(
@@ -1345,9 +1359,14 @@ class PlanApprovalView(discord.ui.View):
                 f"🗑️ Plan deleted for `{self.task_id}`. Task completed without subtasks.",
                 ephemeral=True,
             )
-            for child in self.children:
-                child.disabled = True
-            await interaction.message.edit(view=self)
+            # Delete the plan approval message from the channel
+            try:
+                await interaction.message.delete()
+            except Exception:
+                # Fallback: disable buttons if deletion fails
+                for child in self.children:
+                    child.disabled = True
+                await interaction.message.edit(view=self)
 
 
 def format_plan_approval_embed(
