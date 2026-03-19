@@ -253,6 +253,59 @@ class AgentQueueBot(commands.Bot):
         if reattached:
             print(f"Reattached {reattached} notes view(s)")
 
+    async def _reattach_analyzer_views(self) -> None:
+        """Register persistent ChatAnalyzerSuggestionView buttons after bot restart.
+
+        Queries the database for pending suggestions and registers their views
+        so Accept/Dismiss buttons continue to work across restarts. Uses
+        custom_id encoding (``analyzer_accept:<id>`` / ``analyzer_dismiss:<id>``)
+        for persistence.
+        """
+        service = getattr(self, "_analyzer_service", None)
+        if not service:
+            return
+
+        try:
+            # Get recent pending suggestions (last 24h) to re-register
+            from src.database import Database
+            db: Database = self.orchestrator.db
+            # Query pending suggestions across all channels
+            cursor = await db._db.execute(
+                "SELECT id, suggestion_type, suggestion_text, project_id "
+                "FROM chat_analyzer_suggestions "
+                "WHERE status = 'pending' AND created_at >= ?",
+                (time.time() - 86400,),
+            )
+            rows = await cursor.fetchall()
+            if not rows:
+                return
+
+            from src.discord.notifications import ChatAnalyzerSuggestionView
+            reattached = 0
+            for row in rows:
+                try:
+                    view = ChatAnalyzerSuggestionView(
+                        suggestion_id=row["id"],
+                        suggestion_type=row["suggestion_type"],
+                        suggestion_text=row["suggestion_text"],
+                        project_id=row["project_id"],
+                        handler=self.agent.handler,
+                        db=db,
+                    )
+                    # Register without message_id — discord.py will match
+                    # by custom_id pattern
+                    self.add_view(view)
+                    reattached += 1
+                except Exception as e:
+                    print(
+                        f"Warning: could not reattach analyzer view for "
+                        f"suggestion {row['id']}: {e}"
+                    )
+            if reattached:
+                print(f"Reattached {reattached} analyzer suggestion view(s)")
+        except Exception as e:
+            print(f"Warning: could not reattach analyzer views: {e}")
+
     def update_project_channel(
         self, project_id: str, channel: discord.TextChannel
     ) -> None:
@@ -430,6 +483,12 @@ class AgentQueueBot(commands.Bot):
 
                     # Wire up the chat analyzer's suggestion posting callback
                     if self.orchestrator.chat_analyzer:
+                        from src.chat_analyzer_service import ChatAnalyzerService
+                        self._analyzer_service = ChatAnalyzerService(
+                            db=self.orchestrator.db,
+                            handler=self.agent.handler,
+                            bot=self,
+                        )
                         self.orchestrator.chat_analyzer.set_post_suggestion_callback(
                             self._post_analyzer_suggestion
                         )
@@ -445,6 +504,9 @@ class AgentQueueBot(commands.Bot):
 
         # Reattach persistent NotesView buttons on existing messages
         await self._reattach_notes_views()
+
+        # Register persistent analyzer suggestion views so buttons survive restarts
+        await self._reattach_analyzer_views()
 
         # Start periodic buffer cleanup (evicts idle channel buffers)
         asyncio.create_task(self._periodic_buffer_cleanup())
@@ -633,32 +695,51 @@ class AgentQueueBot(commands.Bot):
         task_title: str = "",
         confidence: float = 0.0,
     ) -> None:
-        """Post a chat analyzer suggestion as a rich embed with buttons."""
-        from src.discord.notifications import (
-            format_analyzer_suggestion_embed,
-            AnalyzerSuggestionView,
-        )
+        """Post a chat analyzer suggestion as a rich embed with buttons.
 
-        channel = self.get_channel(channel_id)
-        if channel is None:
-            return
+        Delegates to ``ChatAnalyzerService.post_suggestion()`` which creates
+        the embed, attaches a persistent ``ChatAnalyzerSuggestionView``, and
+        sends the message. The view uses custom_id encoding so buttons survive
+        bot restarts.
+        """
+        service = getattr(self, "_analyzer_service", None)
+        if service:
+            await service.post_suggestion(
+                channel_id=channel_id,
+                project_id=project_id,
+                suggestion_id=suggestion_id,
+                suggestion_type=suggestion_type,
+                suggestion_text=suggestion_text,
+                task_title=task_title,
+                confidence=confidence,
+            )
+        else:
+            # Fallback: post directly if service not initialized
+            from src.discord.notifications import (
+                format_analyzer_suggestion_embed,
+                ChatAnalyzerSuggestionView,
+            )
 
-        embed = format_analyzer_suggestion_embed(
-            suggestion_type=suggestion_type,
-            suggestion_text=suggestion_text,
-            project_id=project_id,
-            confidence=confidence,
-        )
-        view = AnalyzerSuggestionView(
-            suggestion_id=suggestion_id,
-            suggestion_type=suggestion_type,
-            suggestion_text=suggestion_text,
-            project_id=project_id,
-            task_title=task_title,
-            handler=self.agent.handler,
-            db=self.orchestrator.db,
-        )
-        await channel.send(embed=embed, view=view)
+            channel = self.get_channel(channel_id)
+            if channel is None:
+                return
+
+            embed = format_analyzer_suggestion_embed(
+                suggestion_type=suggestion_type,
+                suggestion_text=suggestion_text,
+                project_id=project_id,
+                confidence=confidence,
+            )
+            view = ChatAnalyzerSuggestionView(
+                suggestion_id=suggestion_id,
+                suggestion_type=suggestion_type,
+                suggestion_text=suggestion_text,
+                project_id=project_id,
+                task_title=task_title,
+                handler=self.agent.handler,
+                db=self.orchestrator.db,
+            )
+            await channel.send(embed=embed, view=view)
 
     async def _create_task_thread(
         self, thread_name: str, initial_message: str,
