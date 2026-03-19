@@ -840,9 +840,10 @@ class TestMemoryCompaction:
         tasks_dir = os.path.join(str(tmp_path), "memory", "proj", "tasks")
         os.makedirs(tasks_dir)
 
-        # Create medium-age files (10 days old)
-        self._write_task_file(tasks_dir, "task-old1.md", "# Task 1\nSome work", age_days=10)
-        self._write_task_file(tasks_dir, "task-old2.md", "# Task 2\nMore work", age_days=12)
+        # Create medium-age files in the same ISO week (must be close enough
+        # in age to land in the same Mon-Sun window)
+        self._write_task_file(tasks_dir, "task-old1.md", "# Task 1\nSome work", age_days=8)
+        self._write_task_file(tasks_dir, "task-old2.md", "# Task 2\nMore work", age_days=10)
 
         result = await mgr.compact("proj", str(tmp_path))
         assert result["status"] == "compacted"
