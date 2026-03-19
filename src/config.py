@@ -327,6 +327,21 @@ class ChatAnalyzerConfig:
     base_url: str = "http://localhost:11434/v1"  # Ollama endpoint
     cooldown_after_dismiss: int = 1800   # Don't suggest again for 30min after dismiss
 
+    # --- Chat history context ---
+    chat_history_window: int = 20        # How many recent messages to include in analysis
+    include_timestamps: bool = True      # Include timestamps in message context
+
+    # --- Memory integration ---
+    memory_integration: bool = True      # Use memory system for richer context
+    memory_search_top_k: int = 3         # Number of memory results per analysis
+    include_profile: bool = True         # Include project profile in analysis context
+
+    # --- Auto-execution ---
+    auto_execute_enabled: bool = False   # Allow auto-executing actions without user approval
+    auto_execute_types: list[str] | None = None  # Suggestion types eligible for auto-execution (e.g. ["task", "answer"])
+    auto_execute_confidence: float = 0.9 # Minimum confidence for auto-execution (higher than normal threshold)
+    auto_execute_max_per_hour: int = 2   # Rate limit for auto-executed actions
+
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         if self.interval_seconds < 30:
@@ -337,6 +352,17 @@ class ChatAnalyzerConfig:
             errors.append(ConfigError("chat_analyzer", "confidence_threshold", "must be between 0.0 and 1.0"))
         if self.max_suggestions_per_hour < 1:
             errors.append(ConfigError("chat_analyzer", "max_suggestions_per_hour", "must be >= 1"))
+        if self.chat_history_window < 1:
+            errors.append(ConfigError("chat_analyzer", "chat_history_window", "must be >= 1"))
+        if not (0.0 <= self.auto_execute_confidence <= 1.0):
+            errors.append(ConfigError("chat_analyzer", "auto_execute_confidence", "must be between 0.0 and 1.0"))
+        if self.auto_execute_confidence < self.confidence_threshold:
+            errors.append(ConfigError("chat_analyzer", "auto_execute_confidence", "must be >= confidence_threshold"))
+        valid_auto_types = {"answer", "task", "context", "warning"}
+        if self.auto_execute_types:
+            for t in self.auto_execute_types:
+                if t not in valid_auto_types:
+                    errors.append(ConfigError("chat_analyzer", "auto_execute_types", f"invalid type '{t}'"))
         return errors
 
 

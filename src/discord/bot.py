@@ -492,6 +492,14 @@ class AgentQueueBot(commands.Bot):
                         self.orchestrator.chat_analyzer.set_post_suggestion_callback(
                             self._post_analyzer_suggestion
                         )
+                        # Wire up command handler and auto-execute for
+                        # memory-informed automatic actions
+                        self.orchestrator.chat_analyzer.set_command_handler(
+                            self.agent.handler
+                        )
+                        self.orchestrator.chat_analyzer.set_auto_execute_callback(
+                            self._post_analyzer_auto_action
+                        )
 
         # Initialize LLM client via ChatAgent
         try:
@@ -740,6 +748,55 @@ class AgentQueueBot(commands.Bot):
                 db=self.orchestrator.db,
             )
             await channel.send(embed=embed, view=view)
+
+    async def _post_analyzer_auto_action(
+        self,
+        channel_id: int,
+        project_id: str,
+        suggestion_id: int,
+        action_text: str,
+        suggestion_type: str = "",
+        confidence: float = 0.0,
+    ) -> None:
+        """Post a notification about an auto-executed analyzer action.
+
+        When the ChatAnalyzer auto-executes a high-confidence action (e.g.,
+        creating a task), this method posts a brief notification embed to
+        the project channel so the user is aware of what happened.
+        """
+        channel = self.get_channel(channel_id)
+        if channel is None:
+            return
+
+        import discord as _discord
+
+        # Color-code by type (muted versions to distinguish from suggestions)
+        type_colors = {
+            "task": 0x2ECC71,     # green
+            "answer": 0x3498DB,   # blue
+        }
+        color = type_colors.get(suggestion_type, 0x95A5A6)
+
+        embed = _discord.Embed(
+            title="⚡ Auto-executed Action",
+            description=action_text,
+            color=color,
+        )
+        confidence_pct = int(confidence * 100)
+        embed.set_footer(
+            text=(
+                f"Chat Analyzer • {project_id} • "
+                f"Confidence: {confidence_pct}% • "
+                f"Suggestion #{suggestion_id}"
+            )
+        )
+
+        try:
+            await channel.send(embed=embed)
+        except Exception as e:
+            logger.error(
+                "Failed to post auto-action notification: %s", e
+            )
 
     async def _create_task_thread(
         self, thread_name: str, initial_message: str,
@@ -1063,19 +1120,22 @@ class AgentQueueBot(commands.Bot):
             ))
 
         # Emit chat.message event for the chat analyzer (before any guards).
-        # This fires for all user messages in project channels so the analyzer
-        # can watch the full conversation flow, not just bot-addressed messages.
-        if message.author != self.user:
-            project_id_for_event = self._channel_to_project.get(channel_id)
-            if project_id_for_event and message.content:
-                await self.orchestrator.bus.emit("chat.message", {
-                    "channel_id": channel_id,
-                    "project_id": project_id_for_event,
-                    "author": message.author.display_name,
-                    "content": message.content,
-                    "timestamp": message.created_at.timestamp(),
-                    "is_bot": False,
-                })
+        # This fires for ALL messages in project channels (including bot
+        # responses) so the analyzer sees the full conversation flow and
+        # can understand context, not just user messages in isolation.
+        project_id_for_event = self._channel_to_project.get(channel_id)
+        if project_id_for_event and message.content:
+            await self.orchestrator.bus.emit("chat.message", {
+                "channel_id": channel_id,
+                "project_id": project_id_for_event,
+                "author": (
+                    "AgentQueue" if message.author == self.user
+                    else message.author.display_name
+                ),
+                "content": message.content,
+                "timestamp": message.created_at.timestamp(),
+                "is_bot": message.author == self.user,
+            })
 
         # Ignore own messages
         if message.author == self.user:

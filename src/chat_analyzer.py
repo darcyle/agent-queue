@@ -7,10 +7,20 @@ a question it can answer, a task that should be created, relevant context
 the user might not know about, or a potential issue — it posts a suggestion
 as a Discord embed with Accept/Dismiss buttons.
 
+Integrations:
+- **Memory system**: queries project profiles and semantic memory for richer
+  context during analysis (architecture decisions, past tasks, conventions).
+- **Chat agent tools**: can auto-execute high-confidence actions (create tasks,
+  post answers) via the CommandHandler when auto-execution is enabled.
+- **Chat history**: configurable window of recent messages with timestamps
+  and author metadata for accurate conversation understanding.
+
 Design principles:
 - **Minimal overhead**: runs on the local LLM to avoid burning Claude tokens.
 - **Non-intrusive**: suggestions have accept/reject UI; dismissed ones don't repeat.
 - **Project-scoped**: analysis happens per-project-channel with project context.
+- **Memory-aware**: leverages project memory for informed suggestions.
+- **Traceable**: all auto-executed actions are logged and stored in the DB.
 
 See the plan in plans/chat-analyzer-agent.md for the full design.
 """
@@ -24,11 +34,15 @@ import os
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.config import ChatAnalyzerConfig
 from src.database import Database
 from src.event_bus import EventBus
+
+if TYPE_CHECKING:
+    from src.command_handler import CommandHandler
+    from src.memory import MemoryManager
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +53,19 @@ MAX_BUFFER_SIZE = 50
 ANALYZER_SYSTEM_PROMPT = """\
 You are a project assistant analyzer. You observe chat conversations about software projects and decide if you can help.
 
-Given the recent conversation and project context, analyze whether you have something genuinely useful to contribute.
+Given the recent conversation, project context, and project memory (if available), analyze whether you have something genuinely useful to contribute.
 
 Suggestion types:
-- "answer": You can directly answer a question the user asked or is struggling with.
+- "answer": You can directly answer a question the user asked or is struggling with. Use memory/profile context to give informed answers.
 - "task": A task should be created based on what's being discussed (a bug to fix, a feature to build, etc.).
-- "context": There's relevant project context (from notes, recent tasks, etc.) that the user might not know about.
-- "warning": There's a potential issue worth flagging (conflicting tasks, known bugs related to the discussion, etc.).
+- "context": There's relevant project context (from memory, profiles, notes, past tasks) that the user might not know about or that's relevant to their discussion.
+- "warning": There's a potential issue worth flagging (conflicting tasks, known bugs related to the discussion, architectural concerns from the project profile, etc.).
+
+When project memory or profile information is provided, USE IT to inform your suggestions:
+- Reference specific past tasks or decisions when relevant
+- Flag when current discussion contradicts established conventions
+- Suggest approaches based on what worked (or didn't) in past tasks
+- Surface relevant architecture decisions or patterns from the profile
 
 Rules:
 - Only suggest if you're confident the suggestion adds real value
@@ -53,6 +73,8 @@ Rules:
 - Don't repeat information that was already shared in the conversation
 - Prefer actionable suggestions (create a task, here's the fix) over vague advice
 - If the conversation is casual/social or you're unsure, respond with should_suggest: false
+- When you have memory context, prefer "context" type for surfacing relevant past knowledge
+- For "task" type, always include a clear task_title
 
 Respond with JSON only:
 {
@@ -61,8 +83,15 @@ Respond with JSON only:
   "suggestion_text": "Your suggestion here",
   "confidence": 0.0-1.0,
   "reasoning": "Why this is helpful (internal, not shown to user)",
-  "task_title": "optional - only for type=task, a short task title"
+  "task_title": "optional - only for type=task, a short task title",
+  "auto_executable": false
 }
+
+Set "auto_executable" to true ONLY when ALL of these conditions are met:
+- The action is routine and low-risk (e.g., creating a straightforward task from explicit user request)
+- The suggestion is extremely high confidence (0.95+)
+- The action is clearly what the user wants based on the conversation
+- The action does NOT involve destructive operations or irreversible changes
 """
 
 
@@ -84,6 +113,7 @@ class AnalyzerSuggestion:
     confidence: float
     reasoning: str = ""
     task_title: str = ""
+    auto_executable: bool = False
 
 
 class ChatAnalyzer:
@@ -100,11 +130,13 @@ class ChatAnalyzer:
         bus: EventBus,
         config: ChatAnalyzerConfig,
         data_dir: str = "",
+        memory_manager: "MemoryManager | None" = None,
     ):
         self._db = db
         self._bus = bus
         self._config = config
         self._data_dir = data_dir or os.path.expanduser("~/.agent-queue")
+        self._memory_manager = memory_manager
 
         # Per-channel message buffer: channel_id -> deque of BufferedMessage
         self._buffers: dict[int, deque[BufferedMessage]] = defaultdict(
@@ -124,6 +156,12 @@ class ChatAnalyzer:
         self._notify: Any = None
         # Post-suggestion callback — set by the bot for Discord embed posting
         self._post_suggestion: Any = None
+        # Auto-execution callback — set by the bot for direct action execution
+        self._auto_execute: Any = None
+        # Command handler for auto-execution — set by the bot
+        self._command_handler: "CommandHandler | None" = None
+        # Track auto-executions for rate limiting
+        self._auto_execute_counts: dict[str, list[float]] = defaultdict(list)
 
     def set_notify_callback(self, callback) -> None:
         """Set the callback for posting messages to Discord channels."""
@@ -132,6 +170,14 @@ class ChatAnalyzer:
     def set_post_suggestion_callback(self, callback) -> None:
         """Set the callback for posting suggestion embeds with buttons."""
         self._post_suggestion = callback
+
+    def set_command_handler(self, handler: "CommandHandler") -> None:
+        """Set the command handler for auto-executing actions."""
+        self._command_handler = handler
+
+    def set_auto_execute_callback(self, callback) -> None:
+        """Set the callback for notifying about auto-executed actions."""
+        self._auto_execute = callback
 
     async def initialize(self) -> None:
         """Subscribe to events and start the background analysis loop."""
@@ -315,8 +361,10 @@ class ChatAnalyzer:
         # Build the conversation context from the last N buffered messages
         messages_text = self._format_messages(buffer)
 
-        # Gather project context (summary, recent tasks, notes)
-        project_context = await self._gather_project_context(project_id)
+        # Gather project context (summary, recent tasks, notes, memory)
+        project_context = await self._gather_project_context(
+            project_id, conversation_text=messages_text
+        )
 
         user_prompt = self._build_analysis_prompt(messages_text, project_context)
 
@@ -359,6 +407,17 @@ class ChatAnalyzer:
             context_snapshot=context_snapshot,
         )
 
+        # Check if this suggestion should be auto-executed
+        if await self._try_auto_execute(
+            suggestion, project_id, channel_id, suggestion_id
+        ):
+            logger.info(
+                "Chat analyzer: auto-executed %s action for project %s "
+                "(confidence=%.2f)",
+                suggestion.suggestion_type, project_id, suggestion.confidence,
+            )
+            return
+
         # Post to Discord via the bot's callback
         if self._post_suggestion:
             try:
@@ -379,20 +438,40 @@ class ChatAnalyzer:
             suggestion.suggestion_type, project_id, suggestion.confidence,
         )
 
-    @staticmethod
-    def _format_messages(buffer: deque[BufferedMessage]) -> str:
-        """Format buffered messages into a readable conversation transcript."""
+    def _format_messages(self, buffer: deque[BufferedMessage]) -> str:
+        """Format buffered messages into a readable conversation transcript.
+
+        Uses the configured chat_history_window to limit how many messages
+        are included. When include_timestamps is enabled, each message gets
+        a human-readable timestamp for temporal context.
+        """
+        window = self._config.chat_history_window
+        messages = list(buffer)[-window:] if window > 0 else list(buffer)
+
         lines = []
-        for msg in buffer:
+        for msg in messages:
             prefix = "[BOT]" if msg.is_bot else f"[{msg.author}]"
-            lines.append(f"{prefix} {msg.content}")
+            if self._config.include_timestamps:
+                ts = time.strftime("%H:%M:%S", time.gmtime(msg.timestamp))
+                lines.append(f"[{ts}] {prefix} {msg.content}")
+            else:
+                lines.append(f"{prefix} {msg.content}")
         return "\n".join(lines)
 
-    async def _gather_project_context(self, project_id: str) -> str:
-        """Gather project summary, notes, and recent tasks for context."""
+    async def _gather_project_context(
+        self, project_id: str, conversation_text: str = ""
+    ) -> str:
+        """Gather project summary, notes, recent tasks, and memory context.
+
+        When a MemoryManager is available and memory_integration is enabled,
+        this method enriches the context with:
+        - The project profile (architecture, conventions, decisions)
+        - Semantic memory search results relevant to the current conversation
+        """
         context_parts = []
 
         # Get project summary
+        workspace = ""
         try:
             project = await self._db.get_project(project_id)
             if project:
@@ -402,6 +481,65 @@ class ChatAnalyzer:
                 )
         except Exception as e:
             logger.debug("Chat analyzer: could not fetch project: %s", e)
+
+        # Resolve workspace path for memory operations
+        try:
+            workspace = await self._db.get_project_workspace_path(project_id)
+        except Exception:
+            workspace = ""
+
+        # --- Memory system integration ---
+        if (
+            self._memory_manager
+            and self._config.memory_integration
+            and workspace
+        ):
+            # Include project profile for architectural context
+            if self._config.include_profile:
+                try:
+                    profile = await self._memory_manager.get_profile(project_id)
+                    if profile:
+                        # Truncate to keep context manageable
+                        max_profile = 2000
+                        if len(profile) > max_profile:
+                            profile = profile[:max_profile] + "\n\n[profile truncated]"
+                        context_parts.append(
+                            "## Project Profile (synthesized knowledge)\n" + profile
+                        )
+                except Exception as e:
+                    logger.debug("Chat analyzer: could not fetch profile: %s", e)
+
+            # Semantic memory search using conversation as query
+            if conversation_text:
+                try:
+                    # Use the recent conversation as a semantic search query
+                    # to find relevant past context
+                    query = conversation_text[-500:]  # Last ~500 chars as query
+                    results = await self._memory_manager.search(
+                        project_id, workspace, query,
+                        top_k=self._config.memory_search_top_k,
+                    )
+                    if results:
+                        memory_lines = []
+                        for mem in results:
+                            source = os.path.basename(mem.get("source", "unknown"))
+                            heading = mem.get("heading", "")
+                            content = mem.get("content", "")
+                            score = mem.get("score", 0)
+                            if score < 0.3:
+                                continue  # Skip low-relevance results
+                            entry = f"- **{source}**"
+                            if heading:
+                                entry += f" ({heading})"
+                            entry += f" [relevance: {score:.2f}]: {content[:300]}"
+                            memory_lines.append(entry)
+                        if memory_lines:
+                            context_parts.append(
+                                "## Relevant Memory (from past tasks, notes, docs)\n"
+                                + "\n".join(memory_lines)
+                            )
+                except Exception as e:
+                    logger.debug("Chat analyzer: memory search failed: %s", e)
 
         # Get recent tasks for the project
         try:
@@ -457,6 +595,141 @@ class ChatAnalyzer:
             "Respond with JSON only."
         )
         return "\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # Auto-execution
+    # ------------------------------------------------------------------
+
+    def _can_auto_execute(
+        self, suggestion: AnalyzerSuggestion, project_id: str
+    ) -> bool:
+        """Check whether a suggestion is eligible for auto-execution.
+
+        Auto-execution requires ALL of:
+        1. auto_execute_enabled in config
+        2. Suggestion type in auto_execute_types whitelist
+        3. LLM flagged auto_executable=true
+        4. Confidence >= auto_execute_confidence threshold (default 0.9)
+        5. Not rate-limited (auto_execute_max_per_hour)
+        6. CommandHandler is available
+        """
+        if not self._config.auto_execute_enabled:
+            return False
+        if not self._command_handler:
+            return False
+        if not suggestion.auto_executable:
+            return False
+        if suggestion.confidence < self._config.auto_execute_confidence:
+            return False
+
+        # Check type whitelist
+        allowed_types = self._config.auto_execute_types or []
+        if suggestion.suggestion_type not in allowed_types:
+            return False
+
+        # Rate limit auto-executions
+        now = time.time()
+        recent = self._auto_execute_counts.get(project_id, [])
+        # Prune old entries
+        recent = [t for t in recent if (now - t) < 3600]
+        self._auto_execute_counts[project_id] = recent
+        if len(recent) >= self._config.auto_execute_max_per_hour:
+            logger.debug(
+                "Chat analyzer: auto-execute rate limit reached for %s",
+                project_id,
+            )
+            return False
+
+        return True
+
+    async def _try_auto_execute(
+        self,
+        suggestion: AnalyzerSuggestion,
+        project_id: str,
+        channel_id: int,
+        suggestion_id: int,
+    ) -> bool:
+        """Attempt to auto-execute a suggestion if it meets all criteria.
+
+        Returns True if the action was auto-executed, False otherwise.
+        Auto-executed actions are logged and the suggestion is marked as
+        accepted in the database.
+        """
+        if not self._can_auto_execute(suggestion, project_id):
+            return False
+
+        handler = self._command_handler
+        if not handler:
+            return False
+
+        result: dict = {}
+        action_taken = ""
+
+        try:
+            if suggestion.suggestion_type == "task":
+                title = suggestion.task_title or suggestion.suggestion_text[:80]
+                result = await handler.execute("create_task", {
+                    "project_id": project_id,
+                    "title": title,
+                    "description": suggestion.suggestion_text,
+                })
+                if "error" not in result:
+                    task_id = result.get("task_id", "?")
+                    action_taken = f"Auto-created task `{task_id}`: {title}"
+                else:
+                    logger.warning(
+                        "Chat analyzer: auto-execute create_task failed: %s",
+                        result["error"],
+                    )
+                    return False
+
+            elif suggestion.suggestion_type == "answer":
+                # For answers, we post via the notification callback
+                action_taken = (
+                    f"💡 **Auto-answer (from analyzer):**\n"
+                    f"{suggestion.suggestion_text}"
+                )
+
+            else:
+                # Other types (context, warning) are not auto-executed
+                return False
+
+        except Exception as e:
+            logger.error("Chat analyzer: auto-execute failed: %s", e)
+            return False
+
+        # Mark suggestion as accepted in DB
+        try:
+            await self._db.resolve_chat_analyzer_suggestion(
+                suggestion_id, "auto_executed"
+            )
+        except Exception as e:
+            logger.warning("Chat analyzer: could not mark auto-executed: %s", e)
+
+        # Track for rate limiting
+        self._auto_execute_counts[project_id].append(time.time())
+
+        # Notify via callback (post to Discord channel)
+        if self._auto_execute and action_taken:
+            try:
+                await self._auto_execute(
+                    channel_id=channel_id,
+                    project_id=project_id,
+                    suggestion_id=suggestion_id,
+                    action_text=action_taken,
+                    suggestion_type=suggestion.suggestion_type,
+                    confidence=suggestion.confidence,
+                )
+            except Exception as e:
+                logger.error(
+                    "Chat analyzer: auto-execute notification failed: %s", e
+                )
+
+        logger.info(
+            "Chat analyzer: auto-executed %s for project %s: %s",
+            suggestion.suggestion_type, project_id, action_taken[:100],
+        )
+        return True
 
     @staticmethod
     def _parse_response(response) -> AnalyzerSuggestion | None:
@@ -529,4 +802,5 @@ class ChatAnalyzer:
             confidence=confidence,
             reasoning=str(data.get("reasoning", "")),
             task_title=str(data.get("task_title", "")),
+            auto_executable=bool(data.get("auto_executable", False)),
         )

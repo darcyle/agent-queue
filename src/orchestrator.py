@@ -707,6 +707,7 @@ class Orchestrator:
             self.chat_analyzer = ChatAnalyzer(
                 self.db, self.bus, self.config.chat_analyzer,
                 data_dir=self.config.data_dir,
+                memory_manager=self.memory_manager,
             )
             await self.chat_analyzer.initialize()
 
