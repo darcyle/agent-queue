@@ -26,7 +26,7 @@ def _get_system_prompt() -> str:
 
 _TOOL = {
     "name": "extract_plan_steps",
-    "description": "Extract high-level implementation phases from a plan. Each phase should group many related steps into one substantial chunk of work. Return 2-4 phases (max 5). Each phase description must start with a numbered outline of steps.",
+    "description": "Extract high-level implementation phases from a plan. Each phase should group many related steps into one substantial chunk of work. Each phase description must start with a numbered outline of steps.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -46,8 +46,7 @@ _TOOL = {
                     },
                     "required": ["title", "description"],
                 },
-                "maxItems": 5,
-                "description": "Ordered list of high-level implementation phases (2-4 recommended, max 5).",
+                "description": "Ordered list of high-level implementation phases.",
             },
         },
         "required": ["steps"],
@@ -59,7 +58,7 @@ async def parse_plan_with_llm(
     raw_content: str,
     provider: ChatProvider,
     source_file: str = "",
-    max_steps: int = 5,
+    max_steps: int = 20,
 ) -> ParsedPlan:
     """Parse a plan using an LLM provider with tool_use for structured output.
 

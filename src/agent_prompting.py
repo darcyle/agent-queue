@@ -51,7 +51,7 @@ class PromptConfig:
     """
 
     max_plan_depth: int = 2
-    max_steps_per_plan: int = 5
+    max_steps_per_plan: int = 20
     project_context: str = ""
 
 

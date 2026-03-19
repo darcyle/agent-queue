@@ -179,7 +179,7 @@ class AutoTaskConfig:
     mid_chain_rebase: bool = True       # Rebase onto main between subtasks to reduce drift
     mid_chain_rebase_push: bool = False # Push rebased branch to remote between subtasks
     max_plan_depth: int = 1             # Max nesting of plan-generated tasks
-    max_steps_per_plan: int = 5         # Cap phases from a single plan
+    max_steps_per_plan: int = 20        # Cap phases from a single plan
     use_llm_parser: bool = False        # Use LLM (Claude) for plan parsing
     llm_parser_model: str = ""          # Model override for plan parsing
     skip_if_implemented: bool = True    # Skip task generation if branch has substantial code changes
@@ -1075,7 +1075,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             mid_chain_rebase=at.get("mid_chain_rebase", True),
             mid_chain_rebase_push=at.get("mid_chain_rebase_push", False),
             max_plan_depth=at.get("max_plan_depth", 1),
-            max_steps_per_plan=at.get("max_steps_per_plan", 5),
+            max_steps_per_plan=at.get("max_steps_per_plan", 20),
             use_llm_parser=at.get("use_llm_parser", False),
             llm_parser_model=at.get("llm_parser_model", ""),
             skip_if_implemented=at.get("skip_if_implemented", True),

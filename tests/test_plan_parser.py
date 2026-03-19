@@ -539,13 +539,13 @@ class TestMaxStepsCap:
         plan = parse_plan(content, max_steps=5)
         assert len(plan.steps) == 5
 
-    def test_default_max_steps_is_5(self):
+    def test_default_max_steps_is_20(self):
         sections = []
         for i in range(25):
             sections.append(f"## Task {i}: Implement feature {i}\n\nAdd feature {i} with validation, error handling, and tests.\n")
         content = "\n".join(sections)
         plan = parse_plan(content)
-        assert len(plan.steps) == 5
+        assert len(plan.steps) == 20
 
     def test_max_steps_does_not_affect_small_plans(self):
         content = """## Add models

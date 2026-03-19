@@ -252,7 +252,7 @@ def read_plan_file(path: str) -> str:
 
 
 def parse_plan(
-    content: str, source_file: str = "", max_steps: int = 5,
+    content: str, source_file: str = "", max_steps: int = 20,
 ) -> ParsedPlan:
     """Parse plan markdown content into structured steps.
 
@@ -935,7 +935,7 @@ def validate_plan_quality(content: str) -> PlanQualityReport:
 def parse_and_generate_steps(
     content: str,
     *,
-    max_steps: int = 5,
+    max_steps: int = 20,
     enforce_quality: bool = False,
     min_quality_score: float = 0.3,
 ) -> tuple[list[dict], PlanQualityReport]:
