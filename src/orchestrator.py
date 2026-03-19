@@ -705,7 +705,8 @@ class Orchestrator:
         if self.config.chat_analyzer.enabled:
             from src.chat_analyzer import ChatAnalyzer
             self.chat_analyzer = ChatAnalyzer(
-                self.db, self.bus, self.config.chat_analyzer
+                self.db, self.bus, self.config.chat_analyzer,
+                data_dir=self.config.data_dir,
             )
             await self.chat_analyzer.initialize()
 
