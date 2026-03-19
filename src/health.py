@@ -1,7 +1,8 @@
-"""Lightweight HTTP health check endpoint using only the Python standard library.
+"""Lightweight HTTP server for health checks and plan viewing.
 
-Exposes /health and /ready endpoints over a raw asyncio TCP server,
-parsing HTTP manually to avoid pulling in any third-party web framework.
+Exposes /health, /ready, and /plans/<task_id> endpoints over a raw asyncio
+TCP server, parsing HTTP manually to avoid pulling in any third-party web
+framework.
 
 Usage::
 
@@ -27,8 +28,10 @@ their results.  Each result should be a dict with at least an ``ok`` key::
 from __future__ import annotations
 
 import asyncio
+import html as _html
 import json
 import logging
+import re as _re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -43,10 +46,14 @@ class HealthCheckConfig:
 
     enabled: bool = False
     port: int = 8080
+    base_url: str = ""  # External URL for links (e.g. tunnel URL). Falls back to http://localhost:{port}
 
 
 # Type alias for the callback the orchestrator supplies.
 HealthProvider = Callable[[], Awaitable[dict[str, Any]]]
+
+# Callback that returns raw markdown content for a given task_id, or None.
+PlanContentProvider = Callable[[str], Awaitable[str | None]]
 
 
 class HealthCheckServer:
@@ -65,9 +72,11 @@ class HealthCheckServer:
         self,
         config: HealthCheckConfig,
         health_provider: HealthProvider | None = None,
+        plan_content_provider: PlanContentProvider | None = None,
     ) -> None:
         self._config = config
         self._health_provider = health_provider
+        self._plan_content_provider = plan_content_provider
         self._server: asyncio.AbstractServer | None = None
         self._started_at: float | None = None
 
@@ -117,6 +126,9 @@ class HealthCheckServer:
                 await self._handle_health(writer)
             elif path == "/ready":
                 await self._handle_ready(writer)
+            elif path.startswith("/plans/"):
+                task_id = path[len("/plans/"):]
+                await self._handle_plan(writer, task_id)
             else:
                 await self._send_response(writer, 404, {"error": "not found"})
         except asyncio.TimeoutError:
@@ -191,6 +203,24 @@ class HealthCheckServer:
         http_status = 200 if ready else 503
         await self._send_response(writer, http_status, body)
 
+    async def _handle_plan(self, writer: asyncio.StreamWriter, task_id: str) -> None:
+        """Serve plan content as an HTML page for ``GET /plans/<task_id>``."""
+        if not self._plan_content_provider:
+            await self._send_response(writer, 404, {"error": "plan viewer not configured"})
+            return
+
+        # Sanitise task_id: only allow alphanumeric + hyphen/underscore
+        if not _re.match(r"^[a-zA-Z0-9_-]+$", task_id):
+            await self._send_response(writer, 400, {"error": "invalid task id"})
+            return
+
+        content = await self._plan_content_provider(task_id)
+        if content is None:
+            await self._send_response(writer, 404, {"error": "plan not found"})
+            return
+
+        await self._send_html_response(writer, 200, _render_plan_html(task_id, content))
+
     async def _get_checks(self) -> dict[str, Any]:
         """Invoke the health provider, returning an empty dict on failure."""
         if self._health_provider is None:
@@ -241,3 +271,81 @@ class HealthCheckServer:
 
         writer.write(header + payload)
         await writer.drain()
+
+    @staticmethod
+    async def _send_html_response(
+        writer: asyncio.StreamWriter,
+        status_code: int,
+        html: str,
+    ) -> None:
+        """Send an HTML response."""
+        reason = {200: "OK", 400: "Bad Request", 404: "Not Found"}.get(
+            status_code, "Unknown"
+        )
+        payload = html.encode("utf-8")
+        lines = [
+            f"HTTP/1.1 {status_code} {reason}",
+            "Content-Type: text/html; charset=utf-8",
+            f"Content-Length: {len(payload)}",
+            "Connection: close",
+            "",
+            "",
+        ]
+        header = "\r\n".join(lines).encode("utf-8")
+        writer.write(header + payload)
+        await writer.drain()
+
+    def get_plan_url(self, task_id: str) -> str:
+        """Return the full URL to view a plan for the given task."""
+        base = self._config.base_url.rstrip("/") if self._config.base_url else f"http://localhost:{self._config.port}"
+        return f"{base}/plans/{task_id}"
+
+
+def _render_plan_html(task_id: str, markdown_content: str) -> str:
+    """Render plan markdown as a simple HTML page.
+
+    Uses a CDN-hosted markdown renderer (marked.js) for rich rendering
+    with a fallback to preformatted text if JS is disabled.
+    """
+    escaped = _html.escape(markdown_content)
+    return f"""\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan — {_html.escape(task_id)}</title>
+<style>
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    max-width: 860px; margin: 2rem auto; padding: 0 1rem;
+    color: #e0e0e0; background: #1a1a2e;
+    line-height: 1.6;
+  }}
+  h1, h2, h3 {{ color: #f39c12; }}
+  pre {{ background: #16213e; padding: 1rem; border-radius: 6px; overflow-x: auto; }}
+  code {{ background: #16213e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }}
+  pre code {{ background: none; padding: 0; }}
+  a {{ color: #3498db; }}
+  hr {{ border: none; border-top: 1px solid #333; }}
+  .task-id {{ font-size: 0.85em; color: #888; }}
+</style>
+</head>
+<body>
+<div class="task-id">Task: {_html.escape(task_id)}</div>
+<div id="content">
+  <noscript><pre>{escaped}</pre></noscript>
+</div>
+<script id="raw-md" type="text/plain">{escaped}</script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+  try {{
+    const md = document.getElementById('raw-md').textContent;
+    document.getElementById('content').innerHTML = marked.parse(md);
+  }} catch(e) {{
+    document.getElementById('content').innerHTML = '<pre>' +
+      document.getElementById('raw-md').textContent + '</pre>';
+  }}
+</script>
+</body>
+</html>"""

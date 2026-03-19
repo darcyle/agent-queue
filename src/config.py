@@ -453,12 +453,17 @@ class AgentProfileConfig:
 class HealthCheckConfig:
     """Configuration for the HTTP health check server.
 
-    When enabled, the daemon exposes ``/health`` and ``/ready`` endpoints
-    on the configured port for external monitoring and load balancer probes.
+    When enabled, the daemon exposes ``/health``, ``/ready``, and
+    ``/plans/<task_id>`` endpoints on the configured port.
+
+    ``base_url`` is the externally-reachable URL used to generate links
+    (e.g. a tunnel URL like ``https://myqueue.example.com``).  When empty
+    the daemon falls back to ``http://localhost:{port}``.
     """
 
     enabled: bool = False
     port: int = 8080
+    base_url: str = ""
 
 
 @dataclass
@@ -1132,6 +1137,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.health_check = HealthCheckConfig(
             enabled=hc.get("enabled", False),
             port=hc.get("port", 8080),
+            base_url=hc.get("base_url", ""),
         )
 
     if "rate_limits" in raw:

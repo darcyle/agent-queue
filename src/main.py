@@ -72,11 +72,21 @@ async def run(config_path: str, profile: str | None = None) -> bool:
     await orch.initialize()
 
     # Start health check server (if enabled)
+    async def _plan_content(task_id: str) -> str | None:
+        """Fetch raw plan content from task_context for the plan viewer."""
+        contexts = await orch.db.get_task_contexts(task_id)
+        raw_ctx = next((c for c in contexts if c["type"] == "plan_raw"), None)
+        return raw_ctx["content"] if raw_ctx else None
+
     health_server = HealthCheckServer(
         config=config.health_check,
         health_provider=lambda: _health_checks(orch),
+        plan_content_provider=_plan_content,
     )
     await health_server.start()
+
+    # Make health server accessible to orchestrator for plan URL generation
+    orch._health_server = health_server
 
     # Start Discord bot
     bot = AgentQueueBot(config, orch)

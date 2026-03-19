@@ -1374,10 +1374,11 @@ def format_plan_approval_embed(
     task: Task,
     steps_json: str = "[]",
     raw_content: str = "",
+    plan_url: str = "",
 ) -> discord.Embed:
     """Rich embed showing a plan awaiting user approval.
 
-    Displays the parsed plan steps and a snippet of the raw plan content
+    Displays the parsed plan steps and a link to view the full plan
     so the user can review before approving, requesting changes, or deleting.
     """
     import json
@@ -1390,11 +1391,18 @@ def format_plan_approval_embed(
         f"Task `{task.id}` generated an implementation plan with "
         f"**{count}** step{plural}.",
         "",
+    ]
+
+    if plan_url:
+        desc_lines.append(f"[**View Full Plan**]({plan_url})")
+        desc_lines.append("")
+
+    desc_lines.extend([
         "Review the plan below, then choose an action:",
         "- **Approve Plan** — create subtasks and execute the plan",
         "- **Request Changes** — reopen the task with your feedback",
         "- **Delete Plan** — discard the plan and complete the task",
-    ]
+    ])
     description = "\n".join(desc_lines)
 
     fields: list[tuple[str, str, bool]] = [
@@ -1422,13 +1430,9 @@ def format_plan_approval_embed(
         field_value = "\n".join(detail_parts) if detail_parts else "*No description*"
         fields.append((field_name, truncate(field_value, 1024), False))
 
-    # Show a snippet of the raw plan content
-    if raw_content:
-        raw_snippet = raw_content[:500]
-        if len(raw_content) > 500:
-            raw_snippet += "\n... _(truncated)_"
-        fields.append(("─── Raw Plan ───", "\u200b", False))
-        fields.append(("Plan Content", f"```markdown\n{truncate(raw_snippet, 1000)}\n```", False))
+    # Link to full plan instead of truncated raw content
+    if plan_url:
+        fields.append(("─── Full Plan ───", f"[View in browser]({plan_url})", False))
 
     _PLAN_APPROVAL_COLOR = 0xF39C12  # amber/orange to indicate "needs attention"
 

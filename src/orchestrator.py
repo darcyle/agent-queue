@@ -3489,10 +3489,17 @@ class Orchestrator:
                     (c for c in plan_contexts if c["type"] == "plan_raw"),
                     None,
                 )
+                # Generate a URL to view the full plan in a browser
+                plan_url = ""
+                health_server = getattr(self, "_health_server", None)
+                if health_server and self.config.health_check.enabled:
+                    plan_url = health_server.get_plan_url(task.id)
+
                 plan_embed = format_plan_approval_embed(
                     task,
                     steps_json=steps_ctx["content"] if steps_ctx else "[]",
                     raw_content=raw_ctx["content"] if raw_ctx else "",
+                    plan_url=plan_url,
                 )
                 await self._notify_channel(
                     f"📋 **Plan Awaiting Approval:** Task `{task.id}` — {task.title}\n"
