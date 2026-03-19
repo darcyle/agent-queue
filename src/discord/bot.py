@@ -428,6 +428,12 @@ class AgentQueueBot(commands.Bot):
                     # (Retry/Skip/Approve buttons) can execute commands.
                     self.orchestrator.set_command_handler(self.agent.handler)
 
+                    # Wire up the chat analyzer's suggestion posting callback
+                    if self.orchestrator.chat_analyzer:
+                        self.orchestrator.chat_analyzer.set_post_suggestion_callback(
+                            self._post_analyzer_suggestion
+                        )
+
         # Initialize LLM client via ChatAgent
         try:
             if self.agent.initialize():
@@ -616,6 +622,43 @@ class AgentQueueBot(commands.Bot):
             else:
                 return await self._send_long_message(channel, text)
         return None
+
+    async def _post_analyzer_suggestion(
+        self,
+        channel_id: int,
+        project_id: str,
+        suggestion_id: int,
+        suggestion_type: str,
+        suggestion_text: str,
+        task_title: str = "",
+        confidence: float = 0.0,
+    ) -> None:
+        """Post a chat analyzer suggestion as a rich embed with buttons."""
+        from src.discord.notifications import (
+            format_analyzer_suggestion_embed,
+            AnalyzerSuggestionView,
+        )
+
+        channel = self.get_channel(channel_id)
+        if channel is None:
+            return
+
+        embed = format_analyzer_suggestion_embed(
+            suggestion_type=suggestion_type,
+            suggestion_text=suggestion_text,
+            project_id=project_id,
+            confidence=confidence,
+        )
+        view = AnalyzerSuggestionView(
+            suggestion_id=suggestion_id,
+            suggestion_type=suggestion_type,
+            suggestion_text=suggestion_text,
+            project_id=project_id,
+            task_title=task_title,
+            handler=self.agent.handler,
+            db=self.orchestrator.db,
+        )
+        await channel.send(embed=embed, view=view)
 
     async def _create_task_thread(
         self, thread_name: str, initial_message: str,
@@ -937,6 +980,21 @@ class AgentQueueBot(commands.Bot):
                 content=message.content,
                 created_at=message.created_at.timestamp(),
             ))
+
+        # Emit chat.message event for the chat analyzer (before any guards).
+        # This fires for all user messages in project channels so the analyzer
+        # can watch the full conversation flow, not just bot-addressed messages.
+        if message.author != self.user:
+            project_id_for_event = self._channel_to_project.get(channel_id)
+            if project_id_for_event and message.content:
+                await self.orchestrator.bus.emit("chat.message", {
+                    "channel_id": channel_id,
+                    "project_id": project_id_for_event,
+                    "author": message.author.display_name,
+                    "content": message.content,
+                    "timestamp": message.created_at.timestamp(),
+                    "is_bot": False,
+                })
 
         # Ignore own messages
         if message.author == self.user:

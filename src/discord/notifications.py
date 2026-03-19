@@ -1440,3 +1440,165 @@ def format_plan_approval_embed(
     )
 
     return embed
+
+
+# ---------------------------------------------------------------------------
+# Chat Analyzer suggestion notifications
+# ---------------------------------------------------------------------------
+
+_SUGGESTION_TYPE_EMOJIS = {
+    "answer": "\U0001f4a1",
+    "task": "\U0001f4cb",
+    "context": "\U0001f4ce",
+    "warning": "\u26a0\ufe0f",
+}
+
+_SUGGESTION_TYPE_COLORS = {
+    "answer": 0x3498DB,   # blue
+    "task": 0x2ECC71,     # green
+    "context": 0x9B59B6,  # purple
+    "warning": 0xE67E22,  # orange
+}
+
+
+def format_analyzer_suggestion_embed(
+    suggestion_type: str,
+    suggestion_text: str,
+    project_id: str,
+    confidence: float,
+) -> discord.Embed:
+    """Create a rich embed for a chat analyzer suggestion."""
+    emoji = _SUGGESTION_TYPE_EMOJIS.get(suggestion_type, "\U0001f4ac")
+    color = _SUGGESTION_TYPE_COLORS.get(suggestion_type, 0x95A5A6)
+    type_label = suggestion_type.capitalize()
+
+    embed = discord.Embed(
+        title=f"{emoji} Suggestion: {type_label}",
+        description=truncate(suggestion_text, LIMIT_DESCRIPTION),
+        color=color,
+    )
+    embed.set_footer(
+        text=f"Chat Analyzer \u2022 {project_id} \u2022 Confidence: {confidence:.0%}"
+    )
+    return embed
+
+
+class AnalyzerSuggestionView(discord.ui.View):
+    """Accept/Dismiss buttons for chat analyzer suggestions.
+
+    On Accept:
+    - answer: posts the answer as a bot message
+    - task: creates a task via CommandHandler
+    - context: posts the context info
+    - warning: acknowledges the warning
+
+    On Dismiss: records the dismissal so similar suggestions aren't repeated.
+    """
+
+    def __init__(
+        self,
+        suggestion_id: int,
+        suggestion_type: str,
+        suggestion_text: str,
+        project_id: str,
+        task_title: str = "",
+        handler=None,
+        db=None,
+    ) -> None:
+        super().__init__(timeout=3600)  # 1 hour
+        self.suggestion_id = suggestion_id
+        self.suggestion_type = suggestion_type
+        self.suggestion_text = suggestion_text
+        self.project_id = project_id
+        self.task_title = task_title
+        self._handler = handler
+        self._db = db
+
+    @discord.ui.button(
+        label="Accept",
+        style=discord.ButtonStyle.success,
+        emoji="\u2705",
+    )
+    async def accept_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        # Record acceptance in the database
+        if self._db:
+            try:
+                await self._db.resolve_chat_analyzer_suggestion(
+                    self.suggestion_id, "accepted"
+                )
+            except Exception:
+                pass
+
+        # Execute the suggestion based on type
+        if self.suggestion_type == "answer":
+            await interaction.channel.send(
+                f"\U0001f4a1 **Suggested answer:**\n{self.suggestion_text}"
+            )
+            await interaction.followup.send("Suggestion accepted!", ephemeral=True)
+
+        elif self.suggestion_type == "task" and self._handler:
+            title = self.task_title or self.suggestion_text[:80]
+            result = await self._handler.execute("create_task", {
+                "project_id": self.project_id,
+                "title": title,
+                "description": self.suggestion_text,
+            })
+            if "error" in result:
+                await interaction.followup.send(
+                    f"Could not create task: {result['error']}", ephemeral=True
+                )
+            else:
+                task_id = result.get("task_id", "?")
+                await interaction.followup.send(
+                    f"\U0001f4cb Task `{task_id}` created: {title}", ephemeral=True
+                )
+
+        elif self.suggestion_type == "context":
+            await interaction.channel.send(
+                f"\U0001f4ce **Relevant context:**\n{self.suggestion_text}"
+            )
+            await interaction.followup.send("Context posted!", ephemeral=True)
+
+        elif self.suggestion_type == "warning":
+            await interaction.channel.send(
+                f"\u26a0\ufe0f **Heads up:**\n{self.suggestion_text}"
+            )
+            await interaction.followup.send("Warning acknowledged!", ephemeral=True)
+
+        else:
+            await interaction.followup.send("Suggestion accepted.", ephemeral=True)
+
+        # Disable buttons after action
+        for child in self.children:
+            child.disabled = True
+        await interaction.message.edit(view=self)
+
+    @discord.ui.button(
+        label="Dismiss",
+        style=discord.ButtonStyle.secondary,
+        emoji="\u274c",
+    )
+    async def dismiss_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        # Record dismissal
+        if self._db:
+            try:
+                await self._db.resolve_chat_analyzer_suggestion(
+                    self.suggestion_id, "dismissed"
+                )
+            except Exception:
+                pass
+
+        await interaction.followup.send("Suggestion dismissed.", ephemeral=True)
+
+        # Disable buttons
+        for child in self.children:
+            child.disabled = True
+        await interaction.message.edit(view=self)

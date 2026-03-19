@@ -236,6 +236,24 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
     updated_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS chat_analyzer_suggestions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    channel_id INTEGER NOT NULL,
+    suggestion_type TEXT NOT NULL,
+    suggestion_text TEXT NOT NULL,
+    suggestion_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at REAL NOT NULL,
+    resolved_at REAL,
+    context_snapshot TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_analyzer_project
+    ON chat_analyzer_suggestions(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_chat_analyzer_hash
+    ON chat_analyzer_suggestions(suggestion_hash);
+
 CREATE TABLE IF NOT EXISTS archived_tasks (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
@@ -2148,3 +2166,73 @@ class Database:
             "updated_at": row["updated_at"],
             "archived_at": row["archived_at"],
         }
+
+    # ── Chat Analyzer Suggestions ──────────────────────────────────────
+
+    async def create_chat_analyzer_suggestion(
+        self,
+        project_id: str,
+        channel_id: int,
+        suggestion_type: str,
+        suggestion_text: str,
+        suggestion_hash: str,
+        context_snapshot: str | None = None,
+    ) -> int:
+        """Insert a new chat analyzer suggestion and return its row ID."""
+        now = time.time()
+        cursor = await self._db.execute(
+            "INSERT INTO chat_analyzer_suggestions "
+            "(project_id, channel_id, suggestion_type, suggestion_text, "
+            "suggestion_hash, status, created_at, context_snapshot) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+            (project_id, channel_id, suggestion_type, suggestion_text,
+             suggestion_hash, now, context_snapshot),
+        )
+        await self._db.commit()
+        return cursor.lastrowid
+
+    async def resolve_chat_analyzer_suggestion(
+        self, suggestion_id: int, status: str
+    ) -> None:
+        """Mark a suggestion as accepted or dismissed."""
+        now = time.time()
+        await self._db.execute(
+            "UPDATE chat_analyzer_suggestions SET status = ?, resolved_at = ? WHERE id = ?",
+            (status, now, suggestion_id),
+        )
+        await self._db.commit()
+
+    async def get_suggestion_hash_exists(
+        self, project_id: str, suggestion_hash: str
+    ) -> bool:
+        """Check if a suggestion with this hash already exists (for dedup)."""
+        cursor = await self._db.execute(
+            "SELECT 1 FROM chat_analyzer_suggestions "
+            "WHERE project_id = ? AND suggestion_hash = ? LIMIT 1",
+            (project_id, suggestion_hash),
+        )
+        return (await cursor.fetchone()) is not None
+
+    async def count_recent_suggestions(
+        self, project_id: str, since: float
+    ) -> int:
+        """Count suggestions created since the given timestamp (for rate limiting)."""
+        cursor = await self._db.execute(
+            "SELECT COUNT(*) FROM chat_analyzer_suggestions "
+            "WHERE project_id = ? AND created_at >= ?",
+            (project_id, since),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def get_last_dismiss_time(
+        self, project_id: str, channel_id: int
+    ) -> float | None:
+        """Return the timestamp of the most recent dismissal, or None."""
+        cursor = await self._db.execute(
+            "SELECT MAX(resolved_at) FROM chat_analyzer_suggestions "
+            "WHERE project_id = ? AND channel_id = ? AND status = 'dismissed'",
+            (project_id, channel_id),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row and row[0] else None

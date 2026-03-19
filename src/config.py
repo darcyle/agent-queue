@@ -309,6 +309,38 @@ class LoggingConfig:
 
 
 @dataclass
+class ChatAnalyzerConfig:
+    """Configuration for the background chat analyzer agent.
+
+    When enabled, the analyzer watches conversation flow in project channels
+    and proactively suggests answers, tasks, or context when it spots something
+    useful. Runs on the local LLM (Ollama) to avoid burning Claude tokens.
+    """
+
+    enabled: bool = False
+    interval_seconds: int = 300          # How often to analyze (5 min)
+    min_messages_to_analyze: int = 3     # Don't analyze until N new messages
+    confidence_threshold: float = 0.7    # Minimum confidence to suggest
+    max_suggestions_per_hour: int = 5    # Rate limit suggestions
+    provider: str = "ollama"             # Which chat provider to use
+    model: str = "llama3.2"             # Model for analysis
+    base_url: str = "http://localhost:11434/v1"  # Ollama endpoint
+    cooldown_after_dismiss: int = 1800   # Don't suggest again for 30min after dismiss
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.interval_seconds < 30:
+            errors.append(ConfigError("chat_analyzer", "interval_seconds", "must be >= 30"))
+        if self.min_messages_to_analyze < 1:
+            errors.append(ConfigError("chat_analyzer", "min_messages_to_analyze", "must be >= 1"))
+        if not (0.0 <= self.confidence_threshold <= 1.0):
+            errors.append(ConfigError("chat_analyzer", "confidence_threshold", "must be between 0.0 and 1.0"))
+        if self.max_suggestions_per_hour < 1:
+            errors.append(ConfigError("chat_analyzer", "max_suggestions_per_hour", "must be >= 1"))
+        return errors
+
+
+@dataclass
 class HookEngineConfig:
     enabled: bool = True
     max_concurrent_hooks: int = 2
@@ -437,6 +469,7 @@ class AppConfig:
     pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
     chat_provider: ChatProviderConfig = field(default_factory=ChatProviderConfig)
     hook_engine: HookEngineConfig = field(default_factory=HookEngineConfig)
+    chat_analyzer: ChatAnalyzerConfig = field(default_factory=ChatAnalyzerConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
@@ -495,6 +528,7 @@ class AppConfig:
         errors.extend(self.archive.validate())
         errors.extend(self.llm_logging.validate())
         errors.extend(self.memory.validate())
+        errors.extend(self.chat_analyzer.validate())
 
         # Agent profiles
         for profile in self.agent_profiles:
@@ -557,6 +591,7 @@ class AppConfig:
         updated.archive = fresh.archive
         updated.monitoring = fresh.monitoring
         updated.hook_engine = fresh.hook_engine
+        updated.chat_analyzer = fresh.chat_analyzer
         updated.llm_logging = fresh.llm_logging
 
         return updated
@@ -569,7 +604,7 @@ class AppConfig:
 HOT_RELOADABLE_SECTIONS = {
     "scheduling", "monitoring", "hook_engine", "archive",
     "llm_logging", "pause_retry", "agents_config", "auto_task",
-    "logging", "agent_profiles", "rate_limits",
+    "logging", "agent_profiles", "rate_limits", "chat_analyzer",
 }
 """Config sections that can be safely updated at runtime without restart."""
 
@@ -584,7 +619,7 @@ RESTART_REQUIRED_SECTIONS = {
 _SECTION_FIELDS = {
     "data_dir", "workspace_dir", "database_path", "profile", "env",
     "discord", "agents_config", "scheduling", "pause_retry",
-    "chat_provider", "hook_engine", "health_check", "logging",
+    "chat_provider", "hook_engine", "chat_analyzer", "health_check", "logging",
     "monitoring", "archive", "auto_task", "memory", "llm_logging",
     "agent_profiles", "global_token_budget_daily", "rate_limits",
 }
@@ -958,6 +993,20 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             file_watcher_enabled=h.get("file_watcher_enabled", True),
             file_watcher_poll_interval=h.get("file_watcher_poll_interval", 10.0),
             file_watcher_debounce_seconds=h.get("file_watcher_debounce_seconds", 5.0),
+        )
+
+    if "chat_analyzer" in raw:
+        ca = raw["chat_analyzer"]
+        config.chat_analyzer = ChatAnalyzerConfig(
+            enabled=ca.get("enabled", False),
+            interval_seconds=ca.get("interval_seconds", 300),
+            min_messages_to_analyze=ca.get("min_messages_to_analyze", 3),
+            confidence_threshold=float(ca.get("confidence_threshold", 0.7)),
+            max_suggestions_per_hour=ca.get("max_suggestions_per_hour", 5),
+            provider=ca.get("provider", "ollama"),
+            model=ca.get("model", "llama3.2"),
+            base_url=ca.get("base_url", "http://localhost:11434/v1"),
+            cooldown_after_dismiss=ca.get("cooldown_after_dismiss", 1800),
         )
 
     if "logging" in raw:
