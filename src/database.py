@@ -1648,6 +1648,7 @@ class Database:
             await self._db.execute("DELETE FROM task_context WHERE task_id = ?", (tid,))
             await self._db.execute("DELETE FROM task_tools WHERE task_id = ?", (tid,))
 
+        await self._db.execute("DELETE FROM chat_analyzer_suggestions WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM hook_runs WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM hooks WHERE project_id = ?", (project_id,))
         await self._db.execute("DELETE FROM token_ledger WHERE project_id = ?", (project_id,))
@@ -2224,6 +2225,76 @@ class Database:
         )
         row = await cursor.fetchone()
         return row[0] if row else 0
+
+    async def get_suggestion(self, suggestion_id: int) -> dict | None:
+        """Return a single chat analyzer suggestion by ID, or None."""
+        cursor = await self._db.execute(
+            "SELECT * FROM chat_analyzer_suggestions WHERE id = ?",
+            (suggestion_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "project_id": row["project_id"],
+            "channel_id": row["channel_id"],
+            "suggestion_type": row["suggestion_type"],
+            "suggestion_text": row["suggestion_text"],
+            "suggestion_hash": row["suggestion_hash"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "resolved_at": row["resolved_at"],
+            "context_snapshot": row["context_snapshot"],
+        }
+
+    async def get_recent_suggestions(
+        self, channel_id: int, hours: int = 24
+    ) -> list[dict]:
+        """Return suggestions for a channel created within the last N hours.
+
+        Used for dedup — the analyzer checks recent suggestions before posting
+        a new one to avoid repeating itself.
+        """
+        since = time.time() - (hours * 3600)
+        cursor = await self._db.execute(
+            "SELECT * FROM chat_analyzer_suggestions "
+            "WHERE channel_id = ? AND created_at >= ? "
+            "ORDER BY created_at DESC",
+            (channel_id, since),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": row["id"],
+                "project_id": row["project_id"],
+                "channel_id": row["channel_id"],
+                "suggestion_type": row["suggestion_type"],
+                "suggestion_text": row["suggestion_text"],
+                "suggestion_hash": row["suggestion_hash"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "resolved_at": row["resolved_at"],
+                "context_snapshot": row["context_snapshot"],
+            }
+            for row in rows
+        ]
+
+    async def update_suggestion_status(
+        self, suggestion_id: int, status: str, resolved_at: float | None = None
+    ) -> None:
+        """Update a suggestion's status and optional resolved_at timestamp.
+
+        Wraps resolve_chat_analyzer_suggestion with an explicit resolved_at
+        parameter for callers that need to set a specific timestamp.
+        """
+        if resolved_at is None:
+            resolved_at = time.time()
+        await self._db.execute(
+            "UPDATE chat_analyzer_suggestions SET status = ?, resolved_at = ? WHERE id = ?",
+            (status, resolved_at, suggestion_id),
+        )
+        await self._db.commit()
 
     async def get_last_dismiss_time(
         self, project_id: str, channel_id: int

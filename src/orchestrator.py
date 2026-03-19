@@ -856,6 +856,8 @@ class Orchestrator:
             await self._config_watcher.stop()
         if self.hooks:
             await self.hooks.shutdown()
+        if self.chat_analyzer:
+            await self.chat_analyzer.shutdown()
         if self.memory_manager:
             try:
                 await self.memory_manager.close()
