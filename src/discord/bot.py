@@ -1219,11 +1219,26 @@ class AgentQueueBot(commands.Bot):
                     # Prepend project context for project channels and notes threads
                     user_text = text
                     if project_channel_id and not is_bot_channel:
+                        # List other projects so the LLM can route tasks
+                        # to the correct project when the user's request
+                        # is about a different project than the channel's.
+                        other_projects = [
+                            pid for pid in self._project_channels
+                            if pid != project_channel_id
+                        ]
+                        cross_project_hint = ""
+                        if other_projects:
+                            names = ", ".join(f"`{p}`" for p in sorted(other_projects))
+                            cross_project_hint = (
+                                f" Other known projects: {names}. "
+                                f"If the user's request is clearly about a "
+                                f"different project, set project_id explicitly."
+                            )
                         user_text = (
                             f"[Context: this is the channel for project "
                             f"`{project_channel_id}`. Default to using "
                             f"project_id='{project_channel_id}' for all project-scoped "
-                            f"commands.]\n{text}"
+                            f"commands.{cross_project_hint}]\n{text}"
                         )
                     elif is_notes_thread and not is_bot_channel:
                         user_text = (
