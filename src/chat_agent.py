@@ -611,14 +611,16 @@ TOOLS = [
     {
         "name": "edit_task",
         "description": (
-            "Edit a task's properties: title, description, priority, task_type, "
-            "status, max_retries, verification_type, or profile_id. Use this to rename tasks, "
-            "change priority, override status (admin), assign a profile, or adjust retry/verification settings."
+            "Edit a task's properties: project_id, title, description, priority, task_type, "
+            "status, max_retries, verification_type, or profile_id. Use this to move a task "
+            "to a different project, rename tasks, change priority, override status (admin), "
+            "assign a profile, or adjust retry/verification settings."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "Task ID"},
+                "project_id": {"type": "string", "description": "Move task to a different project (optional)"},
                 "title": {"type": "string", "description": "New title (optional)"},
                 "description": {"type": "string", "description": "New description (optional)"},
                 "priority": {"type": "integer", "description": "New priority (optional)"},

@@ -2141,6 +2141,27 @@ class CommandHandler:
             result["profile_id"] = profile_id
         if preferred_workspace_id:
             result["preferred_workspace_id"] = preferred_workspace_id
+
+        # Cross-project warning: if project_id was implicitly inherited from
+        # the active channel context (not explicitly passed by the caller),
+        # check whether the task title or description mentions another known
+        # project name.  This catches the common mistake of creating a task
+        # for project A while chatting in project B's channel.
+        if not args.get("project_id"):
+            other_projects = await self.db.list_projects()
+            text_to_check = f"{task.title} {task.description}".lower()
+            mentioned = [
+                p.id for p in other_projects
+                if p.id != project_id and p.id.lower() in text_to_check
+            ]
+            if mentioned:
+                result["warning"] = (
+                    f"Task was assigned to '{project_id}' (from channel context) "
+                    f"but its content mentions project(s): {', '.join(mentioned)}. "
+                    f"If this task belongs to a different project, update it with "
+                    f"edit_task(task_id='{task_id}', project_id='<correct_project>')."
+                )
+
         return result
 
     async def _cmd_get_task(self, args: dict) -> dict:
@@ -2370,6 +2391,12 @@ class CommandHandler:
             status_changed = True
 
         updates = {}
+        if "project_id" in args:
+            new_pid = args["project_id"]
+            project = await self.db.get_project(new_pid)
+            if not project:
+                return {"error": f"Project '{new_pid}' not found"}
+            updates["project_id"] = new_pid
         if "title" in args:
             updates["title"] = args["title"]
         if "description" in args:
@@ -2410,7 +2437,7 @@ class CommandHandler:
         if not all_fields:
             return {
                 "error": (
-                    "No fields to update. Provide title, description, priority, "
+                    "No fields to update. Provide project_id, title, description, priority, "
                     "task_type, status, max_retries, verification_type, or profile_id."
                 )
             }
