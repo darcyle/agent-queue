@@ -26,6 +26,7 @@ CATEGORY_MODULES = [
     "context_dependent",
     "memory",
     "profiles",
+    "analyzer",
 ]
 
 

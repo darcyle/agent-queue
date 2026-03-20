@@ -6190,3 +6190,91 @@ class CommandHandler:
             result["ready"] = True
 
         return result
+
+    # -----------------------------------------------------------------------
+    # Chat analyzer commands
+    # -----------------------------------------------------------------------
+
+    async def _cmd_analyzer_status(self, args: dict) -> dict:
+        """Show whether the chat analyzer is enabled and its aggregate stats.
+
+        Optional args:
+            project_id: scope stats to a specific project
+        """
+        config = self.config.chat_analyzer
+        project_id = args.get("project_id")
+
+        stats = await self.db.get_analyzer_suggestion_stats(project_id)
+
+        return {
+            "enabled": config.enabled,
+            "model": config.model,
+            "provider": config.provider,
+            "interval_seconds": config.interval_seconds,
+            "confidence_threshold": config.confidence_threshold,
+            "max_suggestions_per_hour": config.max_suggestions_per_hour,
+            "auto_execute_enabled": config.auto_execute_enabled,
+            "stats": stats,
+            "project_id": project_id,
+        }
+
+    async def _cmd_analyzer_toggle(self, args: dict) -> dict:
+        """Enable or disable the chat analyzer at runtime.
+
+        Args:
+            enabled: bool — if omitted, toggles current state
+        """
+        analyzer = self.orchestrator.chat_analyzer
+        config = self.config.chat_analyzer
+        enabled = args.get("enabled")
+
+        if enabled is None:
+            # Toggle
+            enabled = not config.enabled
+
+        if enabled and not config.enabled:
+            # Turning on
+            config.enabled = True
+            if analyzer is None:
+                from src.chat_analyzer import ChatAnalyzer
+                analyzer = ChatAnalyzer(
+                    self.db,
+                    self.orchestrator.bus,
+                    config,
+                    data_dir=self.config.data_dir,
+                    memory_manager=self.orchestrator.memory_manager,
+                )
+                self.orchestrator.chat_analyzer = analyzer
+                await analyzer.initialize()
+            return {"enabled": True, "message": "Chat analyzer enabled."}
+
+        elif not enabled and config.enabled:
+            # Turning off
+            config.enabled = False
+            if analyzer:
+                await analyzer.shutdown()
+            return {"enabled": False, "message": "Chat analyzer disabled."}
+
+        else:
+            state = "enabled" if config.enabled else "disabled"
+            return {"enabled": config.enabled, "message": f"Chat analyzer already {state}."}
+
+    async def _cmd_analyzer_history(self, args: dict) -> dict:
+        """Show recent chat analyzer suggestions and their statuses.
+
+        Optional args:
+            project_id: scope to a specific project
+            limit: max number of suggestions to return (default 20)
+        """
+        project_id = args.get("project_id")
+        limit = int(args.get("limit", 20))
+
+        suggestions = await self.db.get_analyzer_suggestion_history(
+            project_id=project_id, limit=limit,
+        )
+
+        return {
+            "suggestions": suggestions,
+            "count": len(suggestions),
+            "project_id": project_id,
+        }

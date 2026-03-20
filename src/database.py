@@ -2307,3 +2307,68 @@ class Database:
         )
         row = await cursor.fetchone()
         return row[0] if row and row[0] else None
+
+    async def get_analyzer_suggestion_stats(
+        self, project_id: str | None = None
+    ) -> dict:
+        """Return aggregate stats for chat analyzer suggestions.
+
+        Returns counts of total, pending, accepted, dismissed, and
+        auto_executed suggestions. Optionally scoped to a project.
+        """
+        where = ""
+        params: tuple = ()
+        if project_id:
+            where = " WHERE project_id = ?"
+            params = (project_id,)
+
+        cursor = await self._db.execute(
+            "SELECT status, COUNT(*) as cnt FROM chat_analyzer_suggestions"
+            f"{where} GROUP BY status",
+            params,
+        )
+        rows = await cursor.fetchall()
+        stats = {"total": 0, "pending": 0, "accepted": 0, "dismissed": 0, "auto_executed": 0}
+        for row in rows:
+            status = row["status"]
+            count = row["cnt"]
+            stats["total"] += count
+            if status in stats:
+                stats[status] = count
+        return stats
+
+    async def get_analyzer_suggestion_history(
+        self,
+        project_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Return recent analyzer suggestions, newest first.
+
+        Optionally scoped to a project.
+        """
+        where = ""
+        params: list = []
+        if project_id:
+            where = " WHERE project_id = ?"
+            params.append(project_id)
+
+        params.append(limit)
+        cursor = await self._db.execute(
+            "SELECT * FROM chat_analyzer_suggestions"
+            f"{where} ORDER BY created_at DESC LIMIT ?",
+            tuple(params),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": row["id"],
+                "project_id": row["project_id"],
+                "channel_id": row["channel_id"],
+                "suggestion_type": row["suggestion_type"],
+                "suggestion_text": row["suggestion_text"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "resolved_at": row["resolved_at"],
+            }
+            for row in rows
+        ]
