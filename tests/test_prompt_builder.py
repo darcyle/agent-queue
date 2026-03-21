@@ -315,3 +315,64 @@ def test_hook_executor_identity():
 
     assert "tunnel-monitor" in system_prompt
     assert "My Game Server" in system_prompt
+
+
+def test_task_agent_assembly_ordering(prompts_dir):
+    """Verify task agent prompt assembles all sections in correct order."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+
+    # Layer 1: identity (use simple for test)
+    builder.set_identity("simple")
+
+    # Layer 4: system metadata
+    builder.add_context("system_context", (
+        "## System Context\n"
+        "- Workspace directory: /home/user/project\n"
+        "- Project: my-game (id: game-001)\n"
+        "- Git branch: feat/login"
+    ))
+
+    # Layer 4: execution rules
+    builder.add_context("execution_rules", (
+        "## Execution Rules\n"
+        "- Do not use plan mode\n"
+        "- Commit your changes when done"
+    ))
+
+    # Layer 4: upstream work
+    builder.add_context("upstream_work", (
+        "## Completed Upstream Work\n"
+        "### Auth Module\n"
+        "**Summary:** Implemented JWT tokens.\n"
+        "**Files changed:**\n- `src/auth.py`"
+    ))
+
+    # Layer 4: role instructions
+    builder.add_context("role_instructions", (
+        "## Agent Role Instructions\n"
+        "You are a backend developer specializing in security."
+    ))
+
+    # Layer 4: task description
+    builder.add_context("task", (
+        "## Task\n"
+        "Fix the login endpoint to validate JWT expiration."
+    ))
+
+    prompt = builder.build_task_prompt()
+
+    # All sections present in order
+    assert "System Context" in prompt
+    assert "Execution Rules" in prompt
+    assert "Completed Upstream Work" in prompt
+    assert "Agent Role Instructions" in prompt
+    assert "Fix the login endpoint" in prompt
+
+    # Verify ordering
+    sys_pos = prompt.index("System Context")
+    rules_pos = prompt.index("Execution Rules")
+    upstream_pos = prompt.index("Completed Upstream Work")
+    task_pos = prompt.index("Fix the login endpoint")
+    assert sys_pos < rules_pos < upstream_pos < task_pos

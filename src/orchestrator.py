@@ -2935,6 +2935,153 @@ class Orchestrator:
             )
             await self._notify_stuck_chain(task)
 
+    # ------------------------------------------------------------------ #
+    # Task context assembly helpers
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _get_subtask_execution_rules() -> str:
+        """Return execution rules for plan subtasks."""
+        return (
+            "## Important: Execution Rules\n"
+            "You are running autonomously — there is NO interactive user.\n"
+            "Do NOT use plan mode or EnterPlanMode.\n"
+            "Do NOT write implementation plans or plan files.\n"
+            "Your task is one step of an existing implementation plan — write code, not plans.\n"
+            "Implement the changes described below DIRECTLY.\n"
+            "If you encounter ambiguity, make reasonable decisions and document in code comments.\n"
+            "\n## Important: Committing Your Work\n"
+            "When you have finished, you MUST commit your work:\n"
+            "1. `git add` the files you changed\n"
+            "2. `git commit` with a descriptive message\n"
+            "Do NOT push — the system handles pushing and PR creation.\n"
+            "\n## Important: Keeping Your Workspace in Sync\n"
+            "Before starting work, pull the latest changes from the main branch:\n"
+            "1. `git fetch origin`\n"
+            "2. `git rebase origin/main` (if on a task branch)\n"
+            "This ensures you're working with the latest code and reduces merge conflicts.\n"
+            "If a rebase has conflicts you cannot resolve, proceed with your work anyway —\n"
+            "the system will handle conflicts during the merge phase."
+        )
+
+    @staticmethod
+    def _get_root_task_execution_rules() -> str:
+        """Return execution rules for root tasks."""
+        return (
+            "## Important: Execution Rules\n"
+            "You are running autonomously — there is NO interactive user to approve plans.\n"
+            "Do NOT use plan mode or EnterPlanMode. Implement the changes DIRECTLY.\n"
+            "If the task description contains a plan, execute it immediately — do not re-plan.\n"
+            "\n## Important: Committing Your Work\n"
+            "When you have finished making changes, you MUST commit your work:\n"
+            "1. `git add` the files you changed\n"
+            "2. `git commit` with a descriptive message\n"
+            "Do NOT push — the system handles pushing and PR creation.\n"
+            "\n## Important: Keeping Your Workspace in Sync\n"
+            "Before starting work, pull the latest changes from the main branch:\n"
+            "1. `git fetch origin`\n"
+            "2. `git rebase origin/main` (if on a task branch)\n"
+            "This ensures you're working with the latest code and reduces merge conflicts.\n"
+            "If a rebase has conflicts you cannot resolve, proceed with your work anyway —\n"
+            "the system will handle conflicts during the merge phase.\n"
+            "\n## CRITICAL: Writing Implementation Plans\n"
+            "Most tasks do NOT require writing a plan — just implement the changes directly.\n"
+            "Only write a plan if the task explicitly asks you to create an implementation plan,\n"
+            "investigate and propose changes, or produce a multi-step strategy for follow-up work.\n"
+            "\n"
+            "If you DO need to write a plan, you MUST follow these rules exactly:\n"
+            "1. Write the plan to **`.claude/plan.md`** in the workspace root (preferred)\n"
+            "   or `plan.md` — these are the ONLY locations the system checks first\n"
+            "2. Do NOT write plans to `notes/`, `docs/`, or any other directory — plans\n"
+            "   written elsewhere may not be detected for automatic task splitting\n"
+            "3. Name each implementation phase clearly: `## Phase 1: <title>`,\n"
+            "   `## Phase 2: <title>`, etc.\n"
+            "4. Put ALL background/reference material (design specs, constraints,\n"
+            "   architecture notes) BEFORE the phase headings, NOT as separate phases\n"
+            "5. Keep each phase focused on a single actionable implementation step\n"
+            "6. If you implement the plan yourself (i.e., you both plan AND execute the work\n"
+            "   in a single task), DELETE the plan file before completing. Only leave a plan\n"
+            "   file in the workspace if you want the system to create follow-up tasks from it.\n"
+            "   Alternatively, add `auto_tasks: false` to the plan's YAML frontmatter.\n"
+            "\n"
+            "NOTE: Any plan file left in the workspace when your task completes will be\n"
+            "automatically parsed and converted into follow-up subtasks. If you already\n"
+            "did the work described in the plan, this creates duplicate/unnecessary tasks.\n"
+            "\n"
+            "This is required for the system to automatically split your plan into\n"
+            "follow-up tasks. Plans that mix reference sections with implementation\n"
+            "phases will produce low-quality task splits."
+        )
+
+    async def _build_task_context_with_prompt_builder(
+        self,
+        task,
+        workspace: str,
+        project,
+        profile,
+    ) -> str:
+        """Build the task description using PromptBuilder.
+
+        Replaces the inline string concatenation that was in _execute_task().
+        """
+        from src.prompt_builder import PromptBuilder
+
+        builder = PromptBuilder(project_id=task.project_id)
+
+        # System metadata
+        sys_parts = [f"- Workspace directory: {workspace}"]
+        if project:
+            sys_parts.append(f"- Project: {project.name} (id: {project.id})")
+        if task.branch_name:
+            sys_parts.append(f"- Git branch: {task.branch_name}")
+        builder.add_context("system_context", "## System Context\n" + "\n".join(sys_parts))
+
+        # Execution rules
+        if task.is_plan_subtask:
+            builder.add_context("execution_rules", self._get_subtask_execution_rules())
+        else:
+            builder.add_context("execution_rules", self._get_root_task_execution_rules())
+
+        # Upstream dependency summaries
+        dep_ids = await self.db.get_dependencies(task.id)
+        if dep_ids:
+            dep_sections = []
+            for dep_id in sorted(dep_ids):
+                dep_task = await self.db.get_task(dep_id)
+                dep_result = await self.db.get_task_result(dep_id)
+                if not dep_task or not dep_result:
+                    continue
+                title = dep_task.title or dep_id
+                summary = dep_result.get("summary") or "(no summary recorded)"
+                if len(summary) > 2000:
+                    summary = summary[:2000] + "... [truncated]"
+                files = dep_result.get("files_changed") or []
+                section = f"### {title}\n**Summary:** {summary}"
+                if files:
+                    file_list = "\n".join(f"  - `{f}`" for f in files)
+                    section += f"\n**Files changed:**\n{file_list}"
+                dep_sections.append(section)
+            if dep_sections:
+                builder.add_context(
+                    "upstream_work",
+                    "## Completed Upstream Work\n"
+                    "The following tasks were direct dependencies of your task "
+                    "and have already been completed:\n\n"
+                    + "\n\n".join(dep_sections)
+                )
+
+        # Agent role instructions from profile
+        if profile and profile.system_prompt_suffix:
+            builder.add_context(
+                "role_instructions",
+                f"## Agent Role Instructions\n{profile.system_prompt_suffix}",
+            )
+
+        # Task description
+        builder.add_context("task", f"## Task\n{task.description}")
+
+        return builder.build_task_prompt()
+
     async def _execute_task(self, action: AssignAction) -> None:
         """The full task execution pipeline (layer 3 of 3), run as a background asyncio task.
 
@@ -3099,9 +3246,9 @@ class Orchestrator:
         # ------------------------------------------------------------------ #
         # Build the agent's system context prompt.
         #
-        # The context is assembled as a list of markdown sections and injected
-        # as the first part of the task description sent to the adapter.  It
-        # includes:
+        # The context is assembled via PromptBuilder as named markdown
+        # sections injected as the first part of the task description sent
+        # to the adapter.  It includes:
         #   - System metadata (workspace path, project, branch)
         #   - Execution rules (subtask vs. root task behavior)
         #   - Upstream dependency results (so the agent has continuity)
@@ -3113,133 +3260,9 @@ class Orchestrator:
         # These instructions are critical for the orchestrator's post-
         # completion git workflow to function correctly.
         # ------------------------------------------------------------------ #
-        context_lines = [
-            "## System Context",
-            f"- Workspace directory: {workspace}",
-            f"- Project: {project.name} (id: {project.id})",
-        ]
-        if task.branch_name:
-            context_lines.append(f"- Git branch: {task.branch_name}")
-
-        if task.is_plan_subtask:
-            # Subtask prompt: implement directly, no re-planning
-            context_lines.append(
-                "\n## Important: Execution Rules\n"
-                "You are running autonomously — there is NO interactive user.\n"
-                "Do NOT use plan mode or EnterPlanMode.\n"
-                "Do NOT write implementation plans or plan files.\n"
-                "Your task is one step of an existing implementation plan — write code, not plans.\n"
-                "Implement the changes described below DIRECTLY.\n"
-                "If you encounter ambiguity, make reasonable decisions and document in code comments.\n"
-                "\n## Important: Committing Your Work\n"
-                "When you have finished, you MUST commit your work:\n"
-                "1. `git add` the files you changed\n"
-                "2. `git commit` with a descriptive message\n"
-                "Do NOT push — the system handles pushing and PR creation.\n"
-                "\n## Important: Keeping Your Workspace in Sync\n"
-                "Before starting work, pull the latest changes from the main branch:\n"
-                "1. `git fetch origin`\n"
-                "2. `git rebase origin/main` (if on a task branch)\n"
-                "This ensures you're working with the latest code and reduces merge conflicts.\n"
-                "If a rebase has conflicts you cannot resolve, proceed with your work anyway —\n"
-                "the system will handle conflicts during the merge phase."
-            )
-        else:
-            # Root task prompt: may write plans
-            context_lines.append(
-                "\n## Important: Execution Rules\n"
-                "You are running autonomously — there is NO interactive user to approve plans.\n"
-                "Do NOT use plan mode or EnterPlanMode. Implement the changes DIRECTLY.\n"
-                "If the task description contains a plan, execute it immediately — do not re-plan.\n"
-                "\n## Important: Committing Your Work\n"
-                "When you have finished making changes, you MUST commit your work:\n"
-                "1. `git add` the files you changed\n"
-                "2. `git commit` with a descriptive message\n"
-                "Do NOT push — the system handles pushing and PR creation.\n"
-                "\n## Important: Keeping Your Workspace in Sync\n"
-                "Before starting work, pull the latest changes from the main branch:\n"
-                "1. `git fetch origin`\n"
-                "2. `git rebase origin/main` (if on a task branch)\n"
-                "This ensures you're working with the latest code and reduces merge conflicts.\n"
-                "If a rebase has conflicts you cannot resolve, proceed with your work anyway —\n"
-                "the system will handle conflicts during the merge phase.\n"
-                "\n## CRITICAL: Writing Implementation Plans\n"
-                "Most tasks do NOT require writing a plan — just implement the changes directly.\n"
-                "Only write a plan if the task explicitly asks you to create an implementation plan,\n"
-                "investigate and propose changes, or produce a multi-step strategy for follow-up work.\n"
-                "\n"
-                "If you DO need to write a plan, you MUST follow these rules exactly:\n"
-                "1. Write the plan to **`.claude/plan.md`** in the workspace root (preferred)\n"
-                "   or `plan.md` — these are the ONLY locations the system checks first\n"
-                "2. Do NOT write plans to `notes/`, `docs/`, or any other directory — plans\n"
-                "   written elsewhere may not be detected for automatic task splitting\n"
-                "3. Name each implementation phase clearly: `## Phase 1: <title>`,\n"
-                "   `## Phase 2: <title>`, etc.\n"
-                "4. Put ALL background/reference material (design specs, constraints,\n"
-                "   architecture notes) BEFORE the phase headings, NOT as separate phases\n"
-                "5. Keep each phase focused on a single actionable implementation step\n"
-                "6. If you implement the plan yourself (i.e., you both plan AND execute the work\n"
-                "   in a single task), DELETE the plan file before completing. Only leave a plan\n"
-                "   file in the workspace if you want the system to create follow-up tasks from it.\n"
-                "   Alternatively, add `auto_tasks: false` to the plan's YAML frontmatter.\n"
-                "\n"
-                "NOTE: Any plan file left in the workspace when your task completes will be\n"
-                "automatically parsed and converted into follow-up subtasks. If you already\n"
-                "did the work described in the plan, this creates duplicate/unnecessary tasks.\n"
-                "\n"
-                "This is required for the system to automatically split your plan into\n"
-                "follow-up tasks. Plans that mix reference sections with implementation\n"
-                "phases will produce low-quality task splits."
-            )
-
-        # ------------------------------------------------------------------ #
-        # Inject results from direct upstream dependencies.
-        #
-        # When a task has upstream dependencies (e.g. a plan subtask that
-        # depends on a previous step), we include the summary and file list
-        # from each completed dependency.  This gives the agent continuity
-        # across a multi-step plan: it knows what was already done, what
-        # files were changed, and can build on that work rather than
-        # starting from scratch.
-        #
-        # Summaries are truncated to 2000 chars to prevent context window
-        # bloat when dependency chains are long.
-        # ------------------------------------------------------------------ #
-        dep_ids = await self.db.get_dependencies(task.id)
-        if dep_ids:
-            dep_sections = []
-            for dep_id in sorted(dep_ids):
-                dep_task = await self.db.get_task(dep_id)
-                dep_result = await self.db.get_task_result(dep_id)
-                if not dep_task or not dep_result:
-                    continue
-                title = dep_task.title or dep_id
-                summary = dep_result.get("summary") or "(no summary recorded)"
-                if len(summary) > 2000:
-                    summary = summary[:2000] + "... [truncated]"
-                files = dep_result.get("files_changed") or []
-                section = f"### {title}\n**Summary:** {summary}"
-                if files:
-                    file_list = "\n".join(f"  - `{f}`" for f in files)
-                    section += f"\n**Files changed:**\n{file_list}"
-                dep_sections.append(section)
-            if dep_sections:
-                context_lines.append(
-                    "\n## Completed Upstream Work\n"
-                    "The following tasks were direct dependencies of your task "
-                    "and have already been completed:\n\n"
-                    + "\n\n".join(dep_sections)
-                )
-
-        # Inject profile-specific role instructions
-        if profile and profile.system_prompt_suffix:
-            context_lines.append(
-                f"\n## Agent Role Instructions\n{profile.system_prompt_suffix}"
-            )
-
-        context_lines.append(f"\n## Task\n{task.description}")
-
-        full_description = "\n".join(context_lines)
+        full_description = await self._build_task_context_with_prompt_builder(
+            task, workspace, project, profile
+        )
 
         ctx = TaskContext(
             task_id=task.id,
