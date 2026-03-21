@@ -220,6 +220,12 @@ listing notes, or any project-scoped operation, use this project.
 
 This means the active project is communicated to the LLM through the system prompt, not through any special message or tool call.
 
+### System Prompt Assembly
+
+The system prompt is assembled using `PromptBuilder` (see `specs/prompt-builder.md`).
+`_build_system_prompt()` uses `PromptBuilder.set_identity("chat-agent-system")` with
+the `workspace_dir` variable, and optionally adds an active project context block.
+
 ---
 
 ## 5. History Compaction
