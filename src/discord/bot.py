@@ -483,6 +483,8 @@ class AgentQueueBot(commands.Bot):
                     # Pass command handler ref so interactive views
                     # (Retry/Skip/Approve buttons) can execute commands.
                     self.orchestrator.set_command_handler(self.agent.handler)
+                    # Wire Supervisor for post-task completion delegation
+                    self.orchestrator.set_supervisor(self.agent)
 
                     # Wire up the chat analyzer's suggestion posting callback
                     if self.orchestrator.chat_analyzer:

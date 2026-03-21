@@ -207,6 +207,7 @@ class Orchestrator:
         self._last_auto_archive: float = 0.0
         self._last_memory_compact: float = 0.0
         self._config_watcher: ConfigWatcher | None = None
+        self._supervisor = None  # Set via set_supervisor() in Discord bot
         self.rule_manager = None
         # Chat provider for LLM-based plan parsing.  Optionally used by
         # ``_generate_tasks_from_plan`` to parse agent-written plan files
@@ -261,6 +262,10 @@ class Orchestrator:
     def _get_handler(self) -> Any:
         """Return the command handler or None. Used by interactive views."""
         return self._command_handler
+
+    def set_supervisor(self, supervisor) -> None:
+        """Set the Supervisor reference for post-task delegation."""
+        self._supervisor = supervisor
 
     async def _get_default_branch(self, project, workspace: str | None = None) -> str:
         """Get the default branch for a project, with dynamic detection fallback.
@@ -2514,7 +2519,7 @@ class Orchestrator:
         """Run the post-completion pipeline. Returns (pr_url, completed_ok)."""
         phases = [
             ("commit", self._phase_commit),
-            ("plan_generate", self._phase_plan_generate),
+            ("plan_discover", self._phase_plan_discover),
             ("merge", self._phase_merge),
         ]
 
@@ -2696,6 +2701,20 @@ class Orchestrator:
         except Exception:
             pass
         logger.info("Task %s: merge+push succeeded", task.id)
+        return PhaseResult.CONTINUE
+
+    async def _phase_plan_discover(self, ctx: PipelineContext) -> PhaseResult:
+        """Delegate plan discovery to the Supervisor."""
+        if not hasattr(self, '_supervisor') or not self._supervisor:
+            return await self._phase_plan_generate(ctx)  # Legacy fallback
+
+        result = await self._supervisor.on_task_completed(
+            task_id=ctx.task.id,
+            project_id=ctx.task.project_id or "",
+            workspace_path=ctx.workspace_path,
+        )
+        if result and result.get("plan_found"):
+            ctx.plan_needs_approval = True
         return PhaseResult.CONTINUE
 
     async def _phase_plan_generate(self, ctx: PipelineContext) -> PhaseResult:
