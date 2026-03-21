@@ -3603,20 +3603,23 @@ class CommandHandler:
     async def _sync_single_workspace(
         self, ws, default_branch: str, *, skip_locked: bool = True,
     ) -> dict:
-        """Sync a single workspace to the latest main branch.
+        """Sync a single workspace to the latest default branch from origin.
+
+        The goal is to get all committed work pushed to origin and then reset
+        the workspace to match origin/<default_branch>. This must NEVER
+        force-push to the default branch, as that can overwrite commits pushed
+        by other workspaces.
 
         Steps:
         1. Validate the workspace is a valid git repo.
         2. Skip if locked by an agent (unless skip_locked=False).
         3. Fetch latest from origin.
         4. Determine current branch state.
-        5. If on default branch: hard-reset to origin/default.
-        6. If on a feature branch:
-           a. Commit any uncommitted changes.
-           b. Push the branch to origin (save work).
-           c. Switch to default branch and hard-reset to origin.
-              (workspace ends up on the default branch, not the feature branch)
-        7. Handle conflicts gracefully.
+        5. If on default branch with local-only commits that diverge from
+           origin: rescue them onto a temporary branch and push that branch
+           (never force-push to default).
+        6. If on a feature branch: commit + push the feature branch.
+        7. Always end by resetting the workspace to origin/<default_branch>.
         """
         ws_path = ws.workspace_path
         ws_info = {
@@ -3688,7 +3691,7 @@ class CommandHandler:
                 pass
 
             if current_branch == default_branch:
-                # On the default branch — push any local commits, then reset
+                # On the default branch — save any local work, then reset
                 actions: list[str] = []
                 try:
                     # Auto-commit uncommitted changes so they aren't lost
@@ -3703,21 +3706,121 @@ class CommandHandler:
                         except GitError:
                             pass
 
-                    # Push any unpushed local commits before resetting
+                    # Check how many local commits are ahead of origin
                     rc, ahead_count, _ = await _run_subprocess(
                         "git", "rev-list", "--count",
                         f"origin/{default_branch}..HEAD",
                         cwd=ws_path, timeout=10,
                     )
-                    if rc == 0 and ahead_count.strip() not in ("", "0"):
-                        await git.apush_branch(
-                            ws_path, default_branch, force_with_lease=True,
+                    has_local_commits = (
+                        rc == 0 and ahead_count.strip() not in ("", "0")
+                    )
+
+                    if has_local_commits:
+                        # Check if local and origin have diverged (local is
+                        # both ahead AND behind origin). This happens when
+                        # other workspaces pushed to main while this workspace
+                        # had local-only commits.
+                        rc_behind, behind_count, _ = await _run_subprocess(
+                            "git", "rev-list", "--count",
+                            f"HEAD..origin/{default_branch}",
+                            cwd=ws_path, timeout=10,
                         )
-                        actions.append(f"pushed_{ahead_count.strip()}_commits")
-                        # Re-fetch so origin/default reflects what we just pushed
-                        await git._arun(
-                            ["fetch", "origin", default_branch], cwd=ws_path,
+                        has_diverged = (
+                            rc_behind == 0
+                            and behind_count.strip() not in ("", "0")
                         )
+
+                        if has_diverged:
+                            # CRITICAL: Local main has diverged from origin.
+                            # We must NOT force-push to the default branch as
+                            # that would overwrite commits from other
+                            # workspaces. Instead, rescue local commits onto a
+                            # temporary branch and push that.
+                            rescue_branch = (
+                                f"sync-rescue/{ws.name or ws.id}/"
+                                f"{int(time.time())}"
+                            )
+                            try:
+                                await git._arun(
+                                    ["checkout", "-b", rescue_branch],
+                                    cwd=ws_path,
+                                )
+                                await git.apush_branch(
+                                    ws_path, rescue_branch,
+                                )
+                                actions.append(
+                                    f"rescued_{ahead_count.strip()}_commits"
+                                    f"_to_{rescue_branch}"
+                                )
+                                # Switch back to default branch for the reset
+                                await git._arun(
+                                    ["checkout", default_branch], cwd=ws_path,
+                                )
+                            except GitError as e:
+                                # If rescue fails, still try to get back to
+                                # default branch — don't lose the reset
+                                logger.warning(
+                                    "Failed to rescue diverged commits in %s: %s",
+                                    ws_path, e,
+                                )
+                                try:
+                                    await git._arun(
+                                        ["checkout", default_branch],
+                                        cwd=ws_path,
+                                    )
+                                except GitError:
+                                    pass
+                                actions.append("rescue_failed")
+                        else:
+                            # Local is strictly ahead (not diverged) — safe to
+                            # do a normal (non-force) push
+                            try:
+                                await git.apush_branch(
+                                    ws_path, default_branch,
+                                    force_with_lease=False,
+                                )
+                                actions.append(
+                                    f"pushed_{ahead_count.strip()}_commits"
+                                )
+                                # Re-fetch so origin/default reflects what
+                                # we just pushed
+                                await git._arun(
+                                    ["fetch", "origin", default_branch],
+                                    cwd=ws_path,
+                                )
+                            except GitError:
+                                # Normal push failed — this shouldn't happen
+                                # if we're strictly ahead, but rescue just
+                                # in case
+                                rescue_branch = (
+                                    f"sync-rescue/{ws.name or ws.id}/"
+                                    f"{int(time.time())}"
+                                )
+                                try:
+                                    await git._arun(
+                                        ["checkout", "-b", rescue_branch],
+                                        cwd=ws_path,
+                                    )
+                                    await git.apush_branch(
+                                        ws_path, rescue_branch,
+                                    )
+                                    actions.append(
+                                        f"push_failed_rescued_to_{rescue_branch}"
+                                    )
+                                    await git._arun(
+                                        ["checkout", default_branch],
+                                        cwd=ws_path,
+                                    )
+                                except GitError:
+                                    try:
+                                        await git._arun(
+                                            ["checkout", default_branch],
+                                            cwd=ws_path,
+                                        )
+                                    except GitError:
+                                        pass
+                                    actions.append("push_and_rescue_failed")
 
                     await git._arun(
                         ["reset", "--hard", f"origin/{default_branch}"],
@@ -3731,7 +3834,7 @@ class CommandHandler:
                 except GitError as e:
                     return {**ws_info, "status": "error", "reason": f"reset failed: {e}"}
             else:
-                # On a feature branch — save work and update default branch
+                # On a feature branch — save work and switch to default branch
                 actions: list[str] = []
 
                 # Auto-commit uncommitted changes if any
@@ -3761,10 +3864,6 @@ class CommandHandler:
                 if is_worktree:
                     # In a worktree, update the ref to point at origin/default
                     try:
-                        origin_sha = await git._arun(
-                            ["rev-parse", f"origin/{default_branch}"], cwd=ws_path,
-                        )
-                        # Switch the worktree to the default branch
                         await git._arun(
                             ["checkout", default_branch], cwd=ws_path,
                         )
