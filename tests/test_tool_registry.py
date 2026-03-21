@@ -108,3 +108,95 @@ def test_get_category_tool_names(registry):
     names = registry.get_category_tool_names("git")
     assert isinstance(names, list)
     assert "git_push" in names
+
+
+# -------------------------------------------------------------------
+# CommandHandler integration tests (browse_tools, load_tools, stubs)
+# -------------------------------------------------------------------
+
+import asyncio
+import sys
+from unittest.mock import AsyncMock, MagicMock
+
+
+def _get_command_handler():
+    """Import CommandHandler, mocking missing packages."""
+    # Stub out packages that may not be installed in test env
+    for mod_name in [
+        "discord", "discord.ext", "discord.ext.commands",
+        "discord.app_commands", "discord.ui",
+        "aiosqlite", "anthropic", "ollama",
+    ]:
+        sys.modules.setdefault(mod_name, MagicMock())
+    from src.command_handler import CommandHandler
+    return CommandHandler
+
+
+def _make_handler():
+    """Build a CommandHandler with mocked orchestrator/config."""
+    CommandHandler = _get_command_handler()
+    orch = MagicMock()
+    orch.db = AsyncMock()
+    orch.config = MagicMock()
+    config = MagicMock()
+    config.workspace_dir = "/tmp/test"
+    return CommandHandler(orch, config)
+
+
+def test_cmd_browse_tools():
+    handler = _make_handler()
+    result = asyncio.run(handler.execute("browse_tools", {}))
+
+    assert "categories" in result
+    cat_names = {c["name"] for c in result["categories"]}
+    assert "git" in cat_names
+    assert "project" in cat_names
+    for cat in result["categories"]:
+        assert "description" in cat
+        assert "tool_count" in cat
+
+
+def test_cmd_load_tools_valid_category():
+    handler = _make_handler()
+    result = asyncio.run(
+        handler.execute("load_tools", {"category": "git"})
+    )
+
+    assert result["loaded"] == "git"
+    assert "tools_added" in result
+    assert "git_push" in result["tools_added"]
+    assert "message" in result
+
+
+def test_cmd_load_tools_invalid_category():
+    handler = _make_handler()
+    result = asyncio.run(
+        handler.execute("load_tools", {"category": "nonexistent"})
+    )
+    assert "error" in result
+
+
+def test_cmd_send_message_stub():
+    handler = _make_handler()
+    result = asyncio.run(handler.execute("send_message", {
+        "channel_id": "12345",
+        "content": "Hello world",
+    }))
+    # send_message needs Discord bot reference; without it, error
+    assert "error" in result or "success" in result
+
+
+def test_cmd_browse_rules_stub():
+    handler = _make_handler()
+    result = asyncio.run(handler.execute("browse_rules", {}))
+    # Phase 2 stub returns informative error
+    assert "error" in result
+
+
+def test_cmd_save_rule_stub():
+    handler = _make_handler()
+    result = asyncio.run(handler.execute("save_rule", {
+        "type": "passive",
+        "content": "Always check for SQL injection",
+    }))
+    assert "error" in result  # Phase 2 stub

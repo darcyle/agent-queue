@@ -6404,3 +6404,78 @@ class CommandHandler:
             "count": len(suggestions),
             "project_id": project_id,
         }
+
+    # -------------------------------------------------------------------
+    # Tool navigation commands (Phase 3 -- tiered tool system)
+    # -------------------------------------------------------------------
+
+    async def _cmd_browse_tools(self, args: dict) -> dict:
+        """List available tool categories with metadata."""
+        from src.tool_registry import ToolRegistry
+        registry = ToolRegistry()
+        return {"categories": registry.get_categories()}
+
+    async def _cmd_load_tools(self, args: dict) -> dict:
+        """Load a tool category's definitions for the current interaction.
+
+        The actual schema injection happens in the chat layer (ChatAgent),
+        not here. This command returns the list of tool names so the chat
+        layer knows which schemas to add.
+        """
+        from src.tool_registry import ToolRegistry
+        category = args.get("category", "")
+        registry = ToolRegistry()
+        names = registry.get_category_tool_names(category)
+        if names is None:
+            available = [c["name"] for c in registry.get_categories()]
+            return {
+                "error": (
+                    f"Unknown category: {category}. "
+                    f"Available: {', '.join(available)}"
+                ),
+            }
+        return {
+            "loaded": category,
+            "tools_added": names,
+            "message": (
+                f"{len(names)} {category} tools are now available."
+            ),
+        }
+
+    async def _cmd_send_message(self, args: dict) -> dict:
+        """Post a message to a Discord channel."""
+        channel_id = args.get("channel_id")
+        content = args.get("content")
+        if not channel_id or not content:
+            return {"error": "channel_id and content are required"}
+        bot = getattr(self.orchestrator, "_discord_bot", None)
+        if not bot:
+            return {"error": "Discord bot not available"}
+        try:
+            channel = bot.get_channel(int(channel_id))
+            if not channel:
+                channel = await bot.fetch_channel(int(channel_id))
+            await channel.send(content)
+            return {"success": True, "channel_id": channel_id}
+        except Exception as e:
+            return {"error": f"Failed to send message: {e}"}
+
+    # -------------------------------------------------------------------
+    # Rule system stubs (Phase 2 placeholders)
+    # -------------------------------------------------------------------
+
+    async def _cmd_browse_rules(self, args: dict) -> dict:
+        """List active rules. Phase 2 stub."""
+        return {"error": "Rule system not yet implemented (Phase 2)"}
+
+    async def _cmd_load_rule(self, args: dict) -> dict:
+        """Load a rule's full detail. Phase 2 stub."""
+        return {"error": "Rule system not yet implemented (Phase 2)"}
+
+    async def _cmd_save_rule(self, args: dict) -> dict:
+        """Create/update a rule. Phase 2 stub."""
+        return {"error": "Rule system not yet implemented (Phase 2)"}
+
+    async def _cmd_delete_rule(self, args: dict) -> dict:
+        """Remove a rule. Phase 2 stub."""
+        return {"error": "Rule system not yet implemented (Phase 2)"}
