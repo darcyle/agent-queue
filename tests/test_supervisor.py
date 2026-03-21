@@ -62,3 +62,23 @@ def test_process_hook_llm_exists():
     sup = _make_supervisor()
     assert hasattr(sup, "process_hook_llm")
     assert callable(sup.process_hook_llm)
+
+def test_process_hook_llm_sets_project():
+    """process_hook_llm sets active project before processing."""
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.tool_uses = []
+    mock_resp.text_parts = ["Hook processed successfully"]
+    sup._provider.create_message = AsyncMock(return_value=mock_resp)
+
+    result = asyncio.get_event_loop().run_until_complete(
+        sup.process_hook_llm(
+            hook_context="## Hook Context\nProject: test",
+            rendered_prompt="Check tunnel status",
+            project_id="my-game",
+            hook_name="tunnel-monitor",
+        )
+    )
+    assert "Hook processed" in result
+    assert sup._active_project_id == "my-game"

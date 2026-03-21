@@ -76,6 +76,9 @@ class AgentQueueBot(commands.Bot):
         # Register a callback so that project deletions (from any caller)
         # automatically purge the bot's in-memory channel caches.
         self.agent.handler._on_project_deleted = self.clear_project_channels
+        # Wire Supervisor into HookEngine for LLM invocations
+        if hasattr(self.orchestrator, 'hooks') and self.orchestrator.hooks:
+            self.orchestrator.hooks.set_supervisor(self.agent)
         self._channel: discord.TextChannel | None = None
         # Per-project channel cache: project_id -> channel
         self._project_channels: dict[str, discord.TextChannel] = {}
