@@ -1336,19 +1336,21 @@ class HookEngine:
                 parts.append("Last run: *first run*")
             timing_line = "\n".join(parts) + "\n"
 
-        return _prompt_registry.render(
-            "hook-context",
-            {
-                "hook_name": hook.name,
-                "project_id": hook.project_id,
-                "project_name": project_name,
-                "workspace_dir": ws_line,
-                "repo_url": repo_line,
-                "default_branch": branch_line,
-                "trigger_reason": trigger_reason,
-                "timing_context": timing_line,
-            },
-        )
+        from src.prompt_builder import PromptBuilder
+
+        builder = PromptBuilder()
+        builder.set_identity("hook-context", {
+            "hook_name": hook.name,
+            "project_id": hook.project_id or "",
+            "project_name": project_name,
+            "workspace_dir": ws_line,
+            "repo_url": repo_line,
+            "default_branch": branch_line,
+            "trigger_reason": trigger_reason,
+            "timing_context": timing_line,
+        })
+        result, _ = builder.build()
+        return result
 
     async def _invoke_llm(
         self, hook: Hook, prompt: str,
