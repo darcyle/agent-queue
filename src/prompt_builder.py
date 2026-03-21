@@ -141,3 +141,77 @@ class PromptBuilder:
         if not tpl:
             return None
         return self._render_variables(tpl.body, variables)
+
+    # ------------------------------------------------------------------
+    # Layer setters
+    # ------------------------------------------------------------------
+
+    def set_identity(self, name: str, variables: dict[str, str] | None = None) -> None:
+        """Layer 1: Set the identity from a prompt template."""
+        rendered = self.render_template(name, variables)
+        self._identity = rendered or ""
+
+    async def load_project_context(self) -> None:
+        """Layer 2: Load project context from memory system."""
+        if not self._memory_manager or not self._project_id:
+            return
+        try:
+            ctx = await self._memory_manager.build_context(
+                self._project_id, task=None, workspace_path=""
+            )
+            if ctx and not ctx.is_empty():
+                self._project_context = ctx.to_context_block()
+        except Exception:
+            pass  # graceful degradation
+
+    async def load_relevant_rules(self, query: str) -> None:
+        """Layer 3: Load relevant rules. Stub for Phase 1 — always empty."""
+        # Implemented in Phase 2
+        self._rules = ""
+
+    def add_context(self, name: str, content: str) -> None:
+        """Layer 4: Add a named context block."""
+        if content and content.strip():
+            self._context_blocks.append((name, content))
+
+    def add_context_section(self, name: str, data: dict) -> None:
+        """Layer 4: Add structured context rendered as markdown."""
+        if not data:
+            return
+        lines = [f"## {name.replace('_', ' ').title()}"]
+        for key, value in data.items():
+            lines.append(f"- **{key}:** {value}")
+        self._context_blocks.append((name, "\n".join(lines)))
+
+    def set_core_tools(self, tools: list[dict]) -> None:
+        """Layer 5: Set tool definitions."""
+        self._tools = list(tools)
+
+    def set_tools(self, tools: list[dict]) -> None:
+        """Alias for set_core_tools."""
+        self.set_core_tools(tools)
+
+    # ------------------------------------------------------------------
+    # Build
+    # ------------------------------------------------------------------
+
+    def build(self) -> tuple[str, list[dict]]:
+        """Assemble all layers into (system_prompt, tools)."""
+        sections: list[str] = []
+
+        if self._identity:
+            sections.append(self._identity)
+        if self._project_context:
+            sections.append(self._project_context)
+        if self._rules:
+            sections.append(self._rules)
+        for _name, content in self._context_blocks:
+            sections.append(content)
+
+        system_prompt = "\n\n---\n\n".join(sections) if sections else ""
+        return system_prompt, list(self._tools)
+
+    def build_task_prompt(self) -> str:
+        """Assemble into a flat prompt string (for task execution)."""
+        prompt, _ = self.build()
+        return prompt
