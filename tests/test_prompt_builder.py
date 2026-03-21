@@ -155,6 +155,77 @@ def test_add_context_section(prompts_dir):
     assert "**branch:** main" in prompt
 
 
+@pytest.fixture
+def task_prompts_dir(tmp_path):
+    """Create temp prompts dir with task-related templates."""
+    (tmp_path / "plan_structure_guide.md").write_text(textwrap.dedent("""\
+        ---
+        name: plan-structure-guide
+        category: task
+        variables:
+          - name: max_steps
+            required: true
+        ---
+        Write a plan with at most {{max_steps}} steps.
+    """))
+
+    (tmp_path / "controlled_splitting.md").write_text(textwrap.dedent("""\
+        ---
+        name: controlled-splitting
+        category: task
+        variables:
+          - name: current_depth
+            required: true
+          - name: max_depth
+            required: true
+        ---
+        You are at depth {{current_depth}} of {{max_depth}}. You may split further.
+    """))
+
+    (tmp_path / "execution_focus.md").write_text(textwrap.dedent("""\
+        ---
+        name: execution-focus
+        category: task
+        ---
+        Execute directly. Do not create plans.
+    """))
+
+    return tmp_path
+
+
+def test_depth_zero_gets_plan_guide(task_prompts_dir):
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=task_prompts_dir)
+    builder.add_context_section("task_depth", {"depth": 0, "max_depth": 2})
+    prompt = builder.build_task_prompt()
+
+    assert "Write a plan with at most" in prompt
+    assert "Execute directly" not in prompt
+
+
+def test_intermediate_depth_gets_controlled_splitting(task_prompts_dir):
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=task_prompts_dir)
+    builder.add_context_section("task_depth", {"depth": 1, "max_depth": 2})
+    prompt = builder.build_task_prompt()
+
+    assert "You are at depth 1 of 2" in prompt
+    assert "Execute directly" not in prompt
+
+
+def test_max_depth_gets_execution_focus(task_prompts_dir):
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=task_prompts_dir)
+    builder.add_context_section("task_depth", {"depth": 2, "max_depth": 2})
+    prompt = builder.build_task_prompt()
+
+    assert "Execute directly" in prompt
+    assert "Write a plan" not in prompt
+
+
 def test_build_is_idempotent(prompts_dir):
     from src.prompt_builder import PromptBuilder
 

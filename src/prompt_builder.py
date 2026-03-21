@@ -175,13 +175,45 @@ class PromptBuilder:
             self._context_blocks.append((name, content))
 
     def add_context_section(self, name: str, data: dict) -> None:
-        """Layer 4: Add structured context rendered as markdown."""
+        """Layer 4: Add structured context rendered as markdown.
+
+        Special handling for name="task_depth":
+          - depth 0 (root): plan structure guide
+          - intermediate: controlled splitting
+          - max_depth: execution focus only
+        """
         if not data:
             return
+
+        if name == "task_depth":
+            self._add_depth_context(data)
+            return
+
         lines = [f"## {name.replace('_', ' ').title()}"]
         for key, value in data.items():
             lines.append(f"- **{key}:** {value}")
         self._context_blocks.append((name, "\n".join(lines)))
+
+    def _add_depth_context(self, data: dict) -> None:
+        """Dispatch to appropriate depth-aware template."""
+        depth = int(data.get("depth", 0))
+        max_depth = int(data.get("max_depth", 2))
+        max_steps = int(data.get("max_steps", 20))
+
+        if depth >= max_depth:
+            content = self.render_template("execution-focus") or ""
+        elif depth == 0:
+            content = self.render_template(
+                "plan-structure-guide", {"max_steps": str(max_steps)}
+            ) or ""
+        else:
+            content = self.render_template(
+                "controlled-splitting",
+                {"current_depth": str(depth), "max_depth": str(max_depth)},
+            ) or ""
+
+        if content:
+            self.add_context("execution_rules", content)
 
     def set_core_tools(self, tools: list[dict]) -> None:
         """Layer 5: Set tool definitions."""
