@@ -648,6 +648,17 @@ class AppConfig:
 
         return errors
 
+    def check_deprecations(self) -> list[str]:
+        """Check for deprecated config sections and return warning messages."""
+        warnings = []
+        if self.chat_analyzer.enabled:
+            warnings.append(
+                "DEPRECATED: 'chat_analyzer' config section is deprecated. "
+                "Use 'supervisor.observation' instead. The chat_analyzer "
+                "section will be ignored when supervisor.observation is active."
+            )
+        return warnings
+
     def reload_non_critical(self) -> "AppConfig":
         """Return a new AppConfig with non-critical settings refreshed from disk.
 
