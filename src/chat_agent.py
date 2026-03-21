@@ -1958,6 +1958,94 @@ TOOLS = [
             },
         },
     },
+    # -----------------------------------------------------------------------
+    # Rule tools -- persistent autonomous behaviors
+    # -----------------------------------------------------------------------
+    {
+        "name": "save_rule",
+        "description": (
+            "Create or update a persistent rule. Rules define autonomous behaviors. "
+            "Active rules have triggers (periodic/event) and generate hooks automatically. "
+            "Passive rules have no triggers but influence reasoning when relevant. "
+            "Content should be markdown with sections: # Title, ## Intent, "
+            "## Trigger (active only), ## Logic."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": (
+                        "Rule ID (optional, auto-generated from title if omitted). "
+                        "Use existing ID to update."
+                    ),
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project ID. Omit or null for global rules that apply "
+                        "to all projects."
+                    ),
+                },
+                "type": {
+                    "type": "string",
+                    "enum": ["active", "passive"],
+                    "description": (
+                        "active = has triggers, generates hooks. "
+                        "passive = influences reasoning only."
+                    ),
+                },
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "Rule content in markdown. Include # Title, ## Intent, "
+                        "## Trigger (for active), ## Logic."
+                    ),
+                },
+            },
+            "required": ["type", "content"],
+        },
+    },
+    {
+        "name": "delete_rule",
+        "description": "Delete a rule and all its associated hooks.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Rule ID to delete"},
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "browse_rules",
+        "description": (
+            "List all rules for a project (plus global rules). Returns summaries "
+            "-- use load_rule for full details."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project ID. Returns project rules + all global rules."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "load_rule",
+        "description": "Load the full content and metadata of a specific rule.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Rule ID to load"},
+            },
+            "required": ["id"],
+        },
+    },
     {
         "name": "analyzer_history",
         "description": (
