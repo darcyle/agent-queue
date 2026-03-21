@@ -166,7 +166,7 @@ class Supervisor:
 
         builder = PromptBuilder()
         builder.set_identity(
-            "chat-agent-system",
+            "supervisor-system",
             {"workspace_dir": self.config.workspace_dir},
         )
         if self._active_project_id:

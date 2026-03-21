@@ -154,3 +154,16 @@ def test_chat_no_reflection_for_simple_text():
     )
     assert result == "Hi there!"
     assert sup._provider.create_message.call_count == 1
+
+
+def test_supervisor_prompt_template_exists():
+    """Supervisor identity template renders with workspace_dir."""
+    from src.prompt_builder import PromptBuilder
+    import os
+
+    prompts_dir = os.path.join(os.path.dirname(__file__), "..", "src", "prompts")
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    result = builder.render_template("supervisor-system", {"workspace_dir": "/tmp/test"})
+    assert result is not None
+    assert "/tmp/test" in result
+    assert "supervisor" in result.lower() or "single intelligent entity" in result.lower()
