@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from unittest.mock import AsyncMock, MagicMock
@@ -180,3 +181,126 @@ def test_get_rules_for_prompt_empty(rule_manager):
     """get_rules_for_prompt returns empty string when no rules exist."""
     text = rule_manager.get_rules_for_prompt("proj")
     assert text == ""
+
+
+# ------------------------------------------------------------------
+# Async hook generation and deletion (Task 3)
+# ------------------------------------------------------------------
+
+@pytest.fixture
+def mock_db():
+    """Mock database that tracks hook create/delete calls."""
+    db = AsyncMock()
+    db.create_hook = AsyncMock()
+    db.delete_hook = AsyncMock()
+    db.get_hook = AsyncMock(return_value=None)
+    return db
+
+
+@pytest.fixture
+def rule_manager_with_db(storage_root, mock_db):
+    from src.rule_manager import RuleManager
+    return RuleManager(storage_root=storage_root, db=mock_db)
+
+
+def test_async_delete_rule_removes_hooks(rule_manager_with_db, mock_db):
+    """async_delete_rule removes associated hooks from the database."""
+    rm = rule_manager_with_db
+
+    # Save rule and manually set hooks in frontmatter
+    rm.save_rule(
+        id="rule-with-hooks",
+        project_id="proj",
+        rule_type="active",
+        content="# Active Rule\n\n## Trigger\nEvery 5 min.",
+    )
+    rm._update_rule_hooks("rule-with-hooks", ["hook-from-rule"])
+
+    result = asyncio.get_event_loop().run_until_complete(
+        rm.async_delete_rule("rule-with-hooks")
+    )
+    assert result["success"] is True
+    assert "hook-from-rule" in result["hooks_removed"]
+
+    # Verify delete_hook was called on DB
+    mock_db.delete_hook.assert_any_call("hook-from-rule")
+
+
+def test_async_save_active_rule_generates_hooks(
+    rule_manager_with_db, mock_db
+):
+    """async_save_rule generates hooks for active rules with triggers."""
+    rm = rule_manager_with_db
+
+    result = asyncio.get_event_loop().run_until_complete(
+        rm.async_save_rule(
+            id="rule-periodic",
+            project_id="proj",
+            rule_type="active",
+            content=(
+                "# Check Status\n\n## Trigger\nEvery 10 minutes."
+                "\n\n## Logic\nRun check."
+            ),
+        )
+    )
+    assert result["success"] is True
+    assert len(result["hooks_generated"]) == 1
+
+    # Verify hook was created in DB
+    mock_db.create_hook.assert_called_once()
+    created_hook = mock_db.create_hook.call_args[0][0]
+    assert created_hook.project_id == "proj"
+    assert "rule-periodic" in created_hook.prompt_template
+
+
+def test_reconcile_detects_missing_hooks(rule_manager_with_db, mock_db):
+    """reconcile detects active rules with missing hooks."""
+    rm = rule_manager_with_db
+
+    # Save active rule referencing a hook that doesn't exist in DB
+    rm.save_rule(
+        id="rule-orphan",
+        project_id="proj",
+        rule_type="active",
+        content=(
+            "# Orphan Rule\n\n## Trigger\nEvery 10 min."
+            "\n\n## Logic\nCheck status."
+        ),
+    )
+    rm._update_rule_hooks("rule-orphan", ["hook-missing"])
+
+    # DB says hook doesn't exist
+    mock_db.get_hook.return_value = None
+
+    result = asyncio.get_event_loop().run_until_complete(rm.reconcile())
+    assert result["rules_scanned"] > 0
+    assert result["hooks_missing"] > 0
+
+
+def test_parse_trigger_periodic():
+    """_parse_trigger extracts periodic triggers."""
+    from src.rule_manager import RuleManager
+
+    content = "# Test\n\n## Trigger\nEvery 5 minutes.\n\n## Logic\nDo stuff."
+    result = RuleManager._parse_trigger(content)
+    assert result == {"type": "periodic", "interval_seconds": 300}
+
+
+def test_parse_trigger_event():
+    """_parse_trigger extracts event-based triggers."""
+    from src.rule_manager import RuleManager
+
+    content = (
+        "# Test\n\n## Trigger\nWhen a task is completed.\n\n## Logic\nReview."
+    )
+    result = RuleManager._parse_trigger(content)
+    assert result == {"type": "event", "event_type": "task.completed"}
+
+
+def test_parse_trigger_none():
+    """_parse_trigger returns None for unparseable triggers."""
+    from src.rule_manager import RuleManager
+
+    content = "# Test\n\n## Intent\nNo trigger here."
+    result = RuleManager._parse_trigger(content)
+    assert result is None
