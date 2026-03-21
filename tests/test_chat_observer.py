@@ -111,3 +111,69 @@ def test_batch_not_ready_under_count():
     obs = _make_observer()
     obs.on_message(_make_message("the particle system crashed"))
     assert obs.is_batch_ready(12345) is False
+
+
+def test_start_creates_timer_task():
+    """start() creates the background batch timer."""
+    obs = _make_observer()
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(obs.start())
+        assert obs._running is True
+    finally:
+        loop.run_until_complete(obs.stop())
+        loop.close()
+
+
+def test_stop_cancels_timer():
+    obs = _make_observer()
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(obs.start())
+        loop.run_until_complete(obs.stop())
+        assert obs._running is False
+    finally:
+        loop.close()
+
+
+def test_process_batch_calls_callback():
+    """When batch is flushed, callback receives messages and project_id."""
+    obs = _make_observer()
+    callback = AsyncMock(return_value={"action": "ignore"})
+    obs._on_batch_ready = callback
+    obs.on_message(_make_message("particle system crashed"))
+    loop = asyncio.new_event_loop()
+    try:
+        # Manually flush and invoke process
+        loop.run_until_complete(obs._process_batch(12345))
+        # Callback should have been called with channel_id and batch
+        callback.assert_called_once()
+        call_args = callback.call_args
+        assert call_args[0][0] == 12345  # channel_id
+        assert len(call_args[0][1]) == 1  # batch with 1 message
+    finally:
+        loop.close()
+
+
+def test_full_flow_filter_buffer_flush():
+    """End-to-end: messages are filtered, buffered, and flushed."""
+    obs = _make_observer()
+    obs.on_message(_make_message("ok"))
+    obs.on_message(_make_message("lol"))
+    obs.on_message(_make_message("the particle system is broken"))
+    obs.on_message(_make_message("yes"))
+    obs.on_message(_make_message("we need to deploy the fix"))
+    assert obs.get_buffer_size(12345) == 2
+    batch = obs.flush_buffer(12345)
+    assert len(batch) == 2
+    assert "particle" in batch[0]["content"]
+    assert "deploy" in batch[1]["content"]
+
+
+def test_observer_config_wired_to_supervisor_config():
+    """ObservationConfig is accessible from SupervisorConfig."""
+    from src.config import AppConfig
+    app = AppConfig()
+    assert hasattr(app.supervisor, "observation")
+    assert app.supervisor.observation.enabled is True
+    assert app.supervisor.observation.batch_window_seconds == 60

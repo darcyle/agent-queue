@@ -799,9 +799,115 @@ class AgentQueueBot(commands.Bot):
         try:
             await channel.send(embed=embed)
         except Exception as e:
-            logger.error(
-                "Failed to post auto-action notification: %s", e
-            )
+            print(f"Failed to post auto-action notification: {e}")
+
+    async def _process_observation_batch(
+        self, channel_id: int, messages: list[dict]
+    ) -> None:
+        """Process a batch of observations from the ChatObserver.
+
+        This is the callback invoked when the observer has a ready batch.
+        It calls the Supervisor's observe() method for LLM analysis and
+        routes the result to the appropriate handler.
+        """
+        if not messages:
+            return
+
+        # Extract project_id from the first message
+        project_id = messages[0].get("project_id")
+        if not project_id:
+            return
+
+        try:
+            # Stage 2: LLM analysis via Supervisor
+            result = await self.agent.observe(messages=messages, project_id=project_id)
+            action = result.get("action", "ignore")
+
+            if action == "ignore":
+                pass  # Nothing to do
+
+            elif action == "memory":
+                # Store as project memory
+                content = result.get("content", "")
+                await self._store_observation_memory(project_id, content)
+
+            elif action == "suggest":
+                # Post suggestion to channel
+                suggestion_type = result.get("suggestion_type", "context")
+                text = result.get("content", "")
+                task_title = result.get("task_title")
+                await self._post_observation_suggestion(
+                    channel_id=channel_id,
+                    project_id=project_id,
+                    suggestion={
+                        "suggestion_type": suggestion_type,
+                        "content": text,
+                        "task_title": task_title,
+                    },
+                )
+
+        except Exception as e:
+            print(f"Error processing observation batch: {e}")
+
+    async def _post_observation_suggestion(
+        self, channel_id: int, project_id: str, suggestion: dict
+    ) -> None:
+        """Post an observation suggestion as a rich embed with Accept/Dismiss buttons."""
+        from src.discord.views import SuggestionView, format_suggestion_embed
+
+        channel = self.get_channel(channel_id)
+        if not channel:
+            return
+
+        suggestion_type = suggestion.get("suggestion_type", "context")
+        text = suggestion.get("content", "")
+        task_title = suggestion.get("task_title")
+
+        # Create database record if DB is available
+        suggestion_id = None
+        if self.orchestrator.db:
+            try:
+                suggestion_id = await self.orchestrator.db.create_chat_analyzer_suggestion(
+                    project_id=project_id,
+                    channel_id=channel_id,
+                    suggestion_type=suggestion_type,
+                    suggestion_text=text,
+                )
+            except Exception as e:
+                print(f"Error creating suggestion record: {e}")
+
+        embed = format_suggestion_embed(
+            suggestion_type=suggestion_type,
+            text=text,
+            project_id=project_id,
+            confidence=0.8,
+        )
+        view = SuggestionView(
+            suggestion_id=suggestion_id or 0,
+            suggestion_type=suggestion_type,
+            suggestion_text=text,
+            project_id=project_id,
+            task_title=task_title,
+            handler=self.agent.handler,
+            db=self.orchestrator.db,
+        )
+        await channel.send(embed=embed, view=view)
+
+    async def _store_observation_memory(
+        self, project_id: str, content: str
+    ) -> None:
+        """Store observation content in project memory."""
+        if not content:
+            return
+        try:
+            if hasattr(self.orchestrator, 'memory_manager') and self.orchestrator.memory_manager:
+                await self.orchestrator.memory_manager.add_memory(
+                    project_id=project_id,
+                    content=f"[Observed] {content}",
+                    source="chat_observation",
+                )
+        except Exception as e:
+            print(f"Error storing observation memory: {e}")
 
     async def _create_task_thread(
         self, thread_name: str, initial_message: str,
