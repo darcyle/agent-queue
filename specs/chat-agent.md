@@ -351,7 +351,25 @@ Re-calls `initialize()`. Used by the Discord bot to recover from `anthropic.Auth
 
 ---
 
-## 8. Streaming
+## 8. Tiered Tool Loading
+
+The `chat()` method uses a mutable tool set per interaction:
+
+1. Initializes `active_tools` from `ToolRegistry.get_core_tools()` (~11 tools)
+2. Passes `active_tools` to each `create_message()` call
+3. When the LLM calls `load_tools(category)`, the category's tool definitions
+   are added to `active_tools` for subsequent turns
+4. Tool expansion does not persist across separate `chat()` invocations
+
+The LLM sees only core tools initially. It uses `browse_tools` to discover
+categories and `load_tools` to expand its capabilities as needed.
+
+Tool definitions live in `src/tool_registry.py`. The `TOOLS` name in
+`chat_agent.py` is a backward-compatible alias that returns all tools.
+
+---
+
+## 9. Streaming
 
 `ChatAgent` does not implement streaming. The `chat()` method is a coroutine that awaits the full LLM response before returning. The provider's `create_message()` interface returns a complete `ChatResponse` object, not an async generator.
 

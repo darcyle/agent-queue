@@ -80,3 +80,26 @@ The tool schemas themselves are NOT in this response -- they are injected into t
 - Tool names are globally unique across all categories.
 - browse_tools and load_tools are themselves core tools.
 - Category metadata (descriptions) are static -- defined in code, not configurable.
+
+## Source Files
+
+- `src/tool_registry.py` -- ToolRegistry class, category metadata, all tool definitions
+- `src/chat_agent.py` -- chat() uses mutable tool set; TOOLS is backward-compat alias
+- `src/command_handler.py` -- browse_tools, load_tools, send_message, rule stubs
+
+## Core Tool List
+
+The following tools are always available (not assigned to any category):
+
+- `create_task` -- create a new task
+- `list_tasks` -- list tasks with filtering
+- `edit_task` -- modify task properties
+- `get_task` -- get full task details
+- `browse_tools` -- list available tool categories
+- `load_tools` -- load a tool category
+- `memory_search` -- search project memory
+- `send_message` -- post to Discord channel
+- `browse_rules` -- list rules (Phase 2 stub)
+- `load_rule` -- load rule detail (Phase 2 stub)
+- `save_rule` -- create/update rule (Phase 2 stub)
+- `delete_rule` -- remove rule (Phase 2 stub)

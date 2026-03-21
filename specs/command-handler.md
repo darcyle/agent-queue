@@ -2130,3 +2130,33 @@ Queries the database for any tasks with status `IN_PROGRESS` for the given proje
 If no tasks are in progress, returns `None`.
 
 This method is called by the high-level git commands `checkout_branch`, `commit_changes`, and `merge_branch` after a successful git operation. The warning is included in the response dict under the `"warning"` key when present. It is never a blocking error — the git operation proceeds regardless.
+
+---
+
+## 8. Tool Navigation Commands
+
+### `browse_tools`
+
+Returns list of tool categories with name, description, and tool_count.
+No arguments required.
+
+### `load_tools`
+
+Accepts `category` (string). Returns confirmation of loaded category with
+the list of tool names added. The actual tool schema injection happens in
+the chat layer (ChatAgent), not in CommandHandler.
+
+Returns error if category is unknown, listing available categories.
+
+### `send_message`
+
+Posts a message to a Discord channel via the bot reference. Accepts
+`channel_id` and `content`. Returns error if the Discord bot is not
+available or the channel cannot be found.
+
+### Rule System Stubs (Phase 2)
+
+- `browse_rules` -- Stub, returns Phase 2 not-implemented error
+- `load_rule` -- Stub
+- `save_rule` -- Stub
+- `delete_rule` -- Stub
