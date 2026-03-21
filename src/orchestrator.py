@@ -207,6 +207,7 @@ class Orchestrator:
         self._last_auto_archive: float = 0.0
         self._last_memory_compact: float = 0.0
         self._config_watcher: ConfigWatcher | None = None
+        self.rule_manager = None
         # Chat provider for LLM-based plan parsing.  Optionally used by
         # ``_generate_tasks_from_plan`` to parse agent-written plan files
         # with an LLM instead of the regex parser, producing higher-quality
@@ -700,6 +701,40 @@ class Orchestrator:
             self.hooks = HookEngine(self.db, self.bus, self.config)
             self.hooks.set_orchestrator(self)
             await self.hooks.initialize()
+
+        # Initialize rule manager
+        from src.rule_manager import RuleManager
+        self.rule_manager = RuleManager(
+            storage_root=self.config.data_dir,
+            db=self.db,
+            hook_engine=self.hooks if hasattr(self, 'hooks') else None,
+        )
+
+        # Run startup reconciliation for rules -> hooks
+        try:
+            reconcile_stats = await self.rule_manager.reconcile()
+            if reconcile_stats.get("rules_scanned", 0) > 0:
+                logger.info(
+                    "Rule reconciliation: %d rules scanned, %d hooks verified, "
+                    "%d hooks missing, %d regenerated",
+                    reconcile_stats["rules_scanned"],
+                    reconcile_stats["hooks_verified"],
+                    reconcile_stats["hooks_missing"],
+                    reconcile_stats["hooks_regenerated"],
+                )
+        except Exception as e:
+            logger.warning("Rule reconciliation failed: %s", e)
+
+        # Install default global rules if not already present
+        try:
+            installed = self.rule_manager.install_defaults()
+            if installed:
+                logger.info(
+                    "Installed %d default global rules: %s",
+                    len(installed), installed,
+                )
+        except Exception as e:
+            logger.warning("Default rule installation failed: %s", e)
 
         # Initialize chat analyzer if enabled
         if self.config.chat_analyzer.enabled:

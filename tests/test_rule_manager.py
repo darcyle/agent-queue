@@ -385,3 +385,56 @@ def test_cmd_delete_rule(storage_root, mock_db):
         handler.execute("delete_rule", {"id": "rule-3"})
     )
     assert result.get("success") is True
+
+
+# ------------------------------------------------------------------
+# Orchestrator integration (Task 7)
+# ------------------------------------------------------------------
+
+def test_orchestrator_initializes_rule_manager(tmp_path):
+    """Orchestrator creates RuleManager during initialize()."""
+    import sys
+
+    # Ensure discord/aiosqlite stubs exist so orchestrator can import
+    for mod_name in [
+        "discord", "discord.ext", "discord.ext.commands", "discord.ui",
+        "aiosqlite",
+    ]:
+        if mod_name not in sys.modules:
+            sys.modules[mod_name] = MagicMock()
+
+    from unittest.mock import patch, AsyncMock
+
+    from src.orchestrator import Orchestrator
+    from src.config import AppConfig
+
+    config = MagicMock()
+    config.data_dir = str(tmp_path)
+    config.database_path = str(tmp_path / "test.db")
+    config.global_token_budget_daily = 1000000
+    config.hook_engine = MagicMock()
+    config.hook_engine.enabled = False
+    config.chat_analyzer = MagicMock()
+    config.chat_analyzer.enabled = False
+    config.memory = MagicMock()
+    config.memory.enabled = False
+    config._config_path = None
+    config.llm_logging = MagicMock()
+    config.llm_logging.enabled = False
+    config.llm_logging.retention_days = 30
+    config.agent_profiles = []
+
+    orch = Orchestrator(config)
+
+    # Mock DB and recovery so initialize() doesn't need real sqlite
+    orch.db = MagicMock()
+    orch.db.initialize = AsyncMock()
+    orch.db.list_agents = AsyncMock(return_value=[])
+    orch.db.list_workspaces = AsyncMock(return_value=[])
+    orch.db.list_tasks = AsyncMock(return_value=[])
+
+    with patch.object(orch, '_sync_profiles_from_config', new_callable=AsyncMock):
+        asyncio.get_event_loop().run_until_complete(orch.initialize())
+
+    assert hasattr(orch, 'rule_manager')
+    assert orch.rule_manager is not None
