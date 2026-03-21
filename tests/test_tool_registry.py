@@ -299,6 +299,34 @@ def test_core_tools_are_compact(registry):
     assert len(core) < len(all_tools) * 0.25
 
 
+# -------------------------------------------------------------------
+# Tool description quality tests (Task 7)
+# -------------------------------------------------------------------
+
+def test_all_tools_have_descriptions():
+    """Every tool should have a non-empty description."""
+    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    for tool in registry.get_all_tools():
+        assert "description" in tool, (
+            f"Tool {tool['name']} missing description"
+        )
+        assert len(tool["description"]) > 10, (
+            f"Tool {tool['name']} has too-short description: "
+            f"{tool['description']}"
+        )
+
+
+def test_all_tools_have_input_schema():
+    """Every tool should have an input_schema."""
+    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+    registry = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
+    for tool in registry.get_all_tools():
+        assert "input_schema" in tool, (
+            f"Tool {tool['name']} missing input_schema"
+        )
+
+
 def test_system_prompt_is_compact():
     """System prompt should be well under 500 lines with tiered tools."""
     from src.prompt_builder import PromptBuilder
