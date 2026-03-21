@@ -8,7 +8,6 @@ import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import yaml
 
 
 @pytest.fixture
@@ -406,7 +405,6 @@ def test_orchestrator_initializes_rule_manager(tmp_path):
     from unittest.mock import patch, AsyncMock
 
     from src.orchestrator import Orchestrator
-    from src.config import AppConfig
 
     config = MagicMock()
     config.data_dir = str(tmp_path)
