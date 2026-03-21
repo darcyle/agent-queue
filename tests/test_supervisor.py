@@ -218,3 +218,38 @@ def test_process_hook_llm_uses_hook_trigger():
     )
     # The reflection trigger should be hook-related, not user.request
     assert any("hook" in t for t in triggers_seen)
+
+
+def test_full_integration_supervisor_replaces_chat_agent():
+    """Verify Supervisor can be used everywhere ChatAgent was."""
+    from src.supervisor import Supervisor
+    from src.chat_agent import ChatAgent
+
+    # They're the same class
+    assert Supervisor is ChatAgent
+
+    # Supervisor has all the ChatAgent interface
+    sup = _make_supervisor()
+    assert hasattr(sup, "chat")
+    assert hasattr(sup, "summarize")
+    assert hasattr(sup, "initialize")
+    assert hasattr(sup, "is_ready")
+    assert hasattr(sup, "model")
+    assert hasattr(sup, "set_active_project")
+    assert hasattr(sup, "reload_credentials")
+    assert hasattr(sup, "handler")
+
+    # Plus new capabilities
+    assert hasattr(sup, "reflection")
+    assert hasattr(sup, "process_hook_llm")
+    assert hasattr(sup, "reflect")
+
+
+def test_reflection_engine_wired_to_config():
+    """ReflectionEngine uses config values from SupervisorConfig."""
+    from src.config import AppConfig
+    app = AppConfig()
+    from src.reflection import ReflectionEngine
+    engine = ReflectionEngine(app.supervisor.reflection)
+    assert engine.level == "full"
+    assert engine._config.max_depth == 3
