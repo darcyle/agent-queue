@@ -167,3 +167,54 @@ def test_supervisor_prompt_template_exists():
     assert result is not None
     assert "/tmp/test" in result
     assert "supervisor" in result.lower() or "single intelligent entity" in result.lower()
+
+
+def test_reflect_method_exists():
+    """Supervisor has a public reflect() method for event-driven reflection."""
+    sup = _make_supervisor()
+    assert hasattr(sup, "reflect")
+    assert callable(sup.reflect)
+
+
+def test_process_hook_llm_uses_hook_trigger():
+    """process_hook_llm triggers reflection with hook-specific trigger."""
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+
+    # First call: LLM uses a tool
+    tool_use = MagicMock()
+    tool_use.name = "list_tasks"
+    tool_use.input = {"status": "ready"}
+    tool_use.id = "tu-1"
+
+    resp_with_tools = MagicMock()
+    resp_with_tools.tool_uses = [tool_use]
+    resp_with_tools.text_parts = []
+
+    # Second call: LLM responds with text (after tool result)
+    resp_text = MagicMock()
+    resp_text.tool_uses = []
+    resp_text.text_parts = ["Hook done"]
+
+    sup._provider.create_message = AsyncMock(
+        side_effect=[resp_with_tools, resp_text]
+    )
+
+    # Mock tool execution
+    sup.handler.execute = AsyncMock(return_value={"tasks": []})
+
+    # Track what trigger the reflection sees
+    triggers_seen = []
+    def track_should(trigger):
+        triggers_seen.append(trigger)
+        return False  # Skip actual reflection for test speed
+    sup.reflection.should_reflect = track_should
+
+    asyncio.get_event_loop().run_until_complete(
+        sup.process_hook_llm(
+            hook_context="ctx", rendered_prompt="prompt",
+            project_id="p1", hook_name="my-hook",
+        )
+    )
+    # The reflection trigger should be hook-related, not user.request
+    assert any("hook" in t for t in triggers_seen)
