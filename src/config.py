@@ -367,6 +367,41 @@ class ChatAnalyzerConfig:
 
 
 @dataclass
+class ReflectionConfig:
+    """Configuration for the Supervisor's action-reflect cycle."""
+    level: str = "full"
+    periodic_interval: int = 900
+    max_depth: int = 3
+    per_cycle_token_cap: int = 10000
+    hourly_token_circuit_breaker: int = 100000
+
+    _VALID_LEVELS = {"full", "moderate", "minimal", "off"}
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.level not in self._VALID_LEVELS:
+            errors.append(ConfigError("reflection", "level", f"must be one of {sorted(self._VALID_LEVELS)}, got '{self.level}'"))
+        if self.max_depth < 1:
+            errors.append(ConfigError("reflection", "max_depth", "must be >= 1"))
+        if self.periodic_interval < 0:
+            errors.append(ConfigError("reflection", "periodic_interval", "must be >= 0"))
+        if self.per_cycle_token_cap < 0:
+            errors.append(ConfigError("reflection", "per_cycle_token_cap", "must be >= 0"))
+        if self.hourly_token_circuit_breaker < 0:
+            errors.append(ConfigError("reflection", "hourly_token_circuit_breaker", "must be >= 0"))
+        return errors
+
+
+@dataclass
+class SupervisorConfig:
+    """Top-level Supervisor configuration."""
+    reflection: ReflectionConfig = field(default_factory=ReflectionConfig)
+
+    def validate(self) -> list[ConfigError]:
+        return self.reflection.validate()
+
+
+@dataclass
 class HookEngineConfig:
     enabled: bool = True
     max_concurrent_hooks: int = 2
@@ -499,6 +534,7 @@ class AppConfig:
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
     chat_provider: ChatProviderConfig = field(default_factory=ChatProviderConfig)
+    supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
     hook_engine: HookEngineConfig = field(default_factory=HookEngineConfig)
     chat_analyzer: ChatAnalyzerConfig = field(default_factory=ChatAnalyzerConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
@@ -555,6 +591,7 @@ class AppConfig:
         errors.extend(self.scheduling.validate())
         errors.extend(self.pause_retry.validate())
         errors.extend(self.chat_provider.validate())
+        errors.extend(self.supervisor.validate())
         errors.extend(self.auto_task.validate())
         errors.extend(self.archive.validate())
         errors.extend(self.llm_logging.validate())
@@ -1014,6 +1051,19 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             model=cp.get("model", ""),
             base_url=cp.get("base_url", ""),
             keep_alive=cp.get("keep_alive", "1h"),
+        )
+
+    if "supervisor" in raw:
+        s = raw["supervisor"]
+        reflection = s.get("reflection", {})
+        config.supervisor = SupervisorConfig(
+            reflection=ReflectionConfig(
+                level=reflection.get("level", "full"),
+                periodic_interval=reflection.get("periodic_interval", 900),
+                max_depth=reflection.get("max_depth", 3),
+                per_cycle_token_cap=reflection.get("per_cycle_token_cap", 10000),
+                hourly_token_circuit_breaker=reflection.get("hourly_token_circuit_breaker", 100000),
+            ),
         )
 
     if "hook_engine" in raw:
