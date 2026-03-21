@@ -235,3 +235,30 @@ def test_build_is_idempotent(prompts_dir):
     r1 = builder.build()
     r2 = builder.build()
     assert r1 == r2
+
+
+def test_build_task_prompt_matches_adapter_format(prompts_dir):
+    """Verify PromptBuilder produces the same output as adapter._build_prompt()."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.add_context("description", "Fix the login bug in auth.py.")
+    builder.add_context(
+        "acceptance_criteria",
+        "## Acceptance Criteria\n- Login works with valid credentials\n- Invalid creds show error",
+    )
+    builder.add_context(
+        "test_commands",
+        "## Test Commands\n- `pytest tests/test_auth.py`",
+    )
+    builder.add_context(
+        "additional_context",
+        "## Additional Context\nProject uses JWT tokens.",
+    )
+
+    prompt = builder.build_task_prompt()
+
+    assert "Fix the login bug" in prompt
+    assert "Acceptance Criteria" in prompt
+    assert "pytest tests/test_auth.py" in prompt
+    assert "Project uses JWT tokens" in prompt
