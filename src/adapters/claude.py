@@ -530,7 +530,7 @@ class ClaudeAdapter(AgentAdapter):
             builder.add_context("test_commands", f"## Test Commands\n{cmds}")
 
         if self._task.attached_context:
-            combined = "\n".join(self._task.attached_context)
+            combined = "\n".join(f"- {ctx}" for ctx in self._task.attached_context)
             builder.add_context("additional_context", f"## Additional Context\n{combined}")
 
         return builder.build_task_prompt()
