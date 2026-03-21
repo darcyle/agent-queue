@@ -59,3 +59,37 @@ def test_supervisor_config_validation():
     cfg = SupervisorConfig()
     errors = cfg.validate()
     assert len(errors) == 0
+
+
+def test_observation_config_defaults():
+    from src.config import ObservationConfig
+    cfg = ObservationConfig()
+    assert cfg.enabled is True
+    assert cfg.batch_window_seconds == 60
+    assert cfg.max_buffer_size == 20
+    assert cfg.stage1_keywords == []
+
+
+def test_observation_config_validation():
+    from src.config import ObservationConfig
+    cfg = ObservationConfig(batch_window_seconds=0)
+    errors = cfg.validate()
+    assert any("batch_window_seconds" in str(e) for e in errors)
+
+
+def test_supervisor_config_has_observation():
+    from src.config import SupervisorConfig
+    cfg = SupervisorConfig()
+    assert hasattr(cfg, "observation")
+    assert cfg.observation.enabled is True
+
+
+def test_observation_config_from_yaml():
+    from src.config import SupervisorConfig, ObservationConfig
+    cfg = SupervisorConfig(observation=ObservationConfig(
+        enabled=False, batch_window_seconds=30, max_buffer_size=10,
+        stage1_keywords=["deploy", "hotfix"],
+    ))
+    assert cfg.observation.enabled is False
+    assert cfg.observation.batch_window_seconds == 30
+    assert cfg.observation.stage1_keywords == ["deploy", "hotfix"]

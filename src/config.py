@@ -393,12 +393,33 @@ class ReflectionConfig:
 
 
 @dataclass
+class ObservationConfig:
+    """Configuration for the Supervisor's passive chat observation."""
+    enabled: bool = True
+    batch_window_seconds: int = 60
+    max_buffer_size: int = 20
+    stage1_keywords: list[str] = field(default_factory=list)
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.batch_window_seconds < 5:
+            errors.append(ConfigError("observation", "batch_window_seconds", "must be >= 5"))
+        if self.max_buffer_size < 1:
+            errors.append(ConfigError("observation", "max_buffer_size", "must be >= 1"))
+        return errors
+
+
+@dataclass
 class SupervisorConfig:
     """Top-level Supervisor configuration."""
     reflection: ReflectionConfig = field(default_factory=ReflectionConfig)
+    observation: ObservationConfig = field(default_factory=ObservationConfig)
 
     def validate(self) -> list[ConfigError]:
-        return self.reflection.validate()
+        errors: list[ConfigError] = []
+        errors.extend(self.reflection.validate())
+        errors.extend(self.observation.validate())
+        return errors
 
 
 @dataclass
@@ -1056,6 +1077,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     if "supervisor" in raw:
         s = raw["supervisor"]
         reflection = s.get("reflection", {})
+        observation = s.get("observation", {})
         config.supervisor = SupervisorConfig(
             reflection=ReflectionConfig(
                 level=reflection.get("level", "full"),
@@ -1063,6 +1085,12 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 max_depth=reflection.get("max_depth", 3),
                 per_cycle_token_cap=reflection.get("per_cycle_token_cap", 10000),
                 hourly_token_circuit_breaker=reflection.get("hourly_token_circuit_breaker", 100000),
+            ),
+            observation=ObservationConfig(
+                enabled=observation.get("enabled", True),
+                batch_window_seconds=observation.get("batch_window_seconds", 60),
+                max_buffer_size=observation.get("max_buffer_size", 20),
+                stage1_keywords=observation.get("stage1_keywords", []),
             ),
         )
 
