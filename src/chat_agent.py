@@ -2413,6 +2413,10 @@ class ChatAgent:
     ) -> str:
         """Process a user message with tool use. Returns response text.
 
+        Starts with core tools only. When the LLM calls ``load_tools``,
+        the requested category's tool definitions are added to the active
+        set for subsequent turns within this interaction.
+
         ``history`` is a list of {"role": "user"|"assistant", "content": ...}
         dicts.  The caller is responsible for building history from whatever
         source it uses (Discord channel, CLI readline, HTTP session, etc.).
@@ -2426,6 +2430,14 @@ class ChatAgent:
         """
         if not self._provider:
             raise RuntimeError("LLM provider not initialized — call initialize() first")
+
+        from src.tool_registry import ToolRegistry
+        registry = ToolRegistry()
+
+        # Mutable tool set — starts with core, expands via load_tools
+        active_tools: dict[str, dict] = {
+            t["name"]: t for t in registry.get_core_tools()
+        }
 
         messages = list(history) if history else []
 
@@ -2451,7 +2463,7 @@ class ChatAgent:
             resp = await self._provider.create_message(
                 messages=messages,
                 system=self._build_system_prompt(),
-                tools=TOOLS,
+                tools=list(active_tools.values()),
                 max_tokens=1024,
             )
 
@@ -2475,6 +2487,15 @@ class ChatAgent:
                     await on_progress("tool_use", label)
                 result = await self._execute_tool(tool_use.name, tool_use.input)
                 tool_actions.append(label)
+
+                # If load_tools was called, expand active tool set
+                if tool_use.name == "load_tools" and "loaded" in result:
+                    category = result["loaded"]
+                    cat_tools = registry.get_category_tools(category)
+                    if cat_tools:
+                        for t in cat_tools:
+                            active_tools[t["name"]] = t
+
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_use.id,

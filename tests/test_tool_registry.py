@@ -200,3 +200,52 @@ def test_cmd_save_rule_stub():
         "content": "Always check for SQL injection",
     }))
     assert "error" in result  # Phase 2 stub
+
+
+# -------------------------------------------------------------------
+# Mutable tool set tests (chat() behavior)
+# -------------------------------------------------------------------
+
+def test_chat_starts_with_core_tools_only(registry):
+    """Verify core tools are significantly fewer than all tools."""
+    core_count = len(registry.get_core_tools())
+    all_count = len(registry.get_all_tools())
+
+    # Core should be significantly fewer than all
+    assert core_count < all_count, (
+        f"Core ({core_count}) should be fewer than all ({all_count})"
+    )
+
+
+def test_load_tools_expands_active_set(registry):
+    """Verify that simulating load_tools adds category tools."""
+    active_tools = {t["name"]: t for t in registry.get_core_tools()}
+
+    # Simulate load_tools("git")
+    git_tools = registry.get_category_tools("git")
+    assert git_tools is not None
+    for t in git_tools:
+        active_tools[t["name"]] = t
+
+    # Active set should now include git tools
+    assert "git_push" in active_tools
+    assert "create_task" in active_tools  # core still present
+
+
+def test_load_tools_idempotent(registry):
+    """Loading same category twice should not duplicate tools."""
+    active_tools = {t["name"]: t for t in registry.get_core_tools()}
+    initial_count = len(active_tools)
+
+    # Load git twice
+    git_tools = registry.get_category_tools("git")
+    for t in git_tools:
+        active_tools[t["name"]] = t
+    count_after_first = len(active_tools)
+
+    for t in git_tools:
+        active_tools[t["name"]] = t
+    count_after_second = len(active_tools)
+
+    assert count_after_first == count_after_second
+    assert count_after_first > initial_count
