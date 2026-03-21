@@ -20,7 +20,7 @@ Every prompt is assembled from up to 5 ordered layers:
    - Project documentation (CLAUDE.md, README.md)
    - Falls back to empty string if memory unavailable
 
-3. **Relevant Rules** — What rules apply to this action? Semantic search against the current query, or all project rules if memsearch is unavailable. (Populated in Phase 2 — returns empty in Phase 1.)
+3. **Relevant Rules** — What rules apply to this action? Loaded from `RuleManager` via `load_relevant_rules(query)`. Without memsearch, loads ALL rules for the current project plus globals. With memsearch (future), uses semantic search against the query for relevance filtering. Rules are formatted as a single markdown block under `## Applicable Rules` with each rule's content included, prefixed with `[Active]` or `[Passive]`.
 
 4. **Specific Context** — What is the LLM doing right now? Arbitrary named context blocks:
    - `task` — task description
@@ -51,16 +51,17 @@ For task execution prompts (identity="task-agent"), the output is a single promp
 
 ### Constructor
 
-`PromptBuilder(project_id: str | None = None, memory_manager: Any | None = None)`
+`PromptBuilder(project_id: str | None = None, memory_manager: Any | None = None, rule_manager: Any | None = None)`
 
 - `project_id` scopes project context and rule loading
-- `memory_manager` is optional; if None, layers 2 and 3 are empty
+- `memory_manager` is optional; if None, layer 2 is empty
+- `rule_manager` is optional; if None, layer 3 is empty
 
 ### Methods
 
 - `set_identity(name: str, variables: dict | None = None)` — Load identity template, render with variables
 - `load_project_context()` — async, pulls from memory_manager if available
-- `load_relevant_rules(query: str)` — async, semantic search or fallback. Returns empty in Phase 1.
+- `load_relevant_rules(query: str)` — async, queries RuleManager for applicable rules (project + globals). Without memsearch, loads all rules. Gracefully degrades to empty on errors.
 - `add_context(name: str, content: str)` — Add a named context block to layer 4
 - `add_context_section(name: str, data: dict)` — Add structured context rendered as markdown. When `name="task_depth"`, dispatches to depth-aware template selection (see below)
 - `set_core_tools(tools: list[dict])` — Set the tool definitions for layer 5

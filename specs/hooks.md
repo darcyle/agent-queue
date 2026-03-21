@@ -808,3 +808,14 @@ hook_engine:
   file_watcher_poll_interval: 10
   file_watcher_debounce_seconds: 5
 ```
+
+---
+
+## 12. Rule-Generated Hooks
+
+Hooks can be generated automatically from active rules via the Rule System
+(see `specs/rule-system.md`). Rule-generated hooks:
+- Have IDs prefixed with `rule-{rule_id}-`
+- Include the rule content in their prompt template
+- Are deleted and regenerated when the rule is updated
+- Are verified during startup reconciliation

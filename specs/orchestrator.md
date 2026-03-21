@@ -1075,3 +1075,15 @@ The system provides two complementary mechanisms for keeping subtask chains clos
 
 Both mechanisms abort silently on conflict.  Conflicts are deferred to final merge time,
 where `sync_and_merge()` applies its rebase-before-merge fallback.
+
+---
+
+## 18. Rule Manager Initialization
+
+During `initialize()`, after hook engine setup:
+1. Create `RuleManager` with the data directory, database, and hook engine
+2. Run `reconcile()` to verify all active rules have valid hooks
+3. Run `install_defaults()` to create default global rules if not present
+
+The RuleManager is stored as `self.rule_manager` and is accessible by CommandHandler
+for rule CRUD operations. See `specs/rule-system.md` for the full Rule System spec.
