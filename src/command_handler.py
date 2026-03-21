@@ -4846,6 +4846,75 @@ class CommandHandler:
             return {"error": str(e)}
 
     # -----------------------------------------------------------------------
+    # Rule commands -- persistent autonomous behaviors stored as markdown.
+    # Rules are the source of truth; active rules generate hooks.
+    # -----------------------------------------------------------------------
+
+    async def _cmd_save_rule(self, args: dict) -> dict:
+        """Create or update a rule."""
+        rm = getattr(self.orchestrator, "rule_manager", None)
+        if not rm:
+            return {"error": "Rule manager not initialized"}
+
+        rule_id = args.get("id")
+        project_id = args.get("project_id")
+        rule_type = args.get("type", "passive")
+        content = args.get("content", "")
+
+        if not content:
+            return {"error": "content is required"}
+        if rule_type not in ("active", "passive"):
+            return {
+                "error": f"type must be 'active' or 'passive', got '{rule_type}'"
+            }
+
+        result = await rm.async_save_rule(
+            id=rule_id,
+            project_id=project_id,
+            rule_type=rule_type,
+            content=content,
+        )
+        return result
+
+    async def _cmd_delete_rule(self, args: dict) -> dict:
+        """Delete a rule and its associated hooks."""
+        rm = getattr(self.orchestrator, "rule_manager", None)
+        if not rm:
+            return {"error": "Rule manager not initialized"}
+
+        rule_id = args.get("id")
+        if not rule_id:
+            return {"error": "id is required"}
+
+        return await rm.async_delete_rule(rule_id)
+
+    async def _cmd_browse_rules(self, args: dict) -> dict:
+        """List rules for a project (plus globals)."""
+        rm = getattr(self.orchestrator, "rule_manager", None)
+        if not rm:
+            return {"error": "Rule manager not initialized"}
+
+        project_id = args.get("project_id")
+        rules = rm.browse_rules(project_id)
+        return {"rules": rules}
+
+    async def _cmd_load_rule(self, args: dict) -> dict:
+        """Load full details of a specific rule."""
+        rm = getattr(self.orchestrator, "rule_manager", None)
+        if not rm:
+            return {"error": "Rule manager not initialized"}
+
+        rule_id = args.get("id")
+        if not rule_id:
+            return {"error": "id is required"}
+
+        loaded = rm.load_rule(rule_id)
+        if not loaded:
+            return {"error": f"Rule '{rule_id}' not found"}
+
+        return loaded
+
+    # -----------------------------------------------------------------------
     # Notes commands -- markdown documents stored in project workspaces.
     # Notes are a lightweight knowledge base: users and hooks can write
     # specs, brainstorms, or analysis, and later turn them into tasks.

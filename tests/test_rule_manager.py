@@ -304,3 +304,84 @@ def test_parse_trigger_none():
     content = "# Test\n\n## Intent\nNo trigger here."
     result = RuleManager._parse_trigger(content)
     assert result is None
+
+
+# ------------------------------------------------------------------
+# CommandHandler integration (Task 4)
+# ------------------------------------------------------------------
+
+def _make_command_handler(storage_root, mock_db):
+    """Create a CommandHandler with a mocked orchestrator and RuleManager.
+
+    Patches sys.modules for missing dependencies (discord, aiosqlite)
+    so CommandHandler can be imported in test environments.
+    """
+    import sys
+
+    # Ensure discord and aiosqlite stubs exist so command_handler can import
+    mods_to_stub = {}
+    for mod_name in [
+        "discord", "discord.ext", "discord.ext.commands", "discord.ui",
+        "aiosqlite",
+    ]:
+        if mod_name not in sys.modules:
+            sys.modules[mod_name] = MagicMock()
+            mods_to_stub[mod_name] = True
+
+    from src.rule_manager import RuleManager
+    from src.command_handler import CommandHandler
+
+    rm = RuleManager(storage_root=storage_root, db=mock_db)
+    orch = MagicMock()
+    orch.db = mock_db
+    orch.rule_manager = rm
+    orch.config = MagicMock()
+    return CommandHandler(orch, orch.config), rm
+
+
+def test_cmd_save_rule(storage_root, mock_db):
+    """CommandHandler.execute('save_rule') creates a rule file."""
+    handler, rm = _make_command_handler(storage_root, mock_db)
+    result = asyncio.get_event_loop().run_until_complete(
+        handler.execute("save_rule", {
+            "project_id": "proj",
+            "type": "passive",
+            "content": "# Check Code Style\n\n## Intent\nEnforce linting.",
+        })
+    )
+    assert result.get("success") is True or "id" in result
+
+
+def test_cmd_browse_rules(storage_root, mock_db):
+    """CommandHandler.execute('browse_rules') returns rule list."""
+    handler, rm = _make_command_handler(storage_root, mock_db)
+    rm.save_rule("rule-1", "proj", "passive", "# Rule One")
+
+    result = asyncio.get_event_loop().run_until_complete(
+        handler.execute("browse_rules", {"project_id": "proj"})
+    )
+    assert "rules" in result
+    assert any(r["id"] == "rule-1" for r in result["rules"])
+
+
+def test_cmd_load_rule(storage_root, mock_db):
+    """CommandHandler.execute('load_rule') returns full rule."""
+    handler, rm = _make_command_handler(storage_root, mock_db)
+    rm.save_rule("rule-2", "proj", "passive", "# Rule Two\n\nContent here.")
+
+    result = asyncio.get_event_loop().run_until_complete(
+        handler.execute("load_rule", {"id": "rule-2"})
+    )
+    assert result.get("id") == "rule-2"
+    assert "Rule Two" in result.get("content", "")
+
+
+def test_cmd_delete_rule(storage_root, mock_db):
+    """CommandHandler.execute('delete_rule') removes a rule."""
+    handler, rm = _make_command_handler(storage_root, mock_db)
+    rm.save_rule("rule-3", "proj", "passive", "# Rule Three")
+
+    result = asyncio.get_event_loop().run_until_complete(
+        handler.execute("delete_rule", {"id": "rule-3"})
+    )
+    assert result.get("success") is True
