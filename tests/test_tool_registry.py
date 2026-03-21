@@ -281,3 +281,35 @@ def test_total_tool_count_preserved():
         "memory_search",
     ]:
         assert name in all_names, f"Core tool {name} missing"
+
+
+# -------------------------------------------------------------------
+# Compact prompt tests (Task 6)
+# -------------------------------------------------------------------
+
+def test_core_tools_are_compact(registry):
+    """Core tools should be significantly fewer than all tools."""
+    core = registry.get_core_tools()
+    all_tools = registry.get_all_tools()
+
+    # Core should be roughly 10-15 tools
+    assert len(core) <= 20, f"Core has {len(core)} tools -- should be ~11"
+    assert len(core) >= 8, f"Core has {len(core)} tools -- too few"
+    # Core should be < 25% of all tools
+    assert len(core) < len(all_tools) * 0.25
+
+
+def test_system_prompt_is_compact():
+    """System prompt should be well under 500 lines with tiered tools."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder()
+    builder.set_identity(
+        "chat-agent-system", {"workspace_dir": "/tmp/test"}
+    )
+    prompt, _ = builder.build()
+
+    line_count = len(prompt.split("\n"))
+    assert line_count < 500, (
+        f"System prompt is {line_count} lines -- should be compact"
+    )
