@@ -438,3 +438,36 @@ def test_orchestrator_initializes_rule_manager(tmp_path):
 
     assert hasattr(orch, 'rule_manager')
     assert orch.rule_manager is not None
+
+
+# ------------------------------------------------------------------
+# Default rule installation (Task 8)
+# ------------------------------------------------------------------
+
+def test_install_default_rules(storage_root):
+    """install_defaults creates global rules from bundled templates."""
+    from src.rule_manager import RuleManager
+    rm = RuleManager(storage_root=storage_root)
+
+    installed = rm.install_defaults()
+    assert len(installed) >= 2
+
+    # Verify rules are browseable
+    rules = rm.browse_rules(None)
+    ids = [r["id"] for r in rules]
+    assert any("reflection" in rid for rid in ids)
+    assert any("review" in rid for rid in ids)
+
+
+def test_install_defaults_idempotent(storage_root):
+    """install_defaults does not duplicate rules on re-run."""
+    from src.rule_manager import RuleManager
+    rm = RuleManager(storage_root=storage_root)
+
+    rm.install_defaults()
+    rm.install_defaults()
+
+    rules = rm.browse_rules(None)
+    # Count rules -- should not have duplicates
+    ids = [r["id"] for r in rules]
+    assert len(ids) == len(set(ids))
