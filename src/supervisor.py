@@ -247,6 +247,46 @@ class Supervisor:
                 if on_progress:
                     await on_progress("responding", None)
                 response = "\n".join(resp.text_parts).strip()
+
+                # --- Reflection pass (after tool use) ---
+                if tool_actions and self.reflection.should_reflect("user.request"):
+                    depth = self.reflection.determine_depth("user.request", {})
+                    if depth:
+                        reflection_prompt = self.reflection.build_reflection_prompt(
+                            depth=depth,
+                            trigger="user.request",
+                            action_summary=", ".join(tool_actions),
+                            action_results=[],
+                        )
+                        try:
+                            messages.append({
+                                "role": "assistant",
+                                "content": response or "Done.",
+                            })
+                            messages.append({
+                                "role": "user",
+                                "content": f"[system reflection]: {reflection_prompt}",
+                            })
+                            reflect_resp = await self._provider.create_message(
+                                messages=messages,
+                                system=self._build_system_prompt(),
+                                tools=list(active_tools.values()),
+                                max_tokens=512,
+                            )
+                            if reflect_resp.tool_uses and self.reflection.can_reflect_deeper(1):
+                                messages.append({"role": "assistant", "content": reflect_resp.tool_uses})
+                                for tu in reflect_resp.tool_uses:
+                                    res = await self._execute_tool(tu.name, tu.input)
+                                    messages.append({"role": "user", "content": [{
+                                        "type": "tool_result",
+                                        "tool_use_id": tu.id,
+                                        "content": json.dumps(res),
+                                    }]})
+                            estimated_tokens = len(reflection_prompt) // 4
+                            self.reflection.record_tokens(estimated_tokens)
+                        except Exception:
+                            pass  # Reflection must never break the main flow
+
                 if response:
                     return response
                 if tool_actions:

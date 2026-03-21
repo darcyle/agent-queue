@@ -82,3 +82,75 @@ def test_process_hook_llm_sets_project():
     )
     assert "Hook processed" in result
     assert sup._active_project_id == "my-game"
+
+def test_chat_triggers_reflection_on_tool_use():
+    """After tool use, the Supervisor should attempt reflection."""
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+
+    # First call: LLM uses a tool
+    tool_use = MagicMock()
+    tool_use.name = "create_task"
+    tool_use.input = {"title": "Fix login"}
+    tool_use.id = "tu-1"
+
+    resp_with_tools = MagicMock()
+    resp_with_tools.tool_uses = [tool_use]
+    resp_with_tools.text_parts = []
+
+    # Second call: LLM responds with text (after tool result)
+    resp_text = MagicMock()
+    resp_text.tool_uses = []
+    resp_text.text_parts = ["Task created."]
+
+    # Third call (reflection): LLM responds with text
+    resp_reflect = MagicMock()
+    resp_reflect.tool_uses = []
+    resp_reflect.text_parts = ["Reflection: task verified."]
+
+    sup._provider.create_message = AsyncMock(
+        side_effect=[resp_with_tools, resp_text, resp_reflect]
+    )
+
+    # Mock tool execution
+    sup.handler.execute = AsyncMock(return_value={"id": "t-123", "title": "Fix login"})
+
+    result = asyncio.get_event_loop().run_until_complete(
+        sup.chat("Create a task to fix login", "testuser")
+    )
+    assert "Task created" in result
+
+
+def test_chat_skips_reflection_when_off():
+    """When reflection level is off, no reflection pass happens."""
+    sup = _make_supervisor()
+    sup.reflection._config.level = "off"
+    sup._provider = MagicMock()
+
+    resp = MagicMock()
+    resp.tool_uses = []
+    resp.text_parts = ["Done."]
+    sup._provider.create_message = AsyncMock(return_value=resp)
+
+    result = asyncio.get_event_loop().run_until_complete(
+        sup.chat("Hello", "testuser")
+    )
+    # Only 1 LLM call (no reflection)
+    assert sup._provider.create_message.call_count == 1
+
+
+def test_chat_no_reflection_for_simple_text():
+    """No tool use = no reflection needed."""
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+
+    resp = MagicMock()
+    resp.tool_uses = []
+    resp.text_parts = ["Hi there!"]
+    sup._provider.create_message = AsyncMock(return_value=resp)
+
+    result = asyncio.get_event_loop().run_until_complete(
+        sup.chat("Hello", "testuser")
+    )
+    assert result == "Hi there!"
+    assert sup._provider.create_message.call_count == 1
