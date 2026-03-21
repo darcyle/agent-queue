@@ -1,8 +1,11 @@
 """Tests for PromptBuilder — template loading and rendering."""
 
 import textwrap
+from pathlib import Path
 
 import pytest
+
+_DEFAULT_PROMPTS_DIR = Path(__file__).parent.parent / "src" / "prompts"
 
 
 @pytest.fixture
@@ -262,3 +265,32 @@ def test_build_task_prompt_matches_adapter_format(prompts_dir):
     assert "Acceptance Criteria" in prompt
     assert "pytest tests/test_auth.py" in prompt
     assert "Project uses JWT tokens" in prompt
+
+
+def test_supervisor_identity_with_active_project():
+    """Verify supervisor identity renders with project context appended."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=_DEFAULT_PROMPTS_DIR)
+    builder.set_identity("chat-agent-system", {"workspace_dir": "/home/user/.agent-queue"})
+    builder.add_context(
+        "active_project",
+        'ACTIVE PROJECT: `my-game`. Use this as the default project_id for all tools '
+        'unless the user explicitly specifies a different project.',
+    )
+    system_prompt, _ = builder.build()
+
+    assert "/home/user/.agent-queue" in system_prompt
+    assert "ACTIVE PROJECT: `my-game`" in system_prompt
+
+
+def test_supervisor_identity_without_project():
+    """Verify supervisor identity renders without active project."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=_DEFAULT_PROMPTS_DIR)
+    builder.set_identity("chat-agent-system", {"workspace_dir": "/home/user/.agent-queue"})
+    system_prompt, _ = builder.build()
+
+    assert "/home/user/.agent-queue" in system_prompt
+    assert "ACTIVE PROJECT" not in system_prompt

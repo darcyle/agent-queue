@@ -2386,18 +2386,23 @@ class ChatAgent:
         return self.initialize()
 
     def _build_system_prompt(self) -> str:
-        prompt = _prompt_registry.render(
+        from src.prompt_builder import PromptBuilder
+
+        builder = PromptBuilder()
+        builder.set_identity(
             "chat-agent-system",
             {"workspace_dir": self.config.workspace_dir},
         )
         if self._active_project_id:
-            prompt += (
-                f"\n\nACTIVE PROJECT: `{self._active_project_id}`. "
+            builder.add_context(
+                "active_project",
+                f"ACTIVE PROJECT: `{self._active_project_id}`. "
                 f"Use this as the default project_id for all tools unless the user "
                 f"explicitly specifies a different project. When creating tasks, "
-                f"listing notes, or any project-scoped operation, use this project."
+                f"listing notes, or any project-scoped operation, use this project.",
             )
-        return prompt
+        system_prompt, _ = builder.build()
+        return system_prompt
 
     async def chat(
         self,
