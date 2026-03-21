@@ -260,8 +260,6 @@ class AgentQueueBot(commands.Bot):
     # async def _reattach_analyzer_views(self) -> None:
     #     """Register persistent ChatAnalyzerSuggestionView buttons after bot restart."""
     #     pass
-        except Exception as e:
-            print(f"Warning: could not reattach analyzer views: {e}")
 
     def update_project_channel(
         self, project_id: str, channel: discord.TextChannel
