@@ -249,3 +249,35 @@ def test_load_tools_idempotent(registry):
 
     assert count_after_first == count_after_second
     assert count_after_first > initial_count
+
+
+# -------------------------------------------------------------------
+# Tool count preservation after split (Task 5)
+# -------------------------------------------------------------------
+
+def test_total_tool_count_preserved():
+    """Verify no tools were lost in the split."""
+    registry = ToolRegistry(tools=_build_sample_tools())
+    all_tools = registry.get_all_tools()
+    all_names = {t["name"] for t in all_tools}
+
+    # These are the new navigation tools added by the registry
+    expected_new_tools = {
+        "browse_tools", "load_tools", "send_message",
+        "browse_rules", "load_rule", "save_rule", "delete_rule",
+    }
+
+    # Every original categorized tool should still exist
+    for name in _TOOL_CATEGORIES:
+        assert name in all_names, f"Tool {name} missing from registry"
+
+    # New tools should be present
+    for name in expected_new_tools:
+        assert name in all_names, f"New tool {name} missing"
+
+    # Core task tools should be present
+    for name in [
+        "create_task", "list_tasks", "edit_task", "get_task",
+        "memory_search",
+    ]:
+        assert name in all_names, f"Core tool {name} missing"
