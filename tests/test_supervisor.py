@@ -253,3 +253,77 @@ def test_reflection_engine_wired_to_config():
     engine = ReflectionEngine(app.supervisor.reflection)
     assert engine.level == "full"
     assert engine._config.max_depth == 3
+
+
+def test_on_task_completed_exists():
+    sup = _make_supervisor()
+    assert hasattr(sup, "on_task_completed")
+    assert callable(sup.on_task_completed)
+
+
+def test_on_task_completed_calls_process():
+    sup = _make_supervisor()
+    sup.handler.execute = AsyncMock(return_value={
+        "plan_found": False, "reason": "No plan file found"
+    })
+
+    result = asyncio.get_event_loop().run_until_complete(
+        sup.on_task_completed(
+            task_id="t-123",
+            project_id="my-game",
+            workspace_path="/tmp/workspace",
+        )
+    )
+
+    sup.handler.execute.assert_called_once_with(
+        "process_task_completion", {
+            "task_id": "t-123",
+            "workspace_path": "/tmp/workspace",
+        }
+    )
+    assert result["plan_found"] is False
+
+
+def test_on_task_completed_sets_project():
+    sup = _make_supervisor()
+    sup.handler.execute = AsyncMock(return_value={"plan_found": False})
+
+    asyncio.get_event_loop().run_until_complete(
+        sup.on_task_completed(
+            task_id="t-123",
+            project_id="my-game",
+            workspace_path="/tmp/workspace",
+        )
+    )
+    assert sup._active_project_id == "my-game"
+
+
+def test_on_task_completed_returns_plan_found():
+    sup = _make_supervisor()
+    sup.handler.execute = AsyncMock(return_value={
+        "plan_found": True, "steps_count": 3
+    })
+
+    result = asyncio.get_event_loop().run_until_complete(
+        sup.on_task_completed(
+            task_id="t-123",
+            project_id="my-game",
+            workspace_path="/tmp/workspace",
+        )
+    )
+    assert result["plan_found"] is True
+    assert result["steps_count"] == 3
+
+
+def test_on_task_completed_handles_error():
+    sup = _make_supervisor()
+    sup.handler.execute = AsyncMock(side_effect=Exception("DB error"))
+
+    result = asyncio.get_event_loop().run_until_complete(
+        sup.on_task_completed(
+            task_id="t-123",
+            project_id="proj",
+            workspace_path="/tmp/ws",
+        )
+    )
+    assert result["plan_found"] is False

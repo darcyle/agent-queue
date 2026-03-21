@@ -77,3 +77,37 @@ def test_flush_buffer():
     batch = obs.flush_buffer(12345)
     assert len(batch) == 2
     assert obs.get_buffer_size(12345) == 0
+
+
+def test_on_message_buffers_passing_message():
+    obs = _make_observer()
+    obs.on_message(_make_message("the particle system crashed again"))
+    assert obs.get_buffer_size(12345) == 1
+
+
+def test_on_message_drops_failing_message():
+    obs = _make_observer()
+    obs.on_message(_make_message("ok"))
+    assert obs.get_buffer_size(12345) == 0
+
+
+def test_on_message_disabled_drops_all():
+    obs = _make_observer(enabled=False)
+    obs.on_message(_make_message("the particle system is broken"))
+    assert obs.get_buffer_size(12345) == 0
+
+
+def test_batch_ready_by_count():
+    from src.config import ObservationConfig
+    from src.chat_observer import ChatObserver
+    config = ObservationConfig(max_buffer_size=3)
+    obs = ChatObserver(config, project_profiles={"my-game": {"particle"}})
+    for i in range(3):
+        obs.on_message(_make_message(f"particle issue {i}"))
+    assert obs.is_batch_ready(12345) is True
+
+
+def test_batch_not_ready_under_count():
+    obs = _make_observer()
+    obs.on_message(_make_message("the particle system crashed"))
+    assert obs.is_batch_ready(12345) is False

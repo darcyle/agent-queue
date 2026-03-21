@@ -404,6 +404,56 @@ class Supervisor:
             _reflection_trigger="hook.completed",
         )
 
+    async def on_task_completed(
+        self,
+        task_id: str,
+        project_id: str,
+        workspace_path: str,
+    ) -> dict:
+        """Handle a task.completed event.
+
+        Called by the orchestrator's completion pipeline BEFORE merge.
+        Discovers plan files, triggers reflection, and may create
+        follow-up work.
+
+        Returns a dict with "plan_found" (bool) so the orchestrator
+        can transition to AWAITING_PLAN_APPROVAL if needed.
+
+        Never raises — errors are caught, returns {"plan_found": False}.
+        """
+        try:
+            if project_id:
+                self.set_active_project(project_id)
+
+            result = await self.handler.execute(
+                "process_task_completion", {
+                    "task_id": task_id,
+                    "workspace_path": workspace_path,
+                }
+            )
+
+            if self._provider:
+                trigger = "task.completed"
+                summary = f"Task {task_id} completed"
+                if result.get("plan_found"):
+                    summary += f" — plan found with {result.get('steps_count', 0)} steps"
+
+                from src.tool_registry import ToolRegistry
+                registry = ToolRegistry()
+                active_tools = {t["name"]: t for t in registry.get_core_tools()}
+
+                await self.reflect(
+                    trigger=trigger,
+                    action_summary=summary,
+                    action_results=[{"tool": "process_task_completion", "result": result}],
+                    messages=[],
+                    active_tools=active_tools,
+                )
+
+            return result if isinstance(result, dict) else {"plan_found": False}
+        except Exception:
+            return {"plan_found": False}
+
     async def _execute_tool(self, name: str, input_data: dict) -> dict:
         """Execute a tool call via the shared CommandHandler.
 

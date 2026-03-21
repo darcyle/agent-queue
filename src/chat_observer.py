@@ -15,10 +15,11 @@ Stage 1 Filter Logic:
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Awaitable
 
 if TYPE_CHECKING:
     from src.config import ObservationConfig
@@ -42,17 +43,22 @@ class ChatObserver:
         self,
         config: ObservationConfig,
         project_profiles: dict[str, set[str]] | None = None,
+        on_batch_ready: Callable[[int, list[dict]], Awaitable[None]] | None = None,
     ):
         """Initialize the observer.
 
         Args:
             config: Observation configuration
             project_profiles: Map of project_id -> set of project-specific terms
+            on_batch_ready: Callback invoked when a batch is ready for analysis
         """
         self._config = config
         self._project_profiles = project_profiles or {}
         self._buffers: dict[int, list[dict]] = defaultdict(list)
         self._buffer_timestamps: dict[int, float] = {}
+        self._on_batch_ready = on_batch_ready
+        self._running = False
+        self._timer_task: asyncio.Task | None = None
 
     @property
     def enabled(self) -> bool:
@@ -143,3 +149,89 @@ class ChatObserver:
     def pending_channel_ids(self) -> list[int]:
         """Return list of channel IDs with buffered messages."""
         return list(self._buffers.keys())
+
+    def on_message(self, message: dict) -> None:
+        """Process an incoming message through Stage 1 filter.
+
+        If the message passes the filter, it is buffered. Otherwise it is dropped.
+
+        Args:
+            message: Message dict with channel_id, project_id, author, content, etc.
+        """
+        if self.passes_stage1(message):
+            self.buffer_message(message)
+
+    def is_batch_ready(self, channel_id: int) -> bool:
+        """Check if a channel's buffer is ready for batch analysis.
+
+        A batch is ready when:
+        - Buffer size >= max_buffer_size (count threshold)
+        - OR buffer age >= batch_window_seconds (time threshold)
+
+        Args:
+            channel_id: Channel to check
+
+        Returns:
+            True if the batch should be processed now
+        """
+        buffer_size = self.get_buffer_size(channel_id)
+        if buffer_size == 0:
+            return False
+
+        # Ready by count
+        if buffer_size >= self._config.max_buffer_size:
+            return True
+
+        # Ready by time
+        if channel_id in self._buffer_timestamps:
+            age = time.time() - self._buffer_timestamps[channel_id]
+            if age >= self._config.batch_window_seconds:
+                return True
+
+        return False
+
+    async def start(self) -> None:
+        """Start the background batch timer loop."""
+        if not self._config.enabled:
+            return
+        self._running = True
+        self._timer_task = asyncio.create_task(self._batch_loop())
+
+    async def stop(self) -> None:
+        """Stop the background batch timer loop."""
+        self._running = False
+        if self._timer_task and not self._timer_task.done():
+            self._timer_task.cancel()
+            try:
+                await self._timer_task
+            except asyncio.CancelledError:
+                pass
+            self._timer_task = None
+
+    async def _batch_loop(self) -> None:
+        """Background loop that checks for ready batches periodically."""
+        while self._running:
+            try:
+                await asyncio.sleep(10)  # Check every 10 seconds
+                await self._check_ready_batches()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                # Log error but keep loop running
+                pass
+
+    async def _check_ready_batches(self) -> None:
+        """Check all channels for ready batches and process them."""
+        for channel_id in list(self._buffers.keys()):
+            if self.is_batch_ready(channel_id):
+                await self._process_batch(channel_id)
+
+    async def _process_batch(self, channel_id: int) -> None:
+        """Process a ready batch by invoking the callback.
+
+        Args:
+            channel_id: Channel whose batch is ready
+        """
+        batch = self.flush_buffer(channel_id)
+        if self._on_batch_ready and batch:
+            await self._on_batch_ready(channel_id, batch)
