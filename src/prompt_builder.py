@@ -43,10 +43,12 @@ class PromptBuilder:
         self,
         project_id: str | None = None,
         memory_manager: Any | None = None,
+        rule_manager: Any | None = None,
         prompts_dir: Path | str | None = None,
     ):
         self._project_id = project_id
         self._memory_manager = memory_manager
+        self._rule_manager = rule_manager
         self._prompts_dir = Path(prompts_dir) if prompts_dir else _DEFAULT_PROMPTS_DIR
 
         # Layer state
@@ -165,9 +167,22 @@ class PromptBuilder:
             pass  # graceful degradation
 
     async def load_relevant_rules(self, query: str) -> None:
-        """Layer 3: Load relevant rules. Stub for Phase 1 — always empty."""
-        # Implemented in Phase 2
-        self._rules = ""
+        """Layer 3: Load relevant rules from the rule system.
+
+        Uses RuleManager to load all applicable rules for the current
+        project (plus globals). Without memsearch, loads ALL rules.
+        Future: semantic search against query for relevance filtering.
+        """
+        if not self._rule_manager or not self._project_id:
+            self._rules = ""
+            return
+        try:
+            rules_text = self._rule_manager.get_rules_for_prompt(
+                self._project_id, query
+            )
+            self._rules = rules_text
+        except Exception:
+            self._rules = ""  # graceful degradation
 
     def add_context(self, name: str, content: str) -> None:
         """Layer 4: Add a named context block."""

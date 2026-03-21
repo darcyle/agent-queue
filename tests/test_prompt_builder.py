@@ -376,3 +376,61 @@ def test_task_agent_assembly_ordering(prompts_dir):
     upstream_pos = prompt.index("Completed Upstream Work")
     task_pos = prompt.index("Fix the login endpoint")
     assert sys_pos < rules_pos < upstream_pos < task_pos
+
+
+# ------------------------------------------------------------------
+# Rule loading via RuleManager (Phase 2)
+# ------------------------------------------------------------------
+
+
+def test_load_relevant_rules_from_rule_manager(tmp_path, prompts_dir):
+    """load_relevant_rules populates Layer 3 from RuleManager."""
+    import asyncio
+    from src.prompt_builder import PromptBuilder
+    from src.rule_manager import RuleManager
+
+    rm = RuleManager(storage_root=str(tmp_path))
+    rm.save_rule(
+        "rule-style", "proj", "passive",
+        "# Code Style\n\n## Intent\nUse black formatter.",
+    )
+    rm.save_rule(
+        "rule-global", None, "passive",
+        "# Global\n\n## Intent\nBe nice.",
+    )
+
+    builder = PromptBuilder(
+        project_id="proj",
+        rule_manager=rm,
+        prompts_dir=prompts_dir,
+    )
+    builder.set_identity("simple")
+    asyncio.get_event_loop().run_until_complete(
+        builder.load_relevant_rules("code formatting")
+    )
+    system_prompt, _ = builder.build()
+
+    assert "Code Style" in system_prompt
+    assert "Global" in system_prompt
+    assert "Applicable Rules" in system_prompt
+
+
+def test_load_relevant_rules_empty_when_no_rules(prompts_dir):
+    """load_relevant_rules produces no output when no rules exist."""
+    import asyncio
+    from src.prompt_builder import PromptBuilder
+    from src.rule_manager import RuleManager
+
+    rm = RuleManager(storage_root="/nonexistent")
+    builder = PromptBuilder(
+        project_id="proj",
+        rule_manager=rm,
+        prompts_dir=prompts_dir,
+    )
+    builder.set_identity("simple")
+    asyncio.get_event_loop().run_until_complete(
+        builder.load_relevant_rules("anything")
+    )
+    system_prompt, _ = builder.build()
+
+    assert "Applicable Rules" not in system_prompt
