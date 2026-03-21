@@ -6,7 +6,7 @@ their business logic here, keeping formatting and presentation separate.
 
 This is the Command Pattern in action: every operation the system supports
 (50+ commands) is routed through CommandHandler.execute(name, args).  The
-two callers -- Discord slash commands and ChatAgent LLM tool-use -- never
+two callers -- Discord slash commands and Supervisor LLM tool-use -- never
 contain business logic themselves; they translate their inputs into a dict,
 call execute(), and format the returned dict for their respective UIs.
 
@@ -758,7 +758,7 @@ class CommandHandler:
     """Unified command execution layer for AgentQueue (Command Pattern).
 
     This is the single code path for every operation in the system.  Both
-    the Discord slash commands and the ChatAgent LLM tools call
+    the Discord slash commands and the Supervisor LLM tools call
     ``handler.execute(name, args)`` -- neither contains business logic.
 
     Convention for command methods:
@@ -2282,10 +2282,10 @@ class CommandHandler:
         }
 
     async def _cmd_get_task_dependencies(self, args: dict) -> dict:
-        """Alias for ``_cmd_task_deps`` — used by the ChatAgent tool.
+        """Alias for ``_cmd_task_deps`` — used by the Supervisor tool.
 
         The ``/task-deps`` slash command uses ``task_deps`` while the
-        ChatAgent exposes the same data as ``get_task_dependencies``.
+        Supervisor exposes the same data as ``get_task_dependencies``.
         Both route through the same logic.
         """
         return await self._cmd_task_deps(args)
@@ -6487,7 +6487,7 @@ class CommandHandler:
     async def _cmd_load_tools(self, args: dict) -> dict:
         """Load a tool category's definitions for the current interaction.
 
-        The actual schema injection happens in the chat layer (ChatAgent),
+        The actual schema injection happens in the chat layer (Supervisor),
         not here. This command returns the list of tool names so the chat
         layer knows which schemas to add.
         """

@@ -3,13 +3,13 @@
 ``LoggedChatProvider`` wraps any ``ChatProvider`` and transparently logs
 every ``create_message()`` call — including timing, inputs, outputs, and
 errors — via an ``LLMLogger`` instance.  The caller can set the ``caller``
-attribute to tag log entries with the call site (e.g. "chat_agent.chat",
+attribute to tag log entries with the call site (e.g. "supervisor.chat",
 "hook_engine", "plan_parser").
 
 Usage::
 
     provider = create_chat_provider(config)
-    logged = LoggedChatProvider(provider, logger, caller="chat_agent.chat")
+    logged = LoggedChatProvider(provider, logger, caller="supervisor.chat")
     response = await logged.create_message(messages=..., system=...)
 
 The wrapper is intentionally thin: it delegates everything to the inner

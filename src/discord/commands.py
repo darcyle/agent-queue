@@ -1480,7 +1480,7 @@ async def _async_git_output(
 def setup_commands(bot: commands.Bot) -> None:
     """Register all slash commands on the bot."""
 
-    # Shortcut — the shared command handler is owned by the ChatAgent.
+    # Shortcut — the shared command handler is owned by the Supervisor.
     # Every slash command calls `handler.execute(name, args)` for its
     # business logic and only handles Discord-specific formatting here.
     handler = bot.agent.handler

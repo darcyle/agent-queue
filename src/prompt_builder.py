@@ -1,7 +1,7 @@
 """Unified prompt assembly pipeline.
 
 Replaces prompt_registry.py, prompt_manager.py, and scattered string
-concatenation across orchestrator, adapters, chat_agent, and hooks.
+concatenation across orchestrator, adapters, supervisor, and hooks.
 """
 
 from __future__ import annotations

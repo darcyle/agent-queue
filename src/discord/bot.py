@@ -1,7 +1,7 @@
 """Discord integration layer -- connects the orchestrator to Discord via discord.py.
 
 AgentQueueBot extends ``commands.Bot`` with:
-- LLM-powered chat (via ChatAgent) that lets users interact with the orchestrator
+- LLM-powered chat (via Supervisor) that lets users interact with the orchestrator
   through natural language
 - Per-project channel routing so each project's notifications land in the right place
 - Thread-based task output streaming (one Discord thread per agent execution)
@@ -15,7 +15,7 @@ and kept in sync at runtime when channels are created, reassigned, or deleted.
 Message flow::
 
     Discord message -> on_message routing -> _build_message_history
-    -> ChatAgent.chat() -> tool-use loop -> _send_long_message -> Discord reply
+    -> Supervisor.chat() -> tool-use loop -> _send_long_message -> Discord reply
 
 See specs/discord/discord.md for the full specification.
 """
@@ -33,7 +33,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from src.chat_agent import ChatAgent
+from src.supervisor import Supervisor
 from src.config import AppConfig
 from src.discord.notifications import format_server_started, format_server_started_embed
 from src.models import TaskStatus
@@ -63,7 +63,7 @@ class AgentQueueBot(commands.Bot):
     - Registers slash commands and an authorization guard on startup
     - Resolves per-project Discord channels from the database for fast routing
     - Sets orchestrator callbacks for notifications and thread creation
-    - Handles incoming messages: routes them through ChatAgent for LLM responses,
+    - Handles incoming messages: routes them through Supervisor for LLM responses,
       serializing concurrent requests per channel to avoid duplicate processing
     """
     def __init__(self, config: AppConfig, orchestrator: Orchestrator):
@@ -72,7 +72,7 @@ class AgentQueueBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.config = config
         self.orchestrator = orchestrator
-        self.agent = ChatAgent(orchestrator, config, llm_logger=orchestrator.llm_logger)
+        self.agent = Supervisor(orchestrator, config, llm_logger=orchestrator.llm_logger)
         # Register a callback so that project deletions (from any caller)
         # automatically purge the bot's in-memory channel caches.
         self.agent.handler._on_project_deleted = self.clear_project_channels
@@ -501,7 +501,7 @@ class AgentQueueBot(commands.Bot):
                             self._post_analyzer_auto_action
                         )
 
-        # Initialize LLM client via ChatAgent
+        # Initialize LLM client via Supervisor
         try:
             if self.agent.initialize():
                 print(f"Chat agent ready (model: {self.agent.model})")
@@ -1090,7 +1090,7 @@ class AgentQueueBot(commands.Bot):
             self._channel_summaries[channel_id] = (last_id, summary)
 
     async def on_message(self, message: discord.Message) -> None:
-        """Route incoming Discord messages to the ChatAgent for LLM processing.
+        """Route incoming Discord messages to the Supervisor for LLM processing.
 
         Routing logic (a message is handled if ANY of these match):
         1. Posted in the global bot channel (configured in config.yaml)
