@@ -2837,6 +2837,96 @@ class CommandHandler:
         )
         return {"approved": args["task_id"], "title": task.title}
 
+    async def _cmd_process_task_completion(self, args: dict) -> dict:
+        """Process task completion: discover plan files and archive them.
+
+        Called by Supervisor after a task completes. Searches for plan files
+        in the workspace, parses them, archives them to .claude/plans/, and
+        stores plan data via task_context for later approval flow.
+
+        Returns {"plan_found": bool, "steps_count": int, ...}
+        """
+        import logging
+        from src import plan_parser
+
+        logger = logging.getLogger(__name__)
+
+        # Check if auto_task is enabled
+        if not self.orchestrator.config.auto_task.enabled:
+            return {"plan_found": False, "reason": "Auto-task generation is disabled"}
+
+        task_id = args.get("task_id")
+        workspace_path = args.get("workspace_path")
+
+        if not task_id or not workspace_path:
+            return {"plan_found": False, "reason": "Missing required parameters"}
+
+        # Look up the task to check if it's a subtask
+        task = await self.db.get_task(task_id)
+        if not task:
+            return {"plan_found": False, "reason": f"Task {task_id} not found"}
+
+        # Don't process plans for plan-generated subtasks (avoid recursion)
+        if task.is_plan_subtask:
+            return {"plan_found": False, "reason": "Task is already a plan subtask"}
+
+        # Find a plan file in the workspace
+        plan_patterns = self.orchestrator.config.auto_task.plan_file_patterns
+        plan_file = plan_parser.find_plan_file(workspace_path, plan_patterns)
+
+        if not plan_file:
+            return {"plan_found": False, "reason": "No plan file found"}
+
+        # Read and parse the plan
+        try:
+            content = plan_parser.read_plan_file(plan_file)
+            max_steps = self.orchestrator.config.auto_task.max_steps_per_plan
+            steps, quality = plan_parser.parse_and_generate_steps(
+                content, max_steps=max_steps
+            )
+        except Exception as e:
+            logger.warning("Plan parsing failed for task %s: %s", task_id, e)
+            return {"plan_found": False, "reason": f"Plan parsing failed: {e}"}
+
+        if not steps:
+            return {"plan_found": False, "reason": "No actionable steps found in plan"}
+
+        # Archive the plan file to .claude/plans/{task_id}-plan.md
+        try:
+            plans_dir = os.path.join(workspace_path, ".claude", "plans")
+            os.makedirs(plans_dir, exist_ok=True)
+            archived_path = os.path.join(plans_dir, f"{task_id}-plan.md")
+
+            import shutil
+            shutil.copy2(plan_file, archived_path)
+            logger.info("Archived plan file to %s", archived_path)
+        except Exception as e:
+            logger.warning("Failed to archive plan file for task %s: %s", task_id, e)
+            archived_path = plan_file  # Use original path if archival fails
+
+        # Store plan data in task_context
+        try:
+            import json
+            await self.db.set_task_context(
+                task_id, "plan_steps", json.dumps(steps)
+            )
+            await self.db.set_task_context(
+                task_id, "plan_archived_path", archived_path
+            )
+            await self.db.set_task_context(
+                task_id, "plan_quality_score", str(quality.quality_score)
+            )
+        except Exception as e:
+            logger.warning("Failed to store plan context for task %s: %s", task_id, e)
+
+        return {
+            "plan_found": True,
+            "steps_count": len(steps),
+            "plan_file": plan_file,
+            "archived_path": archived_path,
+            "quality_score": quality.quality_score,
+        }
+
     async def _cmd_approve_plan(self, args: dict) -> dict:
         """Approve a plan and create subtasks from it.
 

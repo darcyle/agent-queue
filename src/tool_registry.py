@@ -155,6 +155,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_archived": "system",
     "restore_task": "system",
     "approve_task": "system",
+    "process_task_completion": "system",
     "approve_plan": "system",
     "reject_plan": "system",
     "delete_plan": "system",
@@ -925,6 +926,18 @@ _ALL_TOOL_DEFINITIONS = [
                 "task_id": {"type": "string", "description": "Task ID to approve"},
             },
             "required": ["task_id"],
+        },
+    },
+    {
+        "name": "process_task_completion",
+        "description": "Internal: Process a task completion to discover and archive plan files. Called by Supervisor after task completion.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID that completed"},
+                "workspace_path": {"type": "string", "description": "Path to the workspace where the task was executed"},
+            },
+            "required": ["task_id", "workspace_path"],
         },
     },
     {
