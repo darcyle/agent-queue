@@ -454,6 +454,82 @@ class Supervisor:
         except Exception:
             return {"plan_found": False}
 
+    async def observe(
+        self,
+        messages: list[dict],
+        project_id: str,
+    ) -> dict:
+        """Stage 2 LLM pass for passive observation.
+
+        Receives a batch of messages that passed the Stage 1 keyword
+        filter. Makes a lightweight LLM call to decide:
+        - "ignore" — nothing notable
+        - "memory" — update project memory with observation
+        - "suggest" — post a suggestion to the channel
+
+        Returns a dict with "action" key and optional "content",
+        "suggestion_type", "task_title" keys.
+
+        Never raises — returns {"action": "ignore"} on any error.
+        """
+        if not self._provider or not messages:
+            return {"action": "ignore"}
+
+        lines = []
+        for m in messages:
+            author = m.get("author", "unknown")
+            content = m.get("content", "")
+            lines.append(f"[{author}]: {content}")
+        conversation = "\n".join(lines)
+
+        prompt = (
+            f"## Passive Observation — Project: {project_id}\n\n"
+            f"The following conversation happened in the project channel. "
+            f"You are observing passively — do NOT take action on the project.\n\n"
+            f"### Conversation\n{conversation}\n\n"
+            f"### Instructions\n"
+            f"Decide one of:\n"
+            f'1. **ignore** — nothing notable. Respond: {{"action": "ignore"}}\n'
+            f'2. **memory** — worth remembering. Respond: '
+            f'{{"action": "memory", "content": "what to remember"}}\n'
+            f'3. **suggest** — actionable work item. Respond: '
+            f'{{"action": "suggest", "content": "suggestion text", '
+            f'"suggestion_type": "task|answer|context|warning", '
+            f'"task_title": "optional task title"}}\n\n'
+            f"Respond with ONLY the JSON object, no other text."
+        )
+
+        try:
+            resp = await self._provider.create_message(
+                messages=[{"role": "user", "content": prompt}],
+                system=(
+                    "You are observing a project channel passively. "
+                    "Respond with a single JSON object. No other text."
+                ),
+                max_tokens=256,
+            )
+            text = "\n".join(resp.text_parts).strip()
+            return self._parse_observe_response(text)
+        except Exception:
+            return {"action": "ignore"}
+
+    def _parse_observe_response(self, text: str) -> dict:
+        """Parse the LLM's observation response into a structured dict."""
+        import json as _json
+        if text.startswith("```"):
+            lines = text.split("\n")
+            text = "\n".join(
+                l for l in lines if not l.startswith("```")
+            ).strip()
+        try:
+            result = _json.loads(text)
+            if isinstance(result, dict) and "action" in result:
+                if result["action"] in ("ignore", "memory", "suggest"):
+                    return result
+        except (_json.JSONDecodeError, TypeError):
+            pass
+        return {"action": "ignore"}
+
     async def _execute_tool(self, name: str, input_data: dict) -> dict:
         """Execute a tool call via the shared CommandHandler.
 

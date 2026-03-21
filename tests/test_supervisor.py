@@ -327,3 +327,57 @@ def test_on_task_completed_handles_error():
         )
     )
     assert result["plan_found"] is False
+
+
+def test_observe_method_exists():
+    """Supervisor has an observe() method for passive observation."""
+    sup = _make_supervisor()
+    assert hasattr(sup, "observe")
+    assert callable(sup.observe)
+
+
+def test_observe_returns_decision():
+    """observe() returns a dict with action and content."""
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.tool_uses = []
+    mock_resp.text_parts = ['{"action": "ignore"}']
+    sup._provider.create_message = AsyncMock(return_value=mock_resp)
+
+    result = asyncio.get_event_loop().run_until_complete(
+        sup.observe(
+            messages=[{
+                "author": "alice",
+                "content": "the particle system needs work",
+                "timestamp": 1000.0,
+            }],
+            project_id="my-game",
+        )
+    )
+    assert isinstance(result, dict)
+    assert "action" in result
+
+
+def test_observe_without_provider_returns_ignore():
+    """observe() returns ignore when LLM is not available."""
+    sup = _make_supervisor()
+    sup._provider = None
+    result = asyncio.get_event_loop().run_until_complete(
+        sup.observe(messages=[], project_id="test")
+    )
+    assert result["action"] == "ignore"
+
+
+def test_observe_handles_llm_error():
+    """observe() returns ignore on LLM error (never crashes)."""
+    sup = _make_supervisor()
+    sup._provider = MagicMock()
+    sup._provider.create_message = AsyncMock(side_effect=Exception("LLM down"))
+    result = asyncio.get_event_loop().run_until_complete(
+        sup.observe(
+            messages=[{"author": "bob", "content": "deploy failed", "timestamp": 1.0}],
+            project_id="test",
+        )
+    )
+    assert result["action"] == "ignore"
