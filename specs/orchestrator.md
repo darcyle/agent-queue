@@ -753,12 +753,24 @@ Pushes the task branch and creates a PR. Returns the PR URL or `None`.
 ## 12. Plan-Generated Tasks (Two-Step Approval Workflow)
 
 Plan generation follows a two-step workflow: **discover → approval → create subtasks**.
-After a task completes, the orchestrator discovers any plan file, parses it, stores the
-parsed data, and transitions the task to `AWAITING_PLAN_APPROVAL`.  Subtasks are only
-created once a human approves the plan via the `approve_plan` command (see
-`command-handler.md`).
+After a task completes, the orchestrator delegates plan discovery to the Supervisor
+via `_phase_plan_discover`. The Supervisor calls `process_task_completion` to find,
+parse, and store plan files, then returns whether a plan was found. If found, the
+task transitions to `AWAITING_PLAN_APPROVAL`. Subtasks are only created once a
+human approves the plan via the `approve_plan` command (see `command-handler.md`).
 
-### 12a. `_discover_and_store_plan(task, workspace) -> bool`
+### 12a. Plan Discovery via Supervisor (`_phase_plan_discover`)
+
+Called as part of the completion pipeline, BEFORE merge (so the workspace is still
+available). Delegates to `Supervisor.on_task_completed()` which calls the
+`process_task_completion` command in CommandHandler.
+
+If no Supervisor is set (legacy mode), falls back to `_phase_plan_generate()`.
+
+The `process_task_completion` command wraps the same logic as the former
+`_discover_and_store_plan`:
+
+### 12a-legacy. `_discover_and_store_plan(task, workspace) -> bool` (legacy fallback)
 
 Called immediately after any successful COMPLETED path in `_execute_task`.  Returns `True`
 if a plan was found, parsed, and stored for approval; `False` otherwise.

@@ -1,5 +1,11 @@
 # Chat Analyzer Specification
 
+> **DEPRECATED:** The ChatAnalyzer has been replaced by the ChatObserver
+> (`src/chat_observer.py`) + Supervisor observation mode (`Supervisor.observe()`).
+> See `specs/chat-observer.md` for the current specification.
+> The ChatAnalyzer code is commented out and will be removed in a future cleanup pass.
+> The `ChatAnalyzerConfig` in config.py emits a deprecation warning when enabled.
+
 **Source files:** `src/chat_analyzer.py`
 **Related config:** `src/config.py` (`ChatAnalyzerConfig`)
 **Related models:** `src/discord/notifications.py` (`AnalyzerSuggestionView`, `format_analyzer_suggestion_embed`)

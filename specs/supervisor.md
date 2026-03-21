@@ -30,6 +30,21 @@ Entry point for hook engine LLM invocations. Sets active project,
 combines context with prompt, processes through `chat()` with
 `_reflection_trigger="hook.completed"`.
 
+**observe(messages, project_id) → dict**
+Stage 2 LLM pass for passive observation. Receives a batch of messages
+that passed the ChatObserver's Stage 1 keyword filter. Makes a lightweight
+LLM call (max_tokens=256) to decide: ignore, update memory, or post
+a suggestion. Returns a dict with "action" key. Never raises — returns
+`{"action": "ignore"}` on any error.
+
+**on_task_completed(task_id, project_id, workspace_path) → dict**
+Handles task.completed events. Called by the orchestrator's completion
+pipeline BEFORE merge (while workspace is still available). Delegates
+to `process_task_completion` command to discover plan files, then runs
+a reflection pass. Returns dict with `plan_found` (bool) so the
+orchestrator can transition to AWAITING_PLAN_APPROVAL if needed.
+Never raises — returns `{"plan_found": False}` on error.
+
 **summarize(transcript) → str | None**
 Summarizes a conversation transcript.
 

@@ -1,5 +1,10 @@
 # ChatAgent Specification
 
+> **DEPRECATED:** `ChatAgent` has been renamed to `Supervisor` (`src/supervisor.py`).
+> `src/chat_agent.py` is now a backward-compatibility shim that re-exports `Supervisor`
+> as `ChatAgent`. See `specs/supervisor.md` for the current specification.
+> This spec is retained for historical reference only.
+
 ## 1. Overview
 
 `ChatAgent` (`src/chat_agent.py`) is the LLM-powered natural language interface for the AgentQueue system. It sits between Discord (or any caller) and the `CommandHandler`, translating free-form user messages into structured tool calls and returning plain-English responses.
