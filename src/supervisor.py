@@ -20,6 +20,7 @@ Design boundaries:
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -374,6 +375,22 @@ class Supervisor:
                         finally:
                             self._reflection_retry_active = False
 
+                # --- Adequacy safety net ---
+                # Catches obviously inadequate responses even when
+                # reflection is disabled or the circuit-breaker tripped.
+                if (response and tool_actions
+                        and not self._check_response_adequacy(
+                            text, response, tool_actions)):
+                    synthesized = await self._synthesize_response(
+                        user_text=text,
+                        tool_actions=tool_actions,
+                        accumulated_results=accumulated_tool_results,
+                        messages=messages,
+                        active_tools=active_tools,
+                    )
+                    if synthesized:
+                        response = synthesized
+
                 if response:
                     return response
                 return "Done."
@@ -595,6 +612,55 @@ class Supervisor:
         except (_json.JSONDecodeError, TypeError):
             pass
         return {"action": "ignore"}
+
+    def _check_response_adequacy(
+        self,
+        user_text: str,
+        response: str,
+        tool_actions: list[str],
+    ) -> bool:
+        """Cheap deterministic check for obviously inadequate responses.
+
+        Returns ``True`` if the response looks adequate, ``False`` if it is
+        clearly too thin to be useful.  This is a safety net that catches
+        cases even when reflection is disabled or the circuit-breaker has
+        tripped.
+        """
+        # 1. Generic fallback pattern: "Done. Actions taken: ..."
+        if re.match(r"^Done\.\s*Actions taken:\s*", response):
+            return False
+
+        # 2. User asked multiple things (3+ numbered/bullet items) but
+        #    the response is very short — almost certainly didn't address them.
+        bullet_pattern = re.findall(
+            r"(?:^|\n)\s*(?:\d+[\.\)]\s|[-*•]\s)", user_text,
+        )
+        if len(bullet_pattern) >= 3 and len(response) < 100:
+            return False
+
+        # 3. Response contains nothing beyond tool names — no domain content.
+        #    Strip out tool names (the part before any parenthesised detail)
+        #    and common filler words, then check if anything meaningful remains.
+        cleaned = response
+        for action in tool_actions:
+            # Remove both the full label "tool(detail)" and just "tool"
+            tool_name = action.split("(")[0]
+            cleaned = cleaned.replace(action, "")
+            cleaned = cleaned.replace(tool_name, "")
+        # Strip markdown, punctuation, whitespace, and common filler words
+        cleaned = re.sub(r"[*_`#\-•\d\.\,\:\;\!\?\(\)\[\]]", " ", cleaned)
+        filler = {
+            "done", "actions", "taken", "completed", "ok", "okay",
+            "ran", "called", "executed", "the", "a", "an", "and",
+            "or", "is", "was", "were", "has", "have", "had", "i",
+            "it", "to", "for", "of", "in", "on", "with", "that",
+            "this", "successfully", "finished", "result", "results",
+        }
+        words = [w for w in cleaned.lower().split() if w not in filler]
+        if tool_actions and not words:
+            return False
+
+        return True
 
     async def _synthesize_response(
         self,
