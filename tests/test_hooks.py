@@ -12,7 +12,7 @@ from src.config import AppConfig, HookEngineConfig
 from src.database import Database
 from src.event_bus import EventBus
 from src.hooks import HookEngine
-from src.models import Hook, HookRun
+from src.models import Hook, HookRun, ProjectStatus
 
 
 @pytest.fixture
@@ -690,3 +690,62 @@ class TestSkipLlmFlag:
         runs = await db.list_hook_runs(hook.id)
         assert len(runs) == 1
         assert runs[0].status == "completed"
+
+
+# --- Paused project skipping ---
+
+
+class TestPausedProjectSkipping:
+    @pytest.mark.asyncio
+    async def test_periodic_hook_skipped_when_project_paused(self, db, engine):
+        """Periodic hooks should not fire when their project is paused."""
+        project = await _create_project(db)
+        hook = await _create_hook(
+            db,
+            trigger='{"type": "periodic", "interval_seconds": 10}',
+            cooldown_seconds=0,
+            context_steps='[{"type": "shell", "command": "echo test", "skip_llm_if_exit_zero": true}]',
+        )
+        engine._last_run_time.pop(hook.id, None)
+
+        # Pause the project
+        await db.update_project(project.id, status=ProjectStatus.PAUSED)
+
+        await engine.tick()
+        assert hook.id not in engine._running
+
+    @pytest.mark.asyncio
+    async def test_periodic_hook_fires_when_project_active(self, db, engine):
+        """Periodic hooks should fire normally when project is active."""
+        await _create_project(db)
+        hook = await _create_hook(
+            db,
+            trigger='{"type": "periodic", "interval_seconds": 10}',
+            cooldown_seconds=0,
+            context_steps='[{"type": "shell", "command": "echo test", "skip_llm_if_exit_zero": true}]',
+        )
+        engine._last_run_time.pop(hook.id, None)
+
+        await engine.tick()
+        assert hook.id in engine._running
+
+    @pytest.mark.asyncio
+    async def test_event_hook_skipped_when_project_paused(self, db, bus, engine):
+        """Event-driven hooks should not fire when their project is paused."""
+        project = await _create_project(db)
+        hook = await _create_hook(
+            db,
+            id="event-paused-hook",
+            name="event-paused-hook",
+            trigger='{"type": "event", "event_type": "task_completed"}',
+            cooldown_seconds=0,
+            context_steps='[{"type": "shell", "command": "echo done", "skip_llm_if_exit_zero": true}]',
+        )
+
+        # Pause the project
+        await db.update_project(project.id, status=ProjectStatus.PAUSED)
+
+        await bus.emit("task_completed", {"task_id": "t1", "project_id": project.id})
+        await asyncio.sleep(0.1)
+
+        assert hook.id not in engine._running

@@ -74,7 +74,7 @@ from src.database import Database
 from src.event_bus import EventBus
 from src.file_watcher import FileWatcher, WatchRule
 from src.logging_config import CorrelationContext
-from src.models import Hook, HookRun, Task, TaskStatus
+from src.models import Hook, HookRun, ProjectStatus, Task, TaskStatus
 from src.prompt_registry import registry as _prompt_registry
 
 logger = logging.getLogger(__name__)
@@ -294,11 +294,27 @@ class HookEngine:
         now = time.time()
         max_concurrent = self.config.hook_engine.max_concurrent_hooks
 
+        # Pre-fetch project statuses to skip hooks for paused projects.
+        checked_projects: dict[str, bool] = {}  # project_id -> is_paused
+        for hook in hooks:
+            pid = hook.project_id
+            if pid not in checked_projects:
+                project = await self.db.get_project(pid)
+                checked_projects[pid] = (
+                    project is not None and project.status == ProjectStatus.PAUSED
+                )
+
         for hook in hooks:
             if len(self._running) >= max_concurrent:
                 break  # Global concurrency cap reached
             if hook.id in self._running:
                 continue  # Already in-flight — skip
+            if checked_projects.get(hook.project_id, False):
+                logger.debug(
+                    "Skipping hook %s (%s): project %s is paused",
+                    hook.id, hook.name, hook.project_id,
+                )
+                continue
 
             trigger = json.loads(hook.trigger)
             trigger_type = trigger.get("type")
@@ -370,6 +386,15 @@ class HookEngine:
             # Hooks are project-scoped — only fire on events from the same project
             event_project = data.get("project_id", "")
             if event_project and hook.project_id != event_project:
+                continue
+
+            # Skip hooks for paused projects
+            project = await self.db.get_project(hook.project_id)
+            if project and project.status == ProjectStatus.PAUSED:
+                logger.debug(
+                    "Skipping hook %s (%s): project %s is paused",
+                    hook.id, hook.name, hook.project_id,
+                )
                 continue
 
             if not self._check_cooldown(hook, now):
