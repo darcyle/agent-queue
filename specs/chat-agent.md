@@ -1,5 +1,10 @@
 # ChatAgent Specification
 
+> **DEPRECATED:** `ChatAgent` has been renamed to `Supervisor` (`src/supervisor.py`).
+> `src/chat_agent.py` is now a backward-compatibility shim that re-exports `Supervisor`
+> as `ChatAgent`. See `specs/supervisor.md` for the current specification.
+> This spec is retained for historical reference only.
+
 ## 1. Overview
 
 `ChatAgent` (`src/chat_agent.py`) is the LLM-powered natural language interface for the AgentQueue system. It sits between Discord (or any caller) and the `CommandHandler`, translating free-form user messages into structured tool calls and returning plain-English responses.
@@ -220,6 +225,12 @@ listing notes, or any project-scoped operation, use this project.
 
 This means the active project is communicated to the LLM through the system prompt, not through any special message or tool call.
 
+### System Prompt Assembly
+
+The system prompt is assembled using `PromptBuilder` (see `specs/prompt-builder.md`).
+`_build_system_prompt()` uses `PromptBuilder.set_identity("chat-agent-system")` with
+the `workspace_dir` variable, and optionally adds an active project context block.
+
 ---
 
 ## 5. History Compaction
@@ -345,7 +356,25 @@ Re-calls `initialize()`. Used by the Discord bot to recover from `anthropic.Auth
 
 ---
 
-## 8. Streaming
+## 8. Tiered Tool Loading
+
+The `chat()` method uses a mutable tool set per interaction:
+
+1. Initializes `active_tools` from `ToolRegistry.get_core_tools()` (~11 tools)
+2. Passes `active_tools` to each `create_message()` call
+3. When the LLM calls `load_tools(category)`, the category's tool definitions
+   are added to `active_tools` for subsequent turns
+4. Tool expansion does not persist across separate `chat()` invocations
+
+The LLM sees only core tools initially. It uses `browse_tools` to discover
+categories and `load_tools` to expand its capabilities as needed.
+
+Tool definitions live in `src/tool_registry.py`. The `TOOLS` name in
+`chat_agent.py` is a backward-compatible alias that returns all tools.
+
+---
+
+## 9. Streaming
 
 `ChatAgent` does not implement streaming. The `chat()` method is a coroutine that awaits the full LLM response before returning. The provider's `create_message()` interface returns a complete `ChatResponse` object, not an async generator.
 

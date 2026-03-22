@@ -511,23 +511,26 @@ class ClaudeAdapter(AgentAdapter):
         return None
 
     def _build_prompt(self) -> str:
-        """Assemble the full prompt from TaskContext fields.
+        """Build the final prompt from TaskContext using PromptBuilder."""
+        from src.prompt_builder import PromptBuilder
 
-        Combines the task description with optional acceptance criteria,
-        test commands, and attached context into a single markdown-formatted
-        prompt that the Claude Code agent receives as its initial instruction.
-        """
-        parts = [self._task.description]
+        builder = PromptBuilder()
+
+        # Main description (already assembled by orchestrator)
+        if self._task.description:
+            builder.add_context("description", self._task.description)
+
+        # Optional sections
         if self._task.acceptance_criteria:
-            parts.append("\n## Acceptance Criteria")
-            for c in self._task.acceptance_criteria:
-                parts.append(f"- {c}")
+            criteria = "\n".join(f"- {c}" for c in self._task.acceptance_criteria)
+            builder.add_context("acceptance_criteria", f"## Acceptance Criteria\n{criteria}")
+
         if self._task.test_commands:
-            parts.append("\n## Test Commands")
-            for cmd in self._task.test_commands:
-                parts.append(f"- `{cmd}`")
+            cmds = "\n".join(f"- `{c}`" for c in self._task.test_commands)
+            builder.add_context("test_commands", f"## Test Commands\n{cmds}")
+
         if self._task.attached_context:
-            parts.append("\n## Additional Context")
-            for ctx in self._task.attached_context:
-                parts.append(f"- {ctx}")
-        return "\n".join(parts)
+            combined = "\n".join(f"- {ctx}" for ctx in self._task.attached_context)
+            builder.add_context("additional_context", f"## Additional Context\n{combined}")
+
+        return builder.build_task_prompt()

@@ -1,7 +1,7 @@
 """Discord integration layer -- connects the orchestrator to Discord via discord.py.
 
 AgentQueueBot extends ``commands.Bot`` with:
-- LLM-powered chat (via ChatAgent) that lets users interact with the orchestrator
+- LLM-powered chat (via Supervisor) that lets users interact with the orchestrator
   through natural language
 - Per-project channel routing so each project's notifications land in the right place
 - Thread-based task output streaming (one Discord thread per agent execution)
@@ -15,7 +15,7 @@ and kept in sync at runtime when channels are created, reassigned, or deleted.
 Message flow::
 
     Discord message -> on_message routing -> _build_message_history
-    -> ChatAgent.chat() -> tool-use loop -> _send_long_message -> Discord reply
+    -> Supervisor.chat() -> tool-use loop -> _send_long_message -> Discord reply
 
 See specs/discord/discord.md for the full specification.
 """
@@ -33,7 +33,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from src.chat_agent import ChatAgent
+from src.supervisor import Supervisor
 from src.config import AppConfig
 from src.discord.notifications import format_server_started, format_server_started_embed
 from src.models import TaskStatus
@@ -63,7 +63,7 @@ class AgentQueueBot(commands.Bot):
     - Registers slash commands and an authorization guard on startup
     - Resolves per-project Discord channels from the database for fast routing
     - Sets orchestrator callbacks for notifications and thread creation
-    - Handles incoming messages: routes them through ChatAgent for LLM responses,
+    - Handles incoming messages: routes them through Supervisor for LLM responses,
       serializing concurrent requests per channel to avoid duplicate processing
     """
     def __init__(self, config: AppConfig, orchestrator: Orchestrator):
@@ -72,10 +72,13 @@ class AgentQueueBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.config = config
         self.orchestrator = orchestrator
-        self.agent = ChatAgent(orchestrator, config, llm_logger=orchestrator.llm_logger)
+        self.agent = Supervisor(orchestrator, config, llm_logger=orchestrator.llm_logger)
         # Register a callback so that project deletions (from any caller)
         # automatically purge the bot's in-memory channel caches.
         self.agent.handler._on_project_deleted = self.clear_project_channels
+        # Wire Supervisor into HookEngine for LLM invocations
+        if hasattr(self.orchestrator, 'hooks') and self.orchestrator.hooks:
+            self.orchestrator.hooks.set_supervisor(self.agent)
         self._channel: discord.TextChannel | None = None
         # Per-project channel cache: project_id -> channel
         self._project_channels: dict[str, discord.TextChannel] = {}
@@ -253,58 +256,10 @@ class AgentQueueBot(commands.Bot):
         if reattached:
             print(f"Reattached {reattached} notes view(s)")
 
-    async def _reattach_analyzer_views(self) -> None:
-        """Register persistent ChatAnalyzerSuggestionView buttons after bot restart.
-
-        Queries the database for pending suggestions and registers their views
-        so Accept/Dismiss buttons continue to work across restarts. Uses
-        custom_id encoding (``analyzer_accept:<id>`` / ``analyzer_dismiss:<id>``)
-        for persistence.
-        """
-        service = getattr(self, "_analyzer_service", None)
-        if not service:
-            return
-
-        try:
-            # Get recent pending suggestions (last 24h) to re-register
-            from src.database import Database
-            db: Database = self.orchestrator.db
-            # Query pending suggestions across all channels
-            cursor = await db._db.execute(
-                "SELECT id, suggestion_type, suggestion_text, project_id "
-                "FROM chat_analyzer_suggestions "
-                "WHERE status = 'pending' AND created_at >= ?",
-                (time.time() - 86400,),
-            )
-            rows = await cursor.fetchall()
-            if not rows:
-                return
-
-            from src.discord.notifications import ChatAnalyzerSuggestionView
-            reattached = 0
-            for row in rows:
-                try:
-                    view = ChatAnalyzerSuggestionView(
-                        suggestion_id=row["id"],
-                        suggestion_type=row["suggestion_type"],
-                        suggestion_text=row["suggestion_text"],
-                        project_id=row["project_id"],
-                        handler=self.agent.handler,
-                        db=db,
-                    )
-                    # Register without message_id — discord.py will match
-                    # by custom_id pattern
-                    self.add_view(view)
-                    reattached += 1
-                except Exception as e:
-                    print(
-                        f"Warning: could not reattach analyzer view for "
-                        f"suggestion {row['id']}: {e}"
-                    )
-            if reattached:
-                print(f"Reattached {reattached} analyzer suggestion view(s)")
-        except Exception as e:
-            print(f"Warning: could not reattach analyzer views: {e}")
+    # DEPRECATED: ChatAnalyzer replaced by ChatObserver (Phase 5)
+    # async def _reattach_analyzer_views(self) -> None:
+    #     """Register persistent ChatAnalyzerSuggestionView buttons after bot restart."""
+    #     pass
 
     def update_project_channel(
         self, project_id: str, channel: discord.TextChannel
@@ -480,28 +435,30 @@ class AgentQueueBot(commands.Bot):
                     # Pass command handler ref so interactive views
                     # (Retry/Skip/Approve buttons) can execute commands.
                     self.orchestrator.set_command_handler(self.agent.handler)
+                    # Wire Supervisor for post-task completion delegation
+                    self.orchestrator.set_supervisor(self.agent)
 
-                    # Wire up the chat analyzer's suggestion posting callback
-                    if self.orchestrator.chat_analyzer:
-                        from src.chat_analyzer_service import ChatAnalyzerService
-                        self._analyzer_service = ChatAnalyzerService(
-                            db=self.orchestrator.db,
-                            handler=self.agent.handler,
-                            bot=self,
-                        )
-                        self.orchestrator.chat_analyzer.set_post_suggestion_callback(
-                            self._post_analyzer_suggestion
-                        )
-                        # Wire up command handler and auto-execute for
-                        # memory-informed automatic actions
-                        self.orchestrator.chat_analyzer.set_command_handler(
-                            self.agent.handler
-                        )
-                        self.orchestrator.chat_analyzer.set_auto_execute_callback(
-                            self._post_analyzer_auto_action
-                        )
+                    # DEPRECATED: ChatAnalyzer replaced by ChatObserver (Phase 5)
+                    # if self.orchestrator.chat_analyzer:
+                    #     from src.chat_analyzer_service import ChatAnalyzerService
+                    #     self._analyzer_service = ChatAnalyzerService(
+                    #         db=self.orchestrator.db,
+                    #         handler=self.agent.handler,
+                    #         bot=self,
+                    #     )
+                    #     self.orchestrator.chat_analyzer.set_post_suggestion_callback(
+                    #         self._post_analyzer_suggestion
+                    #     )
+                    #     # Wire up command handler and auto-execute for
+                    #     # memory-informed automatic actions
+                    #     self.orchestrator.chat_analyzer.set_command_handler(
+                    #         self.agent.handler
+                    #     )
+                    #     self.orchestrator.chat_analyzer.set_auto_execute_callback(
+                    #         self._post_analyzer_auto_action
+                    #     )
 
-        # Initialize LLM client via ChatAgent
+        # Initialize LLM client via Supervisor
         try:
             if self.agent.initialize():
                 print(f"Chat agent ready (model: {self.agent.model})")
@@ -513,8 +470,8 @@ class AgentQueueBot(commands.Bot):
         # Reattach persistent NotesView buttons on existing messages
         await self._reattach_notes_views()
 
-        # Register persistent analyzer suggestion views so buttons survive restarts
-        await self._reattach_analyzer_views()
+        # DEPRECATED: ChatAnalyzer replaced by ChatObserver (Phase 5)
+        # await self._reattach_analyzer_views()
 
         # Start periodic buffer cleanup (evicts idle channel buffers)
         asyncio.create_task(self._periodic_buffer_cleanup())
@@ -693,110 +650,122 @@ class AgentQueueBot(commands.Bot):
                 return await self._send_long_message(channel, text)
         return None
 
-    async def _post_analyzer_suggestion(
-        self,
-        channel_id: int,
-        project_id: str,
-        suggestion_id: int,
-        suggestion_type: str,
-        suggestion_text: str,
-        task_title: str = "",
-        confidence: float = 0.0,
+    # DEPRECATED: ChatAnalyzer replaced by ChatObserver (Phase 5)
+    # async def _post_analyzer_suggestion(...) -> None:
+    #     """Post a chat analyzer suggestion (deprecated)."""
+    #     pass
+
+    # async def _post_analyzer_auto_action(...) -> None:
+    #     """Post auto-executed analyzer action notification (deprecated)."""
+    #     pass
+
+    async def _process_observation_batch(
+        self, channel_id: int, messages: list[dict]
     ) -> None:
-        """Post a chat analyzer suggestion as a rich embed with buttons.
+        """Process a batch of observations from the ChatObserver.
 
-        Delegates to ``ChatAnalyzerService.post_suggestion()`` which creates
-        the embed, attaches a persistent ``ChatAnalyzerSuggestionView``, and
-        sends the message. The view uses custom_id encoding so buttons survive
-        bot restarts.
+        This is the callback invoked when the observer has a ready batch.
+        It calls the Supervisor's observe() method for LLM analysis and
+        routes the result to the appropriate handler.
         """
-        service = getattr(self, "_analyzer_service", None)
-        if service:
-            await service.post_suggestion(
-                channel_id=channel_id,
-                project_id=project_id,
-                suggestion_id=suggestion_id,
-                suggestion_type=suggestion_type,
-                suggestion_text=suggestion_text,
-                task_title=task_title,
-                confidence=confidence,
-            )
-        else:
-            # Fallback: post directly if service not initialized
-            from src.discord.notifications import (
-                format_analyzer_suggestion_embed,
-                ChatAnalyzerSuggestionView,
-            )
-
-            channel = self.get_channel(channel_id)
-            if channel is None:
-                return
-
-            embed = format_analyzer_suggestion_embed(
-                suggestion_type=suggestion_type,
-                suggestion_text=suggestion_text,
-                project_id=project_id,
-                confidence=confidence,
-            )
-            view = ChatAnalyzerSuggestionView(
-                suggestion_id=suggestion_id,
-                suggestion_type=suggestion_type,
-                suggestion_text=suggestion_text,
-                project_id=project_id,
-                task_title=task_title,
-                handler=self.agent.handler,
-                db=self.orchestrator.db,
-            )
-            await channel.send(embed=embed, view=view)
-
-    async def _post_analyzer_auto_action(
-        self,
-        channel_id: int,
-        project_id: str,
-        suggestion_id: int,
-        action_text: str,
-        suggestion_type: str = "",
-        confidence: float = 0.0,
-    ) -> None:
-        """Post a notification about an auto-executed analyzer action.
-
-        When the ChatAnalyzer auto-executes a high-confidence action (e.g.,
-        creating a task), this method posts a brief notification embed to
-        the project channel so the user is aware of what happened.
-        """
-        channel = self.get_channel(channel_id)
-        if channel is None:
+        if not messages:
             return
 
-        import discord as _discord
-
-        # Color-code by type (muted versions to distinguish from suggestions)
-        type_colors = {
-            "task": 0x2ECC71,     # green
-            "answer": 0x3498DB,   # blue
-        }
-        color = type_colors.get(suggestion_type, 0x95A5A6)
-
-        embed = _discord.Embed(
-            title="⚡ Auto-executed Action",
-            description=action_text,
-            color=color,
-        )
-        confidence_pct = int(confidence * 100)
-        embed.set_footer(
-            text=(
-                f"Chat Analyzer • {project_id} • "
-                f"Confidence: {confidence_pct}% • "
-                f"Suggestion #{suggestion_id}"
-            )
-        )
+        # Extract project_id from the first message
+        project_id = messages[0].get("project_id")
+        if not project_id:
+            return
 
         try:
-            await channel.send(embed=embed)
+            # Stage 2: LLM analysis via Supervisor
+            result = await self.agent.observe(messages=messages, project_id=project_id)
+            action = result.get("action", "ignore")
+
+            if action == "ignore":
+                pass  # Nothing to do
+
+            elif action == "memory":
+                # Store as project memory
+                content = result.get("content", "")
+                await self._store_observation_memory(project_id, content)
+
+            elif action == "suggest":
+                # Post suggestion to channel
+                suggestion_type = result.get("suggestion_type", "context")
+                text = result.get("content", "")
+                task_title = result.get("task_title")
+                await self._post_observation_suggestion(
+                    channel_id=channel_id,
+                    project_id=project_id,
+                    suggestion={
+                        "suggestion_type": suggestion_type,
+                        "content": text,
+                        "task_title": task_title,
+                    },
+                )
+
         except Exception as e:
-            logger.error(
-                "Failed to post auto-action notification: %s", e
-            )
+            print(f"Error processing observation batch: {e}")
+
+    async def _post_observation_suggestion(
+        self, channel_id: int, project_id: str, suggestion: dict
+    ) -> None:
+        """Post an observation suggestion as a rich embed with Accept/Dismiss buttons."""
+        from src.discord.views import SuggestionView, format_suggestion_embed
+
+        channel = self.get_channel(channel_id)
+        if not channel:
+            return
+
+        suggestion_type = suggestion.get("suggestion_type", "context")
+        text = suggestion.get("content", "")
+        task_title = suggestion.get("task_title")
+
+        # Create database record if DB is available
+        suggestion_id = None
+        if self.orchestrator.db:
+            try:
+                suggestion_id = await self.orchestrator.db.create_chat_analyzer_suggestion(
+                    project_id=project_id,
+                    channel_id=channel_id,
+                    suggestion_type=suggestion_type,
+                    suggestion_text=text,
+                )
+            except Exception as e:
+                print(f"Error creating suggestion record: {e}")
+
+        embed = format_suggestion_embed(
+            suggestion_type=suggestion_type,
+            text=text,
+            project_id=project_id,
+            confidence=0.8,
+        )
+        view = SuggestionView(
+            suggestion_id=suggestion_id or 0,
+            suggestion_type=suggestion_type,
+            suggestion_text=text,
+            project_id=project_id,
+            task_title=task_title,
+            handler=self.agent.handler,
+            db=self.orchestrator.db,
+        )
+        await channel.send(embed=embed, view=view)
+
+    async def _store_observation_memory(
+        self, project_id: str, content: str
+    ) -> None:
+        """Store observation content in project memory."""
+        if not content:
+            return
+        try:
+            if hasattr(self.orchestrator, 'memory_manager') and self.orchestrator.memory_manager:
+                await self.orchestrator.memory_manager.add_memory(
+                    project_id=project_id,
+                    content=f"[Observed] {content}",
+                    source="chat_observation",
+                )
+        except Exception as e:
+            print(f"Error storing observation memory: {e}")
 
     async def _create_task_thread(
         self, thread_name: str, initial_message: str,
@@ -1090,7 +1059,7 @@ class AgentQueueBot(commands.Bot):
             self._channel_summaries[channel_id] = (last_id, summary)
 
     async def on_message(self, message: discord.Message) -> None:
-        """Route incoming Discord messages to the ChatAgent for LLM processing.
+        """Route incoming Discord messages to the Supervisor for LLM processing.
 
         Routing logic (a message is handled if ANY of these match):
         1. Posted in the global bot channel (configured in config.yaml)

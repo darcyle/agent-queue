@@ -6,7 +6,7 @@ without human intervention.  Each hook follows a pipeline::
     trigger -> gather context (shell/file/http/db/git steps)
     -> short-circuit check -> render prompt template -> invoke LLM with tools
 
-The LLM invocation uses a full ChatAgent instance with tool access, so hooks
+The LLM invocation uses a full Supervisor instance with tool access, so hooks
 can create tasks, check status, send notifications, etc. -- anything a human
 user can do via Discord chat, a hook can do autonomously.
 
@@ -36,13 +36,13 @@ Concurrency and cooldown interaction::
 
 Tool access in hook LLM calls:
 
-    Each hook invocation creates a fresh ChatAgent instance with the same
+    Each hook invocation creates a fresh Supervisor instance with the same
     tool set that human users have via Discord chat.  This means hooks can:
     - Create tasks (``/add-task``)
     - Query task status
     - Send notifications
     - Use any registered MCP tools
-    The ChatAgent is stateless — no conversation history carries between
+    The Supervisor is stateless — no conversation history carries between
     hook invocations.  The rendered prompt is the entire context.
 
 Integration with the orchestrator:
@@ -50,7 +50,7 @@ Integration with the orchestrator:
     The orchestrator creates the HookEngine at ``initialize()`` and calls
     ``hooks.tick()`` every cycle (step 7 of ``run_one_cycle``).  The engine
     holds a back-reference to the orchestrator (via ``set_orchestrator``)
-    for LLM invocation (ChatAgent creation) and memory search access.
+    for LLM invocation (Supervisor creation) and memory search access.
 
     See ``src/orchestrator.py::initialize()`` and ``run_one_cycle()`` for
     the integration points.
@@ -156,6 +156,8 @@ class HookEngine:
         # extracted from hook trigger configs that reference file.changed
         # or folder.changed event types.
         self.file_watcher: FileWatcher | None = None
+        # Supervisor instance for LLM invocations.  Set via set_supervisor().
+        self._supervisor = None
 
     async def initialize(self) -> None:
         """Subscribe to EventBus for event-driven hooks and restore state.
@@ -446,7 +448,7 @@ class HookEngine:
         2. Check short-circuit conditions -- if a step signals "nothing to do",
            the hook is marked skipped and the LLM is never called (saves tokens)
         3. Render the prompt template with step results and event data
-        4. Invoke the LLM via a ChatAgent instance with full tool access
+        4. Invoke the LLM via a Supervisor instance with full tool access
         5. Record the run outcome (completed/failed/skipped) in the database
         """
         with CorrelationContext(
@@ -485,7 +487,7 @@ class HookEngine:
             data.
 
         Phase 4 — LLM invocation:
-            Create a ChatAgent and send the rendered prompt.  The LLM can
+            Create a Supervisor and send the rendered prompt.  The LLM can
             use tools (create tasks, send notifications, etc.) as part of
             its response.
 
@@ -1361,19 +1363,21 @@ class HookEngine:
                 parts.append("Last run: *first run*")
             timing_line = "\n".join(parts) + "\n"
 
-        return _prompt_registry.render(
-            "hook-context",
-            {
-                "hook_name": hook.name,
-                "project_id": hook.project_id,
-                "project_name": project_name,
-                "workspace_dir": ws_line,
-                "repo_url": repo_line,
-                "default_branch": branch_line,
-                "trigger_reason": trigger_reason,
-                "timing_context": timing_line,
-            },
-        )
+        from src.prompt_builder import PromptBuilder
+
+        builder = PromptBuilder()
+        builder.set_identity("hook-context", {
+            "hook_name": hook.name,
+            "project_id": hook.project_id or "",
+            "project_name": project_name,
+            "workspace_dir": ws_line,
+            "repo_url": repo_line,
+            "default_branch": branch_line,
+            "trigger_reason": trigger_reason,
+            "timing_context": timing_line,
+        })
+        result, _ = builder.build()
+        return result
 
     async def _invoke_llm(
         self, hook: Hook, prompt: str,
@@ -1381,47 +1385,56 @@ class HookEngine:
         on_progress=None,
         event_data: dict | None = None,
     ) -> tuple[str, int]:
-        """Invoke the LLM with the rendered prompt using ChatAgent's full tool set.
+        """Invoke the LLM through the Supervisor.
 
-        Creates a temporary ChatAgent instance so the hook's LLM call has
-        access to all the same tools a human user would (create tasks, check
-        status, etc.).  The hook can optionally override the LLM provider/model
-        via its ``llm_config`` JSON field, allowing hooks to use cheaper/faster
-        models for simple checks while reserving expensive models for complex
-        reasoning.
-
-        Integration details:
-
-        - **Stateless**: the ChatAgent is created fresh for each invocation.
-          No conversation history carries between hook runs — the rendered
-          prompt is the entire context.
-        - **Tool registration**: ChatAgent's ``__init__`` registers all standard
-          tools (task management, status queries, MCP servers).  The hook's LLM
-          can call any of these tools during its turn, enabling autonomous
-          actions like creating follow-up tasks or sending notifications.
-        - **Provider override**: if ``hook.llm_config`` is set, it overrides
-          the global chat provider config.  This lets a monitoring hook use
-          Haiku for cheap status checks while a planning hook uses Opus.
-        - **Logging**: if an LLM logger is configured, the provider is wrapped
-          with ``LoggedChatProvider`` so hook token usage appears in analytics
-          under the ``hook_engine`` caller tag.
-        - **User identity**: ``user_name`` is set to ``"hook:<hook_name>"``
-          for audit trails in the event log and Discord notifications.
-        - **Active project**: sets the ChatAgent's active project so the
-          system prompt includes the ``ACTIVE PROJECT`` context and all
-          tool calls default to this project.
-        - **Dynamic context preamble**: prepends a rendered context block to
-          the hook prompt that tells the LLM which project it's in, what its
-          role is, and that it should spawn tasks for code work.
-        - **Token estimation**: token counts are *estimated* from string
-          length (÷4) since ChatAgent's ``chat()`` doesn't return exact usage.
-          For accurate cost tracking, rely on the LLM logger's per-call data.
-
-        Returns ``(response_text, estimated_tokens_used)``.
+        Uses the Supervisor's process_hook_llm() method instead of creating
+        a fresh ChatAgent instance. Preserves per-hook llm_config overrides
+        by temporarily swapping the provider.
         """
-        from src.chat_agent import ChatAgent
+        # Build dynamic context preamble
+        context_preamble = await self._build_hook_context(
+            hook, trigger_reason, event_data=event_data,
+        )
 
-        # Determine provider config
+        if self._supervisor:
+            # Handle per-hook LLM config overrides
+            original_provider = None
+            if hook.llm_config:
+                llm_cfg = json.loads(hook.llm_config)
+                provider_config = ChatProviderConfig(
+                    provider=llm_cfg.get("provider", self.config.chat_provider.provider),
+                    model=llm_cfg.get("model", self.config.chat_provider.model),
+                    base_url=llm_cfg.get("base_url", self.config.chat_provider.base_url),
+                )
+                original_provider = self._supervisor._provider
+                hook_provider = create_chat_provider(provider_config)
+                if hook_provider:
+                    orchestrator = self._orchestrator
+                    if hasattr(orchestrator, 'llm_logger') and orchestrator.llm_logger._enabled:
+                        hook_provider = LoggedChatProvider(
+                            hook_provider, orchestrator.llm_logger, caller="hook_engine"
+                        )
+                    self._supervisor._provider = hook_provider
+
+            try:
+                response = await self._supervisor.process_hook_llm(
+                    hook_context=context_preamble,
+                    rendered_prompt=prompt,
+                    project_id=hook.project_id,
+                    hook_name=hook.name,
+                    on_progress=on_progress,
+                )
+            finally:
+                # Restore original provider if we swapped it
+                if original_provider is not None:
+                    self._supervisor._provider = original_provider
+
+            tokens = len(context_preamble + prompt) // 4 + len(response) // 4
+            return response, tokens
+
+        # Fallback: create Supervisor directly (backward compat)
+        from src.supervisor import Supervisor
+
         if hook.llm_config:
             llm_cfg = json.loads(hook.llm_config)
             provider_config = ChatProviderConfig(
@@ -1432,48 +1445,27 @@ class HookEngine:
         else:
             provider_config = self.config.chat_provider
 
-        # Create a ChatAgent with all the existing tools
-        from src.orchestrator import Orchestrator
-        # We need an orchestrator reference — reuse the one that owns us
-        # This is passed through the config, but we need to store it
         orchestrator = self._orchestrator
-        chat_agent = ChatAgent(orchestrator, self.config)
-
-        # Set the active project so the system prompt includes project context
-        # and all tool calls default to this project
-        chat_agent.set_active_project(hook.project_id)
+        supervisor = Supervisor(orchestrator, self.config)
+        supervisor.set_active_project(hook.project_id)
 
         provider = create_chat_provider(provider_config)
-        # Wrap with logging if the orchestrator has an LLM logger
         if provider and hasattr(orchestrator, 'llm_logger') and orchestrator.llm_logger._enabled:
             provider = LoggedChatProvider(
                 provider, orchestrator.llm_logger, caller="hook_engine"
             )
-        chat_agent._provider = provider
+        supervisor._provider = provider
 
-        if not chat_agent._provider:
-            raise RuntimeError(
-                f"Failed to create LLM provider: {provider_config.provider}"
-            )
+        if not supervisor._provider:
+            raise RuntimeError(f"Failed to create LLM provider: {provider_config.provider}")
 
-        # Build dynamic context preamble with project info and role guidance
-        context_preamble = await self._build_hook_context(
-            hook, trigger_reason, event_data=event_data,
-        )
-
-        # Prepend context to the hook's rendered prompt
         full_prompt = context_preamble + prompt
-
-        # Use the chat method with the enriched hook prompt
-        response = await chat_agent.chat(
+        response = await supervisor.chat(
             text=full_prompt,
             user_name="hook:" + hook.name,
             on_progress=on_progress,
         )
-
-        # Estimate tokens (we don't have exact count from chat())
         tokens = len(full_prompt) // 4 + len(response) // 4
-
         return response, tokens
 
     async def fire_hook(self, hook_id: str) -> str:
@@ -1520,7 +1512,7 @@ class HookEngine:
         """Store reference to the orchestrator (for LLM invocation).
 
         The HookEngine needs access to the Orchestrator for two reasons:
-        1. ``_invoke_llm`` creates a ChatAgent which requires an orchestrator
+        1. ``_invoke_llm`` creates a Supervisor which requires an orchestrator
            reference to register its tools (task management, status queries).
         2. ``_step_memory_search`` accesses ``orchestrator.memory_manager``
            for semantic search in context steps.
@@ -1529,3 +1521,7 @@ class HookEngine:
         orchestrator) that is broken at shutdown via ``hooks.shutdown()``.
         """
         self._orchestrator = orchestrator
+
+    def set_supervisor(self, supervisor) -> None:
+        """Set the Supervisor instance for LLM invocations."""
+        self._supervisor = supervisor

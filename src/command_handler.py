@@ -6,7 +6,7 @@ their business logic here, keeping formatting and presentation separate.
 
 This is the Command Pattern in action: every operation the system supports
 (50+ commands) is routed through CommandHandler.execute(name, args).  The
-two callers -- Discord slash commands and ChatAgent LLM tool-use -- never
+two callers -- Discord slash commands and Supervisor LLM tool-use -- never
 contain business logic themselves; they translate their inputs into a dict,
 call execute(), and format the returned dict for their respective UIs.
 
@@ -758,7 +758,7 @@ class CommandHandler:
     """Unified command execution layer for AgentQueue (Command Pattern).
 
     This is the single code path for every operation in the system.  Both
-    the Discord slash commands and the ChatAgent LLM tools call
+    the Discord slash commands and the Supervisor LLM tools call
     ``handler.execute(name, args)`` -- neither contains business logic.
 
     Convention for command methods:
@@ -2282,10 +2282,10 @@ class CommandHandler:
         }
 
     async def _cmd_get_task_dependencies(self, args: dict) -> dict:
-        """Alias for ``_cmd_task_deps`` — used by the ChatAgent tool.
+        """Alias for ``_cmd_task_deps`` — used by the Supervisor tool.
 
         The ``/task-deps`` slash command uses ``task_deps`` while the
-        ChatAgent exposes the same data as ``get_task_dependencies``.
+        Supervisor exposes the same data as ``get_task_dependencies``.
         Both route through the same logic.
         """
         return await self._cmd_task_deps(args)
@@ -2836,6 +2836,96 @@ class CommandHandler:
             task_id=task.id,
         )
         return {"approved": args["task_id"], "title": task.title}
+
+    async def _cmd_process_task_completion(self, args: dict) -> dict:
+        """Process task completion: discover plan files and archive them.
+
+        Called by Supervisor after a task completes. Searches for plan files
+        in the workspace, parses them, archives them to .claude/plans/, and
+        stores plan data via task_context for later approval flow.
+
+        Returns {"plan_found": bool, "steps_count": int, ...}
+        """
+        import logging
+        from src import plan_parser
+
+        logger = logging.getLogger(__name__)
+
+        # Check if auto_task is enabled
+        if not self.orchestrator.config.auto_task.enabled:
+            return {"plan_found": False, "reason": "Auto-task generation is disabled"}
+
+        task_id = args.get("task_id")
+        workspace_path = args.get("workspace_path")
+
+        if not task_id or not workspace_path:
+            return {"plan_found": False, "reason": "Missing required parameters"}
+
+        # Look up the task to check if it's a subtask
+        task = await self.db.get_task(task_id)
+        if not task:
+            return {"plan_found": False, "reason": f"Task {task_id} not found"}
+
+        # Don't process plans for plan-generated subtasks (avoid recursion)
+        if task.is_plan_subtask:
+            return {"plan_found": False, "reason": "Task is already a plan subtask"}
+
+        # Find a plan file in the workspace
+        plan_patterns = self.orchestrator.config.auto_task.plan_file_patterns
+        plan_file = plan_parser.find_plan_file(workspace_path, plan_patterns)
+
+        if not plan_file:
+            return {"plan_found": False, "reason": "No plan file found"}
+
+        # Read and parse the plan
+        try:
+            content = plan_parser.read_plan_file(plan_file)
+            max_steps = self.orchestrator.config.auto_task.max_steps_per_plan
+            steps, quality = plan_parser.parse_and_generate_steps(
+                content, max_steps=max_steps
+            )
+        except Exception as e:
+            logger.warning("Plan parsing failed for task %s: %s", task_id, e)
+            return {"plan_found": False, "reason": f"Plan parsing failed: {e}"}
+
+        if not steps:
+            return {"plan_found": False, "reason": "No actionable steps found in plan"}
+
+        # Archive the plan file to .claude/plans/{task_id}-plan.md
+        try:
+            plans_dir = os.path.join(workspace_path, ".claude", "plans")
+            os.makedirs(plans_dir, exist_ok=True)
+            archived_path = os.path.join(plans_dir, f"{task_id}-plan.md")
+
+            import shutil
+            shutil.copy2(plan_file, archived_path)
+            logger.info("Archived plan file to %s", archived_path)
+        except Exception as e:
+            logger.warning("Failed to archive plan file for task %s: %s", task_id, e)
+            archived_path = plan_file  # Use original path if archival fails
+
+        # Store plan data in task_context
+        try:
+            import json
+            await self.db.set_task_context(
+                task_id, "plan_steps", json.dumps(steps)
+            )
+            await self.db.set_task_context(
+                task_id, "plan_archived_path", archived_path
+            )
+            await self.db.set_task_context(
+                task_id, "plan_quality_score", str(quality.quality_score)
+            )
+        except Exception as e:
+            logger.warning("Failed to store plan context for task %s: %s", task_id, e)
+
+        return {
+            "plan_found": True,
+            "steps_count": len(steps),
+            "plan_file": plan_file,
+            "archived_path": archived_path,
+            "quality_score": quality.quality_score,
+        }
 
     async def _cmd_approve_plan(self, args: dict) -> dict:
         """Approve a plan and create subtasks from it.
@@ -4851,6 +4941,75 @@ class CommandHandler:
             return {"error": str(e)}
 
     # -----------------------------------------------------------------------
+    # Rule commands -- persistent autonomous behaviors stored as markdown.
+    # Rules are the source of truth; active rules generate hooks.
+    # -----------------------------------------------------------------------
+
+    async def _cmd_save_rule(self, args: dict) -> dict:
+        """Create or update a rule."""
+        rm = getattr(self.orchestrator, "rule_manager", None)
+        if not rm:
+            return {"error": "Rule manager not initialized"}
+
+        rule_id = args.get("id")
+        project_id = args.get("project_id")
+        rule_type = args.get("type", "passive")
+        content = args.get("content", "")
+
+        if not content:
+            return {"error": "content is required"}
+        if rule_type not in ("active", "passive"):
+            return {
+                "error": f"type must be 'active' or 'passive', got '{rule_type}'"
+            }
+
+        result = await rm.async_save_rule(
+            id=rule_id,
+            project_id=project_id,
+            rule_type=rule_type,
+            content=content,
+        )
+        return result
+
+    async def _cmd_delete_rule(self, args: dict) -> dict:
+        """Delete a rule and its associated hooks."""
+        rm = getattr(self.orchestrator, "rule_manager", None)
+        if not rm:
+            return {"error": "Rule manager not initialized"}
+
+        rule_id = args.get("id")
+        if not rule_id:
+            return {"error": "id is required"}
+
+        return await rm.async_delete_rule(rule_id)
+
+    async def _cmd_browse_rules(self, args: dict) -> dict:
+        """List rules for a project (plus globals)."""
+        rm = getattr(self.orchestrator, "rule_manager", None)
+        if not rm:
+            return {"error": "Rule manager not initialized"}
+
+        project_id = args.get("project_id")
+        rules = rm.browse_rules(project_id)
+        return {"rules": rules}
+
+    async def _cmd_load_rule(self, args: dict) -> dict:
+        """Load full details of a specific rule."""
+        rm = getattr(self.orchestrator, "rule_manager", None)
+        if not rm:
+            return {"error": "Rule manager not initialized"}
+
+        rule_id = args.get("id")
+        if not rule_id:
+            return {"error": "id is required"}
+
+        loaded = rm.load_rule(rule_id)
+        if not loaded:
+            return {"error": f"Rule '{rule_id}' not found"}
+
+        return loaded
+
+    # -----------------------------------------------------------------------
     # Notes commands -- markdown documents stored in project workspaces.
     # Notes are a lightweight knowledge base: users and hooks can write
     # specs, brainstorms, or analysis, and later turn them into tasks.
@@ -6409,3 +6568,60 @@ class CommandHandler:
             "count": len(suggestions),
             "project_id": project_id,
         }
+
+    # -------------------------------------------------------------------
+    # Tool navigation commands (Phase 3 -- tiered tool system)
+    # -------------------------------------------------------------------
+
+    async def _cmd_browse_tools(self, args: dict) -> dict:
+        """List available tool categories with metadata."""
+        from src.tool_registry import ToolRegistry
+        registry = ToolRegistry()
+        return {"categories": registry.get_categories()}
+
+    async def _cmd_load_tools(self, args: dict) -> dict:
+        """Load a tool category's definitions for the current interaction.
+
+        The actual schema injection happens in the chat layer (Supervisor),
+        not here. This command returns the list of tool names so the chat
+        layer knows which schemas to add.
+        """
+        from src.tool_registry import ToolRegistry
+        category = args.get("category", "")
+        registry = ToolRegistry()
+        names = registry.get_category_tool_names(category)
+        if names is None:
+            available = [c["name"] for c in registry.get_categories()]
+            return {
+                "error": (
+                    f"Unknown category: {category}. "
+                    f"Available: {', '.join(available)}"
+                ),
+            }
+        return {
+            "loaded": category,
+            "tools_added": names,
+            "message": (
+                f"{len(names)} {category} tools are now available."
+            ),
+        }
+
+    async def _cmd_send_message(self, args: dict) -> dict:
+        """Post a message to a Discord channel."""
+        channel_id = args.get("channel_id")
+        content = args.get("content")
+        if not channel_id or not content:
+            return {"error": "channel_id and content are required"}
+        bot = getattr(self.orchestrator, "_discord_bot", None)
+        if not bot:
+            return {"error": "Discord bot not available"}
+        try:
+            channel = bot.get_channel(int(channel_id))
+            if not channel:
+                channel = await bot.fetch_channel(int(channel_id))
+            await channel.send(content)
+            return {"success": True, "channel_id": channel_id}
+        except Exception as e:
+            return {"error": f"Failed to send message: {e}"}
+
+    # Rule system commands are implemented above (Phase 2).

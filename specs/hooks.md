@@ -589,6 +589,13 @@ preamble prepended to the rendered prompt. The preamble includes:
 The preamble is rendered from the `hook-context` prompt template
 (`src/prompts/hook_context.md`).
 
+### Hook Context Preamble
+
+The hook context preamble is assembled using `PromptBuilder` (see `specs/prompt-builder.md`).
+`_build_hook_context()` uses `PromptBuilder.set_identity("hook-context")` with project
+metadata variables. Hook-specific placeholder substitution (`{{step_N}}`, `{{event}}`)
+remains in the hook engine's `_render_prompt()` method.
+
 ### Invocation Mechanism
 
 `_invoke_llm` creates a `ChatAgent` instance (from `src/chat_agent.py`) with a
@@ -801,3 +808,14 @@ hook_engine:
   file_watcher_poll_interval: 10
   file_watcher_debounce_seconds: 5
 ```
+
+---
+
+## 12. Rule-Generated Hooks
+
+Hooks can be generated automatically from active rules via the Rule System
+(see `specs/rule-system.md`). Rule-generated hooks:
+- Have IDs prefixed with `rule-{rule_id}-`
+- Include the rule content in their prompt template
+- Are deleted and regenerated when the rule is updated
+- Are verified during startup reconciliation

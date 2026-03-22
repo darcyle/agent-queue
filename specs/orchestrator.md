@@ -424,6 +424,13 @@ For root tasks, the execution rules:
 
 The full task description is appended as `## Task\n{task.description}`.
 
+### Task Context Assembly
+
+Task execution context is assembled using `PromptBuilder` (see `specs/prompt-builder.md`).
+The orchestrator calls `_build_task_context_with_prompt_builder()` which uses PromptBuilder
+to compose system metadata, execution rules, upstream dependency summaries, agent role
+instructions, and the task description into a single prompt string.
+
 **Step 9 — Start adapter.**
 Build `TaskContext(description=full_description, checkout_path=workspace, branch_name=...)`.
 `await adapter.start(ctx)`.
@@ -746,12 +753,24 @@ Pushes the task branch and creates a PR. Returns the PR URL or `None`.
 ## 12. Plan-Generated Tasks (Two-Step Approval Workflow)
 
 Plan generation follows a two-step workflow: **discover → approval → create subtasks**.
-After a task completes, the orchestrator discovers any plan file, parses it, stores the
-parsed data, and transitions the task to `AWAITING_PLAN_APPROVAL`.  Subtasks are only
-created once a human approves the plan via the `approve_plan` command (see
-`command-handler.md`).
+After a task completes, the orchestrator delegates plan discovery to the Supervisor
+via `_phase_plan_discover`. The Supervisor calls `process_task_completion` to find,
+parse, and store plan files, then returns whether a plan was found. If found, the
+task transitions to `AWAITING_PLAN_APPROVAL`. Subtasks are only created once a
+human approves the plan via the `approve_plan` command (see `command-handler.md`).
 
-### 12a. `_discover_and_store_plan(task, workspace) -> bool`
+### 12a. Plan Discovery via Supervisor (`_phase_plan_discover`)
+
+Called as part of the completion pipeline, BEFORE merge (so the workspace is still
+available). Delegates to `Supervisor.on_task_completed()` which calls the
+`process_task_completion` command in CommandHandler.
+
+If no Supervisor is set (legacy mode), falls back to `_phase_plan_generate()`.
+
+The `process_task_completion` command wraps the same logic as the former
+`_discover_and_store_plan`:
+
+### 12a-legacy. `_discover_and_store_plan(task, workspace) -> bool` (legacy fallback)
 
 Called immediately after any successful COMPLETED path in `_execute_task`.  Returns `True`
 if a plan was found, parsed, and stored for approval; `False` otherwise.
@@ -1068,3 +1087,15 @@ The system provides two complementary mechanisms for keeping subtask chains clos
 
 Both mechanisms abort silently on conflict.  Conflicts are deferred to final merge time,
 where `sync_and_merge()` applies its rebase-before-merge fallback.
+
+---
+
+## 18. Rule Manager Initialization
+
+During `initialize()`, after hook engine setup:
+1. Create `RuleManager` with the data directory, database, and hook engine
+2. Run `reconcile()` to verify all active rules have valid hooks
+3. Run `install_defaults()` to create default global rules if not present
+
+The RuleManager is stored as `self.rule_manager` and is accessible by CommandHandler
+for rule CRUD operations. See `specs/rule-system.md` for the full Rule System spec.
