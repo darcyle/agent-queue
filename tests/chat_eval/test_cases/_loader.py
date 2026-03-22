@@ -27,6 +27,7 @@ CATEGORY_MODULES = [
     "memory",
     "profiles",
     "analyzer",
+    "rules",
 ]
 
 

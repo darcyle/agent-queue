@@ -405,7 +405,7 @@ def test_load_relevant_rules_from_rule_manager(tmp_path, prompts_dir):
         prompts_dir=prompts_dir,
     )
     builder.set_identity("simple")
-    asyncio.get_event_loop().run_until_complete(
+    asyncio.run(
         builder.load_relevant_rules("code formatting")
     )
     system_prompt, _ = builder.build()
@@ -428,7 +428,7 @@ def test_load_relevant_rules_empty_when_no_rules(prompts_dir):
         prompts_dir=prompts_dir,
     )
     builder.set_identity("simple")
-    asyncio.get_event_loop().run_until_complete(
+    asyncio.run(
         builder.load_relevant_rules("anything")
     )
     system_prompt, _ = builder.build()

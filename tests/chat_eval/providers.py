@@ -86,8 +86,9 @@ class ScriptedProvider(ChatProvider):
         else:
             response = self._queue.pop(0)
 
+        import copy
         self._calls.append(ProviderCall(
-            messages=messages,
+            messages=copy.deepcopy(messages),
             system=system,
             tools=tools,
             max_tokens=max_tokens,

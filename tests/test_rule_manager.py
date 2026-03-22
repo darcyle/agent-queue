@@ -215,7 +215,7 @@ def test_async_delete_rule_removes_hooks(rule_manager_with_db, mock_db):
     )
     rm._update_rule_hooks("rule-with-hooks", ["hook-from-rule"])
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         rm.async_delete_rule("rule-with-hooks")
     )
     assert result["success"] is True
@@ -231,7 +231,7 @@ def test_async_save_active_rule_generates_hooks(
     """async_save_rule generates hooks for active rules with triggers."""
     rm = rule_manager_with_db
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         rm.async_save_rule(
             id="rule-periodic",
             project_id="proj",
@@ -271,7 +271,7 @@ def test_reconcile_detects_missing_hooks(rule_manager_with_db, mock_db):
     # DB says hook doesn't exist
     mock_db.get_hook.return_value = None
 
-    result = asyncio.get_event_loop().run_until_complete(rm.reconcile())
+    result = asyncio.run(rm.reconcile())
     assert result["rules_scanned"] > 0
     assert result["hooks_missing"] > 0
 
@@ -341,7 +341,7 @@ def _make_command_handler(storage_root, mock_db):
 def test_cmd_save_rule(storage_root, mock_db):
     """CommandHandler.execute('save_rule') creates a rule file."""
     handler, rm = _make_command_handler(storage_root, mock_db)
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         handler.execute("save_rule", {
             "project_id": "proj",
             "type": "passive",
@@ -356,7 +356,7 @@ def test_cmd_browse_rules(storage_root, mock_db):
     handler, rm = _make_command_handler(storage_root, mock_db)
     rm.save_rule("rule-1", "proj", "passive", "# Rule One")
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         handler.execute("browse_rules", {"project_id": "proj"})
     )
     assert "rules" in result
@@ -368,7 +368,7 @@ def test_cmd_load_rule(storage_root, mock_db):
     handler, rm = _make_command_handler(storage_root, mock_db)
     rm.save_rule("rule-2", "proj", "passive", "# Rule Two\n\nContent here.")
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         handler.execute("load_rule", {"id": "rule-2"})
     )
     assert result.get("id") == "rule-2"
@@ -380,7 +380,7 @@ def test_cmd_delete_rule(storage_root, mock_db):
     handler, rm = _make_command_handler(storage_root, mock_db)
     rm.save_rule("rule-3", "proj", "passive", "# Rule Three")
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         handler.execute("delete_rule", {"id": "rule-3"})
     )
     assert result.get("success") is True
@@ -432,7 +432,7 @@ def test_orchestrator_initializes_rule_manager(tmp_path):
     orch.db.list_tasks = AsyncMock(return_value=[])
 
     with patch.object(orch, '_sync_profiles_from_config', new_callable=AsyncMock):
-        asyncio.get_event_loop().run_until_complete(orch.initialize())
+        asyncio.run(orch.initialize())
 
     assert hasattr(orch, 'rule_manager')
     assert orch.rule_manager is not None

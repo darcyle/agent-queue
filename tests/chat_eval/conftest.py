@@ -81,4 +81,8 @@ async def eval_agent(eval_orchestrator, eval_config, scripted_provider):
     recorder._active_project_id = agent.handler._active_project_id
     agent.handler = recorder
 
+    # Disable reflection for deterministic tests — reflection adds extra
+    # LLM calls that would break scripted-provider call-count assertions.
+    agent.reflection._config.level = "off"
+
     return agent, recorder, scripted_provider

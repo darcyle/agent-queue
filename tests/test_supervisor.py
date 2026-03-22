@@ -72,7 +72,7 @@ def test_process_hook_llm_sets_project():
     mock_resp.text_parts = ["Hook processed successfully"]
     sup._provider.create_message = AsyncMock(return_value=mock_resp)
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         sup.process_hook_llm(
             hook_context="## Hook Context\nProject: test",
             rendered_prompt="Check tunnel status",
@@ -115,7 +115,7 @@ def test_chat_triggers_reflection_on_tool_use():
     # Mock tool execution
     sup.handler.execute = AsyncMock(return_value={"id": "t-123", "title": "Fix login"})
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         sup.chat("Create a task to fix login", "testuser")
     )
     assert "Task created" in result
@@ -132,7 +132,7 @@ def test_chat_skips_reflection_when_off():
     resp.text_parts = ["Done."]
     sup._provider.create_message = AsyncMock(return_value=resp)
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         sup.chat("Hello", "testuser")
     )
     # Only 1 LLM call (no reflection)
@@ -149,7 +149,7 @@ def test_chat_no_reflection_for_simple_text():
     resp.text_parts = ["Hi there!"]
     sup._provider.create_message = AsyncMock(return_value=resp)
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         sup.chat("Hello", "testuser")
     )
     assert result == "Hi there!"
@@ -210,7 +210,7 @@ def test_process_hook_llm_uses_hook_trigger():
         return False  # Skip actual reflection for test speed
     sup.reflection.should_reflect = track_should
 
-    asyncio.get_event_loop().run_until_complete(
+    asyncio.run(
         sup.process_hook_llm(
             hook_context="ctx", rendered_prompt="prompt",
             project_id="p1", hook_name="my-hook",
@@ -267,7 +267,7 @@ def test_on_task_completed_calls_process():
         "plan_found": False, "reason": "No plan file found"
     })
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         sup.on_task_completed(
             task_id="t-123",
             project_id="my-game",
@@ -288,7 +288,7 @@ def test_on_task_completed_sets_project():
     sup = _make_supervisor()
     sup.handler.execute = AsyncMock(return_value={"plan_found": False})
 
-    asyncio.get_event_loop().run_until_complete(
+    asyncio.run(
         sup.on_task_completed(
             task_id="t-123",
             project_id="my-game",
@@ -304,7 +304,7 @@ def test_on_task_completed_returns_plan_found():
         "plan_found": True, "steps_count": 3
     })
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         sup.on_task_completed(
             task_id="t-123",
             project_id="my-game",
@@ -319,7 +319,7 @@ def test_on_task_completed_handles_error():
     sup = _make_supervisor()
     sup.handler.execute = AsyncMock(side_effect=Exception("DB error"))
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         sup.on_task_completed(
             task_id="t-123",
             project_id="proj",
@@ -345,7 +345,7 @@ def test_observe_returns_decision():
     mock_resp.text_parts = ['{"action": "ignore"}']
     sup._provider.create_message = AsyncMock(return_value=mock_resp)
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         sup.observe(
             messages=[{
                 "author": "alice",
@@ -363,7 +363,7 @@ def test_observe_without_provider_returns_ignore():
     """observe() returns ignore when LLM is not available."""
     sup = _make_supervisor()
     sup._provider = None
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         sup.observe(messages=[], project_id="test")
     )
     assert result["action"] == "ignore"
@@ -374,7 +374,7 @@ def test_observe_handles_llm_error():
     sup = _make_supervisor()
     sup._provider = MagicMock()
     sup._provider.create_message = AsyncMock(side_effect=Exception("LLM down"))
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         sup.observe(
             messages=[{"author": "bob", "content": "deploy failed", "timestamp": 1.0}],
             project_id="test",
