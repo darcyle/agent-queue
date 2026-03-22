@@ -10,9 +10,20 @@ Safety controls prevent runaway loops:
 """
 from __future__ import annotations
 
+import json
+import re
 import time
+from dataclasses import dataclass
 
 from src.config import ReflectionConfig
+
+
+@dataclass
+class ReflectionVerdict:
+    """Structured verdict from a reflection pass."""
+    passed: bool
+    reason: str
+    suggested_followup: str | None = None
 
 _DEEP_TRIGGERS = {"task.completed", "task.failed", "hook.failed"}
 _STANDARD_TRIGGERS = {"user.request", "hook.completed"}
@@ -78,7 +89,9 @@ class ReflectionEngine:
             "`browse_rules` to check.\n"
             "4. Did I learn anything that should update memory?\n"
             "5. Is there follow-up work needed?\n\n"
-            "If follow-up is needed, take action. Otherwise, confirm completion."
+            "If follow-up is needed, take action. Otherwise, confirm completion.\n\n"
+            "After your analysis, output a JSON verdict on its own line:\n"
+            '```json\n{"passed": true/false, "reason": "...", "followup": "suggested followup or null"}\n```'
         )
 
     def _build_standard_prompt(self, trigger: str, summary: str, results: list[dict]) -> str:
@@ -91,7 +104,9 @@ class ReflectionEngine:
             f"**Results:**\n{results_text}\n\n"
             "Quick check:\n"
             "1. Did the action succeed?\n"
-            "2. Any directly relevant rules to check?\n"
+            "2. Any directly relevant rules to check?\n\n"
+            "After your analysis, output a JSON verdict on its own line:\n"
+            '```json\n{"passed": true/false, "reason": "...", "followup": "suggested followup or null"}\n```'
         )
 
     def _build_light_prompt(self, trigger: str, summary: str, results: list[dict]) -> str:
@@ -116,3 +131,29 @@ class ReflectionEngine:
 
     def is_circuit_breaker_tripped(self) -> bool:
         return self.hourly_tokens_used() >= self._config.hourly_token_circuit_breaker
+
+    @staticmethod
+    def parse_verdict(text: str) -> ReflectionVerdict:
+        """Extract a structured verdict from the LLM reflection response.
+
+        Looks for a JSON block in the response text. Falls back to
+        ``passed=True`` if no valid JSON is found (safe default — don't
+        retry if we can't parse the verdict).
+        """
+        # Try to find JSON in a fenced code block first
+        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        if not match:
+            # Try bare JSON object on a line
+            match = re.search(r'(\{"passed".*?\})', text, re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group(1))
+                return ReflectionVerdict(
+                    passed=bool(data.get("passed", True)),
+                    reason=str(data.get("reason", "")),
+                    suggested_followup=data.get("followup"),
+                )
+            except (json.JSONDecodeError, TypeError):
+                pass
+        # Default: assume passed if we can't parse
+        return ReflectionVerdict(passed=True, reason="Could not parse verdict")

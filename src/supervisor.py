@@ -30,7 +30,7 @@ from src.command_handler import CommandHandler
 from src.config import AppConfig
 from src.llm_logger import LLMLogger
 from src.orchestrator import Orchestrator
-from src.reflection import ReflectionEngine
+from src.reflection import ReflectionEngine, ReflectionVerdict
 
 
 # ---------------------------------------------------------------------------
@@ -187,20 +187,23 @@ class Supervisor:
         action_results: list[dict],
         messages: list[dict],
         active_tools: dict[str, dict],
-    ) -> None:
+    ) -> ReflectionVerdict | None:
         """Run a reflection pass for the given trigger.
 
         Called after actions complete. Evaluates results, checks rules,
         and may take follow-up actions (depth-limited).
+
+        Returns a ``ReflectionVerdict`` when reflection ran, or ``None``
+        when reflection was skipped (disabled, circuit breaker, etc.).
         """
         if not self._provider:
-            return
+            return None
         if not self.reflection.should_reflect(trigger):
-            return
+            return None
 
         depth = self.reflection.determine_depth(trigger, {})
         if not depth:
-            return
+            return None
 
         reflection_prompt = self.reflection.build_reflection_prompt(
             depth=depth,
@@ -221,6 +224,10 @@ class Supervisor:
                 tools=list(active_tools.values()),
                 max_tokens=512,
             )
+
+            # Collect all text from reflection (including after tool use)
+            reflection_text_parts = list(reflect_resp.text_parts)
+
             if reflect_resp.tool_uses and self.reflection.can_reflect_deeper(1):
                 messages.append({"role": "assistant", "content": reflect_resp.tool_uses})
                 for tool_use in reflect_resp.tool_uses:
@@ -230,10 +237,15 @@ class Supervisor:
                         "tool_use_id": tool_use.id,
                         "content": json.dumps(result),
                     }]})
+
             estimated_tokens = len(reflection_prompt) // 4
             self.reflection.record_tokens(estimated_tokens)
+
+            # Parse verdict from reflection text
+            full_text = "\n".join(reflection_text_parts)
+            return self.reflection.parse_verdict(full_text)
         except Exception:
-            pass  # Reflection failure never breaks the main flow
+            return None  # Reflection failure never breaks the main flow
 
     async def chat(
         self,
@@ -324,13 +336,43 @@ class Supervisor:
                         "role": "assistant",
                         "content": response or "Done.",
                     })
-                    await self.reflect(
+                    verdict = await self.reflect(
                         trigger=_reflection_trigger,
                         action_summary=", ".join(tool_actions),
                         action_results=accumulated_tool_results,
                         messages=messages,
                         active_tools=active_tools,
                     )
+
+                    # If reflection failed and we haven't retried yet,
+                    # re-enter the tool loop with feedback context
+                    if (verdict and not verdict.passed
+                            and not getattr(self, "_reflection_retry_active", False)):
+                        self._reflection_retry_active = True
+                        try:
+                            retry_prompt = (
+                                "Your previous response was evaluated and found "
+                                "inadequate.\n\n"
+                                f"**Reflection feedback:** {verdict.reason}\n"
+                            )
+                            if verdict.suggested_followup:
+                                retry_prompt += (
+                                    f"**Suggested followup:** "
+                                    f"{verdict.suggested_followup}\n"
+                                )
+                            retry_prompt += (
+                                f"\n**Original user request:** {text}\n\n"
+                                "Please try again, addressing the feedback above."
+                            )
+                            return await self.chat(
+                                text=retry_prompt,
+                                user_name="system:reflection-retry",
+                                history=messages,
+                                on_progress=on_progress,
+                                _reflection_trigger=_reflection_trigger,
+                            )
+                        finally:
+                            self._reflection_retry_active = False
 
                 if response:
                     return response
