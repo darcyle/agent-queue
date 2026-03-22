@@ -55,6 +55,9 @@ def test_process_task_completion_finds_plan():
         id="t-123", project_id="proj-1", is_plan_subtask=False,
     ))
     handler.orchestrator.db.set_task_context = AsyncMock()
+    handler.orchestrator.db.list_tasks = AsyncMock(return_value=[])
+    # Provide a real dict so the staleness check works correctly
+    handler.orchestrator._task_exec_start = {}
 
     with tempfile.TemporaryDirectory() as tmpdir:
         plan_dir = os.path.join(tmpdir, ".claude")

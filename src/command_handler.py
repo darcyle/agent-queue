@@ -2859,6 +2859,12 @@ class CommandHandler:
         in the workspace, parses them, archives them to .claude/plans/, and
         stores plan data via task_context for later approval flow.
 
+        Includes safety checks ported from the legacy
+        ``Orchestrator._discover_and_store_plan()`` path:
+        - Staleness check: plan file mtime vs task execution start time
+        - skip_if_implemented: skip if branch has substantial non-plan changes
+        - Deduplication: skip if tasks with the same titles already exist
+
         Returns {"plan_found": bool, "steps_count": int, ...}
         """
         import logging
@@ -2866,8 +2872,10 @@ class CommandHandler:
 
         logger = logging.getLogger(__name__)
 
+        config = self.orchestrator.config.auto_task
+
         # Check if auto_task is enabled
-        if not self.orchestrator.config.auto_task.enabled:
+        if not config.enabled:
             return {"plan_found": False, "reason": "Auto-task generation is disabled"}
 
         task_id = args.get("task_id")
@@ -2885,17 +2893,71 @@ class CommandHandler:
         if task.is_plan_subtask:
             return {"plan_found": False, "reason": "Task is already a plan subtask"}
 
+        # skip_if_implemented: if the branch already has substantial code
+        # changes beyond the plan file itself, the agent likely already
+        # implemented the plan — no need to create subtasks from it.
+        if config.skip_if_implemented:
+            try:
+                project = await self.db.get_project(task.project_id) if task.project_id else None
+                default_branch = await self.orchestrator._get_default_branch(project, workspace_path)
+                if await self.orchestrator.git.ahas_non_plan_changes(workspace_path, default_branch):
+                    logger.info(
+                        "process_task_completion: skipping plan for task %s — "
+                        "branch has substantial code changes beyond the plan file, "
+                        "indicating the plan was already implemented",
+                        task_id,
+                    )
+                    return {"plan_found": False, "reason": "Plan already implemented (non-plan changes detected)"}
+            except Exception as e:
+                logger.debug(
+                    "process_task_completion: skip_if_implemented check failed for task %s: %s",
+                    task_id, e,
+                )
+
         # Find a plan file in the workspace
-        plan_patterns = self.orchestrator.config.auto_task.plan_file_patterns
+        plan_patterns = config.plan_file_patterns
         plan_file = plan_parser.find_plan_file(workspace_path, plan_patterns)
 
         if not plan_file:
             return {"plan_found": False, "reason": "No plan file found"}
 
+        # Staleness check: compare the plan file's mtime against the
+        # recorded execution start time.  If the plan file predates the
+        # agent's execution start, it was written by a previous task and
+        # should not be attributed to this one.
+        exec_start = self.orchestrator._task_exec_start.get(task_id)
+        if exec_start is not None:
+            try:
+                plan_mtime = os.path.getmtime(plan_file)
+                # Use a 2-second tolerance for filesystem timestamp granularity
+                if plan_mtime < exec_start - 2.0:
+                    logger.warning(
+                        "process_task_completion: ignoring stale plan file %s for task %s "
+                        "(plan mtime %.0f < exec start %.0f — file "
+                        "predates this task's execution)",
+                        plan_file, task_id, plan_mtime, exec_start,
+                    )
+                    # Archive stale plan so it's not rediscovered by future tasks
+                    try:
+                        plans_dir = os.path.join(workspace_path, ".claude", "plans")
+                        os.makedirs(plans_dir, exist_ok=True)
+                        stale_archive = os.path.join(
+                            plans_dir, f"stale-{task_id}-plan.md"
+                        )
+                        os.rename(plan_file, stale_archive)
+                    except OSError:
+                        pass
+                    return {"plan_found": False, "reason": "Plan file is stale (predates task execution)"}
+            except OSError as e:
+                logger.debug(
+                    "process_task_completion: staleness check failed for %s: %s (proceeding)",
+                    plan_file, e,
+                )
+
         # Read and parse the plan
         try:
             content = plan_parser.read_plan_file(plan_file)
-            max_steps = self.orchestrator.config.auto_task.max_steps_per_plan
+            max_steps = config.max_steps_per_plan
             steps, quality = plan_parser.parse_and_generate_steps(
                 content, max_steps=max_steps
             )
@@ -2905,6 +2967,35 @@ class CommandHandler:
 
         if not steps:
             return {"plan_found": False, "reason": "No actionable steps found in plan"}
+
+        # Deduplication: check if tasks with the same titles already exist
+        # for this project (from a previous plan generation).
+        if task.project_id:
+            step_titles = {s.get("title", "") for s in steps}
+            existing_tasks = await self.db.list_tasks(project_id=task.project_id)
+            existing_active_titles = {
+                t.title for t in existing_tasks
+                if t.is_plan_subtask
+                and t.status not in (TaskStatus.FAILED, TaskStatus.BLOCKED)
+                and t.title in step_titles
+            }
+            if existing_active_titles:
+                overlap = existing_active_titles & step_titles
+                logger.info(
+                    "process_task_completion: skipping plan for task %s — %d/%d step titles "
+                    "already exist as active subtasks in project %s: %s",
+                    task_id, len(overlap), len(step_titles),
+                    task.project_id, overlap,
+                )
+                # Archive the plan file so it won't be found again
+                try:
+                    plans_dir = os.path.join(workspace_path, ".claude", "plans")
+                    os.makedirs(plans_dir, exist_ok=True)
+                    archived_path = os.path.join(plans_dir, f"{task_id}-plan.md")
+                    os.rename(plan_file, archived_path)
+                except OSError:
+                    pass
+                return {"plan_found": False, "reason": "Duplicate step titles already exist"}
 
         # Archive the plan file to .claude/plans/{task_id}-plan.md
         try:
