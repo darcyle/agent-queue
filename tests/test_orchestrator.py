@@ -15,12 +15,19 @@ from src.config import AppConfig, AutoTaskConfig
 
 
 class MockAdapter(AgentAdapter):
-    def __init__(self, result=AgentResult.COMPLETED, tokens=1000):
+    def __init__(self, result=AgentResult.COMPLETED, tokens=1000,
+                 on_wait=None):
         self._result = result
         self._tokens = tokens
+        self._on_wait = on_wait
+        self._ctx = None
 
-    async def start(self, task): pass
+    async def start(self, task):
+        self._ctx = task  # TaskContext
+
     async def wait(self, on_message=None):
+        if self._on_wait:
+            self._on_wait(self._ctx)
         return AgentOutput(result=self._result, summary="Done",
                            tokens_used=self._tokens)
 
@@ -29,16 +36,19 @@ class MockAdapter(AgentAdapter):
 
 
 class MockAdapterFactory:
-    def __init__(self, result=AgentResult.COMPLETED, tokens=1000):
+    def __init__(self, result=AgentResult.COMPLETED, tokens=1000,
+                 on_wait=None):
         self.result = result
         self.tokens = tokens
+        self.on_wait = on_wait
         self.last_profile = None
         self.create_calls = []
 
     def create(self, agent_type: str, profile=None) -> AgentAdapter:
         self.last_profile = profile
         self.create_calls.append({"agent_type": agent_type, "profile": profile})
-        return MockAdapter(result=self.result, tokens=self.tokens)
+        return MockAdapter(result=self.result, tokens=self.tokens,
+                           on_wait=self.on_wait)
 
 
 async def _drain_running_tasks(orch: Orchestrator) -> None:
@@ -202,6 +212,32 @@ class TestOrchestratorLifecycle:
         assert t2.status == TaskStatus.READY
 
 
+def _make_plan_toucher(workspace):
+    """Create an on_wait callback that touches pre-created plan files.
+
+    Tests pre-create plan files before the orchestration cycle to simulate
+    agent-written plans.  The staleness check in _discover_and_store_plan()
+    compares file mtime against the task execution start time.  This callback
+    runs during adapter.wait() to refresh the mtime, simulating the agent
+    writing the file during execution.
+    """
+    import glob as _glob
+
+    def _touch_plan_files(ctx):
+        for pattern in ("**/*.md",):
+            for md in _glob.glob(
+                os.path.join(str(workspace), ".claude", pattern),
+                recursive=True,
+            ):
+                if os.path.isfile(md) and "plans/" not in md:
+                    os.utime(md, None)
+        root_plan = os.path.join(str(workspace), "plan.md")
+        if os.path.isfile(root_plan):
+            os.utime(root_plan, None)
+
+    return _touch_plan_files
+
+
 class TestAutoTaskGeneration:
     """Tests for auto-generating tasks from implementation plan files."""
 
@@ -213,7 +249,9 @@ class TestAutoTaskGeneration:
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(workspace),
         )
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, adapter_factory=MockAdapterFactory(
+            on_wait=_make_plan_toucher(workspace),
+        ))
         await o.initialize()
         yield o, workspace
         await _drain_running_tasks(o)
@@ -480,7 +518,9 @@ Implement JWT-based sessions.
             workspace_dir=str(workspace),
             auto_task=AutoTaskConfig(chain_dependencies=False),
         )
-        orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        orch = Orchestrator(config, adapter_factory=MockAdapterFactory(
+            on_wait=_make_plan_toucher(workspace),
+        ))
         await orch.initialize()
 
         claude_dir = workspace / ".claude"

@@ -185,6 +185,10 @@ class Orchestrator:
         # Background asyncio Tasks for in-flight agent executions, keyed by
         # task_id.  Cleaned up each cycle; prevents double-launching.
         self._running_tasks: dict[str, asyncio.Task] = {}
+        # Timestamps (time.time()) recording when each task's agent execution
+        # started, keyed by task_id.  Used by _discover_and_store_plan() to
+        # detect stale plan files that predate the current task's execution.
+        self._task_exec_start: dict[str, float] = {}
         self._notify: NotifyCallback | None = None
         self._create_thread: CreateThreadCallback | None = None
         # Discord message objects for task-started notifications, keyed by
@@ -1738,11 +1742,13 @@ class Orchestrator:
             await self.db.release_workspace(ws.id)
             return None
 
-        # Clean up archived plan files from previous tasks.  The main plan
-        # files (.claude/plan.md, plan.md) are not cleaned here because the
-        # sentinel-based staleness check in _discover_and_store_plan() handles
-        # them at discovery time.  Archived plans (in .claude/plans/) have task
-        # IDs in the filename so we can safely remove ones from other tasks.
+        # Clean up plan files from previous tasks to prevent a new task from
+        # discovering and claiming a stale plan that belongs to another task.
+        # Archived plans (.claude/plans/) have task IDs in filenames and are
+        # cleaned up here.  Main plan files (.claude/plan.md, plan.md, etc.)
+        # are handled by a staleness check in _discover_and_store_plan() which
+        # compares the plan file's mtime against the sentinel file written at
+        # task start.  Plans that predate the sentinel are ignored.
         await self._cleanup_archived_plans(workspace, task.id)
 
         return workspace
@@ -2214,6 +2220,42 @@ class Orchestrator:
             logger.debug("Auto-task: no plan file found for task %s in workspace %s (searched patterns: %s)", task.id, workspace, config.plan_file_patterns)
             return False
 
+        # Staleness check: compare the plan file's mtime against the
+        # recorded execution start time.  If the plan file predates the
+        # agent's execution start, it was written by a previous task and
+        # should not be attributed to this one.  This prevents stale plan
+        # files (left behind by failed cleanups) from being incorrectly
+        # picked up by unrelated tasks sharing the same workspace.
+        exec_start = self._task_exec_start.get(task.id)
+        if exec_start is not None:
+            try:
+                plan_mtime = os.path.getmtime(plan_path)
+                # Use a 2-second tolerance to account for filesystem
+                # timestamp granularity (some filesystems round to 1s).
+                # In practice, stale plans are minutes/hours old.
+                if plan_mtime < exec_start - 2.0:
+                    logger.warning(
+                        "Auto-task: ignoring stale plan file %s for task %s "
+                        "(plan mtime %.0f < exec start %.0f — file "
+                        "predates this task's execution)",
+                        plan_path, task.id, plan_mtime, exec_start,
+                    )
+                    # Archive it so it's not rediscovered by future tasks
+                    try:
+                        plans_dir = os.path.join(workspace, ".claude", "plans")
+                        os.makedirs(plans_dir, exist_ok=True)
+                        stale_archive = os.path.join(
+                            plans_dir, f"stale-{task.id}-plan.md"
+                        )
+                        os.rename(plan_path, stale_archive)
+                    except OSError:
+                        pass
+                    return False
+            except OSError as e:
+                logger.debug(
+                    "Auto-task: staleness check failed for %s: %s (proceeding)",
+                    plan_path, e,
+                )
 
         try:
             raw = read_plan_file(plan_path)
@@ -3329,6 +3371,10 @@ class Orchestrator:
             except Exception as e:
                 logger.warning("Memory recall failed for task %s: %s", task.id, e)
 
+        # Record execution start time so _discover_and_store_plan() can
+        # detect stale plan files that predate this task's agent execution.
+        self._task_exec_start[action.task_id] = time.time()
+
         await adapter.start(ctx)
 
         # ------------------------------------------------------------------ #
@@ -3868,6 +3914,7 @@ class Orchestrator:
         # Remove adapter reference — the adapter's subprocess has already
         # exited by this point (wait() returned), so this is just cleanup.
         self._adapters.pop(action.agent_id, None)
+        self._task_exec_start.pop(action.task_id, None)
 
         # Delete the task-started notification from Discord to reduce chat
         # clutter — the completion/failure message provides the relevant info.
