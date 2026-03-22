@@ -322,7 +322,9 @@ class Supervisor:
                 # If the LLM returned no text after tool use, ask it to
                 # synthesize a proper response from the tool results instead
                 # of falling back to the generic "Done. Actions taken: ..."
+                synthesis_attempted = False
                 if not response and tool_actions:
+                    synthesis_attempted = True
                     response = await self._synthesize_response(
                         user_text=text,
                         tool_actions=tool_actions,
@@ -378,7 +380,10 @@ class Supervisor:
                 # --- Adequacy safety net ---
                 # Catches obviously inadequate responses even when
                 # reflection is disabled or the circuit-breaker tripped.
+                # Skip if synthesis already ran — its fallback ("Done.
+                # Actions taken: ...") would trigger re-synthesis in a loop.
                 if (response and tool_actions
+                        and not synthesis_attempted
                         and not self._check_response_adequacy(
                             text, response, tool_actions)):
                     synthesized = await self._synthesize_response(
