@@ -249,6 +249,7 @@ class Task:
     task_type: TaskType | None = None     # categorization: feature, bugfix, refactor, etc.
     profile_id: str | None = None        # which AgentProfile to configure the agent with
     preferred_workspace_id: str | None = None  # hint: use this workspace (e.g. for merge-conflict tasks)
+    attachments: list[str] = field(default_factory=list)  # absolute paths to attached files (images, etc.)
 
 
 @dataclass
@@ -332,6 +333,7 @@ class TaskContext:
     checkout_path: str = ""
     branch_name: str = ""
     attached_context: list[str] = field(default_factory=list)
+    image_paths: list[str] = field(default_factory=list)  # absolute paths to images the agent should examine
     mcp_servers: dict[str, dict] = field(default_factory=dict)
 
 

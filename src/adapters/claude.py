@@ -529,6 +529,16 @@ class ClaudeAdapter(AgentAdapter):
             cmds = "\n".join(f"- `{c}`" for c in self._task.test_commands)
             builder.add_context("test_commands", f"## Test Commands\n{cmds}")
 
+        if self._task.image_paths:
+            paths = "\n".join(f"- `{p}`" for p in self._task.image_paths)
+            builder.add_context(
+                "attached_images",
+                f"## Attached Images\n"
+                f"The user attached the following image files to this task. "
+                f"Use the Read tool to view each image — Claude Code can read "
+                f"image files natively.\n{paths}"
+            )
+
         if self._task.attached_context:
             combined = "\n".join(f"- {ctx}" for ctx in self._task.attached_context)
             builder.add_context("additional_context", f"## Additional Context\n{combined}")

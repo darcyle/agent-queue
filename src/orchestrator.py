@@ -3310,6 +3310,7 @@ class Orchestrator:
             description=full_description,
             checkout_path=workspace,
             branch_name=task.branch_name or "",
+            image_paths=task.attachments if task.attachments else [],
             mcp_servers=(
                 dict(profile.mcp_servers)
                 if profile and profile.mcp_servers else {}

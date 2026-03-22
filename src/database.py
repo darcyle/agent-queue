@@ -327,6 +327,8 @@ class Database:
             "ALTER TABLE archived_tasks ADD COLUMN profile_id TEXT",
             "ALTER TABLE tasks ADD COLUMN preferred_workspace_id TEXT REFERENCES workspaces(id)",
             "ALTER TABLE archived_tasks ADD COLUMN preferred_workspace_id TEXT",
+            "ALTER TABLE tasks ADD COLUMN attachments TEXT DEFAULT '[]'",
+            "ALTER TABLE archived_tasks ADD COLUMN attachments TEXT DEFAULT '[]'",
         ]:
             try:
                 await self._db.execute(migration)
@@ -694,8 +696,9 @@ class Database:
             "description, priority, status, verification_type, retry_count, "
             "max_retries, assigned_agent_id, branch_name, resume_after, "
             "requires_approval, pr_url, plan_source, is_plan_subtask, "
-            "task_type, profile_id, preferred_workspace_id, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "task_type, profile_id, preferred_workspace_id, attachments, "
+            "created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (task.id, task.project_id, task.parent_task_id, task.repo_id,
              task.title, task.description, task.priority, task.status.value,
              task.verification_type.value, task.retry_count, task.max_retries,
@@ -705,6 +708,7 @@ class Database:
              task.task_type.value if task.task_type else None,
              task.profile_id,
              task.preferred_workspace_id,
+             json.dumps(task.attachments) if task.attachments else "[]",
              now, now),
         )
         await self._db.commit()
@@ -1028,6 +1032,7 @@ class Database:
             task_type=TaskType(row["task_type"]) if "task_type" in keys and row["task_type"] else None,
             profile_id=row["profile_id"] if "profile_id" in keys else None,
             preferred_workspace_id=row["preferred_workspace_id"] if "preferred_workspace_id" in keys else None,
+            attachments=json.loads(row["attachments"]) if "attachments" in keys and row["attachments"] else [],
         )
 
     # --- Dependencies ---
@@ -1918,8 +1923,8 @@ class Database:
             "priority, status, verification_type, retry_count, max_retries, "
             "assigned_agent_id, branch_name, resume_after, requires_approval, "
             "pr_url, plan_source, is_plan_subtask, task_type, profile_id, "
-            "preferred_workspace_id, created_at, updated_at, archived_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "preferred_workspace_id, attachments, created_at, updated_at, archived_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (task.id, task.project_id, task.parent_task_id, task.repo_id,
              task.title, task.description, task.priority, task.status.value,
              task.verification_type.value, task.retry_count, task.max_retries,
@@ -1929,6 +1934,7 @@ class Database:
              task.task_type.value if task.task_type else None,
              task.profile_id,
              task.preferred_workspace_id,
+             json.dumps(task.attachments) if task.attachments else "[]",
              0.0, 0.0, now),
         )
         # Read original timestamps from the tasks row directly.

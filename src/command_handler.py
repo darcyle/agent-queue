@@ -2115,6 +2115,18 @@ class CommandHandler:
             if ws.project_id != project_id:
                 return {"error": f"Workspace '{preferred_workspace_id}' belongs to "
                         f"project '{ws.project_id}', not '{project_id}'"}
+        # Validate optional attachments (list of file paths)
+        attachments = args.get("attachments", [])
+        if attachments:
+            import os
+            valid_paths = []
+            for path in attachments:
+                if os.path.isfile(path):
+                    valid_paths.append(os.path.abspath(path))
+                else:
+                    return {"error": f"Attachment file not found: {path}"}
+            attachments = valid_paths
+
         task = Task(
             id=task_id,
             project_id=project_id,
@@ -2126,6 +2138,7 @@ class CommandHandler:
             task_type=task_type,
             profile_id=profile_id,
             preferred_workspace_id=preferred_workspace_id,
+            attachments=attachments,
         )
         await self.db.create_task(task)
         result = {
@@ -2141,6 +2154,8 @@ class CommandHandler:
             result["profile_id"] = profile_id
         if preferred_workspace_id:
             result["preferred_workspace_id"] = preferred_workspace_id
+        if attachments:
+            result["attachments"] = attachments
 
         # Cross-project warning: if project_id was implicitly inherited from
         # the active channel context (not explicitly passed by the caller),

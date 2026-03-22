@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import hashlib
 import json
 import os
 import time
 import traceback
 from dataclasses import dataclass
+from pathlib import Path
 
 import discord
 from discord import app_commands
@@ -55,6 +57,7 @@ class CachedMessage:
     is_bot: bool
     content: str
     created_at: float    # UTC timestamp
+    attachment_paths: list[str] | None = None  # local paths to downloaded attachments
 
 
 class AgentQueueBot(commands.Bot):
@@ -967,6 +970,48 @@ class AgentQueueBot(commands.Bot):
     # Local message buffer
     # ------------------------------------------------------------------
 
+    async def _download_attachments(self, message: discord.Message) -> list[str]:
+        """Download image/file attachments from a Discord message to local disk.
+
+        Returns a list of absolute paths to the downloaded files.  Files are
+        stored under ``<data_dir>/attachments/<message_id>/`` with their
+        original filenames (sanitized).  Only image content types are
+        downloaded — other attachment types are skipped.
+
+        Failures are non-fatal: a failed download is silently skipped.
+        """
+        IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+        paths: list[str] = []
+        if not message.attachments:
+            return paths
+
+        attachments_dir = Path(self.config.data_dir) / "attachments" / str(message.id)
+        attachments_dir.mkdir(parents=True, exist_ok=True)
+
+        for att in message.attachments:
+            # Only download images — skip other file types
+            if att.content_type and att.content_type.split(";")[0].strip() not in IMAGE_CONTENT_TYPES:
+                continue
+            # Even if content_type is missing, allow common image extensions
+            if not att.content_type:
+                ext = os.path.splitext(att.filename)[1].lower()
+                if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+                    continue
+
+            # Sanitize filename: keep only alphanumeric, dots, dashes, underscores
+            safe_name = "".join(
+                c if c.isalnum() or c in ".-_" else "_"
+                for c in att.filename
+            )
+            dest = attachments_dir / safe_name
+            try:
+                await att.save(dest)
+                paths.append(str(dest.resolve()))
+            except Exception as e:
+                print(f"Failed to download attachment {att.filename}: {e}")
+
+        return paths
+
     def _should_buffer(self, channel_id: int, message: discord.Message) -> bool:
         """Return True if this message should be cached in the local buffer.
 
@@ -1062,6 +1107,12 @@ class AgentQueueBot(commands.Bot):
         prevent duplicate or interleaved responses when messages arrive faster
         than the LLM can respond.
         """
+        # Download any image attachments from the message before buffering.
+        # This makes local file paths available for task creation later.
+        downloaded_paths: list[str] = []
+        if message.attachments and message.author != self.user:
+            downloaded_paths = await self._download_attachments(message)
+
         # Buffer the message locally before any early-return guards.
         # Bot's own messages arrive back via the gateway, so this captures
         # both user AND bot messages for the local history cache.
@@ -1073,6 +1124,7 @@ class AgentQueueBot(commands.Bot):
                 is_bot=message.author == self.user,
                 content=message.content,
                 created_at=message.created_at.timestamp(),
+                attachment_paths=downloaded_paths or None,
             ))
 
         # Emit chat.message event for the chat observer (before any guards).
@@ -1160,9 +1212,28 @@ class AgentQueueBot(commands.Bot):
         if self.user:
             text = text.replace(f"<@{self.user.id}>", "").strip()
 
+        # Append attachment info so the LLM knows about uploaded images
+        if downloaded_paths:
+            attachment_lines = "\n".join(f"  - `{p}`" for p in downloaded_paths)
+            text += (
+                f"\n\n[User attached {len(downloaded_paths)} image(s), "
+                f"downloaded to local paths:\n{attachment_lines}\n"
+                f"When creating a task that needs these images, pass these "
+                f"paths in the `attachments` parameter of create_task.]"
+            )
+
         if not text:
-            await message.reply("How can I help? Ask me about status, projects, or tasks.")
-            return
+            if downloaded_paths:
+                text = (
+                    f"[User sent {len(downloaded_paths)} image(s) with no text. "
+                    f"Downloaded to:\n"
+                    + "\n".join(f"  - `{p}`" for p in downloaded_paths)
+                    + "\n"
+                    f"Ask the user what they'd like to do with these images.]"
+                )
+            else:
+                await message.reply("How can I help? Ask me about status, projects, or tasks.")
+                return
 
         # Serialize LLM processing per channel to avoid duplicate/concurrent responses
         lock = self._channel_locks.setdefault(message.channel.id, asyncio.Lock())

@@ -505,6 +505,17 @@ _ALL_TOOL_DEFINITIONS = [
                         "find_merge_conflict_workspaces or list_workspaces."
                     ),
                 },
+                "attachments": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "List of absolute file paths to images or files that the "
+                        "agent should have access to when working on this task. "
+                        "These are typically paths to Discord attachment images "
+                        "that were downloaded locally. The agent will be told to "
+                        "read these files using the Read tool."
+                    ),
+                },
             },
             "required": ["title"],
         },
