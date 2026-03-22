@@ -2897,8 +2897,7 @@ class CommandHandler:
             os.makedirs(plans_dir, exist_ok=True)
             archived_path = os.path.join(plans_dir, f"{task_id}-plan.md")
 
-            import shutil
-            shutil.copy2(plan_file, archived_path)
+            os.rename(plan_file, archived_path)
             logger.info("Archived plan file to %s", archived_path)
         except Exception as e:
             logger.warning("Failed to archive plan file for task %s: %s", task_id, e)
@@ -2907,14 +2906,25 @@ class CommandHandler:
         # Store plan data in task_context
         try:
             import json
-            await self.db.set_task_context(
-                task_id, "plan_steps", json.dumps(steps)
+            await self.db.add_task_context(
+                task_id, type="plan_steps",
+                label="Plan Parsed Steps",
+                content=json.dumps(steps),
             )
-            await self.db.set_task_context(
-                task_id, "plan_archived_path", archived_path
+            await self.db.add_task_context(
+                task_id, type="plan_archived_path",
+                label="Plan Archived Path",
+                content=archived_path,
             )
-            await self.db.set_task_context(
-                task_id, "plan_quality_score", str(quality.quality_score)
+            await self.db.add_task_context(
+                task_id, type="plan_raw",
+                label="Plan Raw Content",
+                content=content,
+            )
+            await self.db.add_task_context(
+                task_id, type="plan_quality_score",
+                label="Plan Quality Score",
+                content=str(quality.quality_score),
             )
         except Exception as e:
             logger.warning("Failed to store plan context for task %s: %s", task_id, e)
@@ -3001,17 +3011,26 @@ class CommandHandler:
                 logger.warning("Plan cleanup: failed to delete archived plan %s: %s", archived_path, e)
 
         # 2. Delete any original plan file that may still exist (in case
-        #    archival failed or there's a leftover copy).
-        plan_patterns = [".claude/plan.md", "plan.md"]
+        #    archival failed or there's a leftover copy).  Use the full
+        #    set of configured plan file patterns, not just hardcoded ones.
+        import glob as _glob
+        plan_patterns = self.orchestrator.config.auto_task.plan_file_patterns
         for pattern in plan_patterns:
-            plan_path = os.path.join(workspace, pattern)
-            try:
-                if os.path.isfile(plan_path):
-                    os.remove(plan_path)
-                    deleted_any = True
-                    logger.info("Plan cleanup: deleted original plan file %s", plan_path)
-            except OSError as e:
-                logger.warning("Plan cleanup: failed to delete plan %s: %s", plan_path, e)
+            full_pattern = os.path.join(workspace, pattern)
+            # Support glob patterns (e.g. "docs/plans/*.md")
+            matches = _glob.glob(full_pattern)
+            if not matches:
+                # Also check as a literal path (no glob chars)
+                if os.path.isfile(full_pattern):
+                    matches = [full_pattern]
+            for plan_path in matches:
+                try:
+                    if os.path.isfile(plan_path):
+                        os.remove(plan_path)
+                        deleted_any = True
+                        logger.info("Plan cleanup: deleted original plan file %s", plan_path)
+                except OSError as e:
+                    logger.warning("Plan cleanup: failed to delete plan %s: %s", plan_path, e)
 
         # 3. Commit the deletions so the plan file is gone from the branch
         if deleted_any and task.branch_name:
