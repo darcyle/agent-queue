@@ -38,6 +38,7 @@ from src.config import AppConfig
 from src.discord.notifications import format_server_started, format_server_started_embed
 from src.models import TaskStatus
 from src.orchestrator import Orchestrator
+from src.chat_observer import ChatObserver
 
 
 MAX_HISTORY_MESSAGES = 50  # Max messages to fetch from Discord
@@ -109,6 +110,13 @@ class AgentQueueBot(commands.Bot):
         self._task_thread_objects: dict[str, discord.Thread] = {}  # task_id -> Thread
         # Wire up the note-written callback
         self.agent.handler.on_note_written = self._handle_note_written
+        # Chat observer for passive channel observation (Phase 5)
+        self._chat_observer: ChatObserver | None = None
+        if config.supervisor.observation.enabled:
+            self._chat_observer = ChatObserver(
+                config=config.supervisor.observation,
+                on_batch_ready=self._process_observation_batch,
+            )
 
     def _load_notes_threads_sync(self) -> None:
         """Synchronous load — safe for use in __init__ (before the event loop)."""
@@ -255,11 +263,6 @@ class AgentQueueBot(commands.Bot):
                 print(f"Warning: could not reattach notes view for thread {thread_id}: {e}")
         if reattached:
             print(f"Reattached {reattached} notes view(s)")
-
-    # DEPRECATED: ChatAnalyzer replaced by ChatObserver (Phase 5)
-    # async def _reattach_analyzer_views(self) -> None:
-    #     """Register persistent ChatAnalyzerSuggestionView buttons after bot restart."""
-    #     pass
 
     def update_project_channel(
         self, project_id: str, channel: discord.TextChannel
@@ -438,25 +441,12 @@ class AgentQueueBot(commands.Bot):
                     # Wire Supervisor for post-task completion delegation
                     self.orchestrator.set_supervisor(self.agent)
 
-                    # DEPRECATED: ChatAnalyzer replaced by ChatObserver (Phase 5)
-                    # if self.orchestrator.chat_analyzer:
-                    #     from src.chat_analyzer_service import ChatAnalyzerService
-                    #     self._analyzer_service = ChatAnalyzerService(
-                    #         db=self.orchestrator.db,
-                    #         handler=self.agent.handler,
-                    #         bot=self,
-                    #     )
-                    #     self.orchestrator.chat_analyzer.set_post_suggestion_callback(
-                    #         self._post_analyzer_suggestion
-                    #     )
-                    #     # Wire up command handler and auto-execute for
-                    #     # memory-informed automatic actions
-                    #     self.orchestrator.chat_analyzer.set_command_handler(
-                    #         self.agent.handler
-                    #     )
-                    #     self.orchestrator.chat_analyzer.set_auto_execute_callback(
-                    #         self._post_analyzer_auto_action
-                    #     )
+                    # Start ChatObserver for passive channel observation
+                    if self._chat_observer and self._chat_observer.enabled:
+                        self._chat_observer.set_project_profiles(
+                            self._build_project_profiles()
+                        )
+                        await self._chat_observer.start()
 
         # Initialize LLM client via Supervisor
         try:
@@ -469,9 +459,6 @@ class AgentQueueBot(commands.Bot):
 
         # Reattach persistent NotesView buttons on existing messages
         await self._reattach_notes_views()
-
-        # DEPRECATED: ChatAnalyzer replaced by ChatObserver (Phase 5)
-        # await self._reattach_analyzer_views()
 
         # Start periodic buffer cleanup (evicts idle channel buffers)
         asyncio.create_task(self._periodic_buffer_cleanup())
@@ -650,15 +637,6 @@ class AgentQueueBot(commands.Bot):
                 return await self._send_long_message(channel, text)
         return None
 
-    # DEPRECATED: ChatAnalyzer replaced by ChatObserver (Phase 5)
-    # async def _post_analyzer_suggestion(...) -> None:
-    #     """Post a chat analyzer suggestion (deprecated)."""
-    #     pass
-
-    # async def _post_analyzer_auto_action(...) -> None:
-    #     """Post auto-executed analyzer action notification (deprecated)."""
-    #     pass
-
     async def _process_observation_batch(
         self, channel_id: int, messages: list[dict]
     ) -> None:
@@ -766,6 +744,15 @@ class AgentQueueBot(commands.Bot):
                 )
         except Exception as e:
             print(f"Error storing observation memory: {e}")
+
+    def _build_project_profiles(self) -> dict[str, set[str]]:
+        """Build keyword sets from registered projects for the ChatObserver."""
+        profiles: dict[str, set[str]] = {}
+        for channel_id, project_id in self._channel_to_project.items():
+            terms = set(project_id.replace("-", " ").replace("_", " ").lower().split())
+            terms.add(project_id.lower())
+            profiles[project_id] = terms
+        return profiles
 
     async def _create_task_thread(
         self, thread_name: str, initial_message: str,
@@ -1088,7 +1075,7 @@ class AgentQueueBot(commands.Bot):
                 created_at=message.created_at.timestamp(),
             ))
 
-        # Emit chat.message event for the chat analyzer (before any guards).
+        # Emit chat.message event for the chat observer (before any guards).
         # This fires for ALL messages in project channels (including bot
         # responses) so the analyzer sees the full conversation flow and
         # can understand context, not just user messages in isolation.
@@ -1105,6 +1092,20 @@ class AgentQueueBot(commands.Bot):
                 "timestamp": message.created_at.timestamp(),
                 "is_bot": message.author == self.user,
             })
+
+            # Feed to ChatObserver for Stage 1 filtering
+            if self._chat_observer:
+                self._chat_observer.on_message({
+                    "channel_id": channel_id,
+                    "project_id": project_id_for_event,
+                    "author": (
+                        "AgentQueue" if message.author == self.user
+                        else message.author.display_name
+                    ),
+                    "content": message.content,
+                    "timestamp": message.created_at.timestamp(),
+                    "is_bot": message.author == self.user,
+                })
 
         # Ignore own messages
         if message.author == self.user:

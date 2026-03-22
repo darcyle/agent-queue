@@ -82,7 +82,6 @@ DEFAULT_PLAN_FILE_PATTERNS = [
     "docs/plans/*.md",
     "plans/*.md",
     "docs/plan.md",
-    "notes/*.md",
     "notes/plans/*.md",
 ]
 

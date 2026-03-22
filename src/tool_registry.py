@@ -169,9 +169,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_prompts": "system",
     "read_prompt": "system",
     "render_prompt": "system",
-    "analyzer_status": "system",
-    "analyzer_toggle": "system",
-    "analyzer_history": "system",
+    # analyzer_status, analyzer_toggle, analyzer_history: deprecated (Phase 6)
 }
 
 
@@ -2061,65 +2059,7 @@ _ALL_TOOL_DEFINITIONS = [
             "required": ["project_id"],
         },
     },
-    {
-        "name": "analyzer_status",
-        "description": (
-            "Show the current status of the chat analyzer: whether it is "
-            "enabled, its configuration (model, interval, thresholds), and "
-            "aggregate stats (total suggestions made, accepted, dismissed). "
-            "Optionally scope stats to a specific project."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Optional project ID to scope stats to",
-                },
-            },
-        },
-    },
-    {
-        "name": "analyzer_toggle",
-        "description": (
-            "Enable or disable the chat analyzer at runtime. If 'enabled' "
-            "is omitted, toggles the current state. When enabling, the "
-            "analyzer starts its background analysis loop. When disabling, "
-            "it stops analyzing but preserves existing suggestions."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "enabled": {
-                    "type": "boolean",
-                    "description": (
-                        "True to enable, false to disable. Omit to toggle."
-                    ),
-                },
-            },
-        },
-    },
-    {
-        "name": "analyzer_history",
-        "description": (
-            "Show recent chat analyzer suggestions and their statuses "
-            "(pending, accepted, dismissed, auto_executed). Use this to "
-            "review what the analyzer has suggested recently."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Optional project ID to filter suggestions",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max suggestions to return (default 20)",
-                },
-            },
-        },
-    },
+    # analyzer tool definitions removed (Phase 6)
 ]
 
 class ToolRegistry:

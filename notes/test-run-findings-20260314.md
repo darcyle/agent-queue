@@ -1,7 +1,3 @@
----
-auto_tasks: true
----
-
 # Test Suite Results & Fix Plan
 
 **Date:** 2026-03-14

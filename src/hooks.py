@@ -75,7 +75,6 @@ from src.event_bus import EventBus
 from src.file_watcher import FileWatcher, WatchRule
 from src.logging_config import CorrelationContext
 from src.models import Hook, HookRun, ProjectStatus, Task, TaskStatus
-from src.prompt_registry import registry as _prompt_registry
 
 logger = logging.getLogger(__name__)
 

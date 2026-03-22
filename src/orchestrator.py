@@ -233,8 +233,6 @@ class Orchestrator:
         # each task (keyed by task_id) to rate-limit alerts.
         self._stuck_notified_at: dict[str, float] = {}
         self.hooks: HookEngine | None = None
-        # DEPRECATED: ChatAnalyzer replaced by ChatObserver (Phase 5)
-        self.chat_analyzer: "ChatAnalyzer | None" = None
         # Semantic memory manager — optional integration with memsearch.
         # Initialized only when config.memory.enabled is True and the
         # memsearch package is installed.
@@ -742,17 +740,6 @@ class Orchestrator:
         except Exception as e:
             logger.warning("Default rule installation failed: %s", e)
 
-        # DEPRECATED: ChatAnalyzer replaced by ChatObserver (Phase 5)
-        # Initialization code removed — chat_analyzer remains None
-        # if self.config.chat_analyzer.enabled:
-        #     from src.chat_analyzer import ChatAnalyzer
-        #     self.chat_analyzer = ChatAnalyzer(
-        #         self.db, self.bus, self.config.chat_analyzer,
-        #         data_dir=self.config.data_dir,
-        #         memory_manager=self.memory_manager,
-        #     )
-        #     await self.chat_analyzer.initialize()
-
         # Start config file watcher for hot-reloading
         if self.config._config_path:
             self._config_watcher = ConfigWatcher(
@@ -900,9 +887,6 @@ class Orchestrator:
             await self._config_watcher.stop()
         if self.hooks:
             await self.hooks.shutdown()
-        # DEPRECATED: chat_analyzer shutdown removed (Phase 5)
-        # if self.chat_analyzer:
-        #     await self.chat_analyzer.shutdown()
         if self.memory_manager:
             try:
                 await self.memory_manager.close()

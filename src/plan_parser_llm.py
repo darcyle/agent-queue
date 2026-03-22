@@ -8,20 +8,29 @@ LLM call fails or no provider is available.
 
 from __future__ import annotations
 
+import os
+
 from src.chat_providers.base import ChatProvider
 from src.plan_parser import ParsedPlan, PlanStep, parse_plan
-from src.prompt_registry import registry as _prompt_registry
 
-# The plan parser system prompt now lives in src/prompts/plan_parser_system.md.
-# Loaded via the prompt registry at call time.
+# The plan parser system prompt lives in src/prompts/plan_parser_system.md.
+# Loaded directly from disk on first access and cached.
 _SYSTEM_PROMPT: str | None = None
+_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "plan_parser_system.md")
 
 
 def _get_system_prompt() -> str:
-    """Lazily load the plan-parser system prompt from the registry."""
+    """Lazily load the plan-parser system prompt from disk."""
     global _SYSTEM_PROMPT
     if _SYSTEM_PROMPT is None:
-        _SYSTEM_PROMPT = _prompt_registry.get("plan-parser-system")
+        with open(_PROMPT_PATH, encoding="utf-8") as f:
+            content = f.read()
+        # Strip YAML frontmatter if present
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            _SYSTEM_PROMPT = parts[2].strip() if len(parts) >= 3 else content
+        else:
+            _SYSTEM_PROMPT = content.strip()
     return _SYSTEM_PROMPT
 
 _TOOL = {
