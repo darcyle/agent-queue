@@ -101,12 +101,14 @@ class TestMaxIterations:
         # Queue 11 tool calls (exceeds limit of 10)
         for i in range(11):
             provider.add_tool_call("list_projects", {})
+        # After max rounds, synthesis is attempted
+        provider.add_text("I completed 10 rounds of listing.")
 
         response = await agent.chat("keep going", user_name="test")
 
-        # Should have stopped at 10 iterations
+        # Should have stopped at 10 tool iterations
         assert len(recorder.calls) == 10
-        assert "Done." in response
+        assert response  # Should have a meaningful response from synthesis
 
     async def test_max_iterations_returns_actions(self, eval_agent):
         agent, recorder, provider = eval_agent
@@ -114,10 +116,12 @@ class TestMaxIterations:
         # Queue exactly 10 tool calls
         for _ in range(10):
             provider.add_tool_call("list_projects", {})
+        # After max rounds, synthesis is attempted — provide a response
+        provider.add_text("I listed projects 10 times.")
 
         response = await agent.chat("keep listing", user_name="test")
 
-        assert "list_projects" in response
+        assert "listed" in response.lower() or "list_projects" in response
 
 
 class TestToolErrorPropagation:
@@ -306,12 +310,29 @@ class TestEmptyResponse:
         agent, recorder, provider = eval_agent
 
         provider.add_tool_call("list_projects", {})
-        # Empty text response
+        # Empty text response — triggers synthesis
+        provider.add_response(ChatResponse(content=[TextBlock(text="")]))
+        # Synthesis call returns a proper response
+        provider.add_text("Here are the projects I found.")
+
+        response = await agent.chat("do something", user_name="test")
+
+        # Synthesis should produce a meaningful response
+        assert "projects" in response.lower()
+
+    async def test_empty_text_synthesis_fallback(self, eval_agent):
+        """When synthesis also returns empty, fall back to actions list."""
+        agent, recorder, provider = eval_agent
+
+        provider.add_tool_call("list_projects", {})
+        # Empty text response — triggers synthesis
+        provider.add_response(ChatResponse(content=[TextBlock(text="")]))
+        # Synthesis also returns empty — should fall back
         provider.add_response(ChatResponse(content=[TextBlock(text="")]))
 
         response = await agent.chat("do something", user_name="test")
 
-        # Should fall back to "Done. Actions taken: ..."
+        # Last-resort fallback
         assert "Done." in response
         assert "list_projects" in response
 

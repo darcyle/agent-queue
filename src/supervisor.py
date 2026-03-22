@@ -282,6 +282,8 @@ class Supervisor:
 
         # Multi-turn tool-use loop
         tool_actions: list[str] = []
+        # Accumulated tool results for synthesis and reflection
+        accumulated_tool_results: list[dict] = []
         max_rounds = getattr(self, "_max_tool_rounds", 10)
 
         for round_num in range(max_rounds):
@@ -304,6 +306,18 @@ class Supervisor:
                     await on_progress("responding", None)
                 response = "\n".join(resp.text_parts).strip()
 
+                # If the LLM returned no text after tool use, ask it to
+                # synthesize a proper response from the tool results instead
+                # of falling back to the generic "Done. Actions taken: ..."
+                if not response and tool_actions:
+                    response = await self._synthesize_response(
+                        user_text=text,
+                        tool_actions=tool_actions,
+                        accumulated_results=accumulated_tool_results,
+                        messages=messages,
+                        active_tools=active_tools,
+                    )
+
                 # --- Reflection pass (after tool use) ---
                 if tool_actions:
                     messages.append({
@@ -313,15 +327,13 @@ class Supervisor:
                     await self.reflect(
                         trigger=_reflection_trigger,
                         action_summary=", ".join(tool_actions),
-                        action_results=[],
+                        action_results=accumulated_tool_results,
                         messages=messages,
                         active_tools=active_tools,
                     )
 
                 if response:
                     return response
-                if tool_actions:
-                    return f"Done. Actions taken: {', '.join(tool_actions)}"
                 return "Done."
 
             # Only keep tool_use blocks in assistant message (drop pre-tool commentary)
@@ -334,6 +346,11 @@ class Supervisor:
                     await on_progress("tool_use", label)
                 result = await self._execute_tool(tool_use.name, tool_use.input)
                 tool_actions.append(label)
+                # Accumulate for synthesis and reflection
+                accumulated_tool_results.append({
+                    "tool": label,
+                    "result": result,
+                })
 
                 # If load_tools was called, expand active tool set
                 if tool_use.name == "load_tools" and "loaded" in result:
@@ -351,8 +368,15 @@ class Supervisor:
 
             messages.append({"role": "user", "content": tool_results})
 
+        # Max rounds exhausted — synthesize instead of generic fallback
         if tool_actions:
-            return f"Done. Actions taken: {', '.join(tool_actions)}"
+            return await self._synthesize_response(
+                user_text=text,
+                tool_actions=tool_actions,
+                accumulated_results=accumulated_tool_results,
+                messages=messages,
+                active_tools=active_tools,
+            )
         return "Done."
 
     async def summarize(self, transcript: str) -> str | None:
@@ -529,6 +553,62 @@ class Supervisor:
         except (_json.JSONDecodeError, TypeError):
             pass
         return {"action": "ignore"}
+
+    async def _synthesize_response(
+        self,
+        user_text: str,
+        tool_actions: list[str],
+        accumulated_results: list[dict],
+        messages: list[dict],
+        active_tools: dict[str, dict],
+    ) -> str:
+        """Ask the LLM to synthesize a user-facing response from tool results.
+
+        Called when the LLM stopped calling tools but produced no text response,
+        or when the max tool rounds were exhausted. Instead of returning a
+        generic "Done. Actions taken: ..." message, this prompts the LLM to
+        compose a meaningful summary that addresses the user's original request.
+        """
+        # Build a concise summary of tool results for the synthesis prompt
+        results_summary_parts = []
+        for entry in accumulated_results:
+            result_str = json.dumps(entry["result"])
+            # Truncate very large results to keep the synthesis prompt manageable
+            if len(result_str) > 500:
+                result_str = result_str[:497] + "..."
+            results_summary_parts.append(f"- **{entry['tool']}**: {result_str}")
+        results_summary = "\n".join(results_summary_parts) or "No results."
+
+        synthesis_prompt = (
+            "You used tools but did not provide a text response to the user. "
+            "Please compose a helpful response that directly addresses the "
+            "user's original request.\n\n"
+            f"**User's request:** {user_text}\n\n"
+            f"**Tools called and their results:**\n{results_summary}\n\n"
+            "Respond naturally. Summarize findings, report what actions were "
+            "taken, and address each part of the user's request. If you could "
+            "not fully complete the request, explain what was done and what "
+            "remains."
+        )
+
+        messages_copy = list(messages)
+        messages_copy.append({"role": "user", "content": synthesis_prompt})
+
+        try:
+            resp = await self._provider.create_message(
+                messages=messages_copy,
+                system=self._build_system_prompt(),
+                tools=list(active_tools.values()),
+                max_tokens=1024,
+            )
+            response = "\n".join(resp.text_parts).strip()
+            if response:
+                return response
+        except Exception:
+            pass  # Synthesis failure falls through to basic fallback
+
+        # Last-resort fallback — still better than just tool names
+        return f"Done. Actions taken: {', '.join(tool_actions)}"
 
     async def _execute_tool(self, name: str, input_data: dict) -> dict:
         """Execute a tool call via the shared CommandHandler.
