@@ -2886,10 +2886,15 @@ class CommandHandler:
         """
         logger = logging.getLogger(__name__)
         ws = await self.db.get_workspace_for_task(task.id)
-        if not ws or not ws.workspace_path:
+        if ws and ws.workspace_path:
+            workspace = ws.workspace_path
+        else:
+            # Workspace lock may have been released (e.g. task is in
+            # AWAITING_PLAN_APPROVAL after the agent finished).  Fall back
+            # to the project's default workspace path.
+            workspace = await self.db.get_project_workspace_path(task.project_id)
+        if not workspace:
             return
-
-        workspace = ws.workspace_path
         deleted_any = False
 
         # 1. Delete the archived plan file if it exists
