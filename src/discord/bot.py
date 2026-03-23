@@ -463,6 +463,9 @@ class AgentQueueBot(commands.Bot):
         # Reattach persistent NotesView buttons on existing messages
         await self._reattach_notes_views()
 
+        # Reconcile rules → hooks in the background now that supervisor is available
+        asyncio.create_task(self._reconcile_rules())
+
         # Start periodic buffer cleanup (evicts idle channel buffers)
         asyncio.create_task(self._periodic_buffer_cleanup())
 
@@ -1531,6 +1534,27 @@ class AgentQueueBot(commands.Bot):
     # ------------------------------------------------------------------
     # Periodic buffer cleanup
     # ------------------------------------------------------------------
+
+    async def _reconcile_rules(self) -> None:
+        """Reconcile rules → hooks now that the supervisor is available.
+
+        Runs once at startup as a background task.  Each active rule gets
+        its hooks regenerated (with LLM prompt expansion if possible).
+        """
+        rm = getattr(self.orchestrator, "rule_manager", None)
+        if not rm:
+            return
+        try:
+            stats = await rm.reconcile()
+            scanned = stats.get("rules_scanned", 0)
+            regen = stats.get("hooks_regenerated", 0)
+            if scanned > 0:
+                print(
+                    f"Rule reconciliation: {scanned} rules scanned, "
+                    f"{regen} hooks regenerated"
+                )
+        except Exception as e:
+            print(f"Rule reconciliation failed: {e}")
 
     async def _periodic_buffer_cleanup(self) -> None:
         """Background loop that evicts idle channel buffers every 10 minutes."""

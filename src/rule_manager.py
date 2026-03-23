@@ -517,15 +517,14 @@ class RuleManager:
         return None
 
     async def reconcile(self) -> dict:
-        """Startup reconciliation: verify hooks exist for all active rules.
+        """Startup reconciliation: regenerate hooks for all active rules.
 
-        Scans all rule files, checks that referenced hooks exist in the DB,
-        and regenerates missing hooks.
+        Scans all rule files and unconditionally regenerates hooks from each
+        active rule.  This ensures hooks stay in sync with rule content even
+        if the rule files or database were edited outside the running system.
         """
         stats = {
             "rules_scanned": 0,
-            "hooks_verified": 0,
-            "hooks_missing": 0,
             "hooks_regenerated": 0,
             "errors": 0,
         }
@@ -554,61 +553,23 @@ class RuleManager:
                     if meta.get("type") != "active":
                         continue
 
-                    hook_ids = meta.get("hooks", [])
-                    if not hook_ids:
-                        stats["hooks_missing"] += 1
-                        # Attempt regeneration
-                        if self._db:
-                            try:
-                                new_hooks = (
-                                    await self._generate_hooks_for_rule(
-                                        meta.get("id", filename[:-3]),
-                                        pid,
-                                        body,
-                                    )
-                                )
-                                if new_hooks:
-                                    stats["hooks_regenerated"] += len(
-                                        new_hooks
-                                    )
-                            except Exception as e:
-                                logger.warning(
-                                    "Hook regen failed for %s: %s",
-                                    filename,
-                                    e,
-                                )
-                                stats["errors"] += 1
+                    if not self._db:
                         continue
 
-                    # Verify referenced hooks exist
-                    for hid in hook_ids:
-                        if self._db:
-                            hook = await self._db.get_hook(hid)
-                            if hook:
-                                stats["hooks_verified"] += 1
-                            else:
-                                stats["hooks_missing"] += 1
-                                # Regenerate
-                                try:
-                                    new_hooks = (
-                                        await self._generate_hooks_for_rule(
-                                            meta.get("id", filename[:-3]),
-                                            pid,
-                                            body,
-                                        )
-                                    )
-                                    if new_hooks:
-                                        stats["hooks_regenerated"] += len(
-                                            new_hooks
-                                        )
-                                except Exception as e:
-                                    logger.warning(
-                                        "Hook regen failed for %s: %s",
-                                        filename,
-                                        e,
-                                    )
-                                    stats["errors"] += 1
-                                break  # regenerated all hooks for this rule
+                    try:
+                        new_hooks = await self._generate_hooks_for_rule(
+                            meta.get("id", filename[:-3]),
+                            pid,
+                            body,
+                        )
+                        if new_hooks:
+                            stats["hooks_regenerated"] += len(new_hooks)
+                    except Exception as e:
+                        logger.warning(
+                            "Hook regen failed for %s: %s",
+                            filename, e,
+                        )
+                        stats["errors"] += 1
 
                 except Exception as e:
                     logger.warning(

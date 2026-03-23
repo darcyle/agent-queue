@@ -252,28 +252,24 @@ def test_async_save_active_rule_generates_hooks(
     assert "rule-periodic" in created_hook.prompt_template
 
 
-def test_reconcile_detects_missing_hooks(rule_manager_with_db, mock_db):
-    """reconcile detects active rules with missing hooks."""
+def test_reconcile_regenerates_hooks(rule_manager_with_db, mock_db):
+    """reconcile regenerates hooks for all active rules."""
     rm = rule_manager_with_db
 
-    # Save active rule referencing a hook that doesn't exist in DB
     rm.save_rule(
-        id="rule-orphan",
+        id="rule-active",
         project_id="proj",
         rule_type="active",
         content=(
-            "# Orphan Rule\n\n## Trigger\nEvery 10 min."
+            "# Active Rule\n\n## Trigger\nEvery 10 min."
             "\n\n## Logic\nCheck status."
         ),
     )
-    rm._update_rule_hooks("rule-orphan", ["hook-missing"])
-
-    # DB says hook doesn't exist
-    mock_db.get_hook.return_value = None
 
     result = asyncio.run(rm.reconcile())
     assert result["rules_scanned"] > 0
-    assert result["hooks_missing"] > 0
+    assert result["hooks_regenerated"] > 0
+    mock_db.create_hook.assert_called()
 
 
 def test_hook_generation_uses_llm_expansion(storage_root, mock_db):

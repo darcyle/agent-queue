@@ -719,22 +719,9 @@ class Orchestrator:
             orchestrator=self,
         )
 
-        # Run startup reconciliation for rules -> hooks
-        try:
-            reconcile_stats = await self.rule_manager.reconcile()
-            if reconcile_stats.get("rules_scanned", 0) > 0:
-                logger.info(
-                    "Rule reconciliation: %d rules scanned, %d hooks verified, "
-                    "%d hooks missing, %d regenerated",
-                    reconcile_stats["rules_scanned"],
-                    reconcile_stats["hooks_verified"],
-                    reconcile_stats["hooks_missing"],
-                    reconcile_stats["hooks_regenerated"],
-                )
-        except Exception as e:
-            logger.warning("Rule reconciliation failed: %s", e)
-
         # Install default global rules if not already present
+        # (Rule reconciliation happens later in on_ready, after the
+        # supervisor is available for LLM prompt expansion.)
         try:
             installed = self.rule_manager.install_defaults()
             if installed:
