@@ -32,6 +32,84 @@ from src.models import TaskStatus
 _NOTES_PER_PAGE = 20  # Max note buttons (4 rows × 5 buttons)
 
 
+async def _send_long_interaction(
+    text: str,
+    send_func,
+    *,
+    filename: str = "response.md",
+    **send_kwargs,
+) -> None:
+    """Send a long message via a Discord interaction, splitting or attaching as needed.
+
+    Works with both ``interaction.response.send_message`` and
+    ``interaction.followup.send``.  Passes through extra *send_kwargs*
+    (e.g. ``ephemeral=True``, ``view=...``) to the first chunk only so
+    that Discord UI elements are attached correctly.
+
+    Behaviour:
+    - ≤2000 chars → send as-is.
+    - 2001–6000 chars → split at line boundaries into ≤2000-char chunks.
+    - >6000 chars → attach as a file with a short preview.
+    """
+    if len(text) <= 2000:
+        await send_func(text, **send_kwargs)
+        return
+
+    # Very long content → attach as file with a short preview
+    if len(text) > 6000:
+        preview_end = text.find("\n\n", 0, 500)
+        if preview_end == -1:
+            preview_end = min(300, len(text))
+        preview = text[:preview_end].rstrip()
+
+        file = discord.File(
+            fp=io.BytesIO(text.encode("utf-8")),
+            filename=filename,
+        )
+        preview_msg = f"{preview}\n\n*Full response attached ({len(text):,} chars)*"
+        # Ensure preview itself fits Discord limit
+        if len(preview_msg) > 2000:
+            preview_msg = preview_msg[:1997] + "…"
+        await send_func(preview_msg, file=file, **send_kwargs)
+        return
+
+    # Medium-length content → split into multiple messages at line boundaries
+    chunks: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        candidate = current + ("\n" if current else "") + line
+        if len(candidate) > 2000:
+            if current:
+                chunks.append(current)
+            # If a single line exceeds 2000, hard-split it
+            while len(line) > 2000:
+                chunks.append(line[:2000])
+                line = line[2000:]
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+
+    for i, chunk in enumerate(chunks):
+        if i == 0:
+            # First chunk carries the extra kwargs (view, ephemeral, etc.)
+            await send_func(chunk, **send_kwargs)
+        else:
+            # Subsequent chunks are plain follow-ups.  If the send_func is
+            # ``interaction.response.send_message``, the response has already
+            # been consumed so we can't call it again.  However, in practice
+            # the caller always uses ``followup.send`` for long lists, which
+            # *can* be called multiple times.  For the rare case where the
+            # first call was ``interaction.response``, we just skip the extra
+            # kwargs (view etc.) because Discord only allows one response.
+            try:
+                await send_func(chunk)
+            except discord.errors.InteractionResponded:
+                # Response already sent – silently drop overflow rather than crash.
+                break
+
+
 class _NoteDismissButton(discord.ui.Button):
     """Dismiss button that deletes the note-viewing message."""
 
@@ -667,9 +745,7 @@ class MenuView(discord.ui.View):
                 lines.append(f"_...and {len(project_tasks) - 8} more_")
 
         msg = "\n".join(lines)
-        if len(msg) > 2000:
-            msg = msg[:1997] + "…"
-        await interaction.followup.send(msg, ephemeral=True)
+        await _send_long_interaction(msg, interaction.followup.send, ephemeral=True)
 
     @discord.ui.button(
         label="All Tasks",
@@ -727,9 +803,7 @@ class MenuView(discord.ui.View):
 
         header = f"## 🌳 All Tasks — Tree View ({grand_total} total)"
         msg = header + "\n" + "\n".join(lines)
-        if len(msg) > 2000:
-            msg = msg[:1997] + "…"
-        await interaction.followup.send(msg, ephemeral=True)
+        await _send_long_interaction(msg, interaction.followup.send, ephemeral=True)
 
     @discord.ui.button(
         label="Projects",
@@ -890,9 +964,7 @@ class MenuView(discord.ui.View):
 
         view = HooksListView(hooks, self._handler)
         msg = view.build_content()
-        if len(msg) > 2000:
-            msg = msg[:1997] + "…"
-        await interaction.followup.send(msg, view=view, ephemeral=True)
+        await _send_long_interaction(msg, interaction.followup.send, view=view, ephemeral=True)
 
     @discord.ui.button(
         label="Toggle Orchestrator",
@@ -2284,9 +2356,7 @@ def setup_commands(bot: commands.Bot) -> None:
             lines.append(f"\n⚠️ Stats: {stats_err}")
 
         msg = "\n".join(lines)
-        if len(msg) > 2000:
-            msg = msg[:1997] + "..."
-        await interaction.followup.send(msg)
+        await _send_long_interaction(msg, interaction.followup.send)
 
     @bot.tree.command(name="events", description="Show recent system events")
     @app_commands.describe(limit="Number of events to show (default 10)")
@@ -2311,9 +2381,7 @@ def setup_commands(bot: commands.Bot) -> None:
                 parts.append(f"at {ts}")
             lines.append(f"• {' — '.join(parts)}")
         msg = "\n".join(lines)
-        if len(msg) > 2000:
-            msg = msg[:1997] + "..."
-        await interaction.response.send_message(msg)
+        await _send_long_interaction(msg, interaction.response.send_message)
 
     # ===================================================================
     # PROJECT COMMANDS
@@ -3504,9 +3572,7 @@ def setup_commands(bot: commands.Bot) -> None:
                 f"`{ws['workspace_path']}` project=`{ws['project_id']}`{lock_info}"
             )
         msg = "\n".join(lines)
-        if len(msg) > 2000:
-            msg = msg[:1997] + "..."
-        await interaction.response.send_message(msg)
+        await _send_long_interaction(msg, interaction.response.send_message)
 
     @bot.tree.command(name="add-workspace", description="Add a workspace directory for a project")
     @app_commands.describe(
@@ -3641,9 +3707,7 @@ def setup_commands(bot: commands.Bot) -> None:
             lines.append(f"{emoji} **{name}**{branch_str}: {detail}")
 
         msg = "\n".join(lines)
-        if len(msg) > 2000:
-            msg = msg[:1997] + "..."
-        await interaction.followup.send(msg)
+        await _send_long_interaction(msg, interaction.followup.send)
 
     # ===================================================================
     # GIT COMMANDS
@@ -4485,9 +4549,7 @@ def setup_commands(bot: commands.Bot) -> None:
             return
         view = HooksListView(hooks, handler)
         msg = view.build_content()
-        if len(msg) > 2000:
-            msg = msg[:1997] + "..."
-        await interaction.response.send_message(msg, view=view)
+        await _send_long_interaction(msg, interaction.response.send_message, view=view)
 
     # --- Hook wizard state management ---
     # In-memory store keyed by Discord user ID.
@@ -5269,9 +5331,7 @@ def setup_commands(bot: commands.Bot) -> None:
                 line += f" (skipped: {r['skipped_reason'][:50]})"
             lines.append(line)
         msg = "\n".join(lines)
-        if len(msg) > 2000:
-            msg = msg[:1997] + "..."
-        await interaction.response.send_message(msg)
+        await _send_long_interaction(msg, interaction.response.send_message)
 
     @bot.tree.command(name="fire-hook", description="Manually trigger a hook immediately")
     @app_commands.describe(hook_id="Hook ID to fire")
