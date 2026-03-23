@@ -558,6 +558,154 @@ class Supervisor:
             _reflection_trigger="hook.completed",
         )
 
+    async def break_plan_into_tasks(
+        self,
+        raw_plan: str,
+        parent_task_id: str,
+        project_id: str,
+        workspace_id: str | None = None,
+        chain_dependencies: bool = True,
+        requires_approval: bool = False,
+        base_priority: int = 100,
+        on_progress: "Callable[[str, str | None], Awaitable[None]] | None" = None,
+    ) -> list[dict]:
+        """Feed a plan to the supervisor LLM to break into tasks.
+
+        Instead of algorithmically parsing plan files, this method sends
+        the raw plan content to the LLM and lets it create tasks via
+        ``create_task`` and ``add_dependency`` tool calls.  The LLM can
+        make multiple tool calls and verify the results.
+
+        After the LLM finishes, newly created tasks are post-processed
+        to set ``parent_task_id`` and ``is_plan_subtask`` flags.
+
+        Returns a list of dicts with ``id`` and ``title`` for each
+        created task.  Never raises — returns ``[]`` on failure.
+        """
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        if not self._provider:
+            logger.warning("break_plan_into_tasks: no LLM provider available")
+            return []
+
+        if project_id:
+            self.set_active_project(project_id)
+
+        # Snapshot existing task IDs so we can identify newly created ones
+        existing_tasks = await self.handler.db.list_tasks(project_id=project_id)
+        existing_ids = {t.id for t in existing_tasks}
+
+        # Build the prompt for the supervisor
+        dep_instructions = ""
+        if chain_dependencies:
+            dep_instructions = (
+                "- Chain the tasks sequentially using add_dependency so each "
+                "task depends on the previous one (task N+1 depends on task N). "
+                "This ensures they execute in order.\n"
+            )
+
+        ws_instructions = ""
+        if workspace_id:
+            ws_instructions = (
+                f"- Set preferred_workspace_id to \"{workspace_id}\" on every "
+                f"task so they all run in the same workspace as the parent.\n"
+            )
+
+        approval_instructions = ""
+        if requires_approval and chain_dependencies:
+            approval_instructions = (
+                "- Set requires_approval to true ONLY on the final task "
+                "(so intermediate tasks don't block the chain).\n"
+            )
+        elif requires_approval:
+            approval_instructions = (
+                "- Set requires_approval to true on every task.\n"
+            )
+
+        prompt = f"""You are breaking an implementation plan into executable tasks.
+
+Read the plan below and create one task per implementation phase using the create_task tool. Each task should be a self-contained unit of work that an AI coding agent can execute.
+
+## Rules
+
+- Create one task per implementation phase/step in the plan. Do NOT create tasks for background sections, architecture notes, or non-actionable content.
+- Use short, descriptive titles (under 80 characters).
+- The description for each task should include all the relevant details from the plan that the agent needs — file paths, code patterns, specific requirements, etc. Include context from the plan's background/architecture sections if it helps the agent understand what to do.
+- Set priority to {base_priority} for all tasks.
+- project_id is already set (active project).
+{dep_instructions}{ws_instructions}{approval_instructions}
+- After creating all tasks, use list_tasks to verify they were created correctly. Confirm the count and titles match what you intended.
+- Parent task ID for reference (do not use as a tool parameter): {parent_task_id}
+
+## Plan Content
+
+{raw_plan}
+"""
+
+        try:
+            # Tag logged calls so they're identifiable
+            prev_caller = None
+            if isinstance(self._provider, LoggedChatProvider):
+                prev_caller = self._provider._caller
+                self._provider._caller = "supervisor.break_plan"
+
+            response = await self.chat(
+                text=prompt,
+                user_name="system:plan-splitter",
+                on_progress=on_progress,
+                _reflection_trigger="plan.split",
+            )
+
+            if prev_caller is not None and isinstance(self._provider, LoggedChatProvider):
+                self._provider._caller = prev_caller
+
+            logger.info(
+                "break_plan_into_tasks: supervisor finished for parent %s: %s",
+                parent_task_id,
+                response[:200] if response else "(empty)",
+            )
+        except Exception as e:
+            logger.error(
+                "break_plan_into_tasks: supervisor chat failed for parent %s: %s",
+                parent_task_id, e, exc_info=True,
+            )
+            return []
+
+        # Find newly created tasks by diffing against the snapshot
+        current_tasks = await self.handler.db.list_tasks(project_id=project_id)
+        new_tasks = [t for t in current_tasks if t.id not in existing_ids]
+
+        if not new_tasks:
+            logger.warning(
+                "break_plan_into_tasks: supervisor created no tasks for parent %s",
+                parent_task_id,
+            )
+            return []
+
+        # Post-process: set parent_task_id and is_plan_subtask on new tasks
+        created_info = []
+        for task in new_tasks:
+            try:
+                await self.handler.db.update_task(
+                    task.id,
+                    parent_task_id=parent_task_id,
+                    is_plan_subtask=1,
+                )
+                created_info.append({"id": task.id, "title": task.title})
+            except Exception as e:
+                logger.warning(
+                    "break_plan_into_tasks: failed to post-process task %s: %s",
+                    task.id, e,
+                )
+
+        logger.info(
+            "break_plan_into_tasks: created %d tasks from plan for parent %s",
+            len(created_info), parent_task_id,
+        )
+        return created_info
+
     async def on_task_completed(
         self,
         task_id: str,
@@ -590,7 +738,7 @@ class Supervisor:
                 trigger = "task.completed"
                 summary = f"Task {task_id} completed"
                 if result.get("plan_found"):
-                    summary += f" — plan found with {result.get('steps_count', 0)} steps"
+                    summary += " — plan found, awaiting approval"
 
                 from src.tool_registry import ToolRegistry
                 registry = ToolRegistry()

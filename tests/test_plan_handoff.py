@@ -80,7 +80,8 @@ def test_process_task_completion_finds_plan():
         ))
 
     assert result.get("plan_found") is True
-    assert result.get("steps_count", 0) >= 1
+    # Plan content is stored for later supervisor processing (no step count at discovery time)
+    assert "archived_path" in result
 
 
 def test_process_task_completion_disabled():

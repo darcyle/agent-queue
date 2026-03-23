@@ -1390,18 +1390,12 @@ def format_plan_approval_embed(
 ) -> discord.Embed:
     """Rich embed showing a plan awaiting user approval.
 
-    Displays the parsed plan steps and a link to view the full plan
-    so the user can review before approving, requesting changes, or deleting.
+    Displays the raw plan content (or a link to view it) so the user
+    can review before approving, requesting changes, or deleting.
+    When approved, the supervisor LLM will break the plan into tasks.
     """
-    import json
-
-    steps = json.loads(steps_json) if steps_json else []
-    count = len(steps)
-    plural = "s" if count != 1 else ""
-
     desc_lines = [
-        f"Task `{task.id}` generated an implementation plan with "
-        f"**{count}** step{plural}.",
+        f"Task `{task.id}` generated an implementation plan.",
         "",
     ]
 
@@ -1410,8 +1404,8 @@ def format_plan_approval_embed(
         desc_lines.append("")
 
     desc_lines.extend([
-        "Review the plan below, then choose an action:",
-        "- **Approve Plan** — create subtasks and execute the plan",
+        "Review the plan, then choose an action:",
+        "- **Approve Plan** — the supervisor will break this into subtasks",
         "- **Request Changes** — reopen the task with your feedback",
         "- **Delete Plan** — discard the plan and complete the task",
     ])
@@ -1422,27 +1416,23 @@ def format_plan_approval_embed(
         ("Project", f"`{task.project_id}`", True),
     ]
 
-    # Separator
-    fields.append(("─── Plan Steps ───", "\u200b", False))
+    # Show a preview of the raw plan content
+    if raw_content:
+        # Extract a meaningful preview (first ~800 chars, stopping at a
+        # reasonable boundary)
+        preview = raw_content.strip()
+        if len(preview) > 800:
+            # Try to break at a line boundary
+            cut = preview[:800].rfind("\n")
+            if cut > 400:
+                preview = preview[:cut] + "\n..."
+            else:
+                preview = preview[:800] + "..."
 
-    # Per-step fields
-    for idx, step in enumerate(steps, 1):
-        title = step.get("title", "Untitled")
-        desc = step.get("description", "")
+        fields.append(("─── Plan Preview ───", "\u200b", False))
+        fields.append(("Content", truncate(f"```md\n{preview}\n```", 1024), False))
 
-        field_name = f"Step {idx}/{count}: {truncate(title, 80)}"
-
-        # Show a snippet of the step description
-        detail_parts = []
-        if desc:
-            snippet = _extract_description_snippet(desc, max_len=200)
-            if snippet:
-                detail_parts.append(f"*{snippet}*")
-
-        field_value = "\n".join(detail_parts) if detail_parts else "*No description*"
-        fields.append((field_name, truncate(field_value, 1024), False))
-
-    # Link to full plan instead of truncated raw content
+    # Link to full plan
     if plan_url:
         fields.append(("─── Full Plan ───", f"[View in browser]({plan_url})", False))
 
@@ -1450,7 +1440,7 @@ def format_plan_approval_embed(
 
     embed = make_embed(
         EmbedStyle.INFO,
-        f"Plan Awaiting Approval — {count} Step{plural}",
+        "Plan Awaiting Approval",
         description=truncate(description, LIMIT_DESCRIPTION),
         fields=fields,
         color_override=_PLAN_APPROVAL_COLOR,

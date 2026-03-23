@@ -2954,48 +2954,15 @@ class CommandHandler:
                     plan_file, e,
                 )
 
-        # Read and parse the plan
+        # Read the plan file content
         try:
             content = plan_parser.read_plan_file(plan_file)
-            max_steps = config.max_steps_per_plan
-            steps, quality = plan_parser.parse_and_generate_steps(
-                content, max_steps=max_steps
-            )
         except Exception as e:
-            logger.warning("Plan parsing failed for task %s: %s", task_id, e)
-            return {"plan_found": False, "reason": f"Plan parsing failed: {e}"}
+            logger.warning("Failed to read plan file for task %s: %s", task_id, e)
+            return {"plan_found": False, "reason": f"Failed to read plan file: {e}"}
 
-        if not steps:
-            return {"plan_found": False, "reason": "No actionable steps found in plan"}
-
-        # Deduplication: check if tasks with the same titles already exist
-        # for this project (from a previous plan generation).
-        if task.project_id:
-            step_titles = {s.get("title", "") for s in steps}
-            existing_tasks = await self.db.list_tasks(project_id=task.project_id)
-            existing_active_titles = {
-                t.title for t in existing_tasks
-                if t.is_plan_subtask
-                and t.status not in (TaskStatus.FAILED, TaskStatus.BLOCKED)
-                and t.title in step_titles
-            }
-            if existing_active_titles:
-                overlap = existing_active_titles & step_titles
-                logger.info(
-                    "process_task_completion: skipping plan for task %s — %d/%d step titles "
-                    "already exist as active subtasks in project %s: %s",
-                    task_id, len(overlap), len(step_titles),
-                    task.project_id, overlap,
-                )
-                # Archive the plan file so it won't be found again
-                try:
-                    plans_dir = os.path.join(workspace_path, ".claude", "plans")
-                    os.makedirs(plans_dir, exist_ok=True)
-                    archived_path = os.path.join(plans_dir, f"{task_id}-plan.md")
-                    os.rename(plan_file, archived_path)
-                except OSError:
-                    pass
-                return {"plan_found": False, "reason": "Duplicate step titles already exist"}
+        if not content or not content.strip():
+            return {"plan_found": False, "reason": "Plan file is empty"}
 
         # Archive the plan file to .claude/plans/{task_id}-plan.md
         try:
@@ -3009,14 +2976,10 @@ class CommandHandler:
             logger.warning("Failed to archive plan file for task %s: %s", task_id, e)
             archived_path = plan_file  # Use original path if archival fails
 
-        # Store plan data in task_context
+        # Store raw plan content in task_context for later use during approval.
+        # The actual plan-to-task splitting is done by the supervisor LLM
+        # at approval time (not by algorithmic parsing here).
         try:
-            import json
-            await self.db.add_task_context(
-                task_id, type="plan_steps",
-                label="Plan Parsed Steps",
-                content=json.dumps(steps),
-            )
             await self.db.add_task_context(
                 task_id, type="plan_archived_path",
                 label="Plan Archived Path",
@@ -3027,37 +2990,108 @@ class CommandHandler:
                 label="Plan Raw Content",
                 content=content,
             )
-            await self.db.add_task_context(
-                task_id, type="plan_quality_score",
-                label="Plan Quality Score",
-                content=str(quality.quality_score),
-            )
         except Exception as e:
             logger.warning("Failed to store plan context for task %s: %s", task_id, e)
 
         return {
             "plan_found": True,
-            "steps_count": len(steps),
             "plan_file": plan_file,
             "archived_path": archived_path,
-            "quality_score": quality.quality_score,
         }
 
     async def _cmd_approve_plan(self, args: dict) -> dict:
         """Approve a plan and create subtasks from it.
 
-        The task must be in AWAITING_PLAN_APPROVAL status.  The stored plan
-        data (from task_context) is used to create subtasks, and the task
-        is transitioned to COMPLETED.
+        The task must be in AWAITING_PLAN_APPROVAL status.  The stored raw
+        plan content is fed to the supervisor LLM, which creates tasks via
+        ``create_task`` and ``add_dependency`` tool calls.  Falls back to
+        the legacy algorithmic parser if the supervisor is unavailable.
+
+        The task is transitioned to COMPLETED after subtasks are created.
         """
+        import logging
+
+        logger = logging.getLogger(__name__)
+
         task = await self.db.get_task(args["task_id"])
         if not task:
             return {"error": f"Task '{args['task_id']}' not found"}
         if task.status != TaskStatus.AWAITING_PLAN_APPROVAL:
             return {"error": f"Task is not awaiting plan approval (status: {task.status.value})"}
 
-        # Create subtasks from the stored plan data
-        created = await self.orchestrator._create_subtasks_from_stored_plan(task)
+        # Retrieve stored plan content
+        contexts = await self.db.get_task_contexts(task.id)
+        raw_ctx = next((c for c in contexts if c["type"] == "plan_raw"), None)
+        if not raw_ctx:
+            return {"error": "No stored plan content found for this task"}
+
+        raw_plan = raw_ctx["content"]
+
+        # Determine workspace for subtasks
+        ws = await self.db.get_workspace_for_task(task.id)
+        workspace_id = ws.id if ws else None
+        if not workspace_id and task.project_id:
+            workspaces = await self.db.list_workspaces(project_id=task.project_id)
+            if workspaces:
+                workspace_id = workspaces[0].id
+
+        # Use supervisor LLM to break plan into tasks
+        config = self.orchestrator.config.auto_task
+        supervisor = getattr(self.orchestrator, "_supervisor", None)
+
+        created_info: list[dict] = []
+        if supervisor and supervisor.is_ready:
+            created_info = await supervisor.break_plan_into_tasks(
+                raw_plan=raw_plan,
+                parent_task_id=task.id,
+                project_id=task.project_id or "",
+                workspace_id=workspace_id,
+                chain_dependencies=config.chain_dependencies,
+                requires_approval=(
+                    task.requires_approval if config.inherit_approval else False
+                ),
+                base_priority=config.base_priority,
+            )
+
+            if created_info:
+                # Handle downstream dependencies: any task that depends on the
+                # parent task should also depend on the final subtask.
+                if config.chain_dependencies and len(created_info) > 0:
+                    final_subtask_id = created_info[-1]["id"]
+                    dependents = await self.db.get_dependents(task.id)
+                    for dep_task_id in dependents:
+                        try:
+                            await self.db.add_dependency(
+                                dep_task_id, depends_on=final_subtask_id
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to add downstream dep %s→%s: %s",
+                                dep_task_id, final_subtask_id, e,
+                            )
+
+                # Notify about created subtasks
+                task_lines = "\n".join(
+                    f"  {i+1}. `{t['id']}` — {t['title']}"
+                    for i, t in enumerate(created_info)
+                )
+                await self.orchestrator._notify_channel(
+                    f"**Plan Approved:** Created {len(created_info)} subtask(s) from "
+                    f"`{task.id}` plan:\n{task_lines}",
+                    project_id=task.project_id,
+                )
+
+                # Re-check DEFINED tasks so newly created subtasks get promoted
+                await self.orchestrator._check_defined_tasks()
+        else:
+            # Fallback: use legacy algorithmic parser if supervisor unavailable
+            logger.warning(
+                "approve_plan: supervisor unavailable, falling back to "
+                "algorithmic parser for task %s",
+                task.id,
+            )
+            created_tasks = await self.orchestrator._create_subtasks_from_stored_plan(task)
+            created_info = [{"id": t.id, "title": t.title} for t in created_tasks]
 
         # Delete the plan file from the workspace so it isn't picked up by
         # other tasks that may later run in the same workspace/branch.
@@ -3073,13 +3107,13 @@ class CommandHandler:
             "plan_approved",
             project_id=task.project_id,
             task_id=task.id,
-            payload=f"Created {len(created)} subtask(s)",
+            payload=f"Created {len(created_info)} subtask(s)",
         )
         return {
             "approved": args["task_id"],
             "title": task.title,
-            "subtask_count": len(created),
-            "subtasks": [{"id": t.id, "title": t.title} for t in created],
+            "subtask_count": len(created_info),
+            "subtasks": created_info,
         }
 
     async def _cleanup_plan_files_after_approval(self, task) -> None:

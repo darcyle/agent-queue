@@ -103,10 +103,7 @@ from src.models import (
     Task, TaskStatus, TaskContext, Workspace,
 )
 from src.hooks import HookEngine
-from src.plan_parser import (
-    find_plan_file, read_plan_file, parse_plan, build_task_description,
-)
-from src.plan_parser_llm import parse_plan_with_llm
+from src.plan_parser import find_plan_file, read_plan_file
 from src.scheduler import AssignAction, Scheduler, SchedulerState
 from src.task_names import generate_task_id
 from src.tokens.budget import BudgetManager
@@ -2251,87 +2248,11 @@ class Orchestrator:
             logger.warning("Auto-task: failed to read plan file %s: %s", plan_path, e)
             return False
 
-        if config.use_llm_parser and self._chat_provider:
-            try:
-                plan = await parse_plan_with_llm(
-                    raw, self._chat_provider,
-                    source_file=plan_path,
-                    max_steps=config.max_steps_per_plan,
-                )
-            except Exception as e:
-                logger.warning("LLM plan parser failed, falling back to regex: %s", e)
-                plan = parse_plan(
-                    raw, source_file=plan_path,
-                    max_steps=config.max_steps_per_plan,
-                )
-        else:
-            plan = parse_plan(
-                raw, source_file=plan_path,
-                max_steps=config.max_steps_per_plan,
-            )
-
-        # Smart LLM fallback: the regex parser is fast but struggles with
-        # plans that mix informational headings (background, architecture
-        # notes) with actionable implementation phases.  When this happens,
-        # _score_parse_quality returns a low score (< 0.4 = more than 60%
-        # of steps look non-actionable).  For plans with many steps (> 5),
-        # this is a strong signal that the regex parser misidentified
-        # section headings as implementation steps.
-        if (
-            plan.steps
-            and not config.use_llm_parser
-            and self._chat_provider
-        ):
-            from src.plan_parser import _score_parse_quality
-            quality = _score_parse_quality(plan.steps)
-            if quality < 0.4 and len(plan.steps) > 5:
-                logger.info("Auto-task: regex parse quality low (%.2f) for %s, retrying with LLM parser", quality, plan_path)
-                try:
-                    llm_plan = await parse_plan_with_llm(
-                        raw, self._chat_provider,
-                        source_file=plan_path,
-                        max_steps=config.max_steps_per_plan,
-                    )
-                    if llm_plan.steps:
-                        plan = llm_plan
-                        logger.info("Auto-task: LLM parser produced %d steps (replacing regex result)", len(plan.steps))
-                except Exception as e:
-                    logger.warning("Auto-task: LLM fallback failed, keeping regex result: %s", e)
-
-        if not plan.steps:
-            logger.info("Auto-task: plan file %s parsed but contained no steps", plan_path)
+        if not raw or not raw.strip():
+            logger.info("Auto-task: plan file %s is empty", plan_path)
             return False
 
-        logger.info("Auto-task: found %d steps in plan file %s for task %s", len(plan.steps), plan_path, task.id)
-
-        # Deduplication: check if tasks with the same titles already exist
-        # for this project (from a previous plan generation).
-        if task.project_id:
-            step_titles = {s.title for s in plan.steps}
-            existing_tasks = await self.db.list_tasks(project_id=task.project_id)
-            existing_active_titles = {
-                t.title for t in existing_tasks
-                if t.is_plan_subtask
-                and t.status not in (TaskStatus.FAILED, TaskStatus.BLOCKED)
-                and t.title in step_titles
-            }
-            if existing_active_titles:
-                overlap = existing_active_titles & step_titles
-                logger.info(
-                    "Auto-task: skipping plan for task %s — %d/%d step titles "
-                    "already exist as active subtasks in project %s: %s",
-                    task.id, len(overlap), len(step_titles),
-                    task.project_id, overlap,
-                )
-                # Still archive the plan file so it won't be found again
-                try:
-                    plans_dir = os.path.join(workspace, ".claude", "plans")
-                    os.makedirs(plans_dir, exist_ok=True)
-                    archived_path = os.path.join(plans_dir, f"{task.id}-plan.md")
-                    os.rename(plan_path, archived_path)
-                except OSError:
-                    pass
-                return False
+        logger.info("Auto-task: found plan file %s for task %s", plan_path, task.id)
 
         # Archive the plan file for traceability (so it won't be re-processed
         # if the workspace is reused for another task).
@@ -2344,29 +2265,14 @@ class Orchestrator:
         except OSError:
             pass
 
-        # Store the raw plan content and parsed step data as task_context
-        # so it can be used later when the user approves the plan.
-        import json as _json
-        steps_data = [
-            {
-                "title": s.title,
-                "description": s.description,
-                "priority_hint": s.priority_hint,
-                "raw_title": s.raw_title,
-            }
-            for s in plan.steps
-        ]
+        # Store the raw plan content as task_context.  The actual
+        # plan-to-task splitting is done by the supervisor LLM at
+        # approval time (not by algorithmic parsing here).
         await self.db.add_task_context(
             task.id,
             type="plan_raw",
             label="Plan Raw Content",
             content=raw,
-        )
-        await self.db.add_task_context(
-            task.id,
-            type="plan_steps",
-            label="Plan Parsed Steps",
-            content=_json.dumps(steps_data),
         )
         if archived_path:
             await self.db.add_task_context(
@@ -2377,8 +2283,8 @@ class Orchestrator:
             )
 
         logger.info(
-            "Auto-task: stored plan with %d steps for task %s — awaiting user approval",
-            len(plan.steps), task.id,
+            "Auto-task: stored plan for task %s — awaiting user approval",
+            task.id,
         )
         return True
 
@@ -2387,14 +2293,15 @@ class Orchestrator:
     ) -> list[Task]:
         """Create subtasks from a previously stored and approved plan.
 
-        Called when the user approves a plan via the plan approval UI.
-        Reads the plan data from task_context entries and creates subtasks
-        just as ``_generate_tasks_from_plan`` previously did.
+        Legacy fallback used when the supervisor LLM is unavailable.
+        Reads the raw plan from task_context and uses the algorithmic
+        parser to extract steps.  The primary path is
+        ``Supervisor.break_plan_into_tasks()``.
 
         Returns the list of created tasks.
         """
         import json as _json
-        from src.plan_parser import PlanStep, build_task_description
+        from src.plan_parser import PlanStep, build_task_description, parse_plan
 
         config = self.config.auto_task
         contexts = await self.db.get_task_contexts(task.id)
@@ -2404,20 +2311,50 @@ class Orchestrator:
         archived_ctx = next((c for c in contexts if c["type"] == "plan_archived_path"), None)
         raw_ctx = next((c for c in contexts if c["type"] == "plan_raw"), None)
 
-        if not steps_ctx:
-            logger.warning("Plan approval: no stored plan steps for task %s", task.id)
+        # Try pre-parsed steps first (legacy data), fall back to parsing raw content
+        if steps_ctx:
+            steps_data = _json.loads(steps_ctx["content"])
+            plan_steps = [
+                PlanStep(
+                    title=s["title"],
+                    description=s["description"],
+                    priority_hint=s.get("priority_hint", 0),
+                    raw_title=s.get("raw_title", ""),
+                )
+                for s in steps_data
+            ]
+        elif raw_ctx:
+            parsed = parse_plan(
+                raw_ctx["content"],
+                max_steps=config.max_steps_per_plan,
+            )
+            plan_steps = parsed.steps if parsed.steps else []
+        else:
+            logger.warning("Plan approval: no stored plan data for task %s", task.id)
             return []
 
-        steps_data = _json.loads(steps_ctx["content"])
-        plan_steps = [
-            PlanStep(
-                title=s["title"],
-                description=s["description"],
-                priority_hint=s.get("priority_hint", 0),
-                raw_title=s.get("raw_title", ""),
-            )
-            for s in steps_data
-        ]
+        if not plan_steps:
+            logger.warning("Plan approval: no actionable steps found for task %s", task.id)
+            return []
+
+        # Deduplication: skip if tasks with the same titles already exist
+        if task.project_id:
+            step_titles = {s.title for s in plan_steps}
+            existing_tasks = await self.db.list_tasks(project_id=task.project_id)
+            existing_active_titles = {
+                t.title for t in existing_tasks
+                if t.is_plan_subtask
+                and t.status not in (TaskStatus.FAILED, TaskStatus.BLOCKED)
+                and t.title in step_titles
+            }
+            if existing_active_titles:
+                logger.info(
+                    "Plan approval: skipping for task %s — %d/%d step titles "
+                    "already exist as active subtasks",
+                    task.id, len(existing_active_titles), len(step_titles),
+                )
+                return []
+
         archived_path = archived_ctx["content"] if archived_ctx else None
 
         # Extract plan context from raw content (preamble before first step)
@@ -3578,12 +3515,8 @@ class Orchestrator:
                 plan_view = PlanApprovalView(
                     task.id, handler=self._get_handler()
                 )
-                # Retrieve the stored plan steps for the embed
+                # Retrieve the stored plan content for the embed
                 plan_contexts = await self.db.get_task_contexts(task.id)
-                steps_ctx = next(
-                    (c for c in plan_contexts if c["type"] == "plan_steps"),
-                    None,
-                )
                 raw_ctx = next(
                     (c for c in plan_contexts if c["type"] == "plan_raw"),
                     None,
@@ -3596,7 +3529,6 @@ class Orchestrator:
 
                 plan_embed = format_plan_approval_embed(
                     task,
-                    steps_json=steps_ctx["content"] if steps_ctx else "[]",
                     raw_content=raw_ctx["content"] if raw_ctx else "",
                     plan_url=plan_url,
                 )
