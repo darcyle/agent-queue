@@ -2,147 +2,330 @@
 auto_tasks: true
 ---
 
-# Investigation: All Truncation Points in Agent Queue System
+# Messaging Adapter Layer — Discord + Telegram Support
 
-## Background & Root Cause Analysis
+## Background & Architecture Analysis
 
-Task reports/responses are being truncated, making them unreadable. After a thorough investigation of the entire codebase, there are **multiple layers of truncation** — some are intentional Discord API constraints, some are overly aggressive internal limits, and some are missing proper handling for long content.
+### Current State
 
-### The Main Culprit: Discord's 2000-Character Message Limit
+The system is already well-decoupled from Discord at the orchestrator level. The `Orchestrator` communicates with the UI layer exclusively through injected callbacks:
 
-Discord enforces a hard 2000-character limit per message. The system has a `_send_long_message()` method in `bot.py` (line 496) that handles this correctly by:
-- Sending messages under 2000 chars normally
-- Splitting medium messages (2000–6000 chars) at line boundaries
-- Attaching very long messages (>6000 chars) as files with a short preview
+- `set_notify_callback(callback)` — all notifications (task started/completed/failed, PR created, agent questions, budget warnings)
+- `set_create_thread_callback(callback)` — creates per-task output threads, returns `(send_to_thread, notify_main_channel)` pair
+- `set_command_handler(handler)` — passes `CommandHandler` for interactive views
+- `set_supervisor(supervisor)` — passes `Supervisor` for post-task LLM operations
 
-**However, this handler is NOT used consistently.** Several notification paths bypass it and directly truncate to `[:1997] + "..."`, losing content permanently.
+The `CommandHandler` is already unified — Discord slash commands and LLM tools both call the same `_cmd_*` methods. The `Supervisor` is stateless and platform-agnostic.
 
-### Discord Embed Limits (separate from message limits)
+**However**, the wiring in `main.py` hardcodes `AgentQueueBot` (Discord), and the bot startup sequence assumes Discord is always present. The `AppConfig` only has a `discord: DiscordConfig` field. Interactive views (buttons, modals) are tightly Discord-specific in `src/discord/views.py` and `src/discord/notifications.py`.
 
-Discord embeds have their own hard limits defined in `embeds.py`:
-- Title: 256 chars
-- Description: 4096 chars
-- **Field value: 1024 chars** ← This is where task summaries get truncated in embeds
-- Footer: 2048 chars
-- Total embed: 6000 chars
+### Design Decisions
 
-The task completion embed (`format_task_completed_embed` in `notifications.py:335`) truncates the summary to `LIMIT_FIELD_VALUE` (1024 chars) — this is the most impactful truncation for task reports since summaries from Claude agents are often longer.
+1. **One platform at a time** — The config selects either `discord` or `telegram` as the messaging platform. Running both simultaneously adds complexity (dual routing, message dedup, channel mapping) with minimal benefit. The orchestrator callbacks are single-assignment.
 
----
+2. **Shared abstractions** — A `MessagingAdapter` ABC defines the contract that both Discord and Telegram implement. The orchestrator and main.py talk only to this interface.
 
-## Complete Truncation Inventory
+3. **Platform-specific directories** — `src/discord/` stays as-is, `src/telegram/` mirrors its structure. No shared base classes for platform-specific UI concerns (embeds vs inline keyboards).
 
-### Category 1: Task Report Truncation (HIGH IMPACT — directly causes the user's issue)
+4. **Feature parity via CommandHandler** — Both platforms get full command access through the same `CommandHandler`. Telegram uses bot commands (`/create_task`) mapped to the same handler methods.
 
-| Location | What's Truncated | Limit | Fix Priority |
-|----------|-----------------|-------|-------------|
-| `notifications.py:348` | Task completion summary in embed field | 1024 chars | **HIGH** |
-| `notifications.py:184,375` | Error messages in failure notifications | 300 chars | MEDIUM |
-| `orchestrator.py:3770` | Error message in thread failure report | 400 chars | MEDIUM |
-| `command_handler.py:3413` | Agent summary in task-info command | 1000 chars | **HIGH** |
-| `command_handler.py:3409` | Error message in task-info command | 2000 chars | LOW |
-| `hooks.py:481` | Hook response summary | 200 chars | **HIGH** |
+### Key Files
 
-### Category 2: Discord Message Truncation (MEDIUM IMPACT — loses content without fallback)
-
-| Location | What's Truncated | Limit | Fix Priority |
-|----------|-----------------|-------|-------------|
-| `commands.py:670-671` | Various command responses | `[:1997] + "…"` | MEDIUM |
-| `commands.py:730-731` | Various command responses | `[:1997] + "…"` | MEDIUM |
-| `commands.py:893-894` | Various command responses | `[:1997] + "…"` | MEDIUM |
-| `commands.py:2287-2288` | Various command responses | `[:1997] + "…"` | MEDIUM |
-| `commands.py:2314-2315` | Various command responses | `[:1997] + "…"` | MEDIUM |
-| `commands.py:3507-3508` | Various command responses | `[:1997] + "…"` | MEDIUM |
-| `commands.py:3644-3645` | Various command responses | `[:1997] + "…"` | MEDIUM |
-| `commands.py:4488-4489` | Various command responses | `[:1997] + "…"` | MEDIUM |
-| `commands.py:5272-5273` | Various command responses | `[:1997] + "…"` | LOW |
-
-### Category 3: Display/Preview Truncation (LOW IMPACT — intentional UI limits)
-
-| Location | What's Truncated | Limit |
-|----------|-----------------|-------|
-| `commands.py:539` | Task title in thread name | 100 chars |
-| `commands.py:1595` | Task description preview | 800 chars |
-| `commands.py:2800` | Task title | 100 chars |
-| `orchestrator.py:602,3847` | Question payload in DB log | 500 chars |
-| `orchestrator.py:2064` | PR body description | 500 chars |
-| `orchestrator.py:3291` | Thread name | 100 chars |
-| `notifications.py:219` | Agent question in notification | 500 chars |
-| `plan_parser.py:549` | Plan step title | 120 chars |
-| `adapters/claude.py:452,465,479` | Streaming previews (thinking/cmd/content) | 100-500 chars |
-
-### Category 4: Context/Memory Truncation (MEDIUM IMPACT — affects agent context)
-
-| Location | What's Truncated | Limit |
-|----------|-----------------|-------|
-| `memory.py:929-931` | Project docs injected as context | 3000 chars |
-| `memory.py:989-990` | Recent task content in memory recall | 500 chars |
-| `orchestrator.py:3127-3128` | Dependency summary for downstream tasks | 2000 chars |
-| `config.py:270` | Agent profile content | 5000 chars |
-| `command_handler.py:5467` | Profile preview | 500 chars |
-
-### Category 5: Tool Output Truncation (LOW IMPACT — tool execution limits)
-
-| Location | What's Truncated | Limit |
-|----------|-----------------|-------|
-| `command_handler.py:6017` | Shell stdout | 4000 chars |
-| `command_handler.py:6018` | Shell stderr | 2000 chars |
-| `command_handler.py:6051` | Find output | 4000 chars |
-| `command_handler.py:6064` | File read (modal) | 4000 chars |
-| `command_handler.py:6240` | Grep matches | 500 items |
-| `command_handler.py:6293` | Grep output | 8000 chars |
-
-### Category 6: Supervisor/Hook Truncation
-
-| Location | What's Truncated | Limit |
-|----------|-----------------|-------|
-| `supervisor.py:112-113` | Detail in supervisor notices | 60 chars |
-| `supervisor.py:756-757` | Supervisor result | 500 chars |
-| `hooks.py:481` | Hook response summary | 200 chars |
+| File | Current Role | Changes Needed |
+|------|-------------|----------------|
+| `src/main.py` | Hardcodes Discord bot | Use factory based on config to create the right messaging adapter |
+| `src/config.py` | Only `DiscordConfig` | Add `TelegramConfig`, add `messaging_platform` selector |
+| `src/orchestrator.py` | Callback-based (already clean) | No changes needed — callbacks are platform-agnostic |
+| `src/discord/bot.py` | `AgentQueueBot` class | Extract interface methods into `MessagingAdapter` ABC |
+| `src/discord/notifications.py` | Discord-specific formatting | Keep as-is, Telegram gets its own formatters |
+| `src/command_handler.py` | Unified command logic | No changes — already platform-agnostic |
+| `src/supervisor.py` | Stateless LLM agent | No changes — already platform-agnostic |
 
 ---
 
-## Recommended Fixes
+## Phase 1: Define the MessagingAdapter ABC and config changes
 
-## Phase 1: Fix task completion reports — move summary to embed description instead of field
+Create `src/messaging/` package with the abstract base class that defines the contract both Discord and Telegram must implement. Also add `TelegramConfig` and `messaging_platform` selector to config.
 
-The most impactful fix. Currently, task summaries go into an embed **field** (1024 char limit). Move the summary into the embed **description** (4096 char limit) for both completion and failure embeds.
+### Files to create:
+- `src/messaging/__init__.py` — exports `MessagingAdapter`, `create_messaging_adapter`
+- `src/messaging/base.py` — the ABC
 
-**Files to change:**
-- `src/discord/notifications.py` — `format_task_completed_embed()`: Move `output.summary` from a field to the embed description, giving it 4096 chars instead of 1024. Same for `format_task_failed_embed()`.
-- `src/discord/embeds.py` — Ensure `success_embed()` and `error_embed()` support a `description` parameter that gets truncated to `LIMIT_DESCRIPTION`.
+### MessagingAdapter interface:
 
-**Also fix:** The thread-posted completion message in `orchestrator.py:3657-3667` — it appends `output.summary` without any length handling. Since `thread_send` uses `_send_long_message`, this actually works correctly for threads already — but for the non-thread fallback path via `format_task_completed()` in `notifications.py:162`, the summary is included without truncation and then the whole message gets truncated to 2000 chars. Fix by using `_send_long_message` consistently.
+```python
+class MessagingAdapter(ABC):
+    """Abstract messaging platform adapter."""
 
-## Phase 2: Fix hook response truncation (200 chars is too aggressive)
+    @abstractmethod
+    async def start(self) -> None:
+        """Connect to the platform and begin listening for messages."""
 
-The hook response summary in `hooks.py:481` truncates to just 200 characters. This makes hook results nearly useless for task-spawning hooks and periodic reports.
+    @abstractmethod
+    async def wait_until_ready(self) -> None:
+        """Block until the platform connection is established and ready."""
 
-**Files to change:**
-- `src/hooks.py:481` — Increase from 200 to at least 2000 chars, or better yet, use `_send_long_message` pattern (split/attach for long content).
+    @abstractmethod
+    async def close(self) -> None:
+        """Disconnect from the platform gracefully."""
 
-## Phase 3: Replace bare `[:1997]` truncations in commands.py with proper splitting
+    @abstractmethod
+    async def send_message(self, text: str, project_id: str | None = None,
+                           *, embed: Any = None, view: Any = None) -> None:
+        """Send a notification message to the appropriate channel/chat."""
 
-Multiple locations in `commands.py` do `msg[:1997] + "..."` which silently loses content. Replace these with calls to a shared utility that either splits the message or attaches it as a file.
+    @abstractmethod
+    async def create_task_thread(self, task, project) -> tuple[MessageCallback, MessageCallback]:
+        """Create a thread/topic for task output streaming.
+        Returns (send_to_thread, notify_main_channel) callbacks."""
 
-**Files to change:**
-- `src/discord/commands.py` — All ~11 locations listed in Category 2 above. Create or reuse a helper function that:
-  1. If under 2000 chars, send normally
-  2. If under 6000 chars, split at line boundaries
-  3. If over 6000 chars, attach as file with preview
+    @abstractmethod
+    def get_command_handler(self) -> Any:
+        """Return the CommandHandler instance."""
 
-  Since `commands.py` uses `interaction.response` / `interaction.followup`, the helper needs to work with Discord interactions, not just channels.
+    @abstractmethod
+    def get_supervisor(self) -> Any:
+        """Return the Supervisor instance."""
+```
 
-## Phase 4: Increase agent summary limit in task-info command
+### Config changes in `src/config.py`:
 
-`command_handler.py:3413` truncates `summary[:1000]` in the task-info response. This is a user-facing command where people go specifically to read the full summary.
+Add `TelegramConfig` dataclass:
+```python
+@dataclass
+class TelegramConfig:
+    bot_token: str = ""
+    chat_id: str = ""           # Main chat/group for notifications
+    authorized_users: list[str] = field(default_factory=list)  # Telegram user IDs
+    per_project_chats: dict[str, str] = field(default_factory=dict)  # project_id -> chat_id
+    use_topics: bool = True     # Use forum topics for task threads (requires supergroup)
+```
 
-**Files to change:**
-- `src/command_handler.py:3413` — Remove or increase the 1000-char limit. Since the response goes through the LLM chat interface which has its own length handling, a higher limit (4000+) or no limit is fine.
+Add to `AppConfig`:
+```python
+messaging_platform: str = "discord"  # "discord" or "telegram"
+telegram: TelegramConfig = field(default_factory=TelegramConfig)
+```
 
-## Phase 5: Increase dependency summary limit for downstream tasks
+Only validate the active platform's config — skip telegram validation when `messaging_platform == "discord"` and vice versa.
 
-`orchestrator.py:3127-3128` truncates dependency summaries to 2000 chars. For complex tasks, this cuts off important context that downstream tasks need.
+### Factory function:
+```python
+def create_messaging_adapter(config: AppConfig, orchestrator: Orchestrator) -> MessagingAdapter:
+    if config.messaging_platform == "discord":
+        from src.discord.adapter import DiscordMessagingAdapter
+        return DiscordMessagingAdapter(config, orchestrator)
+    elif config.messaging_platform == "telegram":
+        from src.telegram.adapter import TelegramMessagingAdapter
+        return TelegramMessagingAdapter(config, orchestrator)
+    else:
+        raise ValueError(f"Unknown messaging platform: {config.messaging_platform}")
+```
 
-**Files to change:**
-- `src/orchestrator.py:3127-3128` — Increase from 2000 to 4000 chars. The dependency summary goes into the agent's prompt, not Discord, so there's no Discord limit concern.
+### Tests:
+- ABC cannot be instantiated directly
+- Factory raises on unknown platform
+- Factory returns correct type for "discord" and "telegram"
+- Config validation only validates active platform
+- Default `messaging_platform` is "discord" (backward compatible)
+
+---
+
+## Phase 2: Wrap Discord in the MessagingAdapter
+
+Wrap the existing `AgentQueueBot` in a `DiscordMessagingAdapter` class that implements the ABC. This is a thin wrapper — the existing bot code stays intact.
+
+### Files to create/modify:
+- Create `src/discord/adapter.py` — `DiscordMessagingAdapter(MessagingAdapter)` that wraps `AgentQueueBot`
+- Modify `src/main.py` — replace hardcoded `AgentQueueBot` with `create_messaging_adapter()`
+
+### DiscordMessagingAdapter implementation:
+
+```python
+class DiscordMessagingAdapter(MessagingAdapter):
+    def __init__(self, config: AppConfig, orchestrator: Orchestrator):
+        self._bot = AgentQueueBot(config, orchestrator)
+        self._config = config
+
+    async def start(self) -> None:
+        await self._bot.start(self._config.discord.bot_token)
+
+    async def wait_until_ready(self) -> None:
+        await self._bot.wait_until_ready()
+
+    async def close(self) -> None:
+        await self._bot.close()
+
+    async def send_message(self, text, project_id=None, *, embed=None, view=None):
+        await self._bot._send_message(text, project_id, embed=embed, view=view)
+
+    async def create_task_thread(self, task, project):
+        return await self._bot._create_task_thread(task, project)
+
+    def get_command_handler(self):
+        return self._bot.agent.handler
+
+    def get_supervisor(self):
+        return self._bot.agent
+```
+
+### Changes to `src/main.py`:
+
+Replace the hardcoded `AgentQueueBot` creation with the factory. Move callback registration from Discord's `on_ready()` to `main.py` so it's explicit and platform-agnostic:
+
+```python
+adapter = create_messaging_adapter(config, orch)
+# Callbacks registered after adapter.wait_until_ready()
+orch.set_notify_callback(adapter.send_message)
+orch.set_create_thread_callback(adapter.create_task_thread)
+orch.set_command_handler(adapter.get_command_handler())
+orch.set_supervisor(adapter.get_supervisor())
+```
+
+The Discord `on_ready()` handler should skip callback registration when it detects the adapter has already registered them.
+
+### Tests:
+- `DiscordMessagingAdapter` correctly wraps `AgentQueueBot`
+- All existing tests continue to pass (no behavior change)
+- `main.py` creates the adapter through the factory
+- Callback registration happens through the adapter path
+
+---
+
+## Phase 3: Implement Telegram Bot Core
+
+Create `src/telegram/` package with the Telegram bot implementation using `python-telegram-bot` (async).
+
+### Files to create:
+- `src/telegram/__init__.py`
+- `src/telegram/bot.py` — `TelegramBot` class (core message handling, chat routing)
+- `src/telegram/adapter.py` — `TelegramMessagingAdapter(MessagingAdapter)` wrapper
+- `src/telegram/commands.py` — Telegram command handlers (`/create_task`, `/list_tasks`, etc.)
+- `src/telegram/notifications.py` — Telegram-specific message formatting (MarkdownV2)
+
+### Dependencies:
+- Add `python-telegram-bot[ext]` to requirements (async-native, well-maintained)
+
+### TelegramBot responsibilities:
+- Connect to Telegram Bot API via long polling
+- Route incoming messages to `Supervisor.chat()` (same as Discord bot)
+- Maintain per-chat message buffers and conversation history (same pattern as Discord)
+- Authorize users by Telegram user ID
+- Per-project chat routing (similar to Discord's per-project channels)
+
+### Thread equivalents:
+- **Forum topics** (supergroups with topics enabled): Each task gets its own topic — closest to Discord threads. This is the preferred mode (`use_topics: true`).
+- **Reply threads**: If topics aren't available, use reply chains for task output grouping.
+
+### TelegramMessagingAdapter:
+
+```python
+class TelegramMessagingAdapter(MessagingAdapter):
+    def __init__(self, config: AppConfig, orchestrator: Orchestrator):
+        self._bot = TelegramBot(config, orchestrator)
+        self._config = config
+
+    async def start(self) -> None:
+        await self._bot.start()
+
+    async def wait_until_ready(self) -> None:
+        await self._bot.wait_until_ready()
+
+    async def close(self) -> None:
+        await self._bot.stop()
+
+    async def send_message(self, text, project_id=None, *, embed=None, view=None):
+        await self._bot.send_notification(text, project_id, embed=embed)
+
+    async def create_task_thread(self, task, project):
+        return await self._bot.create_task_topic(task, project)
+
+    def get_command_handler(self):
+        return self._bot.handler
+
+    def get_supervisor(self):
+        return self._bot.supervisor
+```
+
+### Telegram message formatting:
+- Discord embeds → Telegram MarkdownV2 formatted messages (bold title, fields as key-value lines)
+- Discord buttons → Telegram inline keyboards (Retry, Approve, Skip)
+- Discord file attachments → Telegram `send_document()`
+- 4096 char limit per message (vs Discord's 2000) — still need splitting for very long outputs
+
+### Command mapping:
+All Telegram bot commands map to `CommandHandler.execute()`:
+- `/create_task description` → `handler.execute("create_task", {...})`
+- `/list_tasks` → `handler.execute("list_tasks", {})`
+- `/status` → `handler.execute("status", {})`
+- Natural language messages → `Supervisor.chat()` (same as Discord)
+
+### Tests:
+- Unit tests for `TelegramBot` with mocked `python-telegram-bot` API
+- Unit tests for `TelegramMessagingAdapter` implementing the ABC correctly
+- Unit tests for Telegram notification formatting (MarkdownV2 escaping)
+- Unit tests for command parsing and routing to `CommandHandler`
+- Integration test: message received → supervisor invoked → response sent
+
+---
+
+## Phase 4: Implement Telegram Interactive Features
+
+Add inline keyboards (button equivalents), callback query handling, and task approval flows for Telegram.
+
+### Files to create/modify:
+- `src/telegram/views.py` — Inline keyboard builders for task actions (Retry, Skip, Approve, Dismiss)
+- `src/telegram/bot.py` — Add callback query handler for button presses
+
+### Interactive features mapping:
+
+| Discord Feature | Telegram Equivalent |
+|----------------|-------------------|
+| `TaskFailedView` (Retry/Skip buttons) | Inline keyboard with Retry/Skip buttons |
+| `TaskApprovalView` (Approve/Dismiss) | Inline keyboard with Approve/Dismiss buttons |
+| `AgentQuestionView` (Answer button) | Inline keyboard with Answer button → prompts reply |
+| Slash command autocomplete | Bot command suggestions via `setMyCommands` |
+| Modal forms (project wizard) | Multi-step conversation flow with `ConversationHandler` |
+
+### Callback query routing:
+```python
+# Button callback data format: "action:task_id"
+# e.g., "retry:abc123", "approve:def456"
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    action, task_id = update.callback_query.data.split(":", 1)
+    result = await handler.execute(action, {"task_id": task_id})
+    await update.callback_query.answer(result[:200])
+```
+
+### Tests:
+- Inline keyboard generation for each view type
+- Callback query parsing and routing
+- Error handling for expired/invalid callbacks
+- Conversation flow for multi-step commands
+
+---
+
+## Phase 5: Update health check and startup diagnostics
+
+Update the health check endpoint and startup sequence to be platform-aware.
+
+### Files to modify:
+- `src/main.py` — update health check to report active messaging platform
+- `src/health.py` — add platform-agnostic health reporting
+
+### Changes:
+- Health check `messaging` field reports which platform is active and whether it's connected:
+  ```json
+  {"messaging": {"ok": true, "platform": "telegram", "connected": true}}
+  ```
+  instead of the current:
+  ```json
+  {"discord": {"ok": true}}
+  ```
+- Startup log message indicates which platform is being used
+- The `_health_checks` function queries the adapter (not the bot directly) for connection status
+- Add `is_connected() -> bool` method to `MessagingAdapter` ABC for health reporting
+
+### Tests:
+- Health check returns correct platform name
+- Health check reports connection status via adapter
