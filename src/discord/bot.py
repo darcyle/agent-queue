@@ -435,14 +435,19 @@ class AgentQueueBot(commands.Bot):
                 # (global or per-project).  Previously these were only set when
                 # the global channel existed, which meant projects with dedicated
                 # channels but no global channel never got threads or notifications.
+                #
+                # When running through the MessagingAdapter path (main.py),
+                # callbacks are registered after wait_until_ready() returns —
+                # skip re-registration if they're already set.
                 if self._channel or self._project_channels:
-                    self.orchestrator.set_notify_callback(self._send_message)
-                    self.orchestrator.set_create_thread_callback(self._create_task_thread)
-                    # Pass command handler ref so interactive views
-                    # (Retry/Skip/Approve buttons) can execute commands.
-                    self.orchestrator.set_command_handler(self.agent.handler)
-                    # Wire Supervisor for post-task completion delegation
-                    self.orchestrator.set_supervisor(self.agent)
+                    if self.orchestrator._notify is None:
+                        self.orchestrator.set_notify_callback(self._send_message)
+                        self.orchestrator.set_create_thread_callback(self._create_task_thread)
+                        # Pass command handler ref so interactive views
+                        # (Retry/Skip/Approve buttons) can execute commands.
+                        self.orchestrator.set_command_handler(self.agent.handler)
+                        # Wire Supervisor for post-task completion delegation
+                        self.orchestrator.set_supervisor(self.agent)
 
                     # Start ChatObserver for passive channel observation
                     if self._chat_observer and self._chat_observer.enabled:
