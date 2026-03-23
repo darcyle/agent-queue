@@ -335,19 +335,21 @@ def format_task_started_embed(task: Task, agent: Agent, workspace: Workspace | N
 def format_task_completed_embed(
     task: Task, agent: Agent, output: AgentOutput,
 ) -> discord.Embed:
-    """Rich embed version of :func:`format_task_completed`."""
+    """Rich embed version of :func:`format_task_completed`.
+
+    The summary is placed in the embed *description* (4096 char limit)
+    rather than a field (1024 char limit) so that longer agent summaries
+    are not truncated.
+    """
+    # Use the embed description for the summary (4096 chars vs 1024 for fields)
+    description = truncate(output.summary, LIMIT_DESCRIPTION) if output.summary else None
+
     fields: list[tuple[str, str, bool]] = [
         ("Task ID", f"`{task.id}`", True),
         ("Project", f"`{task.project_id}`", True),
         ("Agent", agent.name, True),
         ("Tokens Used", f"{output.tokens_used:,}", True),
     ]
-    if output.summary:
-        fields.append((
-            "Summary",
-            truncate(output.summary, LIMIT_FIELD_VALUE),
-            False,
-        ))
     if output.files_changed:
         files_text = ", ".join(f"`{f}`" for f in output.files_changed)
         fields.append((
@@ -355,14 +357,30 @@ def format_task_completed_embed(
             truncate(files_text, LIMIT_FIELD_VALUE),
             False,
         ))
-    return success_embed(f"Task Completed — {task.title}", fields=fields)
+    return success_embed(f"Task Completed — {task.title}", description=description, fields=fields)
 
 
 def format_task_failed_embed(
     task: Task, agent: Agent, output: AgentOutput,
 ) -> discord.Embed:
-    """Rich embed version of :func:`format_task_failed`."""
+    """Rich embed version of :func:`format_task_failed`.
+
+    The error detail is placed in the embed *description* (4096 char limit)
+    rather than a field (1024 char limit) so that longer error messages
+    are not truncated as aggressively.
+    """
     error_type, suggestion = classify_error(output.error_message)
+
+    # Use the embed description for error detail (4096 chars vs 1024 for fields)
+    description: str | None = None
+    if output.error_message:
+        # Reserve space for code-block fences (```\n ... \n```)
+        max_error_len = LIMIT_DESCRIPTION - 8
+        snippet = output.error_message[:max_error_len]
+        if len(output.error_message) > max_error_len:
+            snippet += "\u2026"
+        description = f"```\n{snippet}\n```"
+
     fields: list[tuple[str, str, bool]] = [
         ("Task ID", f"`{task.id}`", True),
         ("Project", f"`{task.project_id}`", True),
@@ -370,19 +388,13 @@ def format_task_failed_embed(
         ("Retries", f"{task.retry_count}/{task.max_retries}", True),
         ("Error Type", f"**{error_type}**", True),
     ]
-    if output.error_message:
-        # Code block markers consume ~8 chars; cap snippet to leave room.
-        snippet = output.error_message[:300]
-        if len(output.error_message) > 300:
-            snippet += "\u2026"
-        fields.append(("Error Detail", f"```\n{snippet}\n```", False))
     fields.append(("Suggestion", f"\U0001F4A1 {suggestion}", False))
     fields.append((
         "Next Step",
         f"Use `/agent-error {task.id}` for the full error log.",
         False,
     ))
-    return error_embed(f"Task Failed — {task.title}", fields=fields)
+    return error_embed(f"Task Failed — {task.title}", description=description, fields=fields)
 
 
 def format_task_blocked_embed(
