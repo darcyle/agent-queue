@@ -94,6 +94,30 @@ class DiscordConfig:
 
 
 @dataclass
+class TelegramConfig:
+    """Telegram bot connection and chat routing settings.
+
+    When ``messaging_platform`` is ``"telegram"``, these settings control
+    the Telegram bot integration.  ``use_topics`` requires the target chat
+    to be a supergroup with forum topics enabled.
+    """
+
+    bot_token: str = ""
+    chat_id: str = ""  # Main chat/group for notifications
+    authorized_users: list[str] = field(default_factory=list)  # Telegram user IDs
+    per_project_chats: dict[str, str] = field(default_factory=dict)  # project_id -> chat_id
+    use_topics: bool = True  # Use forum topics for task threads (requires supergroup)
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not self.bot_token:
+            errors.append(ConfigError("telegram", "bot_token", "bot_token is required for Telegram connection"))
+        if not self.chat_id:
+            errors.append(ConfigError("telegram", "chat_id", "chat_id is required for Telegram connection"))
+        return errors
+
+
+@dataclass
 class AgentsDefaultConfig:
     """Default timeouts for agent health monitoring and graceful shutdown."""
 
@@ -550,7 +574,9 @@ class AppConfig:
     )
     profile: str = ""
     env: str = "production"
+    messaging_platform: str = "discord"  # "discord" or "telegram"
     discord: DiscordConfig = field(default_factory=DiscordConfig)
+    telegram: TelegramConfig = field(default_factory=TelegramConfig)
     agents_config: AgentsDefaultConfig = field(default_factory=AgentsDefaultConfig)
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
@@ -606,8 +632,20 @@ class AppConfig:
                         severity="warning"
                     ))
 
-        # Delegate to per-section validators
-        errors.extend(self.discord.validate())
+        # Validate messaging_platform field
+        valid_platforms = {"discord", "telegram"}
+        if self.messaging_platform not in valid_platforms:
+            errors.append(ConfigError(
+                "app", "messaging_platform",
+                f"must be one of {sorted(valid_platforms)}, got '{self.messaging_platform}'"
+            ))
+
+        # Only validate the active messaging platform's config
+        if self.messaging_platform == "discord":
+            errors.extend(self.discord.validate())
+        elif self.messaging_platform == "telegram":
+            errors.extend(self.telegram.validate())
+
         errors.extend(self.agents_config.validate())
         errors.extend(self.scheduling.validate())
         errors.extend(self.pause_retry.validate())
@@ -709,8 +747,8 @@ HOT_RELOADABLE_SECTIONS = {
 """Config sections that can be safely updated at runtime without restart."""
 
 RESTART_REQUIRED_SECTIONS = {
-    "discord", "data_dir", "workspace_dir", "database_path", "chat_provider",
-    "memory", "health_check",
+    "discord", "telegram", "messaging_platform", "data_dir", "workspace_dir",
+    "database_path", "chat_provider", "memory", "health_check",
 }
 """Config sections that require a full restart to take effect."""
 
@@ -718,7 +756,8 @@ RESTART_REQUIRED_SECTIONS = {
 # Most fields map to themselves; these are the exceptions.
 _SECTION_FIELDS = {
     "data_dir", "workspace_dir", "database_path", "profile", "env",
-    "discord", "agents_config", "scheduling", "pause_retry",
+    "messaging_platform", "discord", "telegram", "agents_config",
+    "scheduling", "pause_retry",
     "chat_provider", "hook_engine", "chat_analyzer", "health_check", "logging",
     "monitoring", "archive", "auto_task", "memory", "llm_logging",
     "agent_profiles", "global_token_budget_daily", "rate_limits",
@@ -1016,6 +1055,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.database_path = raw["database_path"]
     if "global_token_budget_daily" in raw:
         config.global_token_budget_daily = raw["global_token_budget_daily"]
+    if "messaging_platform" in raw:
+        config.messaging_platform = raw["messaging_platform"]
 
     if "discord" in raw:
         d = raw["discord"]
@@ -1046,6 +1087,18 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             channels=raw_channels,
             authorized_users=d.get("authorized_users", []),
             per_project_channels=ppc,
+        )
+
+    if "telegram" in raw:
+        tg = raw["telegram"]
+        config.telegram = TelegramConfig(
+            bot_token=tg.get("bot_token", ""),
+            chat_id=str(tg.get("chat_id", "")),
+            authorized_users=[str(u) for u in tg.get("authorized_users", [])],
+            per_project_chats={
+                k: str(v) for k, v in tg.get("per_project_chats", {}).items()
+            },
+            use_topics=tg.get("use_topics", True),
         )
 
     if "agents" in raw:

@@ -1,0 +1,112 @@
+"""Abstract messaging platform adapter.
+
+``MessagingAdapter`` defines the contract that both Discord and Telegram
+transports must implement.  The orchestrator and ``main.py`` interact only
+through this ABC — never importing platform-specific types directly.
+
+This differs from ``MessagingPort`` (the lower-level transport contract) in
+that it bundles higher-level orchestrator-facing concerns: task thread
+creation that returns callback pairs, and access to the ``CommandHandler``
+and ``Supervisor`` instances wired into the transport.
+
+Lifecycle::
+
+    adapter = create_messaging_adapter(config, orchestrator)
+    await adapter.start()
+    await adapter.wait_until_ready()
+    ...
+    await adapter.close()
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.messaging.types import ThreadSendCallback
+
+
+class MessagingAdapter(ABC):
+    """Abstract messaging platform adapter.
+
+    Both ``DiscordMessagingAdapter`` and ``TelegramMessagingAdapter`` implement
+    this interface.  The orchestrator and ``main.py`` create an adapter via the
+    ``create_messaging_adapter()`` factory and interact only through this ABC.
+    """
+
+    # -------------------------------------------------------------------
+    # Lifecycle
+    # -------------------------------------------------------------------
+
+    @abstractmethod
+    async def start(self) -> None:
+        """Connect to the platform and begin listening for messages."""
+
+    @abstractmethod
+    async def wait_until_ready(self) -> None:
+        """Block until the platform connection is established and ready."""
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Disconnect from the platform gracefully."""
+
+    # -------------------------------------------------------------------
+    # Messaging
+    # -------------------------------------------------------------------
+
+    @abstractmethod
+    async def send_message(
+        self,
+        text: str,
+        project_id: str | None = None,
+        *,
+        embed: Any = None,
+        view: Any = None,
+    ) -> None:
+        """Send a notification message to the appropriate channel/chat.
+
+        Parameters
+        ----------
+        text:
+            Plain-text message content.
+        project_id:
+            Route to a project-specific channel/chat when set.
+        embed:
+            Platform-specific rich embed (Discord Embed, etc.).
+        view:
+            Platform-specific interactive view (Discord View, etc.).
+        """
+
+    @abstractmethod
+    async def create_task_thread(
+        self,
+        task: Any,
+        project: Any,
+    ) -> tuple["ThreadSendCallback", "ThreadSendCallback"]:
+        """Create a thread/topic for task output streaming.
+
+        Parameters
+        ----------
+        task:
+            The task model instance.
+        project:
+            The project model instance.
+
+        Returns
+        -------
+        tuple[ThreadSendCallback, ThreadSendCallback]
+            ``(send_to_thread, notify_main_channel)`` callback pair.
+        """
+
+    # -------------------------------------------------------------------
+    # Component access
+    # -------------------------------------------------------------------
+
+    @abstractmethod
+    def get_command_handler(self) -> Any:
+        """Return the ``CommandHandler`` instance wired to this adapter."""
+
+    @abstractmethod
+    def get_supervisor(self) -> Any:
+        """Return the ``Supervisor`` instance wired to this adapter."""
