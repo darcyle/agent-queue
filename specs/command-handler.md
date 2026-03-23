@@ -1955,23 +1955,120 @@ Pulls the latest source from git and restarts the daemon. Determines the repo ro
 
 #### `read_file`
 
-Reads a file from within an allowed directory. Intended for the chat agent, not Discord slash commands.
+Reads a file from within an allowed directory. Supports offset and line limits for reading specific sections of large files. Intended for the chat agent, not Discord slash commands.
 
 **Parameters:**
 - `path` (required): File path. If not absolute, it is joined with `config.workspace_dir`.
-- `max_lines` (optional, default `200`): Maximum lines to return. If the file is longer, a truncation notice is appended.
+- `offset` (optional, default `0`): Line number to start reading from (0-based). Lines before this offset are skipped.
+- `max_lines` (optional, default `500`): Maximum lines to return. If the file is longer, a truncation notice is appended.
 
-**Behavior:** Resolves the path and validates it via `_validate_path`. Reads up to `max_lines` lines. Returns an error for binary files (UnicodeDecodeError).
+**Behavior:** Resolves the path and validates it via `_validate_path`. Skips `offset` lines, then reads up to `max_lines` lines. Returns total line count in response metadata. Returns an error for binary files (UnicodeDecodeError).
 
 **Returns on success:**
 ```python
-{"content": <str: file contents>, "path": <str: validated absolute path>}
+{"content": <str: file contents>, "path": <str: validated absolute path>, "total_lines": <int>}
 ```
 
 **Errors:**
 - Path is outside allowed directories.
 - File not found.
 - Binary file (cannot display).
+
+---
+
+#### `write_file`
+
+Writes content to a file. Creates the file if it doesn't exist, overwrites if it does. Creates parent directories automatically.
+
+**Parameters:**
+- `path` (required): File path. If not absolute, it is joined with `config.workspace_dir`.
+- `content` (required): Full file content to write.
+
+**Behavior:** Resolves the path and validates it via `_validate_path`. Writes the content to the file.
+
+**Returns on success:**
+```python
+{"path": <str: validated absolute path>, "written": <int: number of characters written>}
+```
+
+**Errors:**
+- Path is outside allowed directories.
+- Permission denied.
+- Write failed (OS error).
+
+---
+
+#### `edit_file`
+
+Edits a file by replacing an exact string match. Designed for targeted, surgical edits — the `old_string` must appear exactly once in the file unless `replace_all` is set.
+
+**Parameters:**
+- `path` (required): File path. If not absolute, it is joined with `config.workspace_dir`.
+- `old_string` (required): The exact text to find and replace.
+- `new_string` (required): The replacement text.
+- `replace_all` (optional, default `false`): If true, replace all occurrences. If false, fails when `old_string` matches multiple locations.
+
+**Behavior:** Validates path, reads the file, counts occurrences of `old_string`. If `replace_all=false` and count != 1, returns an error with the match count. Otherwise performs the replacement and writes the file back.
+
+**Returns on success:**
+```python
+{"path": <str>, "replacements_made": <int>}
+```
+
+**Errors:**
+- Path is outside allowed directories.
+- File not found.
+- `old_string` not found in file.
+- Multiple matches found (when `replace_all=false`).
+
+---
+
+#### `glob_files`
+
+Finds files matching a glob pattern within a directory. Uses Python's `pathlib.Path.glob()` with recursive support for `**` patterns.
+
+**Parameters:**
+- `pattern` (required): Glob pattern (e.g. `**/*.py`, `src/*.ts`).
+- `path` (required): Root directory to search in. If not absolute, joined with `config.workspace_dir`.
+- `max_results` (optional, default `100`): Maximum number of results to return.
+
+**Behavior:** Validates the path, runs the glob, sorts results by modification time (newest first), and limits to `max_results`. Returns relative paths from the search root.
+
+**Returns on success:**
+```python
+{"path": <str>, "pattern": <str>, "matches": [<str>, ...], "count": <int>, "truncated": <bool>}
+```
+
+**Errors:**
+- Path is outside allowed directories.
+- Directory not found.
+
+---
+
+#### `grep`
+
+Searches file contents using regex patterns. More powerful than `search_files` — supports context lines, file type filtering, case-insensitive search, and file-paths-only mode. Uses `rg` (ripgrep) when available, falls back to `grep -rn`.
+
+**Parameters:**
+- `pattern` (required): Regex pattern to search for.
+- `path` (required): Directory or file to search. If not absolute, joined with `config.workspace_dir`.
+- `glob` (optional): File glob filter (e.g. `*.py`, `*.{ts,tsx}`).
+- `context_lines` (optional, default `0`): Number of context lines before and after each match.
+- `case_insensitive` (optional, default `false`): Case-insensitive search.
+- `max_results` (optional, default `50`): Maximum number of matching lines to return.
+- `files_only` (optional, default `false`): Only return file paths with matches, not matching lines.
+
+**Behavior:** Validates the path, builds the search command with appropriate flags, runs it via subprocess. Output is truncated to 4000 characters.
+
+**Returns on success:**
+```python
+{"results": <str: matching lines or file paths>, "pattern": <str>, "path": <str>}
+```
+
+**Errors:**
+- Path is outside allowed directories.
+- Directory not found.
+- Search timed out.
 
 ---
 

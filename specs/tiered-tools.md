@@ -17,7 +17,7 @@ search, and messaging. Approximately 11 tools.
 
 ### Tool Categories
 
-Six named categories group related tools:
+Seven named categories group related tools:
 
 | Category | Description | Approximate Count |
 |----------|-------------|-------------------|
@@ -26,7 +26,8 @@ Six named categories group related tools:
 | `agent` | Agent management, agent profiles | 17 |
 | `hooks` | Direct hook management (low-level) | 6 |
 | `memory` | Memory operations beyond search, notes, project profiles | 13 |
-| `system` | Token usage, config, diagnostics, task lifecycle ops, prompts | 33 |
+| `files` | Read, write, edit, search, and browse files in project workspaces | 8 |
+| `system` | Token usage, config, diagnostics, task lifecycle ops, prompts | 28 |
 
 ### ToolRegistry
 
@@ -38,7 +39,7 @@ A singleton-like registry that owns:
 ### Navigation Flow
 
 1. LLM calls `browse_tools` -- receives category list with names, descriptions, tool counts
-2. LLM calls `load_tools(category="git")` -- category's tool schemas are injected into
+2. LLM calls `load_tools(category="files")` -- category's tool schemas are injected into
    the `tools` parameter for subsequent LLM turns in the same interaction
 3. LLM can now call any git tool
 

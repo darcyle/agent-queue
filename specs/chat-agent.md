@@ -100,9 +100,14 @@ Tools are grouped below by functional category. Every tool name listed is an exa
 
 | Tool | Purpose |
 |------|---------|
-| `read_file` | Read a file's contents from a workspace |
-| `run_command` | Execute a shell command in a workspace directory |
+| `read_file` | Read a file's contents with optional offset and line limit |
+| `write_file` | Write or create a file (creates parent directories if needed) |
+| `edit_file` | Targeted string replacement in a file (unique match required unless `replace_all=true`) |
+| `grep` | Search file contents with regex, context lines, file type filtering, and case-insensitive options |
+| `glob_files` | Find files matching a glob pattern (e.g. `**/*.py`), sorted by modification time |
 | `search_files` | Search file contents (grep mode) or filenames (find mode) in a workspace |
+| `list_directory` | List files and directories at a given path within a project workspace |
+| `run_command` | Execute a shell command in a workspace directory |
 
 ### Git Operations (repo-ID based)
 

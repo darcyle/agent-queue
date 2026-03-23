@@ -58,6 +58,23 @@ Summarizes a conversation transcript.
 2. **Passive Observation** — absorbs chat, suggests only (Phase 5)
 3. **Reflection** — periodic/event-driven self-verification
 
+### Direct Work vs. Task Delegation
+
+The Supervisor has filesystem tools (via the `files` tool category) for direct
+investigation and small changes. These include `read_file`, `write_file`,
+`edit_file`, `grep`, `glob_files`, `search_files`, `list_directory`, and
+`run_command`.
+
+**Use file tools directly when:**
+- Investigating a bug or reading code to answer a question
+- Making small, targeted edits (config changes, single-file fixes)
+- Running quick commands (tests, status checks, builds)
+
+**Create a task for an agent when:**
+- The work spans multiple files or requires significant reasoning
+- It's a feature, refactor, or multi-step implementation
+- You need Claude Code's full context window and tool suite
+
 ### Invariants
 - Only one Supervisor instance per bot (created by AgentQueueBot)
 - All LLM reasoning goes through the Supervisor
