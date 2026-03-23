@@ -96,6 +96,11 @@ from src.discord.notifications import (
     TaskStartedView, TaskFailedView, TaskApprovalView, TaskBlockedView, AgentQuestionView,
 )
 from src.event_bus import EventBus
+from src.messaging.types import (
+    NotifyCallback as _NotifyCallbackType,
+    ThreadSendCallback as _ThreadSendCallbackType,
+    CreateThreadCallback as _CreateThreadCallbackType,
+)
 from src.git.manager import GitError, GitManager
 from src.models import (
     AgentOutput, AgentProfile, AgentResult, AgentState,
@@ -110,24 +115,13 @@ from src.tokens.budget import BudgetManager
 
 logger = logging.getLogger(__name__)
 
-# Sends a formatted message to a Discord channel.  The optional project_id
-# lets the callback route to per-project channels instead of the global one.
-# When an ``embed`` kwarg is provided, the callback should prefer it over
-# the plain-text message for Discord display.
-NotifyCallback = Callable[..., Awaitable[Any]]
-
-# Sends a single message into an already-created Discord thread.
-ThreadSendCallback = Callable[[str], Awaitable[None]]
-
-# Creates a Discord thread for streaming agent output and returns two
-# send functions: one for posting into the thread itself, and one for
-# posting a brief summary/reply to the parent notifications channel.
-# Args: (thread_name, initial_message, project_id, task_id)
-# Returns: (send_to_thread, notify_main) or None if thread creation failed.
-CreateThreadCallback = Callable[
-    [str, str, str | None, str | None],
-    Awaitable[tuple[ThreadSendCallback, ThreadSendCallback] | None],
-]
+# Re-export callback types from the messaging abstraction layer.
+# These were previously defined inline here; now they live in
+# src/messaging/types.py so both the orchestrator and transport
+# implementations share the same type definitions.
+NotifyCallback = _NotifyCallbackType
+ThreadSendCallback = _ThreadSendCallbackType
+CreateThreadCallback = _CreateThreadCallbackType
 
 
 class Orchestrator:
