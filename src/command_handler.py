@@ -5957,7 +5957,9 @@ class CommandHandler:
 
     async def _cmd_read_file(self, args: dict) -> dict:
         path = args["path"]
-        max_lines = args.get("max_lines", 200)
+        offset = max(args.get("offset", 1), 1)  # 1-based line number
+        limit = args.get("limit")
+        max_lines = limit if limit is not None else args.get("max_lines", 2000)
         if not os.path.isabs(path):
             path = os.path.join(self.config.workspace_dir, path)
         validated = await self._validate_path(path)
@@ -5968,12 +5970,23 @@ class CommandHandler:
         try:
             with open(validated, "r") as f:
                 lines = []
-                for i, line in enumerate(f):
-                    if i >= max_lines:
-                        lines.append(f"\n... truncated at {max_lines} lines ({i} total)")
-                        break
+                total_lines = 0
+                for i, line in enumerate(f, start=1):
+                    total_lines = i
+                    if i < offset:
+                        continue
+                    if len(lines) >= max_lines:
+                        # Keep counting total lines
+                        continue
                     lines.append(line.rstrip("\n"))
-            return {"content": "\n".join(lines), "path": validated}
+            result: dict = {"content": "\n".join(lines), "path": validated}
+            if offset > 1:
+                result["offset"] = offset
+            if len(lines) < total_lines - (offset - 1):
+                result["truncated"] = True
+                result["total_lines"] = total_lines
+                result["lines_returned"] = len(lines)
+            return result
         except UnicodeDecodeError:
             return {"error": "Binary file — cannot display contents"}
 
@@ -6122,7 +6135,7 @@ class CommandHandler:
         }
 
     async def _cmd_write_file(self, args: dict) -> dict:
-        """Write content to a file within the workspace (for the file editor)."""
+        """Write content to a file within the workspace."""
         path = args.get("path", "")
         content = args.get("content", "")
         if not path:
@@ -6135,6 +6148,8 @@ class CommandHandler:
             return {"error": "Access denied: path is outside allowed directories"}
 
         try:
+            # Create parent directories if needed
+            os.makedirs(os.path.dirname(validated), exist_ok=True)
             with open(validated, "w") as f:
                 f.write(content)
             return {"path": validated, "written": len(content)}
@@ -6142,6 +6157,146 @@ class CommandHandler:
             return {"error": f"Permission denied: {path}"}
         except OSError as e:
             return {"error": f"Write failed: {e}"}
+
+    async def _cmd_edit_file(self, args: dict) -> dict:
+        """Perform targeted string replacement in a file."""
+        path = args.get("path", "")
+        old_string = args.get("old_string", "")
+        new_string = args.get("new_string", "")
+        replace_all = args.get("replace_all", False)
+
+        if not path:
+            return {"error": "path is required"}
+        if not old_string:
+            return {"error": "old_string is required"}
+
+        if not os.path.isabs(path):
+            path = os.path.join(self.config.workspace_dir, path)
+        validated = await self._validate_path(path)
+        if not validated:
+            return {"error": "Access denied: path is outside allowed directories"}
+        if not os.path.isfile(validated):
+            return {"error": f"File not found: {path}"}
+
+        try:
+            with open(validated, "r") as f:
+                content = f.read()
+        except UnicodeDecodeError:
+            return {"error": "Binary file — cannot edit"}
+
+        count = content.count(old_string)
+        if count == 0:
+            return {"error": "old_string not found in file"}
+        if count > 1 and not replace_all:
+            return {
+                "error": (
+                    f"old_string found {count} times — must be unique. "
+                    "Include more surrounding context to disambiguate, "
+                    "or set replace_all=true."
+                )
+            }
+
+        new_content = content.replace(old_string, new_string) if replace_all else content.replace(old_string, new_string, 1)
+
+        try:
+            with open(validated, "w") as f:
+                f.write(new_content)
+            return {
+                "path": validated,
+                "replacements": count if replace_all else 1,
+            }
+        except PermissionError:
+            return {"error": f"Permission denied: {path}"}
+        except OSError as e:
+            return {"error": f"Edit failed: {e}"}
+
+    async def _cmd_glob_files(self, args: dict) -> dict:
+        """Find files matching a glob pattern."""
+        import glob as glob_mod
+
+        pattern = args.get("pattern", "")
+        path = args.get("path", "")
+
+        if not pattern:
+            return {"error": "pattern is required"}
+        if not path:
+            return {"error": "path is required"}
+
+        if not os.path.isabs(path):
+            path = os.path.join(self.config.workspace_dir, path)
+        validated = await self._validate_path(path)
+        if not validated:
+            return {"error": "Access denied: path is outside allowed directories"}
+        if not os.path.isdir(validated):
+            return {"error": f"Directory not found: {path}"}
+
+        full_pattern = os.path.join(validated, pattern)
+        try:
+            matches = glob_mod.glob(full_pattern, recursive=True)
+            # Sort by modification time (newest first)
+            matches.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+            # Limit results
+            total = len(matches)
+            matches = matches[:500]
+            # Make paths relative to the search directory
+            rel_matches = [os.path.relpath(m, validated) for m in matches]
+            result: dict = {"matches": rel_matches, "count": len(rel_matches)}
+            if total > 500:
+                result["truncated"] = True
+                result["total"] = total
+            return result
+        except OSError as e:
+            return {"error": f"Glob failed: {e}"}
+
+    async def _cmd_grep(self, args: dict) -> dict:
+        """Search file contents using ripgrep-style patterns."""
+        pattern = args.get("pattern", "")
+        path = args.get("path", "")
+        context = args.get("context", 0)
+        case_insensitive = args.get("case_insensitive", False)
+        glob_filter = args.get("glob")
+        output_mode = args.get("output_mode", "content")
+        max_results = min(args.get("max_results", 100), 500)
+
+        if not pattern:
+            return {"error": "pattern is required"}
+        if not path:
+            return {"error": "path is required"}
+
+        if not os.path.isabs(path):
+            path = os.path.join(self.config.workspace_dir, path)
+        validated = await self._validate_path(path)
+        if not validated:
+            return {"error": "Access denied: path is outside allowed directories"}
+        if not os.path.exists(validated):
+            return {"error": f"Path not found: {path}"}
+
+        # Build grep command args
+        cmd = ["grep", "-rn", "--color=never"]
+        if case_insensitive:
+            cmd.append("-i")
+        if context > 0:
+            cmd.extend(["-C", str(context)])
+        if output_mode == "files_with_matches":
+            cmd.append("-l")
+        elif output_mode == "count":
+            cmd.append("-c")
+        if glob_filter:
+            cmd.extend(["--include", glob_filter])
+        cmd.extend(["-m", str(max_results), "-E", pattern, validated])
+
+        try:
+            rc, stdout, stderr = await _run_subprocess(
+                *cmd,
+                timeout=30,
+            )
+            output = stdout[:8000] if stdout else "(no matches)"
+            result: dict = {"results": output, "mode": output_mode}
+            if rc == 1 and not stdout:
+                result["results"] = "(no matches)"
+            return result
+        except asyncio.TimeoutError:
+            return {"error": "Search timed out"}
 
     # -----------------------------------------------------------------------
     # Agent Profile commands -- CRUD for capability bundles that configure

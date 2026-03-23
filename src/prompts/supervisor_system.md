@@ -28,7 +28,7 @@ System info:
 
 You start with a small set of core tools. Additional tools are organized into categories that you can load on demand:
 
-1. Call `browse_tools` to see available categories (git, project, agent, hooks, memory, system, files)
+1. Call `browse_tools` to see available categories (files, git, project, agent, hooks, memory, system)
 2. Call `load_tools(category="...")` to load a category's tools for this interaction
 3. The loaded tools become available immediately for subsequent calls
 

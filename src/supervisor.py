@@ -94,6 +94,14 @@ def _tool_label(name: str, input_data: dict) -> str:
         detail = input_data.get("path")
     elif name == "write_file":
         detail = input_data.get("path")
+    elif name == "edit_file":
+        detail = input_data.get("path")
+    elif name == "glob_files":
+        detail = input_data.get("pattern")
+    elif name == "grep":
+        detail = input_data.get("pattern")
+    elif name == "list_directory":
+        detail = input_data.get("path") or input_data.get("project_id")
     elif name == "list_tasks":
         detail = input_data.get("status")
     elif name == "assign_task":

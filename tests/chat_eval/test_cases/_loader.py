@@ -19,6 +19,7 @@ CATEGORY_MODULES = [
     "notes",
     "hooks",
     "system",
+    "files",
     "archive",
     "ambiguous",
     "multi_step",

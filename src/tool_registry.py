@@ -55,6 +55,13 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "compaction, reindexing"
         ),
     ),
+    "files": CategoryMeta(
+        name="files",
+        description=(
+            "Filesystem tools — read, write, edit files, glob pattern "
+            "matching, grep/ripgrep-style content search"
+        ),
+    ),
     "system": CategoryMeta(
         name="system",
         description=(
@@ -135,11 +142,17 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "append_note": "memory",
     "promote_note": "memory",
     "compare_specs_notes": "memory",
+    # files
+    "read_file": "files",
+    "write_file": "files",
+    "edit_file": "files",
+    "glob_files": "files",
+    "grep": "files",
+    "search_files": "files",
+    "list_directory": "files",
     # system
     "get_token_usage": "system",
     "run_command": "system",
-    "read_file": "system",
-    "search_files": "system",
     "get_status": "system",
     "get_recent_events": "system",
     "get_task_result": "system",
@@ -1117,18 +1130,129 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "read_file",
-        "description": "Read a file's contents from a workspace. Path can be absolute or relative to the workspaces root.",
+        "description": "Read a file's contents from a workspace. Path can be absolute or relative to the workspaces root. Supports offset/limit for reading specific portions of large files.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "File path (absolute or relative to workspaces root)"},
                 "max_lines": {
                     "type": "integer",
-                    "description": "Max lines to return (default 200)",
-                    "default": 200,
+                    "description": "Max lines to return (default 2000)",
+                    "default": 2000,
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Line number to start reading from (1-based, default 1)",
+                    "default": 1,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of lines to read. If set, overrides max_lines.",
                 },
             },
             "required": ["path"],
+        },
+    },
+    {
+        "name": "write_file",
+        "description": "Write content to a file. Creates the file (and parent directories) if it doesn't exist, or overwrites if it does. Path can be absolute or relative to the workspaces root.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path (absolute or relative to workspaces root)"},
+                "content": {"type": "string", "description": "Content to write to the file"},
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "edit_file",
+        "description": (
+            "Perform targeted string replacement in a file. Finds old_string and replaces it with new_string. "
+            "The old_string must be unique in the file (include surrounding context to disambiguate). "
+            "Use replace_all=true to replace every occurrence."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path (absolute or relative to workspaces root)"},
+                "old_string": {"type": "string", "description": "Exact text to find and replace"},
+                "new_string": {"type": "string", "description": "Replacement text"},
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "Replace all occurrences (default false — requires unique match)",
+                    "default": False,
+                },
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+    },
+    {
+        "name": "glob_files",
+        "description": (
+            "Find files matching a glob pattern (e.g. '**/*.py', 'src/**/*.ts'). "
+            "Returns matching file paths sorted by modification time."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Glob pattern to match files (e.g. '**/*.py', 'src/components/**/*.tsx')"},
+                "path": {"type": "string", "description": "Directory to search in (absolute or relative to workspaces root)"},
+            },
+            "required": ["pattern", "path"],
+        },
+    },
+    {
+        "name": "grep",
+        "description": (
+            "Search file contents using regex patterns (ripgrep-style). Supports context lines, "
+            "case-insensitive search, file type filtering, and multiple output modes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Regex pattern to search for"},
+                "path": {"type": "string", "description": "File or directory to search in (absolute or relative to workspaces root)"},
+                "context": {
+                    "type": "integer",
+                    "description": "Number of context lines before and after each match",
+                    "default": 0,
+                },
+                "case_insensitive": {
+                    "type": "boolean",
+                    "description": "Case-insensitive search (default false)",
+                    "default": False,
+                },
+                "glob": {
+                    "type": "string",
+                    "description": "Glob pattern to filter files (e.g. '*.py', '*.{ts,tsx}')",
+                },
+                "output_mode": {
+                    "type": "string",
+                    "enum": ["content", "files_with_matches", "count"],
+                    "description": "Output mode: 'content' shows matching lines, 'files_with_matches' shows file paths only, 'count' shows match counts (default 'content')",
+                    "default": "content",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of result lines to return (default 100)",
+                    "default": 100,
+                },
+            },
+            "required": ["pattern", "path"],
+        },
+    },
+    {
+        "name": "list_directory",
+        "description": "List files and directories at a given path within a project workspace.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "path": {"type": "string", "description": "Relative path within the workspace (default: root)"},
+                "workspace": {"type": "string", "description": "Workspace name or ID (default: first workspace)"},
+            },
+            "required": ["project_id"],
         },
     },
     {
