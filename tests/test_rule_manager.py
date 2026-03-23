@@ -308,6 +308,63 @@ def test_hook_generation_uses_llm_expansion(storage_root, mock_db):
     assert "rule-tunnel" not in created_hook.prompt_template
 
 
+def test_global_rule_generates_hooks_for_all_projects(storage_root, mock_db):
+    """Global rules (project_id=None) create one hook per project."""
+    from src.rule_manager import RuleManager
+    from src.models import Project
+
+    mock_db.list_projects = AsyncMock(return_value=[
+        Project(id="proj-a", name="A"),
+        Project(id="proj-b", name="B"),
+    ])
+
+    rm = RuleManager(storage_root=storage_root, db=mock_db)
+    result = asyncio.run(
+        rm.async_save_rule(
+            id="rule-global",
+            project_id=None,
+            rule_type="active",
+            content=(
+                "# Global Check\n\n## Trigger\nEvery 10 minutes."
+                "\n\n## Logic\nDo stuff."
+            ),
+        )
+    )
+    assert result["success"] is True
+    assert len(result["hooks_generated"]) == 2
+    assert mock_db.create_hook.call_count == 2
+
+    # Verify hooks target different projects
+    pids = {
+        mock_db.create_hook.call_args_list[i][0][0].project_id
+        for i in range(2)
+    }
+    assert pids == {"proj-a", "proj-b"}
+
+
+def test_global_rule_no_projects_creates_no_hooks(storage_root, mock_db):
+    """Global rules with no projects in DB create no hooks."""
+    from src.rule_manager import RuleManager
+
+    mock_db.list_projects = AsyncMock(return_value=[])
+
+    rm = RuleManager(storage_root=storage_root, db=mock_db)
+    result = asyncio.run(
+        rm.async_save_rule(
+            id="rule-empty",
+            project_id=None,
+            rule_type="active",
+            content=(
+                "# Empty\n\n## Trigger\nEvery 5 minutes."
+                "\n\n## Logic\nCheck."
+            ),
+        )
+    )
+    assert result["success"] is True
+    assert len(result["hooks_generated"]) == 0
+    mock_db.create_hook.assert_not_called()
+
+
 def test_hook_generation_falls_back_without_supervisor(
     rule_manager_with_db, mock_db,
 ):

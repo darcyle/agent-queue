@@ -52,6 +52,8 @@ When an active rule is saved or updated:
 4. Delete old hooks, create new ones
 5. Update the rule's `hooks` frontmatter field
 
+**Global rules** (project_id=None) create one hook per active project. This means a single global rule fans out to N hooks at generation time. New projects added after a global rule was saved will pick up the hooks on the next startup reconciliation.
+
 Generated hooks do not use context steps. Instead, the hook's `prompt_template` contains a specific, actionable prompt that the supervisor can execute using its existing tools (shell, file I/O, task creation).
 
 #### LLM Prompt Expansion

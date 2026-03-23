@@ -369,8 +369,10 @@ class RuleManager:
         supervisor's LLM to expand the rule into a specific, actionable prompt.
         Falls back to a static template when the supervisor is unavailable
         (e.g. during startup reconciliation).
+
+        For global rules (project_id=None), creates one hook per active project.
         """
-        if not self._db or not project_id:
+        if not self._db:
             return []
 
         # Parse trigger from content
@@ -388,7 +390,7 @@ class RuleManager:
             except Exception:
                 pass
 
-        # Try LLM expansion via the supervisor
+        # Try LLM expansion via the supervisor (done once, shared across hooks)
         prompt_template = None
         supervisor = getattr(self._orchestrator, "_supervisor", None)
         if supervisor is not None:
@@ -416,30 +418,52 @@ class RuleManager:
                 f"Follow the rule's logic and take appropriate action."
             )
 
-        # Create new hook
+        # Determine target projects: specific project or all active projects
+        if project_id:
+            target_project_ids = [project_id]
+        else:
+            projects = await self._db.list_projects()
+            target_project_ids = [p.id for p in projects]
+            if not target_project_ids:
+                logger.info(
+                    "No projects found for global rule %s, skipping hook creation",
+                    rule_id,
+                )
+                return []
+
+        # Create one hook per target project
         import json
         import uuid
 
         from src.models import Hook
 
-        hook_id = f"rule-{rule_id}-{uuid.uuid4().hex[:6]}"
         title = self._extract_title(content)
+        all_hook_ids: list[str] = []
 
-        hook = Hook(
-            id=hook_id,
-            project_id=project_id,
-            name=f"Rule: {title or rule_id}",
-            trigger=json.dumps(trigger_config),
-            context_steps="[]",
-            prompt_template=prompt_template,
-            cooldown_seconds=trigger_config.get("interval_seconds", 3600) // 2,
-        )
-        await self._db.create_hook(hook)
+        for pid in target_project_ids:
+            hook_id = f"rule-{rule_id}-{uuid.uuid4().hex[:6]}"
+            hook = Hook(
+                id=hook_id,
+                project_id=pid,
+                name=f"Rule: {title or rule_id}",
+                trigger=json.dumps(trigger_config),
+                context_steps="[]",
+                prompt_template=prompt_template,
+                cooldown_seconds=trigger_config.get("interval_seconds", 3600) // 2,
+            )
+            await self._db.create_hook(hook)
+            all_hook_ids.append(hook_id)
 
-        # Update rule frontmatter with hook reference
-        self._update_rule_hooks(rule_id, [hook_id])
+        if not project_id:
+            logger.info(
+                "Global rule %s: created %d hooks (one per project)",
+                rule_id, len(all_hook_ids),
+            )
 
-        return [hook_id]
+        # Update rule frontmatter with hook references
+        self._update_rule_hooks(rule_id, all_hook_ids)
+
+        return all_hook_ids
 
     @staticmethod
     def _parse_trigger(content: str) -> dict | None:
@@ -534,7 +558,7 @@ class RuleManager:
                     if not hook_ids:
                         stats["hooks_missing"] += 1
                         # Attempt regeneration
-                        if self._db and pid:
+                        if self._db:
                             try:
                                 new_hooks = (
                                     await self._generate_hooks_for_rule(
