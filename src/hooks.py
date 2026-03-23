@@ -478,7 +478,9 @@ class HookEngine:
                     chain = " → ".join(f"`{t}`" for t in tool_labels)
                     parts.append(f"🔧 {chain}")
                 if response:
-                    summary = response if len(response) <= 200 else response[:200] + "…"
+                    # Use a generous limit — _send_long_message handles
+                    # Discord's 2000-char message cap by splitting/attaching.
+                    summary = response if len(response) <= 4000 else response[:4000] + "…"
                     parts.append(f"> {summary}")
                 await orchestrator._notify_channel(
                     "\n".join(parts),
