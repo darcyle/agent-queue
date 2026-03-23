@@ -395,25 +395,26 @@ class TestIsLikelyActionable:
 
 # ── find_plan_file — notes directory ──────────────────────────────────── #
 
-class TestFindPlanFileNotes:
-    def test_finds_plan_in_notes_directory(self, tmp_path):
-        """Plans in notes/ should be discovered via the expanded patterns."""
+class TestFindPlanFileNarrowScope:
+    def test_ignores_notes_directory(self, tmp_path):
+        """Plans in notes/ are NOT discovered — only .claude/plan.md is checked."""
         notes_dir = tmp_path / "notes"
         notes_dir.mkdir()
         plan = notes_dir / "my-improvement-plan.md"
         plan.write_text("# Plan\n\n## Phase 1: Do stuff\n\nDetails about phase 1.\n")
 
         result = find_plan_file(str(tmp_path))
-        assert result == str(plan)
+        assert result is None
 
-    def test_prefers_claude_dir_over_notes(self, tmp_path):
-        """Standard patterns should take priority over notes/."""
+    def test_only_finds_claude_plan_md(self, tmp_path):
+        """Only .claude/plan.md is found, even when other plan files exist."""
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
         (claude_dir / "plan.md").write_text("# Claude Plan")
         notes_dir = tmp_path / "notes"
         notes_dir.mkdir()
         (notes_dir / "plan.md").write_text("# Notes Plan")
+        (tmp_path / "plan.md").write_text("# Root Plan")
 
         result = find_plan_file(str(tmp_path))
         assert result == str(claude_dir / "plan.md")
@@ -421,9 +422,9 @@ class TestFindPlanFileNotes:
 
 # ── _deep_scan_for_plan ───────────────────────────────────────────────── #
 
-class TestDeepScanForPlan:
-    def test_finds_recent_plan_with_phase_headings(self, tmp_path):
-        """Deep scan should find markdown files with Phase/Step headings."""
+class TestDeepScanDisabled:
+    def test_deep_scan_always_returns_none(self, tmp_path):
+        """Deep scan is disabled — always returns None regardless of content."""
         subdir = tmp_path / "custom" / "location"
         subdir.mkdir(parents=True)
         plan = subdir / "my-plan.md"
@@ -433,39 +434,10 @@ class TestDeepScanForPlan:
         )
 
         result = _deep_scan_for_plan(str(tmp_path))
-        assert result == str(plan)
-
-    def test_ignores_old_files(self, tmp_path):
-        """Files older than max_age_seconds should be ignored."""
-        plan = tmp_path / "old-plan.md"
-        plan.write_text("# Plan\n\n## Phase 1: Stuff\n\nDetails.\n")
-        # Set mtime to 2 hours ago
-        old_time = time.time() - 7200
-        os.utime(str(plan), (old_time, old_time))
-
-        result = _deep_scan_for_plan(str(tmp_path), max_age_seconds=1800)
         assert result is None
 
-    def test_ignores_archived_plans(self, tmp_path):
-        """Plans in .claude/plans/ should be skipped (they're already processed)."""
-        plans_dir = tmp_path / ".claude" / "plans"
-        plans_dir.mkdir(parents=True)
-        archived = plans_dir / "task-123-plan.md"
-        archived.write_text("# Archived\n\n## Phase 1: Stuff\n\nDetails.\n")
-
-        result = _deep_scan_for_plan(str(tmp_path))
-        assert result is None
-
-    def test_ignores_files_without_plan_indicators(self, tmp_path):
-        """Markdown files without Phase/Step headings should be skipped."""
-        readme = tmp_path / "README.md"
-        readme.write_text("# My Project\n\nThis is a README.\n")
-
-        result = _deep_scan_for_plan(str(tmp_path))
-        assert result is None
-
-    def test_finds_implementation_plan_keyword(self, tmp_path):
-        """Files with 'Implementation Plan' heading should be found."""
+    def test_deep_scan_ignores_all_files(self, tmp_path):
+        """Even recent files with plan indicators are not returned."""
         plan = tmp_path / "design-doc.md"
         plan.write_text(
             "# Design\n\n## Background\n\nStuff.\n\n"
@@ -473,18 +445,7 @@ class TestDeepScanForPlan:
         )
 
         result = _deep_scan_for_plan(str(tmp_path))
-        assert result == str(plan)
-
-    def test_returns_newest_when_multiple(self, tmp_path):
-        """When multiple candidates exist, the newest should be returned."""
-        plan1 = tmp_path / "plan-old.md"
-        plan1.write_text("# Old\n\n## Phase 1: Stuff\n\nDetails.\n")
-        time.sleep(0.05)
-        plan2 = tmp_path / "plan-new.md"
-        plan2.write_text("# New\n\n## Phase 1: Stuff\n\nDetails.\n")
-
-        result = _deep_scan_for_plan(str(tmp_path))
-        assert result == str(plan2)
+        assert result is None
 
 
 # ── Full pipeline integration test with keen-beacon plan ──────────────── #
@@ -492,24 +453,24 @@ class TestDeepScanForPlan:
 class TestKeenBeaconIntegration:
     """Integration test simulating the keen-beacon failure scenario."""
 
-    def test_plan_in_notes_is_discovered_and_correctly_parsed(self, tmp_path):
-        """Simulate the keen-beacon scenario: plan in notes/ with design doc structure.
+    def test_plan_in_notes_not_discovered_but_parses_correctly(self, tmp_path):
+        """Plan in notes/ is NOT discovered by find_plan_file (narrow scope),
+        but if passed directly to parse_plan it parses correctly.
 
         The 5 raw implementation phases get consolidated into 3 coarser
         phases (threshold=4, target=3).
         """
-        # Setup: plan file in notes/ (not standard location)
+        # Setup: plan file in notes/ (not a checked location)
         notes_dir = tmp_path / "notes"
         notes_dir.mkdir()
         plan_path = notes_dir / "discord-responses-improvement-plan.md"
         plan_path.write_text(DESIGN_DOCUMENT)
 
-        # Step 1: Discovery should find it
+        # Step 1: Discovery should NOT find it (only .claude/plan.md is checked)
         found = find_plan_file(str(tmp_path))
-        assert found is not None, "Plan in notes/ should be discovered"
-        assert found == str(plan_path)
+        assert found is None, "Plan in notes/ should NOT be discovered"
 
-        # Step 2: Parsing should extract and consolidate implementation phases
+        # Step 2: But parsing should still work when given the content directly
         content = plan_path.read_text()
         plan = parse_plan(content, source_file=str(plan_path))
         assert len(plan.steps) == 3
@@ -747,8 +708,8 @@ A summary of all implementation work that was planned above.
 # ── Regression: deep scan finds plans in unusual directory structures ──── #
 
 class TestDeepScanEdgeCases:
-    def test_finds_plan_in_deeply_nested_directory(self, tmp_path):
-        """Deep scan should find plans in deeply nested directories."""
+    def test_deep_scan_disabled_for_nested(self, tmp_path):
+        """Deep scan is disabled — nested plans are not found."""
         deep_dir = tmp_path / "src" / "docs" / "internal" / "plans"
         deep_dir.mkdir(parents=True)
         plan = deep_dir / "feature-plan.md"
@@ -759,30 +720,10 @@ class TestDeepScanEdgeCases:
         )
 
         result = _deep_scan_for_plan(str(tmp_path))
-        assert result == str(plan)
+        assert result is None
 
-    def test_prefers_plan_with_more_phase_indicators(self, tmp_path):
-        """When multiple recent files match, newest should be returned."""
-        # Create two plan files, both recent
-        plan1 = tmp_path / "plan-a.md"
-        plan1.write_text("# A\n\n## Phase 1: Stuff\n\nDetails.\n")
-
-        # Ensure different mtime
-        time.sleep(0.05)
-
-        plan2 = tmp_path / "plan-b.md"
-        plan2.write_text(
-            "# B\n\n## Phase 1: First\n\nDetails.\n"
-            "## Phase 2: Second\n\nMore details.\n"
-            "## Phase 3: Third\n\nEven more details.\n"
-        )
-
-        result = _deep_scan_for_plan(str(tmp_path))
-        # Should return plan2 because it's newest
-        assert result == str(plan2)
-
-    def test_finds_plan_with_implementation_steps_keyword(self, tmp_path):
-        """Deep scan should detect 'implementation steps' as a keyword."""
+    def test_deep_scan_disabled_for_implementation_steps(self, tmp_path):
+        """Deep scan is disabled — implementation steps keyword not detected."""
         plan = tmp_path / "design.md"
         plan.write_text(
             "# Design\n\n## Background\n\nContext.\n\n"
@@ -790,4 +731,4 @@ class TestDeepScanEdgeCases:
         )
 
         result = _deep_scan_for_plan(str(tmp_path))
-        assert result == str(plan)
+        assert result is None

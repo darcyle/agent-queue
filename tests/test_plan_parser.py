@@ -20,6 +20,7 @@ from src.plan_parser import (
 
 class TestFindPlanFile:
     def test_finds_claude_plan_file(self, tmp_path):
+        """The only default location is .claude/plan.md."""
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
         plan = claude_dir / "plan.md"
@@ -28,27 +29,29 @@ class TestFindPlanFile:
         result = find_plan_file(str(tmp_path))
         assert result == str(plan)
 
-    def test_finds_root_plan_file(self, tmp_path):
+    def test_ignores_root_plan_file(self, tmp_path):
+        """Root plan.md is NOT checked by default — only .claude/plan.md."""
         plan = tmp_path / "plan.md"
         plan.write_text("# Plan")
 
         result = find_plan_file(str(tmp_path))
-        assert result == str(plan)
+        assert result is None
 
-    def test_prefers_claude_dir_over_root(self, tmp_path):
-        # Both exist; .claude/plan.md should be found first
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        (claude_dir / "plan.md").write_text("# Claude Plan")
-        (tmp_path / "plan.md").write_text("# Root Plan")
+    def test_ignores_other_locations(self, tmp_path):
+        """Plans in docs/, plans/, notes/ are NOT checked by default."""
+        for subdir in ["docs/plans", "plans", "docs", "notes/plans"]:
+            d = tmp_path / subdir
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "plan.md").write_text("# Plan")
 
         result = find_plan_file(str(tmp_path))
-        assert result == str(claude_dir / "plan.md")
+        assert result is None
 
     def test_returns_none_when_no_plan_exists(self, tmp_path):
         assert find_plan_file(str(tmp_path)) is None
 
     def test_custom_patterns(self, tmp_path):
+        """Custom patterns override the default and are checked in order."""
         custom = tmp_path / "my-plan.md"
         custom.write_text("# Custom Plan")
 
@@ -56,83 +59,25 @@ class TestFindPlanFile:
         assert find_plan_file(str(tmp_path), ["nonexistent.md"]) is None
 
     def test_ignores_directories(self, tmp_path):
-        # If plan.md is a directory, it should not be returned
-        plan_dir = tmp_path / "plan.md"
+        """If .claude/plan.md is a directory, it should not be returned."""
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        plan_dir = claude_dir / "plan.md"
         plan_dir.mkdir()
 
         assert find_plan_file(str(tmp_path)) is None
 
-    def test_finds_docs_plans_glob(self, tmp_path):
-        """Plans written to docs/plans/*.md should be discovered."""
-        plans_dir = tmp_path / "docs" / "plans"
-        plans_dir.mkdir(parents=True)
-        plan = plans_dir / "2026-02-23-multi-channel-support.md"
-        plan.write_text("# Multi-Channel\n\n## Step 1\n\nImplement multi-channel support for Discord notifications.")
-
-        result = find_plan_file(str(tmp_path))
-        assert result == str(plan)
-
-    def test_finds_plans_glob(self, tmp_path):
-        """Plans in plans/*.md (without docs/ prefix) should be discovered."""
-        plans_dir = tmp_path / "plans"
-        plans_dir.mkdir()
-        plan = plans_dir / "my-plan.md"
-        plan.write_text("# Plan\n\n## Do it\n\nDetails.")
-
-        result = find_plan_file(str(tmp_path))
-        assert result == str(plan)
-
-    def test_glob_returns_newest_file(self, tmp_path):
-        """When multiple files match a glob, the most recently modified is returned."""
+    def test_no_deep_scan_fallback(self, tmp_path):
+        """Deep scan is disabled — recently modified .md files are NOT picked up."""
         import time
-        plans_dir = tmp_path / "docs" / "plans"
-        plans_dir.mkdir(parents=True)
-
-        old_plan = plans_dir / "2026-01-01-old.md"
-        old_plan.write_text("# Old Plan")
-        # Ensure the second file has a different mtime
-        time.sleep(0.05)
-
-        new_plan = plans_dir / "2026-02-23-new.md"
-        new_plan.write_text("# New Plan")
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        # Create a recently-modified .md with plan indicators but NOT at .claude/plan.md
+        other = tmp_path / "some-plan.md"
+        other.write_text("# Plan\n\n## Phase 1: Do something\n\nDetails.")
 
         result = find_plan_file(str(tmp_path))
-        assert result == str(new_plan)
-
-    def test_prefers_explicit_over_glob(self, tmp_path):
-        """Explicit patterns (.claude/plan.md, plan.md) take priority over globs."""
-        # Create both an explicit plan.md and a docs/plans/*.md
-        (tmp_path / "plan.md").write_text("# Root Plan")
-        plans_dir = tmp_path / "docs" / "plans"
-        plans_dir.mkdir(parents=True)
-        (plans_dir / "detailed-plan.md").write_text("# Detailed Plan")
-
-        result = find_plan_file(str(tmp_path))
-        assert result == str(tmp_path / "plan.md")
-
-    def test_glob_ignores_directories_in_matches(self, tmp_path):
-        """Glob expansion should skip directories that happen to match."""
-        plans_dir = tmp_path / "docs" / "plans"
-        plans_dir.mkdir(parents=True)
-        # Create a directory that ends in .md (unusual but possible)
-        bad_dir = plans_dir / "not-a-file.md"
-        bad_dir.mkdir()
-        # Create a real file
-        real_plan = plans_dir / "real-plan.md"
-        real_plan.write_text("# Real")
-
-        result = find_plan_file(str(tmp_path))
-        assert result == str(real_plan)
-
-    def test_finds_docs_plan_md(self, tmp_path):
-        """A plan at docs/plan.md should be discovered."""
-        docs_dir = tmp_path / "docs"
-        docs_dir.mkdir()
-        plan = docs_dir / "plan.md"
-        plan.write_text("# Plan in docs")
-
-        result = find_plan_file(str(tmp_path))
-        assert result == str(plan)
+        assert result is None
 
 
 # ── read_plan_file ──────────────────────────────────────────────────────── #

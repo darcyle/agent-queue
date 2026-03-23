@@ -74,15 +74,11 @@ STEP_HEADING_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Default locations where agents write plan files (checked in order).
-# Entries containing glob characters (*, ?) are expanded via glob.glob().
+# The ONE canonical location where agents must write plan files.
+# Only .claude/plan.md is checked — no glob expansion, no fallback scan.
+# Rationale: detecting an invalid/stale plan is far worse than missing one.
 DEFAULT_PLAN_FILE_PATTERNS = [
     ".claude/plan.md",
-    "plan.md",
-    "docs/plans/*.md",
-    "plans/*.md",
-    "docs/plan.md",
-    "notes/plans/*.md",
 ]
 
 # Plan-indicator patterns for deep scan fallback (headings with Phase/Step numbering).
@@ -155,92 +151,31 @@ class ParsedPlan:
 def find_plan_file(workspace: str, patterns: list[str] | None = None) -> str | None:
     """Search for a plan file in the workspace directory.
 
-    Checks each candidate pattern in order.  Patterns that contain glob
-    characters (``*`` or ``?``) are expanded; the most-recently-modified
-    match is returned so that freshly written plans take priority.
+    Checks each candidate path in order.  Returns the first match, or
+    ``None`` if no plan file is found.
 
-    For plain (non-glob) patterns the file is checked directly.
-
-    If no pattern matches, falls back to a deep scan that looks for
-    recently-modified markdown files with plan-like structure indicators
-    (e.g. headings containing "Phase 1:", "Step 2:", etc.).
-
-    Returns the first match, or ``None`` if no plan file is found.
+    By design this is intentionally narrow — only ``.claude/plan.md`` by
+    default.  Detecting a stale or unrelated plan is far worse than
+    missing one, so there is no glob expansion and no deep-scan fallback.
     """
     candidates = patterns or DEFAULT_PLAN_FILE_PATTERNS
     for pattern in candidates:
-        full_pattern = os.path.join(workspace, pattern)
-        if any(c in pattern for c in ("*", "?")):
-            # Glob pattern — expand and pick the newest match
-            matches = [p for p in glob.glob(full_pattern) if os.path.isfile(p)]
-            if matches:
-                # Return the most-recently-modified file so the latest plan
-                # wins when multiple plan files exist (e.g. date-prefixed).
-                matches.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-                return matches[0]
-        else:
-            if os.path.isfile(full_pattern):
-                return full_pattern
-
-    # Fallback: deep scan for recently-modified markdown files with plan indicators
-    result = _deep_scan_for_plan(workspace)
-    if result:
-        print(
-            f"Plan file discovery: found plan via deep scan at {result} "
-            f"(not in standard patterns: {candidates})"
-        )
-    return result
+        full_path = os.path.join(workspace, pattern)
+        if os.path.isfile(full_path):
+            return full_path
+    return None
 
 
 def _deep_scan_for_plan(
     workspace: str, max_age_seconds: int = 1800,
 ) -> str | None:
-    """Fallback scan for markdown files with plan-like structure.
+    """Legacy fallback scan — disabled.
 
-    Searches the workspace for ``.md`` files modified within the last
-    ``max_age_seconds`` (default 30 minutes) whose content contains
-    plan structure indicators such as ``## Phase 1:``, ``### Step 2:``,
-    or ``## Implementation Plan``.
-
-    Skips archived plans in ``.claude/plans/`` to avoid re-processing.
-
-    Returns the path to the best candidate or ``None``.
+    Previously searched for recently-modified markdown files with plan-like
+    structure indicators.  Removed because false-positive plan detection
+    (picking up design docs, research notes, etc.) is far more damaging
+    than missing a plan file.  Agents must write to ``.claude/plan.md``.
     """
-    cutoff = time.time() - max_age_seconds
-
-    candidates: list[tuple[float, str]] = []
-    for md_path in glob.glob(os.path.join(workspace, "**/*.md"), recursive=True):
-        if not os.path.isfile(md_path):
-            continue
-        # Skip archived plans
-        if ".claude/plans/" in md_path.replace("\\", "/"):
-            continue
-        mtime = os.path.getmtime(md_path)
-        if mtime < cutoff:
-            continue
-        # Quick content check for plan-like structure
-        try:
-            with open(md_path, "r", encoding="utf-8") as f:
-                head = f.read(8192)
-            # Check for Phase/Step headings or implementation plan sections
-            if _PLAN_INDICATOR_PATTERN.search(head):
-                candidates.append((mtime, md_path))
-                continue
-            # Also check for implementation section keywords in headings
-            impl_heading = re.search(
-                r"^#{1,3}\s+.*(?:implementation\s+plan|implementation\s+steps"
-                r"|implementation\s+phases|action\s+items)",
-                head,
-                re.MULTILINE | re.IGNORECASE,
-            )
-            if impl_heading:
-                candidates.append((mtime, md_path))
-        except OSError:
-            continue
-
-    if candidates:
-        candidates.sort(reverse=True)  # Newest first
-        return candidates[0][1]
     return None
 
 

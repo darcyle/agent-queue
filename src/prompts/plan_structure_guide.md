@@ -47,10 +47,15 @@ phases are ALWAYS preferred.
 - Don't produce more than {{max_steps}} implementation phases
 - Don't write a design document when asked to implement something
 
+### Plan File Location
+
+**Always write your plan to `.claude/plan.md`** — this is the ONLY location the
+system checks. Do NOT write `plan.md` at the project root or any other location.
+
 ### Plan File Lifecycle
 
-When your task completes, any plan file left in the workspace (`.claude/plan.md`
-or `plan.md`) will be **automatically parsed and converted into follow-up subtasks**.
+When your task completes, `.claude/plan.md` will be **automatically parsed and
+converted into follow-up subtasks**.
 
 - **If you only wrote the plan** (did NOT implement it): leave the plan file in place
   so the system creates subtasks to execute each phase.
