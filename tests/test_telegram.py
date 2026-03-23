@@ -630,3 +630,351 @@ class TestTelegramBotIntegration:
             bot._application.bot.send_message.assert_awaited()
             call_text = bot._application.bot.send_message.call_args[1]["text"]
             assert "LLM provider" in call_text or "ANTHROPIC_API_KEY" in call_text
+
+
+# ---------------------------------------------------------------------------
+# Views: inline keyboard builders
+# ---------------------------------------------------------------------------
+
+
+class TestCallbackDataParsing:
+    """Test callback_data encoding and parsing round-trip."""
+
+    def test_parse_simple_action(self):
+        from src.telegram.views import parse_callback_data
+
+        action, args = parse_callback_data("stop_task")
+        assert action == "stop_task"
+        assert args == {}
+
+    def test_parse_action_with_args(self):
+        from src.telegram.views import parse_callback_data
+
+        action, args = parse_callback_data("restart_task:task_id=abc123")
+        assert action == "restart_task"
+        assert args == {"task_id": "abc123"}
+
+    def test_parse_action_with_multiple_args(self):
+        from src.telegram.views import parse_callback_data
+
+        action, args = parse_callback_data("some_cmd:a=1,b=two")
+        assert action == "some_cmd"
+        assert args == {"a": "1", "b": "two"}
+
+    def test_round_trip(self):
+        from src.telegram.views import _make_callback_data, parse_callback_data
+
+        data = _make_callback_data("approve_task", task_id="xyz789")
+        action, args = parse_callback_data(data)
+        assert action == "approve_task"
+        assert args["task_id"] == "xyz789"
+
+    def test_make_callback_data_no_args(self):
+        from src.telegram.views import _make_callback_data
+
+        assert _make_callback_data("noop") == "noop"
+
+
+class TestTaskStartedKeyboard:
+    """Test task_started_keyboard builder."""
+
+    def test_has_stop_button(self):
+        from src.telegram.views import task_started_keyboard
+
+        kb = task_started_keyboard("t1")
+        buttons = kb.inline_keyboard
+        assert len(buttons) == 1
+        assert "Stop" in buttons[0][0].text
+        assert "stop_task" in buttons[0][0].callback_data
+        assert "t1" in buttons[0][0].callback_data
+
+
+class TestTaskFailedKeyboard:
+    """Test task_failed_keyboard builder."""
+
+    def test_has_retry_skip_view_error_buttons(self):
+        from src.telegram.views import task_failed_keyboard
+
+        kb = task_failed_keyboard("t2")
+        buttons = kb.inline_keyboard
+        # Row 0: Retry + Skip, Row 1: View Error
+        assert len(buttons) == 2
+        labels = [b.text for row in buttons for b in row]
+        assert any("Retry" in l for l in labels)
+        assert any("Skip" in l for l in labels)
+        assert any("View Error" in l for l in labels)
+
+    def test_callback_data_contains_task_id(self):
+        from src.telegram.views import task_failed_keyboard
+
+        kb = task_failed_keyboard("my-task-99")
+        for row in kb.inline_keyboard:
+            for btn in row:
+                assert "my-task-99" in btn.callback_data
+
+
+class TestTaskApprovalKeyboard:
+    """Test task_approval_keyboard builder."""
+
+    def test_has_approve_restart_buttons(self):
+        from src.telegram.views import task_approval_keyboard
+
+        kb = task_approval_keyboard("t3")
+        buttons = kb.inline_keyboard
+        assert len(buttons) == 1  # single row
+        labels = [b.text for b in buttons[0]]
+        assert any("Approve" in l for l in labels)
+        assert any("Restart" in l for l in labels)
+
+    def test_approve_callback_data(self):
+        from src.telegram.views import task_approval_keyboard
+
+        kb = task_approval_keyboard("t3")
+        approve_btn = kb.inline_keyboard[0][0]
+        assert "approve_task" in approve_btn.callback_data
+        assert "t3" in approve_btn.callback_data
+
+
+class TestTaskBlockedKeyboard:
+    """Test task_blocked_keyboard builder."""
+
+    def test_has_restart_skip_buttons(self):
+        from src.telegram.views import task_blocked_keyboard
+
+        kb = task_blocked_keyboard("t4")
+        buttons = kb.inline_keyboard
+        assert len(buttons) == 1
+        labels = [b.text for b in buttons[0]]
+        assert any("Restart" in l for l in labels)
+        assert any("Skip" in l for l in labels)
+
+
+class TestAgentQuestionKeyboard:
+    """Test agent_question_keyboard builder."""
+
+    def test_has_reply_skip_buttons(self):
+        from src.telegram.views import agent_question_keyboard
+
+        kb = agent_question_keyboard("t5")
+        buttons = kb.inline_keyboard
+        assert len(buttons) == 1
+        labels = [b.text for b in buttons[0]]
+        assert any("Reply" in l for l in labels)
+        assert any("Skip" in l for l in labels)
+
+    def test_reply_uses_pseudo_action(self):
+        from src.telegram.views import agent_question_keyboard
+
+        kb = agent_question_keyboard("t5")
+        reply_btn = kb.inline_keyboard[0][0]
+        assert "agent_reply_prompt" in reply_btn.callback_data
+
+
+class TestPlanApprovalKeyboard:
+    """Test plan_approval_keyboard builder."""
+
+    def test_has_approve_delete_buttons(self):
+        from src.telegram.views import plan_approval_keyboard
+
+        kb = plan_approval_keyboard("t6")
+        buttons = kb.inline_keyboard
+        assert len(buttons) == 1
+        labels = [b.text for b in buttons[0]]
+        assert any("Approve" in l for l in labels)
+        assert any("Delete" in l for l in labels)
+
+    def test_callback_data_actions(self):
+        from src.telegram.views import plan_approval_keyboard, parse_callback_data
+
+        kb = plan_approval_keyboard("t6")
+        approve_btn = kb.inline_keyboard[0][0]
+        delete_btn = kb.inline_keyboard[0][1]
+        action1, args1 = parse_callback_data(approve_btn.callback_data)
+        action2, args2 = parse_callback_data(delete_btn.callback_data)
+        assert action1 == "approve_plan"
+        assert args1["task_id"] == "t6"
+        assert action2 == "delete_plan"
+        assert args2["task_id"] == "t6"
+
+
+class TestNotificationActionsKeyboard:
+    """Test notification_actions_keyboard builder."""
+
+    def test_empty_actions_returns_none(self):
+        from src.telegram.views import notification_actions_keyboard
+
+        assert notification_actions_keyboard([]) is None
+        assert notification_actions_keyboard(None) is None
+
+    def test_single_action(self):
+        from src.telegram.views import notification_actions_keyboard
+
+        action = MagicMock(label="Do it", action_id="do_it", args={"task_id": "t1"})
+        kb = notification_actions_keyboard([action])
+        assert kb is not None
+        assert len(kb.inline_keyboard) == 1
+        assert kb.inline_keyboard[0][0].text == "Do it"
+
+    def test_multiple_actions_row_grouping(self):
+        from src.telegram.views import notification_actions_keyboard
+
+        actions = [
+            MagicMock(label=f"Action {i}", action_id=f"act_{i}", args={})
+            for i in range(5)
+        ]
+        kb = notification_actions_keyboard(actions)
+        # 5 actions -> 2 rows of 3 + 1 row of 2
+        assert len(kb.inline_keyboard) == 2
+        assert len(kb.inline_keyboard[0]) == 3
+        assert len(kb.inline_keyboard[1]) == 2
+
+
+class TestDisableKeyboardAfterAction:
+    """Test disable_keyboard_after_action utility."""
+
+    async def test_edits_message_text(self):
+        from src.telegram.views import disable_keyboard_after_action
+
+        query = MagicMock()
+        query.message.text = "Original notification text"
+        query.edit_message_text = AsyncMock()
+
+        await disable_keyboard_after_action(query, "Task restarted")
+
+        query.edit_message_text.assert_awaited_once()
+        call_args = query.edit_message_text.call_args
+        assert "Original notification text" in call_args[1]["text"]
+        assert "Task restarted" in call_args[1]["text"]
+        assert call_args[1]["reply_markup"] is None
+
+    async def test_fallback_on_edit_failure(self):
+        from src.telegram.views import disable_keyboard_after_action
+
+        query = MagicMock()
+        query.message.text = "Some text"
+        query.edit_message_text = AsyncMock(side_effect=Exception("API error"))
+        query.edit_message_reply_markup = AsyncMock()
+
+        await disable_keyboard_after_action(query, "Done")
+
+        query.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+
+
+# ---------------------------------------------------------------------------
+# Callback query handler integration
+# ---------------------------------------------------------------------------
+
+
+class TestCallbackQueryHandler:
+    """Test the bot's _handle_callback_query method."""
+
+    def _make_bot(self) -> Any:
+        from src.telegram.bot import TelegramBot
+
+        with patch("src.telegram.bot.TelegramBot.__init__", return_value=None):
+            bot = TelegramBot.__new__(TelegramBot)
+            bot.config = _make_config()
+            bot.handler = AsyncMock()
+            return bot
+
+    async def test_unauthorized_user_rejected(self):
+        bot = self._make_bot()
+        update = MagicMock()
+        query = MagicMock()
+        query.from_user.id = 999  # Not in authorized_users
+        query.answer = AsyncMock()
+        update.callback_query = query
+
+        await bot._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_awaited_once()
+        assert "Unauthorized" in query.answer.call_args[0][0]
+
+    async def test_empty_callback_data(self):
+        bot = self._make_bot()
+        update = MagicMock()
+        query = MagicMock()
+        query.from_user.id = 111  # Authorized
+        query.data = ""
+        query.answer = AsyncMock()
+        update.callback_query = query
+
+        await bot._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_awaited_once()
+        bot.handler.execute.assert_not_awaited()
+
+    async def test_agent_reply_prompt_pseudo_action(self):
+        bot = self._make_bot()
+        update = MagicMock()
+        query = MagicMock()
+        query.from_user.id = 111
+        query.data = "agent_reply_prompt:task_id=t5"
+        query.answer = AsyncMock()
+        update.callback_query = query
+
+        await bot._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_awaited_once()
+        # show_alert=True for the prompt
+        assert query.answer.call_args[1].get("show_alert") is True
+        # CommandHandler should NOT be called for pseudo-actions
+        bot.handler.execute.assert_not_awaited()
+
+    async def test_successful_command_execution(self):
+        bot = self._make_bot()
+        bot.handler.execute.return_value = {"status": "ok"}
+
+        update = MagicMock()
+        query = MagicMock()
+        query.from_user.id = 111
+        query.data = "restart_task:task_id=abc123"
+        query.answer = AsyncMock()
+        query.message.text = "Task failed: something broke"
+        query.edit_message_text = AsyncMock()
+        update.callback_query = query
+
+        await bot._handle_callback_query(update, MagicMock())
+
+        bot.handler.execute.assert_awaited_once_with("restart_task", {"task_id": "abc123"})
+        query.edit_message_text.assert_awaited_once()
+        edited_text = query.edit_message_text.call_args[1]["text"]
+        assert "Restart Task" in edited_text
+
+    async def test_command_error_shown(self):
+        bot = self._make_bot()
+        bot.handler.execute.return_value = {"error": "Task not found"}
+
+        update = MagicMock()
+        query = MagicMock()
+        query.from_user.id = 222
+        query.data = "skip_task:task_id=nonexistent"
+        query.answer = AsyncMock()
+        query.message.text = "Task blocked"
+        query.edit_message_text = AsyncMock()
+        update.callback_query = query
+
+        await bot._handle_callback_query(update, MagicMock())
+
+        edited_text = query.edit_message_text.call_args[1]["text"]
+        assert "Error" in edited_text
+        assert "Task not found" in edited_text
+
+    async def test_exception_during_execution(self):
+        bot = self._make_bot()
+        bot.handler.execute.side_effect = RuntimeError("DB down")
+
+        update = MagicMock()
+        query = MagicMock()
+        query.from_user.id = 111
+        query.data = "approve_task:task_id=t9"
+        query.answer = AsyncMock()
+        query.message.text = "Awaiting approval"
+        query.edit_message_text = AsyncMock()
+        update.callback_query = query
+
+        await bot._handle_callback_query(update, MagicMock())
+
+        edited_text = query.edit_message_text.call_args[1]["text"]
+        assert "Error" in edited_text
+        assert "DB down" in edited_text

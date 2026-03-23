@@ -32,6 +32,15 @@ from src.telegram.notifications import (
     format_embed_as_text,
     split_message,
 )
+from src.telegram.views import (
+    disable_keyboard_after_action,
+    notification_actions_keyboard,
+    parse_callback_data,
+    task_approval_keyboard,
+    task_blocked_keyboard,
+    task_failed_keyboard,
+    task_started_keyboard,
+)
 
 if TYPE_CHECKING:
     from src.config import AppConfig
@@ -505,17 +514,7 @@ class TelegramBot:
         actions = getattr(notification, "actions", None)
         if not actions:
             return None
-
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-        buttons = []
-        for action in actions:
-            label = getattr(action, "label", str(action))
-            action_id = getattr(action, "action_id", str(action))
-            buttons.append(
-                [InlineKeyboardButton(text=label, callback_data=action_id)]
-            )
-        return InlineKeyboardMarkup(buttons) if buttons else None
+        return notification_actions_keyboard(actions)
 
     def _convert_view_to_keyboard(self, view: Any) -> Any:
         """Best-effort conversion of a Discord View to an inline keyboard.
@@ -546,43 +545,57 @@ class TelegramBot:
     async def _handle_callback_query(self, update, context) -> None:
         """Handle inline keyboard button presses.
 
-        Button callback_data is expected to be a command action ID that
-        maps to a ``CommandHandler.execute()`` call.
+        Button callback_data uses the format ``"action:key=val,key2=val2"``
+        produced by ``src.telegram.views._make_callback_data``.  The action
+        is routed to ``CommandHandler.execute()`` and the result is shown
+        by editing the original message (removing the keyboard).
+
+        Special pseudo-actions:
+        - ``agent_reply_prompt`` — tells the user to reply to the question
+          message; no command is executed.
         """
         query = update.callback_query
         if not query:
             return
 
-        await query.answer()  # Acknowledge the button press
-
         user = query.from_user
         if not self._is_authorized(user.id):
-            await query.edit_message_text("Unauthorized.")
+            await query.answer("Unauthorized.", show_alert=True)
             return
 
-        action_id = query.data
-        if not action_id:
+        callback_data = query.data
+        if not callback_data:
+            await query.answer()
             return
 
-        # Parse action_id — expected format: "command_name:arg1=val1,arg2=val2"
-        parts = action_id.split(":", 1)
-        cmd_name = parts[0]
-        args: dict[str, str] = {}
-        if len(parts) > 1:
-            for pair in parts[1].split(","):
-                if "=" in pair:
-                    k, v = pair.split("=", 1)
-                    args[k] = v
+        cmd_name, args = parse_callback_data(callback_data)
+
+        # --- Special pseudo-actions that don't map to CommandHandler ---
+
+        if cmd_name == "agent_reply_prompt":
+            # Prompt the user to reply to the message with their answer
+            await query.answer(
+                "Reply to this message with your answer for the agent.",
+                show_alert=True,
+            )
+            return
+
+        # --- Standard command routing ---
+
+        await query.answer()  # Acknowledge the button press
 
         try:
             result = await self.handler.execute(cmd_name, args)
             if "error" in result:
-                await query.edit_message_text(f"Error: {result['error']}")
+                result_text = f"\u274c Error: {result['error']}"
             else:
-                await query.edit_message_text(f"Done: {cmd_name}")
+                # Build a human-friendly summary from the action name
+                friendly = cmd_name.replace("_", " ").title()
+                result_text = f"\u2705 {friendly}"
+            await disable_keyboard_after_action(query, result_text)
         except Exception as e:
             logger.error("Callback query error: %s", e, exc_info=True)
-            await query.edit_message_text(f"Error: {e}")
+            await disable_keyboard_after_action(query, f"\u274c Error: {e}")
 
     # -------------------------------------------------------------------
     # Task topics (thread equivalent)
