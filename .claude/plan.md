@@ -40,6 +40,8 @@ The `CommandHandler` is already unified — Discord slash commands and LLM tools
 | `src/discord/notifications.py` | Discord-specific formatting | Keep as-is, Telegram gets its own formatters |
 | `src/command_handler.py` | Unified command logic | No changes — already platform-agnostic |
 | `src/supervisor.py` | Stateless LLM agent | No changes — already platform-agnostic |
+| `src/setup_wizard.py` | Interactive CLI setup — hardcodes Discord in Step 2 | Add messaging platform choice, Telegram setup step |
+| `specs/setup-wizard.md` | Setup wizard specification | Update to document new messaging platform selection flow |
 
 ---
 
@@ -305,7 +307,269 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
 ---
 
-## Phase 5: Update health check and startup diagnostics
+## Phase 5: Update setup wizard and spec for Telegram support
+
+Update `src/setup_wizard.py` and `specs/setup-wizard.md` to let users choose between Discord and Telegram during initial setup.
+
+### Current setup flow (Discord-only):
+1. Step 1: Workspace & Database directories
+2. Step 2: Discord Bot (token, guild ID, channels, connectivity test)
+3. Step 3: Agent Configuration
+4. Step 4: Chat Provider
+5. Step 5: Scheduling & Budget
+6. Step 6: Write Config Files (hardcodes `discord:` section + `DISCORD_BOT_TOKEN` in .env)
+7. Step 7: Connectivity Summary
+8. Step 8: Launch Daemon
+
+### New setup flow:
+1. Step 1: Workspace & Database directories *(unchanged)*
+2. **Step 2: Messaging Platform** *(new — choose Discord or Telegram)*
+3. Step 3: Platform-specific setup (Discord OR Telegram) *(conditional)*
+4. Step 4: Agent Configuration *(unchanged, renumbered)*
+5. Step 5: Chat Provider *(unchanged, renumbered)*
+6. Step 6: Scheduling & Budget *(unchanged, renumbered)*
+7. Step 7: Write Config Files *(updated for platform-aware output)*
+8. Step 8: Connectivity Summary *(updated for platform-aware reporting)*
+9. Step 9: Launch Daemon *(unchanged, renumbered)*
+
+### Files to modify:
+- `src/setup_wizard.py` — add platform selection step, Telegram setup step, update config writing
+- `specs/setup-wizard.md` — document the new steps
+
+### New Step 2: Messaging Platform Selection
+
+```python
+def step_messaging_platform(existing: dict) -> str:
+    """Choose between Discord and Telegram as the messaging platform."""
+    yaml_cfg = existing.get("_yaml", {})
+    existing_platform = yaml_cfg.get("messaging_platform", "discord")
+
+    step_header(2, "Messaging Platform")
+    print(f"""  Choose your messaging platform for controlling agent-queue.
+  You can switch later by re-running the setup wizard.
+
+  {BOLD}[1] Discord{RESET} — rich embeds, threads, slash commands
+  {BOLD}[2] Telegram{RESET} — lightweight, mobile-first, forum topics
+""")
+
+    default = "1" if existing_platform == "discord" else "2"
+    choice = prompt("Platform", default)
+    platform = "telegram" if choice == "2" else "discord"
+
+    if platform == "telegram":
+        success("Selected: Telegram")
+    else:
+        success("Selected: Discord")
+
+    return platform
+```
+
+### New: `step_telegram(existing)` function
+
+Collects Telegram bot credentials and verifies connectivity. Mirrors `step_discord()` structure.
+
+```python
+def step_telegram(existing: dict) -> dict:
+    """Collect Telegram bot credentials and verify connectivity."""
+    yaml_cfg = existing.get("_yaml", {})
+    telegram_cfg = yaml_cfg.get("telegram", {})
+
+    existing_token = existing.get("TELEGRAM_BOT_TOKEN", "")
+    existing_chat_id = telegram_cfg.get("chat_id", "") or existing.get("TELEGRAM_CHAT_ID", "")
+
+    # Bot Token
+    if existing_token:
+        bot_token = existing_token
+    else:
+        step_header(3, "Telegram Bot")
+        print(f"""  To create a Telegram bot:
+  1. Open Telegram and message {BOLD}@BotFather{RESET}
+  2. Send {BOLD}/newbot{RESET} and follow the prompts to create your bot
+  3. Copy the bot token BotFather gives you
+  4. Add the bot to your group/supergroup as an admin
+""")
+        bot_token = prompt_secret("Bot token")
+        if not bot_token:
+            error("Bot token is required")
+            sys.exit(1)
+        _save_env_value("TELEGRAM_BOT_TOKEN", bot_token)
+
+    # Chat ID
+    if existing_chat_id:
+        chat_id = existing_chat_id
+    else:
+        print(f"""
+  To find your chat ID:
+  1. Add {BOLD}@userinfobot{RESET} to your group, or message it directly
+  2. It will reply with the chat ID (a number, negative for groups)
+  3. For supergroups with topics, use the group's chat ID
+""")
+        chat_id = prompt("Chat ID")
+        if not chat_id:
+            error("Chat ID is required")
+            sys.exit(1)
+        _save_env_value("TELEGRAM_CHAT_ID", chat_id)
+
+    # Use forum topics
+    use_topics = telegram_cfg.get("use_topics", True)
+    use_topics = prompt_yes_no("Use forum topics for task threads (requires supergroup)", use_topics)
+
+    # Connectivity test
+    print()
+    info("Testing Telegram connectivity...")
+    telegram_ok = _test_telegram(bot_token, chat_id)
+
+    # Authorized users (optional)
+    authorized_users = telegram_cfg.get("authorized_users", [])
+    if not authorized_users:
+        print()
+        print(f"  {BOLD}Authorized Users{RESET} (optional)")
+        info("Restrict bot access to specific Telegram user IDs.")
+        info("Enter user IDs one per line (empty line to finish):")
+        while True:
+            uid = input("    > ").strip()
+            if not uid:
+                break
+            authorized_users.append(uid)
+
+    return {
+        "bot_token": bot_token,
+        "chat_id": chat_id,
+        "use_topics": use_topics,
+        "authorized_users": authorized_users,
+        "telegram_ok": telegram_ok,
+    }
+```
+
+### New: `_test_telegram(token, chat_id)` function
+
+```python
+def _test_telegram(token: str, chat_id: str) -> bool:
+    """Test Telegram bot connectivity by calling getMe and getChat."""
+    try:
+        import urllib.request
+        import json
+
+        # Test 1: getMe — verifies the bot token is valid
+        url = f"https://api.telegram.org/bot{token}/getMe"
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            if not data.get("ok"):
+                error("Invalid bot token")
+                return False
+            bot_name = data["result"].get("username", "unknown")
+            success(f"Bot connected: @{bot_name}")
+
+        # Test 2: getChat — verifies the chat_id is accessible
+        url = f"https://api.telegram.org/bot{token}/getChat?chat_id={chat_id}"
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            if not data.get("ok"):
+                error(f"Cannot access chat {chat_id}")
+                return False
+            chat_title = data["result"].get("title") or data["result"].get("first_name", "DM")
+            success(f"Chat verified: {chat_title}")
+
+        return True
+    except Exception as e:
+        error(f"Telegram connectivity test failed: {e}")
+        return False
+```
+
+### Update `step_write_config()`:
+
+The function signature gains a `messaging_platform` parameter and an optional `telegram_cfg` dict. Config generation becomes conditional:
+
+```python
+def step_write_config(
+    workspace, db_path, messaging_platform, discord_cfg, telegram_cfg,
+    agents_cfg, sched_cfg, chat_provider_cfg,
+) -> Path:
+```
+
+**`.env` changes:**
+- Discord: write `DISCORD_BOT_TOKEN=...` (as before)
+- Telegram: write `TELEGRAM_BOT_TOKEN=...` instead
+
+**`config.yaml` changes:**
+- Always write `messaging_platform: discord` or `messaging_platform: telegram`
+- Discord: write the `discord:` section (as before)
+- Telegram: write the `telegram:` section instead:
+  ```yaml
+  messaging_platform: telegram
+
+  telegram:
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+    chat_id: "123456789"
+    use_topics: true
+    authorized_users:
+      - "111222333"
+  ```
+
+### Update `step_test_connectivity()`:
+
+Add platform-awareness:
+- Discord: show Discord connectivity status (as before)
+- Telegram: show Telegram bot and chat connectivity status
+
+### Update `main()`:
+
+```python
+def main():
+    banner()
+    existing = _load_existing_config()
+    ...
+    workspace, db_path = step_directories(existing)
+    messaging_platform = step_messaging_platform(existing)
+
+    discord_cfg = None
+    telegram_cfg = None
+    if messaging_platform == "discord":
+        discord_cfg = step_discord(existing)
+    else:
+        telegram_cfg = step_telegram(existing)
+
+    agents_cfg = step_agents(existing)
+    chat_provider_cfg = step_chat_provider(existing)
+    sched_cfg = step_scheduling(existing)
+
+    config_path = step_write_config(
+        workspace, db_path, messaging_platform,
+        discord_cfg, telegram_cfg,
+        agents_cfg, sched_cfg, chat_provider_cfg,
+    )
+
+    step_test_connectivity(messaging_platform, discord_cfg, telegram_cfg, agents_cfg, chat_provider_cfg)
+    step_launch(config_path)
+    ...
+```
+
+### Update `specs/setup-wizard.md`:
+
+- Add new section "Step 2: Messaging Platform" documenting the platform selection prompt
+- Rename current "Step 2: Discord Bot" to "Step 3a: Discord Bot" — runs only when `messaging_platform == "discord"`
+- Add new section "Step 3b: Telegram Bot" documenting Telegram credential collection, connectivity test, and authorized users — runs only when `messaging_platform == "telegram"`
+- Update "Step 6: Write Config Files" to document platform-conditional `.env` and `config.yaml` output
+- Update "Step 7: Connectivity Summary" to document platform-aware status display
+- Renumber all subsequent steps
+
+### Tests:
+- `step_messaging_platform()` defaults to "discord" with no existing config
+- `step_messaging_platform()` pre-fills from existing `messaging_platform` in config
+- `step_telegram()` collects token, chat_id, use_topics, authorized_users
+- `_test_telegram()` validates bot token and chat accessibility
+- `step_write_config()` writes `TELEGRAM_BOT_TOKEN` to `.env` when platform is "telegram"
+- `step_write_config()` writes `telegram:` section to `config.yaml` when platform is "telegram"
+- `step_write_config()` writes `messaging_platform: telegram` to `config.yaml`
+- Backward compatibility: existing configs without `messaging_platform` default to "discord"
+- `main()` calls `step_discord()` only when Discord is selected
+- `main()` calls `step_telegram()` only when Telegram is selected
+
+---
+
+## Phase 6: Update health check and startup diagnostics
 
 Update the health check endpoint and startup sequence to be platform-aware.
 
