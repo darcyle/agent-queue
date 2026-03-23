@@ -1,14 +1,14 @@
 """Event-driven and periodic hook engine for automated workflows.
 
 Hooks enable the system to react to task lifecycle events or run on a timer
-without human intervention.  Each hook follows a pipeline::
+without human intervention.  Each hook follows a simple pipeline::
 
-    trigger -> gather context (shell/file/http/db/git steps)
-    -> short-circuit check -> render prompt template -> invoke LLM with tools
+    trigger -> render prompt template ({{event.*}} placeholders)
+    -> invoke supervisor LLM with full tool access
 
-The LLM invocation uses a full Supervisor instance with tool access, so hooks
-can create tasks, check status, send notifications, etc. -- anything a human
-user can do via Discord chat, a hook can do autonomously.
+The supervisor has shell, file I/O, and task management tools, so hooks can
+create tasks, check status, run commands, etc. -- anything a human user can
+do via Discord chat, a hook can do autonomously.
 
 Two trigger types are supported:
 
@@ -61,9 +61,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
-import subprocess
 import time
 import uuid
 from datetime import datetime, timezone
@@ -74,61 +72,13 @@ from src.database import Database
 from src.event_bus import EventBus
 from src.file_watcher import FileWatcher, WatchRule
 from src.logging_config import CorrelationContext
-from src.models import Hook, HookRun, ProjectStatus, Task, TaskStatus
+from src.models import Hook, HookRun, ProjectStatus
 
 logger = logging.getLogger(__name__)
 
-# Named DB queries — an allowlist of safe, read-only SQL queries that hooks
-# can execute via the ``db_query`` context step.  This is a security boundary:
-# hooks cannot run arbitrary SQL, only queries listed here.  Parameters are
-# bound via SQLite's ``?``-style parameterization to prevent injection.
-#
-# To add a new query: add an entry here with a descriptive key, then reference
-# it in a hook's context_steps as ``{"type": "db_query", "query": "<key>"}``.
-NAMED_QUERIES = {
-    "recent_task_results": (
-        "SELECT t.id, t.title, t.status, tr.result, tr.summary, tr.error_message, "
-        "tr.tokens_used, tr.created_at "
-        "FROM tasks t LEFT JOIN task_results tr ON tr.task_id = t.id "
-        "ORDER BY tr.created_at DESC LIMIT 20"
-    ),
-    "task_detail": (
-        "SELECT t.*, tr.result, tr.summary, tr.error_message, tr.tokens_used "
-        "FROM tasks t LEFT JOIN task_results tr ON tr.task_id = t.id "
-        "WHERE t.id = :task_id "
-        "ORDER BY tr.created_at DESC LIMIT 1"
-    ),
-    "recent_events": (
-        "SELECT * FROM events ORDER BY id DESC LIMIT 50"
-    ),
-    "hook_runs": (
-        "SELECT * FROM hook_runs WHERE hook_id = :hook_id "
-        "ORDER BY started_at DESC LIMIT 10"
-    ),
-    "failed_tasks": (
-        "SELECT t.id, t.title, t.status, t.project_id, tr.error_message, "
-        "tr.summary, tr.created_at "
-        "FROM tasks t LEFT JOIN task_results tr ON tr.task_id = t.id "
-        "WHERE t.status = 'failed' "
-        "ORDER BY tr.created_at DESC LIMIT 20"
-    ),
-    "project_tasks_by_status": (
-        "SELECT t.id, t.title, t.status, t.priority, t.created_at "
-        "FROM tasks t WHERE t.project_id = :project_id "
-        "AND t.status = :status "
-        "ORDER BY t.priority ASC, t.created_at DESC LIMIT 20"
-    ),
-    "recent_hook_activity": (
-        "SELECT hr.id, hr.hook_id, h.name as hook_name, hr.trigger_reason, "
-        "hr.status, hr.tokens_used, hr.started_at, hr.completed_at "
-        "FROM hook_runs hr JOIN hooks h ON h.id = hr.hook_id "
-        "ORDER BY hr.started_at DESC LIMIT 20"
-    ),
-}
-
 
 class HookEngine:
-    """Manages hook lifecycle: scheduling, context gathering, LLM invocation.
+    """Manages hook lifecycle: scheduling, prompt rendering, LLM invocation.
 
     The engine subscribes to all EventBus events (wildcard ``*``) so it can
     match event-driven hooks.  Periodic hooks are checked on each ``tick()``
@@ -466,34 +416,12 @@ class HookEngine:
         """Inner implementation of the hook execution pipeline.
 
         Runs with the correlation context already set (by ``_execute_hook``).
-        The pipeline has 4 phases, each of which updates the HookRun record
-        in the DB for observability:
+        The pipeline renders ``{{event.*}}`` placeholders in the prompt
+        template, then invokes the supervisor LLM with full tool access.
 
-        Phase 1 — Context gathering:
-            Run each context step sequentially (shell, file, http, db, git,
-            memory_search).  Results are persisted so operators can inspect
-            what data the hook saw.
-
-        Phase 2 — Short-circuit check:
-            Evaluate skip conditions (e.g., "skip if shell exit 0").  If a
-            skip condition matches, the LLM is never called — this is the
-            primary cost-saving mechanism for periodic hooks that usually
-            have nothing to report.
-
-        Phase 3 — Prompt rendering:
-            Substitute ``{{step_N}}``, ``{{event.field}}`` placeholders in
-            the prompt template with actual context step results and event
-            data.
-
-        Phase 4 — LLM invocation:
-            Create a Supervisor and send the rendered prompt.  The LLM can
-            use tools (create tasks, send notifications, etc.) as part of
-            its response.
-
-        Error handling: any exception in phases 1-4 is caught, logged, and
-        recorded as a "failed" HookRun.  The exception does NOT propagate
-        to the caller (tick/event handler) — individual hook failures must
-        not disrupt the rest of the system.
+        Error handling: any exception is caught, logged, and recorded as a
+        "failed" HookRun.  Individual hook failures do not propagate to the
+        caller (tick/event handler).
         """
         run = HookRun(
             id=str(uuid.uuid4())[:12],
@@ -515,52 +443,11 @@ class HookEngine:
             )
 
         try:
-            # Check if this hook skips LLM entirely (only runs context steps)
-            trigger = json.loads(hook.trigger)
-            skip_llm = trigger.get("skip_llm", False)
-
-            # 1. Run context steps
-            steps = json.loads(hook.context_steps)
-            step_results = await self._run_context_steps(steps, event_data)
-
-            await self.db.update_hook_run(
-                run.id, context_results=json.dumps(step_results)
-            )
-
-            # 1b. If skip_llm, we're done after context steps
-            if skip_llm:
-                await self.db.update_hook_run(
-                    run.id,
-                    status="completed",
-                    completed_at=time.time(),
-                )
-                logger.info("Hook %s completed (skip_llm)", hook.name)
-                return
-
-            # 2. Check short-circuit
-            skip_reason = self._should_skip_llm(steps, step_results)
-            if skip_reason:
-                await self.db.update_hook_run(
-                    run.id,
-                    status="skipped",
-                    skipped_reason=skip_reason,
-                    completed_at=time.time(),
-                )
-                logger.info("Hook %s skipped: %s", hook.name, skip_reason)
-                if orchestrator:
-                    await orchestrator._notify_channel(
-                        f"🪝 Hook **{hook.name}** skipped: {skip_reason}",
-                        project_id=hook.project_id,
-                    )
-                return
-
-            # 3. Render prompt
-            prompt = self._render_prompt(
-                hook.prompt_template, step_results, event_data
-            )
+            # Render prompt (substitute {{event.*}} placeholders)
+            prompt = self._render_prompt(hook.prompt_template, event_data)
             await self.db.update_hook_run(run.id, prompt_sent=prompt)
 
-            # 4. Invoke LLM — track tool calls for the completion summary
+            # Invoke LLM — track tool calls for the completion summary
             tool_labels: list[str] = []
 
             async def _on_hook_progress(event: str, detail: str | None) -> None:
@@ -588,10 +475,9 @@ class HookEngine:
             if orchestrator:
                 parts = [f"🪝 Hook **{hook.name}** completed."]
                 if tool_labels:
-                    steps = " → ".join(f"`{t}`" for t in tool_labels)
-                    parts.append(f"🔧 {steps}")
+                    chain = " → ".join(f"`{t}`" for t in tool_labels)
+                    parts.append(f"🔧 {chain}")
                 if response:
-                    # Truncate long responses for the notification
                     summary = response if len(response) <= 200 else response[:200] + "…"
                     parts.append(f"> {summary}")
                 await orchestrator._notify_channel(
@@ -616,689 +502,31 @@ class HookEngine:
                 except Exception:
                     pass
 
-    async def _run_context_steps(
-        self,
-        steps: list[dict],
-        event_data: dict | None = None,
-    ) -> list[dict]:
-        """Execute the context-gathering pipeline: a sequence of data-fetching steps.
-
-        Steps run **sequentially** (not concurrently) because later steps may
-        depend on earlier results via template placeholders.  Each step
-        produces a result dict whose shape depends on the step type:
-
-        - ``shell``: ``{stdout, stderr, exit_code}``
-        - ``read_file``: ``{content}``
-        - ``http``: ``{body, status_code}``
-        - ``db_query``: ``{rows, count}``
-        - ``git_diff``: ``{diff, exit_code}``
-        - ``memory_search``: ``{content, count}``
-
-        On error, the step result contains an ``{error: "..."}`` entry
-        instead.  The pipeline continues past errors so that downstream
-        steps and the short-circuit check still run.
-        """
-        results = []
-        for i, step in enumerate(steps):
-            step_type = step.get("type", "")
-            try:
-                if step_type == "shell":
-                    result = await self._step_shell(step)
-                elif step_type == "read_file":
-                    result = await self._step_read_file(step)
-                elif step_type == "http":
-                    result = await self._step_http(step)
-                elif step_type == "db_query":
-                    result = await self._step_db_query(step, event_data)
-                elif step_type == "git_diff":
-                    result = await self._step_git_diff(step)
-                elif step_type == "memory_search":
-                    result = await self._step_memory_search(step, event_data)
-                elif step_type == "create_task":
-                    result = await self._step_create_task(step, event_data)
-                elif step_type == "run_tests":
-                    result = await self._step_run_tests(step)
-                elif step_type == "list_files":
-                    result = await self._step_list_files(step, event_data)
-                elif step_type == "file_diff":
-                    result = await self._step_file_diff(step, event_data)
-                else:
-                    result = {"error": f"Unknown step type: {step_type}"}
-            except Exception as e:
-                result = {"error": str(e)}
-
-            result["_step_index"] = i
-            results.append(result)
-        return results
-
-    async def _step_shell(self, step: dict) -> dict:
-        """Execute a shell command and capture output."""
-        command = step.get("command", "")
-        timeout = step.get("timeout", 60)
-
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            return {
-                "stdout": "",
-                "stderr": f"Command timed out after {timeout}s",
-                "exit_code": -1,
-            }
-
-        return {
-            "stdout": stdout.decode("utf-8", errors="replace")[:50000],
-            "stderr": stderr.decode("utf-8", errors="replace")[:10000],
-            "exit_code": proc.returncode,
-        }
-
-    async def _step_read_file(self, step: dict) -> dict:
-        """Read a file's contents."""
-        path = step.get("path", "")
-        max_lines = step.get("max_lines", 500)
-
-        try:
-            with open(path, "r") as f:
-                lines = []
-                for i, line in enumerate(f):
-                    if i >= max_lines:
-                        break
-                    lines.append(line.rstrip("\n"))
-            return {"content": "\n".join(lines)}
-        except Exception as e:
-            return {"error": str(e)}
-
-    async def _step_http(self, step: dict) -> dict:
-        """Make an HTTP request."""
-        import urllib.request
-        import urllib.error
-
-        url = step.get("url", "")
-        timeout = step.get("timeout", 30)
-
-        try:
-            req = urllib.request.Request(url)
-            resp = await asyncio.to_thread(
-                urllib.request.urlopen, req, timeout=timeout
-            )
-            body = resp.read().decode("utf-8", errors="replace")[:50000]
-            return {"body": body, "status_code": resp.status}
-        except urllib.error.HTTPError as e:
-            return {"body": str(e), "status_code": e.code}
-        except Exception as e:
-            return {"body": "", "status_code": 0, "error": str(e)}
-
-    async def _step_db_query(
-        self, step: dict, event_data: dict | None = None
-    ) -> dict:
-        """Run a pre-defined named DB query (not arbitrary SQL).
-
-        Security: hooks cannot execute arbitrary SQL.  The ``query`` field
-        must match a key in ``NAMED_QUERIES`` — a hardcoded allowlist of
-        safe, read-only queries.  Parameters are passed via SQLite's
-        parameterized query mechanism (``:param_name``) to prevent injection.
-
-        Template placeholders (``{{event.field}}``) in parameter values are
-        resolved before execution, allowing event-driven hooks to query
-        data related to the triggering event.
-        """
-        query_name = step.get("query", "")
-        params = step.get("params", {})
-
-        if query_name not in NAMED_QUERIES:
-            return {"error": f"Unknown query: {query_name}"}
-
-        sql = NAMED_QUERIES[query_name]
-
-        # Interpolate params from event data
-        resolved_params = {}
-        for key, value in params.items():
-            if isinstance(value, str) and value.startswith("{{") and value.endswith("}}"):
-                value = self._resolve_placeholder(value, [], event_data)
-            resolved_params[key] = value
-
-        try:
-            cursor = await self.db._db.execute(sql, resolved_params)
-            rows = await cursor.fetchall()
-            return {
-                "rows": [dict(r) for r in rows],
-                "count": len(rows),
-            }
-        except Exception as e:
-            return {"error": str(e)}
-
-    async def _step_git_diff(self, step: dict) -> dict:
-        """Get git diff output."""
-        workspace = step.get("workspace", ".")
-        base_branch = step.get("base_branch", "main")
-
-        try:
-            result = await asyncio.create_subprocess_exec(
-                "git", "diff", f"{base_branch}...HEAD",
-                cwd=workspace,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(
-                result.communicate(), timeout=30
-            )
-            return {
-                "diff": stdout.decode("utf-8", errors="replace")[:50000],
-                "exit_code": result.returncode,
-            }
-        except Exception as e:
-            return {"error": str(e)}
-
-    async def _step_memory_search(
-        self, step: dict, event_data: dict | None = None
-    ) -> dict:
-        """Execute a memory_search context step.
-
-        Performs a semantic search against a project's memory index and
-        returns the matching chunks as a formatted context string.  When the
-        memory subsystem is unavailable (not configured, memsearch not
-        installed, etc.) the step returns an empty ``content`` string rather
-        than an error — hooks should degrade gracefully.
-
-        Step config keys:
-            ``project_id`` – target project (or ``{{event.project_id}}``)
-            ``query``      – semantic search query (template placeholders OK)
-            ``top_k``      – max results to return (default 3)
-        """
-        project_id = step.get("project_id", "")
-        query = step.get("query", "")
-        top_k = step.get("top_k", 3)
-
-        # Resolve template placeholders in project_id and query
-        if event_data:
-            if "{{" in project_id:
-                project_id = self._resolve_placeholder(
-                    project_id, [], event_data
-                )
-            if "{{" in query:
-                query = self._resolve_placeholder(query, [], event_data)
-
-        if not project_id or not query:
-            return {"content": "", "error": "project_id and query are required"}
-
-        orchestrator = getattr(self, "_orchestrator", None)
-        if not orchestrator or not getattr(orchestrator, "memory_manager", None):
-            return {"content": "", "count": 0}
-
-        # Look up workspace path for the project
-        try:
-            workspace = await self.db.get_project_workspace_path(project_id)
-        except Exception:
-            workspace = None
-
-        if not workspace:
-            return {"content": "", "count": 0, "error": f"No workspace for project '{project_id}'"}
-
-        try:
-            results = await orchestrator.memory_manager.search(
-                project_id, workspace, query, top_k=top_k
-            )
-        except Exception as e:
-            logger.warning("memory_search step failed for project %s: %s", project_id, e)
-            return {"content": "", "count": 0, "error": str(e)}
-
-        # Format results as a readable context string
-        if not results:
-            return {"content": "", "count": 0}
-
-        parts = []
-        for i, mem in enumerate(results, 1):
-            source = mem.get("source", "unknown")
-            heading = mem.get("heading", "")
-            content = mem.get("content", "")
-            score = mem.get("score", 0)
-            header = f"[{i}] {heading}" if heading else f"[{i}] (from {source})"
-            parts.append(f"{header}  (score: {score:.3f})\n{content}")
-
-        formatted = "\n\n---\n\n".join(parts)
-        return {"content": formatted, "count": len(results)}
-
-    async def _step_create_task(
-        self, step: dict, event_data: dict | None = None
-    ) -> dict:
-        """Create a task from hook step config, resolving {{event.field}} placeholders."""
-        from src.task_names import generate_task_id
-
-        def resolve(template: str) -> str:
-            if not template or not event_data:
-                return template
-            return re.sub(
-                r"\{\{(.+?)\}\}",
-                lambda m: self._resolve_placeholder(
-                    "{{" + m.group(1) + "}}", [], event_data,
-                ),
-                template,
-            )
-
-        try:
-            task_id = await generate_task_id(self.db)
-            title = resolve(step.get("title_template", "Hook-created task"))
-            description = resolve(step.get("description_template", ""))
-            project_id = resolve(step.get("project_id", ""))
-            parent_task_id = resolve(step.get("parent_task_id")) if step.get("parent_task_id") else None
-            profile_id = resolve(step.get("profile_id")) if step.get("profile_id") else None
-            preferred_workspace_id = resolve(step.get("preferred_workspace_id")) if step.get("preferred_workspace_id") else None
-            branch_name = resolve(step.get("branch_name")) if step.get("branch_name") else None
-            priority = step.get("priority", 100)
-
-            task = Task(
-                id=task_id,
-                project_id=project_id,
-                title=title,
-                description=description,
-                priority=priority,
-                status=TaskStatus.DEFINED,
-                parent_task_id=parent_task_id,
-                profile_id=profile_id,
-                preferred_workspace_id=preferred_workspace_id,
-                branch_name=branch_name,
-            )
-            await self.db.create_task(task)
-
-            # Add context entries if specified
-            for ctx_entry in step.get("context_entries", []):
-                resolved = {k: resolve(v) for k, v in ctx_entry.items()}
-                await self.db.add_task_context(
-                    task_id,
-                    type=resolved.get("type", "system"),
-                    label=resolved.get("label", ""),
-                    content=resolved.get("content", ""),
-                )
-
-            logger.info("Hook created task %s: %s", task_id, title)
-            return {"task_id": task_id, "created": True}
-        except Exception as e:
-            logger.error("create_task step failed: %s", e)
-            return {"error": str(e)}
-
-    async def _step_run_tests(self, step: dict) -> dict:
-        """Run a test command and parse results for automated testing hooks.
-
-        Extends the basic ``shell`` step with structured test result parsing.
-        Captures exit code, stdout/stderr, and attempts to extract individual
-        test failure names from common test frameworks (pytest, jest, mocha).
-
-        Step config keys:
-            ``command``    – test command to run (e.g. ``"pytest tests/ -v"``)
-            ``timeout``    – max seconds (default 300 for test suites)
-            ``workspace``  – working directory (default ``"."``)
-            ``framework``  – hint for parsing: ``"pytest"``, ``"jest"``, or ``"auto"``
-        """
-        command = step.get("command", "pytest")
-        timeout = step.get("timeout", 300)
-        workspace = step.get("workspace", ".")
-        framework = step.get("framework", "auto")
-
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=workspace,
-            )
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.communicate()
-                return {
-                    "stdout": "",
-                    "stderr": f"Test command timed out after {timeout}s",
-                    "exit_code": -1,
-                    "passed": False,
-                    "failures": [],
-                    "test_count": 0,
-                }
-
-            stdout_str = stdout.decode("utf-8", errors="replace")[:100000]
-            stderr_str = stderr.decode("utf-8", errors="replace")[:50000]
-            exit_code = proc.returncode
-            passed = exit_code == 0
-
-            # Parse test failures from output
-            failures = self._parse_test_failures(
-                stdout_str, stderr_str, framework
-            )
-
-            # Try to extract test count
-            test_count = self._parse_test_count(stdout_str, framework)
-
-            return {
-                "stdout": stdout_str,
-                "stderr": stderr_str,
-                "exit_code": exit_code,
-                "passed": passed,
-                "failures": failures,
-                "test_count": test_count,
-                "framework": framework,
-            }
-        except Exception as e:
-            return {"error": str(e), "passed": False, "failures": []}
-
-    @staticmethod
-    def _parse_test_failures(
-        stdout: str, stderr: str, framework: str
-    ) -> list[str]:
-        """Extract failing test names from test output.
-
-        Supports pytest (``FAILED test_file.py::test_name``) and
-        jest/mocha (``✕ test description`` or ``FAIL test_file``).
-        """
-        failures = []
-        combined = stdout + "\n" + stderr
-
-        # pytest: "FAILED tests/test_foo.py::test_bar - AssertionError..."
-        for match in re.finditer(
-            r"FAILED\s+(\S+::\S+)", combined
-        ):
-            failures.append(match.group(1))
-
-        # jest/mocha: "✕ test description" or "● test description"
-        if not failures:
-            for match in re.finditer(
-                r"[✕●✗]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$", combined, re.MULTILINE
-            ):
-                failures.append(match.group(1).strip())
-
-        # Generic: "FAIL " prefix (jest summary style)
-        if not failures:
-            for match in re.finditer(
-                r"^FAIL\s+(\S+)", combined, re.MULTILINE
-            ):
-                failures.append(match.group(1))
-
-        return failures[:50]  # Cap at 50 to avoid huge payloads
-
-    @staticmethod
-    def _parse_test_count(stdout: str, framework: str) -> int:
-        """Try to extract total test count from test output."""
-        # jest: "Tests: 2 failed, 5 passed, 7 total" — check first since
-        # the "passed" pattern below would also match the jest format
-        match = re.search(r"Tests:\s+.*?(\d+)\s+total", stdout)
-        if match:
-            return int(match.group(1))
-
-        # pytest: "5 passed, 2 failed"
-        match = re.search(
-            r"(\d+)\s+passed(?:.*?(\d+)\s+failed)?", stdout
-        )
-        if match:
-            total = int(match.group(1))
-            if match.group(2):
-                total += int(match.group(2))
-            return total
-
-        return 0
-
-    async def _step_list_files(
-        self, step: dict, event_data: dict | None = None
-    ) -> dict:
-        """List files in a directory, optionally filtered by extension or pattern.
-
-        Useful for docs hooks and folder watch automation to enumerate what
-        files exist in a directory before taking action.
-
-        Step config keys:
-            ``path``       – directory to list (supports ``{{event.path}}``)
-            ``recursive``  – descend into subdirectories (default False)
-            ``extensions`` – list of extensions to filter (e.g. ``[".md", ".txt"]``)
-            ``max_files``  – maximum number of files to return (default 200)
-        """
-        path = step.get("path", ".")
-        recursive = step.get("recursive", False)
-        extensions = step.get("extensions")
-        max_files = step.get("max_files", 200)
-
-        # Resolve placeholders in path
-        if event_data and "{{" in path:
-            path = self._resolve_placeholder(path, [], event_data)
-
-        if not os.path.isdir(path):
-            return {"error": f"Not a directory: {path}", "files": []}
-
-        files = []
-        try:
-            if recursive:
-                for dirpath, dirnames, filenames in os.walk(path):
-                    dirnames[:] = [
-                        d for d in dirnames if not d.startswith(".")
-                    ]
-                    for fname in sorted(filenames):
-                        if fname.startswith("."):
-                            continue
-                        if extensions and not any(
-                            fname.endswith(ext) for ext in extensions
-                        ):
-                            continue
-                        full = os.path.join(dirpath, fname)
-                        rel = os.path.relpath(full, path)
-                        try:
-                            stat = os.stat(full)
-                            files.append({
-                                "path": rel,
-                                "size": stat.st_size,
-                                "mtime": stat.st_mtime,
-                            })
-                        except OSError:
-                            pass
-                        if len(files) >= max_files:
-                            break
-                    if len(files) >= max_files:
-                        break
-            else:
-                for fname in sorted(os.listdir(path)):
-                    if fname.startswith("."):
-                        continue
-                    full = os.path.join(path, fname)
-                    if not os.path.isfile(full):
-                        continue
-                    if extensions and not any(
-                        fname.endswith(ext) for ext in extensions
-                    ):
-                        continue
-                    try:
-                        stat = os.stat(full)
-                        files.append({
-                            "path": fname,
-                            "size": stat.st_size,
-                            "mtime": stat.st_mtime,
-                        })
-                    except OSError:
-                        pass
-                    if len(files) >= max_files:
-                        break
-        except (OSError, PermissionError) as e:
-            return {"error": str(e), "files": []}
-
-        return {
-            "files": files,
-            "count": len(files),
-            "directory": path,
-            "content": "\n".join(f["path"] for f in files),
-        }
-
-    async def _step_file_diff(
-        self, step: dict, event_data: dict | None = None
-    ) -> dict:
-        """Get the diff of a specific file against its last committed version.
-
-        Useful for file change hooks to see exactly what changed.
-
-        Step config keys:
-            ``path``       – file path (supports ``{{event.path}}``)
-            ``workspace``  – git workspace root (default ``"."``)
-        """
-        path = step.get("path", "")
-        workspace = step.get("workspace", ".")
-
-        # Resolve placeholders
-        if event_data and "{{" in path:
-            path = self._resolve_placeholder(path, [], event_data)
-        if event_data and "{{" in workspace:
-            workspace = self._resolve_placeholder(workspace, [], event_data)
-
-        if not path:
-            return {"error": "path is required", "diff": ""}
-
-        try:
-            result = await asyncio.create_subprocess_exec(
-                "git", "diff", "HEAD", "--", path,
-                cwd=workspace,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(
-                result.communicate(), timeout=30
-            )
-            diff_output = stdout.decode("utf-8", errors="replace")[:50000]
-
-            # If no diff against HEAD, try against index
-            if not diff_output.strip():
-                result2 = await asyncio.create_subprocess_exec(
-                    "git", "diff", "--cached", "--", path,
-                    cwd=workspace,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout2, _ = await asyncio.wait_for(
-                    result2.communicate(), timeout=30
-                )
-                diff_output = stdout2.decode("utf-8", errors="replace")[:50000]
-
-            return {
-                "diff": diff_output,
-                "path": path,
-                "exit_code": result.returncode,
-            }
-        except Exception as e:
-            return {"error": str(e), "diff": ""}
-
-    def _should_skip_llm(
-        self, steps: list[dict], results: list[dict]
-    ) -> str | None:
-        """Evaluate short-circuit conditions to skip the LLM invocation.
-
-        Each context step can declare a skip condition.  If the condition is
-        met, the hook is marked "skipped" and the LLM is never called.  This
-        is a cost-saving mechanism: most periodic hooks (e.g. "check if any
-        tasks failed") produce empty results the majority of the time.
-
-        Supported skip conditions (set on the step config):
-        - ``skip_llm_if_exit_zero``: skip if a shell step exited 0 (success)
-        - ``skip_llm_if_empty``: skip if stdout + content is empty
-        - ``skip_llm_if_status_ok``: skip if an HTTP step returned 2xx
-
-        Returns a human-readable reason string, or None if no skip applies.
-        """
-        for i, step in enumerate(steps):
-            if i >= len(results):
-                break
-            result = results[i]
-
-            if step.get("skip_llm_if_exit_zero") and result.get("exit_code") == 0:
-                return f"step_{i}: exit code 0 (skip_llm_if_exit_zero)"
-
-            if step.get("skip_llm_if_empty"):
-                output = result.get("stdout", "") + result.get("content", "")
-                if not output.strip():
-                    return f"step_{i}: output empty (skip_llm_if_empty)"
-
-            if step.get("skip_llm_if_status_ok"):
-                status = result.get("status_code", 0)
-                if 200 <= status < 300:
-                    return f"step_{i}: HTTP {status} (skip_llm_if_status_ok)"
-
-        return None
-
     def _render_prompt(
         self,
         template: str,
-        step_results: list[dict],
         event_data: dict | None = None,
     ) -> str:
-        """Render the hook's prompt template by substituting placeholders.
+        """Render ``{{event.*}}`` placeholders in the prompt template.
 
-        Uses a regex to find all ``{{...}}`` patterns and delegates each
-        match to ``_resolve_placeholder``.  The rendered prompt is then
-        sent to the LLM as the hook's input.
+        Supported placeholders:
+        - ``{{event}}`` — the full event data dict as JSON
+        - ``{{event.field}}`` — a single field from the event data dict
 
-        Placeholders reference context step results (``{{step_0}}``,
-        ``{{step_1.exit_code}}``) or event data (``{{event.task_id}}``),
-        allowing hooks to inject dynamic context into their prompts.
+        Unrecognized placeholders are left unchanged.
         """
         def replacer(match):
-            placeholder = match.group(1)
-            return self._resolve_placeholder(
-                "{{" + placeholder + "}}", step_results, event_data
-            )
+            key = match.group(1)
+            if key == "event":
+                return json.dumps(event_data) if event_data else ""
+            if key.startswith("event."):
+                field = key[6:]
+                if event_data:
+                    return str(event_data.get(field, ""))
+                return ""
+            return match.group(0)
 
         return re.sub(r"\{\{(.+?)\}\}", replacer, template)
-
-    def _resolve_placeholder(
-        self,
-        placeholder: str,
-        step_results: list[dict] | None = None,
-        event_data: dict | None = None,
-    ) -> str:
-        """Resolve a single ``{{...}}`` template placeholder to a string.
-
-        Supported placeholder forms:
-
-        - ``{{event}}`` — the full event data as JSON
-        - ``{{event.field}}`` — a single field from the event data dict
-        - ``{{step_N}}`` — auto-selects the "main" output from step N
-          (prefers stdout > content > body > diff, falls back to JSON)
-        - ``{{step_N.field}}`` — a specific field from step N's result dict
-
-        Unrecognized placeholders are returned as-is (including the braces)
-        so they're visible in the rendered prompt for debugging.
-        """
-        step_results = step_results or []
-        key = placeholder.strip("{}")
-
-        # {{event.field}}
-        if key.startswith("event."):
-            field = key[6:]
-            if event_data:
-                return str(event_data.get(field, ""))
-            return ""
-
-        # {{event}}
-        if key == "event":
-            return json.dumps(event_data) if event_data else ""
-
-        # {{step_N}} or {{step_N.field}}
-        step_match = re.match(r"step_(\d+)(?:\.(.+))?", key)
-        if step_match:
-            idx = int(step_match.group(1))
-            field = step_match.group(2)
-            if idx < len(step_results):
-                result = step_results[idx]
-                if field:
-                    return str(result.get(field, ""))
-                # Default: return stdout or content or body or diff
-                for k in ("stdout", "content", "body", "diff"):
-                    if k in result and result[k]:
-                        return str(result[k])
-                return json.dumps(result)
-            return ""
-
-        return placeholder
 
     async def _build_hook_context(
         self, hook: Hook, trigger_reason: str,
@@ -1510,11 +738,8 @@ class HookEngine:
     def set_orchestrator(self, orchestrator) -> None:
         """Store reference to the orchestrator (for LLM invocation).
 
-        The HookEngine needs access to the Orchestrator for two reasons:
-        1. ``_invoke_llm`` creates a Supervisor which requires an orchestrator
-           reference to register its tools (task management, status queries).
-        2. ``_step_memory_search`` accesses ``orchestrator.memory_manager``
-           for semantic search in context steps.
+        ``_invoke_llm`` creates a Supervisor which requires an orchestrator
+        reference to register its tools (task management, status queries).
 
         This is a circular reference (orchestrator owns hooks, hooks reference
         orchestrator) that is broken at shutdown via ``hooks.shutdown()``.

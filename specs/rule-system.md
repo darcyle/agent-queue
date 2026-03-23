@@ -52,9 +52,19 @@ When an active rule is saved or updated:
 4. Delete old hooks, create new ones
 5. Update the rule's `hooks` frontmatter field
 
-Hook generation may use an LLM call to translate natural language into context steps and prompt templates. This happens once at creation/edit, not on every execution.
+Generated hooks do not use context steps. Instead, the hook's `prompt_template` contains a specific, actionable prompt that the supervisor can execute using its existing tools (shell, file I/O, task creation).
 
-Generated hooks reference the rule ID in their prompt template so the executing LLM knows which rule it is fulfilling.
+#### LLM Prompt Expansion
+
+When the supervisor is available (interactive `save_rule` calls), `_generate_hooks_for_rule` calls `Supervisor.expand_rule_prompt()` to transform the rule's natural language into a concrete operational prompt. This is a single LLM call (no tool loop) that produces instructions with:
+- Exact shell commands to run for health/status checks
+- How to interpret command output (what "healthy" vs "unhealthy" looks like)
+- Specific actions for each outcome, including the "do nothing" path
+- Edge cases to watch for
+
+This expansion happens once at rule creation/edit, not on every hook execution.
+
+When the supervisor is unavailable (startup reconciliation), hooks fall back to a static template that includes the raw rule content. These hooks still work — the supervisor interprets the rule at execution time — but the prompts are less specific.
 
 ### Reconciliation
 

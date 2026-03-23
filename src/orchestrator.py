@@ -716,6 +716,7 @@ class Orchestrator:
             storage_root=self.config.data_dir,
             db=self.db,
             hook_engine=self.hooks if hasattr(self, 'hooks') else None,
+            orchestrator=self,
         )
 
         # Run startup reconciliation for rules -> hooks

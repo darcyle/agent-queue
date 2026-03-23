@@ -62,7 +62,7 @@ async def _create_hook(db, **overrides) -> Hook:
         enabled=True,
         trigger='{"type": "periodic", "interval_seconds": 3600}',
         context_steps='[]',
-        prompt_template="Test prompt: {{step_0}}",
+        prompt_template="Test prompt",
         cooldown_seconds=60,
     )
     defaults.update(overrides)
@@ -75,35 +75,9 @@ async def _create_hook(db, **overrides) -> Hook:
 
 
 class TestPromptRendering:
-    def test_render_step_output(self, engine):
-        result = engine._render_prompt(
-            "Results: {{step_0}}",
-            [{"stdout": "all tests pass", "exit_code": 0}],
-        )
-        assert result == "Results: all tests pass"
-
-    def test_render_step_field(self, engine):
-        result = engine._render_prompt(
-            "Exit: {{step_0.exit_code}}",
-            [{"stdout": "output", "exit_code": 1}],
-        )
-        assert result == "Exit: 1"
-
-    def test_render_multiple_steps(self, engine):
-        result = engine._render_prompt(
-            "Step 0: {{step_0}}\nStep 1: {{step_1}}",
-            [
-                {"stdout": "first"},
-                {"content": "second"},
-            ],
-        )
-        assert "first" in result
-        assert "second" in result
-
-    def test_render_event_data(self, engine):
+    def test_render_event_field(self, engine):
         result = engine._render_prompt(
             "Task: {{event.task_id}}",
-            [],
             event_data={"task_id": "abc123"},
         )
         assert result == "Task: abc123"
@@ -111,117 +85,22 @@ class TestPromptRendering:
     def test_render_event_full(self, engine):
         result = engine._render_prompt(
             "Event: {{event}}",
-            [],
             event_data={"task_id": "abc", "status": "done"},
         )
         parsed = json.loads(result.replace("Event: ", ""))
         assert parsed["task_id"] == "abc"
 
-    def test_render_missing_step(self, engine):
-        result = engine._render_prompt("{{step_5}}", [])
-        assert result == ""
-
     def test_render_no_event(self, engine):
-        result = engine._render_prompt("{{event.task_id}}", [], event_data=None)
+        result = engine._render_prompt("{{event.task_id}}", event_data=None)
         assert result == ""
 
+    def test_render_unknown_placeholder_unchanged(self, engine):
+        result = engine._render_prompt("{{unknown}}", event_data=None)
+        assert result == "{{unknown}}"
 
-# --- Short-circuit logic ---
-
-
-class TestShortCircuit:
-    def test_skip_on_exit_zero(self, engine):
-        steps = [{"type": "shell", "command": "echo hi", "skip_llm_if_exit_zero": True}]
-        results = [{"stdout": "hi", "exit_code": 0}]
-        reason = engine._should_skip_llm(steps, results)
-        assert reason is not None
-        assert "exit code 0" in reason
-
-    def test_no_skip_on_exit_nonzero(self, engine):
-        steps = [{"type": "shell", "command": "false", "skip_llm_if_exit_zero": True}]
-        results = [{"stdout": "", "exit_code": 1}]
-        reason = engine._should_skip_llm(steps, results)
-        assert reason is None
-
-    def test_skip_on_empty_output(self, engine):
-        steps = [{"type": "shell", "command": "echo", "skip_llm_if_empty": True}]
-        results = [{"stdout": "", "content": ""}]
-        reason = engine._should_skip_llm(steps, results)
-        assert reason is not None
-        assert "empty" in reason
-
-    def test_no_skip_on_nonempty(self, engine):
-        steps = [{"type": "shell", "command": "echo x", "skip_llm_if_empty": True}]
-        results = [{"stdout": "some output"}]
-        reason = engine._should_skip_llm(steps, results)
-        assert reason is None
-
-    def test_skip_on_http_ok(self, engine):
-        steps = [{"type": "http", "url": "http://example.com", "skip_llm_if_status_ok": True}]
-        results = [{"body": "ok", "status_code": 200}]
-        reason = engine._should_skip_llm(steps, results)
-        assert reason is not None
-        assert "HTTP 200" in reason
-
-    def test_no_skip_on_http_error(self, engine):
-        steps = [{"type": "http", "url": "http://example.com", "skip_llm_if_status_ok": True}]
-        results = [{"body": "error", "status_code": 500}]
-        reason = engine._should_skip_llm(steps, results)
-        assert reason is None
-
-    def test_no_skip_conditions(self, engine):
-        steps = [{"type": "shell", "command": "echo hi"}]
-        results = [{"stdout": "hi", "exit_code": 0}]
-        reason = engine._should_skip_llm(steps, results)
-        assert reason is None
-
-
-# --- Context steps ---
-
-
-class TestContextSteps:
-    @pytest.mark.asyncio
-    async def test_shell_step(self, engine):
-        step = {"type": "shell", "command": "echo hello", "timeout": 10}
-        results = await engine._run_context_steps([step])
-        assert len(results) == 1
-        assert "hello" in results[0]["stdout"]
-        assert results[0]["exit_code"] == 0
-
-    @pytest.mark.asyncio
-    async def test_shell_step_failure(self, engine):
-        step = {"type": "shell", "command": "exit 42", "timeout": 10}
-        results = await engine._run_context_steps([step])
-        assert results[0]["exit_code"] == 42
-
-    @pytest.mark.asyncio
-    async def test_shell_step_timeout(self, engine):
-        step = {"type": "shell", "command": "sleep 60", "timeout": 1}
-        results = await engine._run_context_steps([step])
-        assert results[0]["exit_code"] == -1
-        assert "timed out" in results[0]["stderr"]
-
-    @pytest.mark.asyncio
-    async def test_read_file_step(self, engine, tmp_path):
-        test_file = tmp_path / "test.txt"
-        test_file.write_text("line1\nline2\nline3")
-        step = {"type": "read_file", "path": str(test_file)}
-        results = await engine._run_context_steps([step])
-        assert "line1" in results[0]["content"]
-        assert "line3" in results[0]["content"]
-
-    @pytest.mark.asyncio
-    async def test_read_file_missing(self, engine):
-        step = {"type": "read_file", "path": "/nonexistent/file.txt"}
-        results = await engine._run_context_steps([step])
-        assert "error" in results[0]
-
-    @pytest.mark.asyncio
-    async def test_unknown_step_type(self, engine):
-        step = {"type": "foobar"}
-        results = await engine._run_context_steps([step])
-        assert "error" in results[0]
-        assert "Unknown" in results[0]["error"]
+    def test_render_plain_text(self, engine):
+        result = engine._render_prompt("Check the tunnel status.")
+        assert result == "Check the tunnel status."
 
 
 # --- Cooldown ---
@@ -392,7 +271,6 @@ class TestPeriodicTimingContext:
         }
         result = engine._render_prompt(
             "Check for changes since {{event.last_run_time}} (now: {{event.current_time}})",
-            [],
             event_data,
         )
         assert "2026-03-13T23:50:00+00:00" in result
@@ -412,7 +290,6 @@ class TestEventDriven:
             name="event-hook",
             trigger='{"type": "event", "event_type": "task_completed"}',
             cooldown_seconds=0,
-            context_steps='[{"type": "shell", "command": "echo done", "skip_llm_if_exit_zero": true}]',
         )
 
         # Emit an event
@@ -446,51 +323,32 @@ class TestEventDriven:
 
 class TestFullPipeline:
     @pytest.mark.asyncio
-    async def test_execute_hook_skipped(self, db, engine):
-        """Hook with skip_llm_if_exit_zero should skip LLM when command succeeds."""
-        await _create_project(db)
-        hook = await _create_hook(
-            db,
-            context_steps='[{"type": "shell", "command": "echo pass", "skip_llm_if_exit_zero": true}]',
-        )
-
-        await engine._execute_hook(hook, "manual")
-
-        runs = await db.list_hook_runs(hook.id)
-        assert len(runs) == 1
-        assert runs[0].status == "skipped"
-        assert runs[0].skipped_reason is not None
-
-    @pytest.mark.asyncio
     async def test_execute_hook_with_llm(self, db, engine):
-        """Hook that doesn't skip should invoke LLM."""
+        """Hook should render prompt and invoke LLM."""
         await _create_project(db)
         hook = await _create_hook(
             db,
-            context_steps='[{"type": "shell", "command": "exit 1"}]',
-            prompt_template="Fix this: {{step_0}}",
+            prompt_template="Check the tunnel for {{event.project_id}}",
         )
 
-        # Mock the LLM invocation
         with patch.object(engine, '_invoke_llm', new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = ("I created a task to fix it.", 150)
-            await engine._execute_hook(hook, "manual")
+            mock_llm.return_value = ("Tunnel is running.", 150)
+            await engine._execute_hook(
+                hook, "manual", event_data={"project_id": "test-project"},
+            )
 
         runs = await db.list_hook_runs(hook.id)
         assert len(runs) == 1
         assert runs[0].status == "completed"
         assert runs[0].tokens_used == 150
         assert runs[0].prompt_sent is not None
-        assert "Fix this:" in runs[0].prompt_sent
+        assert "Check the tunnel for test-project" in runs[0].prompt_sent
 
     @pytest.mark.asyncio
     async def test_execute_hook_failure(self, db, engine):
         """Hook execution failure should be recorded."""
         await _create_project(db)
-        hook = await _create_hook(
-            db,
-            context_steps='[{"type": "shell", "command": "exit 1"}]',
-        )
+        hook = await _create_hook(db)
 
         with patch.object(engine, '_invoke_llm', new_callable=AsyncMock) as mock_llm:
             mock_llm.side_effect = RuntimeError("LLM provider down")
@@ -606,92 +464,6 @@ class TestMaxConcurrent:
 # --- create_task step ---
 
 
-class TestCreateTaskStep:
-    @pytest.mark.asyncio
-    async def test_create_task_hook_step(self, db, engine):
-        """create_task step should create a task in the DB."""
-        await _create_project(db)
-        step = {
-            "type": "create_task",
-            "title_template": "Fix merge conflict",
-            "description_template": "Resolve conflicts on branch feature-1",
-            "project_id": "test-project",
-            "priority": 25,
-        }
-        results = await engine._run_context_steps([step])
-        assert len(results) == 1
-        assert results[0].get("created") is True
-        task_id = results[0]["task_id"]
-
-        # Verify task exists in DB
-        from src.models import TaskStatus
-        task = await db.get_task(task_id)
-        assert task is not None
-        assert task.title == "Fix merge conflict"
-        assert task.project_id == "test-project"
-        assert task.priority == 25
-        assert task.status == TaskStatus.DEFINED
-
-    @pytest.mark.asyncio
-    async def test_create_task_placeholder_resolution(self, db, engine):
-        """create_task step should resolve {{event.field}} placeholders."""
-        await _create_project(db)
-        step = {
-            "type": "create_task",
-            "title_template": "Fix: {{event.branch_name}}",
-            "description_template": "Resolve for task {{event.task_id}}",
-            "project_id": "test-project",
-            "parent_task_id": "{{event.task_id}}",
-            "context_entries": [
-                {"type": "system", "label": "merge_resolution_for", "content": "{{event.task_id}}"}
-            ],
-        }
-        # Create a parent task first (needed for FK)
-        from src.models import Task, TaskStatus
-        parent = Task(id="t-parent", project_id="test-project", title="Parent",
-                       description="desc", status=TaskStatus.VERIFYING)
-        await db.create_task(parent)
-
-        event_data = {"task_id": "t-parent", "branch_name": "feature-x"}
-        results = await engine._run_context_steps([step], event_data)
-        assert results[0].get("created") is True
-        task_id = results[0]["task_id"]
-
-        task = await db.get_task(task_id)
-        assert "feature-x" in task.title
-        assert task.parent_task_id == "t-parent"
-
-        # Check context entries
-        contexts = await db.get_task_contexts(task_id)
-        assert len(contexts) == 1
-        assert contexts[0]["label"] == "merge_resolution_for"
-        assert contexts[0]["content"] == "t-parent"
-
-
-# --- skip_llm flag ---
-
-
-class TestSkipLlmFlag:
-    @pytest.mark.asyncio
-    async def test_skip_llm_flag(self, db, engine):
-        """Hook with skip_llm=true should complete without calling LLM."""
-        await _create_project(db)
-        hook = await _create_hook(
-            db,
-            trigger='{"type": "event", "event_type": "task.merge_failed", "skip_llm": true}',
-            context_steps='[{"type": "shell", "command": "echo resolved"}]',
-            prompt_template="",
-        )
-
-        with patch.object(engine, '_invoke_llm', new_callable=AsyncMock) as mock_llm:
-            await engine._execute_hook(hook, "manual")
-            mock_llm.assert_not_called()
-
-        runs = await db.list_hook_runs(hook.id)
-        assert len(runs) == 1
-        assert runs[0].status == "completed"
-
-
 # --- Paused project skipping ---
 
 
@@ -704,7 +476,6 @@ class TestPausedProjectSkipping:
             db,
             trigger='{"type": "periodic", "interval_seconds": 10}',
             cooldown_seconds=0,
-            context_steps='[{"type": "shell", "command": "echo test", "skip_llm_if_exit_zero": true}]',
         )
         engine._last_run_time.pop(hook.id, None)
 
@@ -722,7 +493,6 @@ class TestPausedProjectSkipping:
             db,
             trigger='{"type": "periodic", "interval_seconds": 10}',
             cooldown_seconds=0,
-            context_steps='[{"type": "shell", "command": "echo test", "skip_llm_if_exit_zero": true}]',
         )
         engine._last_run_time.pop(hook.id, None)
 
@@ -739,7 +509,6 @@ class TestPausedProjectSkipping:
             name="event-paused-hook",
             trigger='{"type": "event", "event_type": "task_completed"}',
             cooldown_seconds=0,
-            context_steps='[{"type": "shell", "command": "echo done", "skip_llm_if_exit_zero": true}]',
         )
 
         # Pause the project

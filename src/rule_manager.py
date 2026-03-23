@@ -37,10 +37,12 @@ class RuleManager:
         storage_root: str,
         db: Any | None = None,
         hook_engine: Any | None = None,
+        orchestrator: Any | None = None,
     ):
         self._storage_root = os.path.expanduser(storage_root)
         self._db = db
         self._hook_engine = hook_engine
+        self._orchestrator = orchestrator
 
     # ------------------------------------------------------------------
     # Path helpers
@@ -363,9 +365,10 @@ class RuleManager:
     ) -> list[str]:
         """Generate hooks from an active rule's trigger and logic.
 
-        Parses the rule content to extract trigger parameters and
-        creates appropriate hooks. For complex rules, this may
-        use an LLM call in the future.
+        Parses the rule content to extract trigger parameters, then uses the
+        supervisor's LLM to expand the rule into a specific, actionable prompt.
+        Falls back to a static template when the supervisor is unavailable
+        (e.g. during startup reconciliation).
         """
         if not self._db or not project_id:
             return []
@@ -385,6 +388,34 @@ class RuleManager:
             except Exception:
                 pass
 
+        # Try LLM expansion via the supervisor
+        prompt_template = None
+        supervisor = getattr(self._orchestrator, "_supervisor", None)
+        if supervisor is not None:
+            try:
+                expanded = await supervisor.expand_rule_prompt(
+                    content, project_id,
+                )
+                if expanded:
+                    prompt_template = expanded
+                    logger.info(
+                        "LLM-expanded prompt for rule %s (%d chars)",
+                        rule_id, len(expanded),
+                    )
+            except Exception as e:
+                logger.warning(
+                    "LLM expansion failed for rule %s, using static template: %s",
+                    rule_id, e,
+                )
+
+        # Fall back to static template
+        if not prompt_template:
+            prompt_template = (
+                f"You are executing rule `{rule_id}`. "
+                f"The rule's intent and logic:\n\n{content}\n\n"
+                f"Follow the rule's logic and take appropriate action."
+            )
+
         # Create new hook
         import json
         import uuid
@@ -400,11 +431,7 @@ class RuleManager:
             name=f"Rule: {title or rule_id}",
             trigger=json.dumps(trigger_config),
             context_steps="[]",
-            prompt_template=(
-                f"You are executing rule `{rule_id}`. "
-                f"The rule's intent and logic:\n\n{content}\n\n"
-                f"Follow the rule's logic and take appropriate action."
-            ),
+            prompt_template=prompt_template,
             cooldown_seconds=trigger_config.get("interval_seconds", 3600) // 2,
         )
         await self._db.create_hook(hook)

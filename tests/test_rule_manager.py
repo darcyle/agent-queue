@@ -276,6 +276,87 @@ def test_reconcile_detects_missing_hooks(rule_manager_with_db, mock_db):
     assert result["hooks_missing"] > 0
 
 
+def test_hook_generation_uses_llm_expansion(storage_root, mock_db):
+    """Hook generation calls supervisor.expand_rule_prompt when available."""
+    from src.rule_manager import RuleManager
+
+    mock_supervisor = MagicMock()
+    mock_supervisor.expand_rule_prompt = AsyncMock(
+        return_value="Check tunnel with: pgrep -f cloudflared"
+    )
+    mock_orch = MagicMock()
+    mock_orch._supervisor = mock_supervisor
+
+    rm = RuleManager(
+        storage_root=storage_root, db=mock_db, orchestrator=mock_orch,
+    )
+    result = asyncio.run(
+        rm.async_save_rule(
+            id="rule-tunnel",
+            project_id="proj",
+            rule_type="active",
+            content=(
+                "# Keep Tunnel Open\n\n## Trigger\nEvery 5 minutes."
+                "\n\n## Logic\nCheck if tunnel is running."
+            ),
+        )
+    )
+    assert result["success"] is True
+    mock_supervisor.expand_rule_prompt.assert_called_once()
+    created_hook = mock_db.create_hook.call_args[0][0]
+    assert "pgrep" in created_hook.prompt_template
+    assert "rule-tunnel" not in created_hook.prompt_template
+
+
+def test_hook_generation_falls_back_without_supervisor(
+    rule_manager_with_db, mock_db,
+):
+    """Hook generation uses static template when supervisor is unavailable."""
+    result = asyncio.run(
+        rule_manager_with_db.async_save_rule(
+            id="rule-no-sup",
+            project_id="proj",
+            rule_type="active",
+            content=(
+                "# Check Status\n\n## Trigger\nEvery 10 minutes."
+                "\n\n## Logic\nRun check."
+            ),
+        )
+    )
+    assert result["success"] is True
+    created_hook = mock_db.create_hook.call_args[0][0]
+    assert "rule-no-sup" in created_hook.prompt_template
+    assert "Follow the rule" in created_hook.prompt_template
+
+
+def test_hook_generation_falls_back_on_llm_failure(storage_root, mock_db):
+    """Hook generation falls back to static template when LLM fails."""
+    from src.rule_manager import RuleManager
+
+    mock_supervisor = MagicMock()
+    mock_supervisor.expand_rule_prompt = AsyncMock(return_value=None)
+    mock_orch = MagicMock()
+    mock_orch._supervisor = mock_supervisor
+
+    rm = RuleManager(
+        storage_root=storage_root, db=mock_db, orchestrator=mock_orch,
+    )
+    result = asyncio.run(
+        rm.async_save_rule(
+            id="rule-fail",
+            project_id="proj",
+            rule_type="active",
+            content=(
+                "# Failing\n\n## Trigger\nEvery 5 minutes."
+                "\n\n## Logic\nDo stuff."
+            ),
+        )
+    )
+    assert result["success"] is True
+    created_hook = mock_db.create_hook.call_args[0][0]
+    assert "rule-fail" in created_hook.prompt_template
+
+
 def test_parse_trigger_periodic():
     """_parse_trigger extracts periodic triggers."""
     from src.rule_manager import RuleManager

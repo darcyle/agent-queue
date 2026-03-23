@@ -476,6 +476,64 @@ class Supervisor:
             if prev_caller is not None and isinstance(self._provider, LoggedChatProvider):
                 self._provider._caller = prev_caller
 
+    async def expand_rule_prompt(
+        self, rule_content: str, project_id: str | None = None,
+    ) -> str | None:
+        """Expand a rule's natural language into a specific, actionable hook prompt.
+
+        Makes a single LLM call (no tools) to transform vague rule intent into
+        concrete operational instructions that the supervisor can execute
+        reliably on each hook fire.  Returns None on failure.
+        """
+        if not self._provider:
+            return None
+        prev_caller = None
+        if isinstance(self._provider, LoggedChatProvider):
+            prev_caller = self._provider._caller
+            self._provider._caller = "supervisor.expand_rule"
+        try:
+            resp = await self._provider.create_message(
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Convert the following rule into a specific, actionable "
+                        "operational prompt. This prompt will be given to an AI "
+                        "supervisor agent on a recurring schedule. The agent has "
+                        "access to shell commands (bash), file I/O, and task "
+                        "creation tools.\n\n"
+                        "Your output must be ONLY the prompt text — no "
+                        "explanations, preamble, or markdown fences.\n\n"
+                        "The prompt you write should:\n"
+                        "1. State the objective in one sentence\n"
+                        "2. List the exact shell commands to run for health/"
+                        "status checks (with literal command strings)\n"
+                        "3. Explain how to interpret the output of each command "
+                        "(what 'healthy' vs 'unhealthy' looks like)\n"
+                        "4. Specify exactly what action to take for each outcome "
+                        "(including the 'everything is fine, do nothing' case)\n"
+                        "5. Call out edge cases (e.g. process running but not "
+                        "responding, port in use by something else)\n\n"
+                        f"Rule content:\n\n{rule_content}"
+                    ),
+                }],
+                system=(
+                    "You are an expert at writing operational runbook prompts. "
+                    "You produce clear, specific instructions that another AI "
+                    "agent can follow without ambiguity. Prefer standard CLI "
+                    "tools. Always include the 'do nothing' path so the agent "
+                    "doesn't take unnecessary action."
+                ),
+                max_tokens=1024,
+            )
+            parts = resp.text_parts
+            return parts[0] if parts else None
+        except Exception as e:
+            print(f"Rule prompt expansion failed: {e}")
+            return None
+        finally:
+            if prev_caller is not None and isinstance(self._provider, LoggedChatProvider):
+                self._provider._caller = prev_caller
+
     async def process_hook_llm(
         self, hook_context: str, rendered_prompt: str,
         project_id: str | None = None, hook_name: str = "unknown",
