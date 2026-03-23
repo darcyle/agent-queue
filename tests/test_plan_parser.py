@@ -598,3 +598,72 @@ class TestNonActionableHeadingsConstant:
         from src.plan_parser import NON_ACTIONABLE_HEADINGS
         for heading in NON_ACTIONABLE_HEADINGS:
             assert heading == heading.lower(), f"Entry '{heading}' should be lowercase"
+
+
+# ── _is_non_actionable_heading ─────────────────────────────────────── #
+
+class TestIsNonActionableHeading:
+    """Tests for the fuzzy non-actionable heading matcher."""
+
+    def setup_method(self):
+        from src.plan_parser import _is_non_actionable_heading
+        self.check = _is_non_actionable_heading
+
+    def test_exact_match_simple(self):
+        """Simple single-word headings matched by exact lookup."""
+        assert self.check("background") is True
+        assert self.check("Summary") is True
+        assert self.check("OVERVIEW") is True
+
+    def test_exact_match_multi_word(self):
+        """Multi-word entries in NON_ACTIONABLE_HEADINGS matched exactly."""
+        assert self.check("risk assessment") is True
+        assert self.check("Table of Contents") is True
+        assert self.check("Known Issues") is True
+
+    def test_compound_heading_first_word_match(self):
+        """Compound headings filtered by first-word keyword match."""
+        assert self.check("Background & Architecture Analysis") is True
+        assert self.check("Current State of the Codebase") is True
+        assert self.check("Architecture of the Messaging Layer") is True
+        assert self.check("Design Decisions and Trade-offs") is True
+        assert self.check("Summary of All Changes Made") is True
+        assert self.check("Risk Factors and Mitigations") is True
+
+    def test_actionable_verb_overrides_informational(self):
+        """Headings starting with actionable verbs are NOT filtered."""
+        assert self.check("Define the MessagingAdapter") is False
+        assert self.check("Update setup wizard") is False
+        assert self.check("Implement Telegram Bot") is False
+        assert self.check("Create new config module") is False
+        assert self.check("Wrap Discord in the MessagingAdapter") is False
+        assert self.check("Extract interface from bot.py") is False
+        assert self.check("Refactor the notification system") is False
+
+    def test_phase_step_headings_not_filtered(self):
+        """Phase/Step headings are actionable, not informational."""
+        # After _clean_step_title strips "Phase 1:", the remaining title
+        # should be checked — "Do Something" is not non-actionable.
+        assert self.check("Do Something") is False
+        assert self.check("Messaging Layer") is False
+
+    def test_empty_string(self):
+        assert self.check("") is False
+
+    def test_plan_with_background_section_filtered(self):
+        """End-to-end: a plan with 'Background & Architecture Analysis'
+        should NOT produce a task for the background section."""
+        plan = (
+            "# Plan\n\n"
+            "## Background & Architecture Analysis\n\n"
+            "Some context about the project.\n\n"
+            "### Current State\n\nDetails here...\n\n"
+            "## Phase 1: Implement Feature A\n\n"
+            "Do the first thing with enough detail to qualify.\n\n"
+            "## Phase 2: Implement Feature B\n\n"
+            "Do the second thing with enough detail to qualify.\n\n"
+        )
+        result = parse_plan(plan)
+        titles = [s.title for s in result.steps]
+        assert len(titles) == 2
+        assert all("background" not in t.lower() for t in titles)

@@ -58,6 +58,29 @@ NON_ACTIONABLE_HEADINGS = {
     "faq", "troubleshooting", "debugging",
 }
 
+# Single-word keywords extracted from NON_ACTIONABLE_HEADINGS for fuzzy matching.
+# When a heading is a compound phrase like "Background & Architecture Analysis",
+# exact match against NON_ACTIONABLE_HEADINGS fails.  This set allows keyword-
+# based detection: if the FIRST meaningful word of a heading is in this set,
+# the heading is likely informational.
+_NON_ACTIONABLE_FIRST_WORDS = {
+    "overview", "summary", "background", "context", "introduction",
+    "conclusion", "notes", "references", "appendix", "prerequisites",
+    "requirements", "assumptions", "risks", "motivation", "goals",
+    "verdict", "executive", "problem", "data", "current", "proposed",
+    "design", "color", "embed", "inline", "visual", "libraries",
+    "risk", "optional", "total", "expected", "estimated", "technical",
+    "api", "schema", "configuration", "constraints", "capabilities",
+    "architecture", "existing", "backward", "security", "performance",
+    "error", "project", "file", "directory", "environment",
+    "infrastructure", "deployment", "strategy", "approach",
+    "methodology", "rationale", "comparison", "alternatives",
+    "evaluation", "analysis", "findings", "observations",
+    "recommendations", "changelog", "version", "release",
+    "known", "limitations", "caveats", "faq", "troubleshooting",
+    "debugging", "glossary", "table",
+}
+
 # Keywords in a ## heading that indicate an "implementation section" container.
 # Sub-headings (###) within such a section are the actual implementation steps.
 IMPLEMENTATION_SECTION_KEYWORDS = {
@@ -103,7 +126,45 @@ _ACTIONABLE_KEYWORDS = {
     "convert", "build", "write", "modify", "remove", "replace", "move",
     "setup", "configure", "deploy", "test", "verify", "validate",
     "phase", "step", "foundation", "integrate",
+    "define", "wrap", "extract", "establish", "introduce", "extend",
+    "enable", "wire", "hook", "plug", "scaffold", "bootstrap",
+    "redesign", "rewrite", "consolidate", "unify", "decouple",
 }
+
+
+def _is_non_actionable_heading(title: str) -> bool:
+    """Check whether *title* is an informational/structural heading.
+
+    Uses a two-tier strategy:
+
+    1. **Exact match** — the cleaned, lowercased title is in
+       ``NON_ACTIONABLE_HEADINGS`` (fast path for simple headings like
+       "Background" or "Summary").
+    2. **First-word match** — the first word of the title is in
+       ``_NON_ACTIONABLE_FIRST_WORDS`` *and* the title does NOT start
+       with an actionable verb.  This catches compound headings like
+       "Background & Architecture Analysis" that slip past exact matching.
+    """
+    title_lower = title.lower().strip()
+    if not title_lower:
+        return False
+
+    # Exact match (original behavior)
+    if title_lower in NON_ACTIONABLE_HEADINGS:
+        return True
+
+    # First-word heuristic for compound headings
+    first_word = title_lower.split()[0] if title_lower.split() else ""
+
+    # If the first word is an actionable verb, it's NOT informational —
+    # e.g. "Update setup wizard" starts with "update" (actionable).
+    if first_word in _ACTIONABLE_KEYWORDS:
+        return False
+
+    if first_word in _NON_ACTIONABLE_FIRST_WORDS:
+        return True
+
+    return False
 
 
 @dataclass
@@ -330,7 +391,7 @@ def _parse_implementation_section(content: str) -> list[PlanStep]:
         title = _clean_step_title(match.group(2).strip())
         if not title:
             continue
-        if title.lower() in NON_ACTIONABLE_HEADINGS:
+        if _is_non_actionable_heading(title):
             continue
 
         start = match.end()
@@ -451,7 +512,7 @@ def _parse_heading_sections(content: str) -> list[PlanStep]:
     h2_matches = [m for m in matches if len(m.group(1)) == 2]
     actionable_h2 = [
         m for m in h2_matches
-        if _clean_step_title(m.group(2).strip()).lower() not in NON_ACTIONABLE_HEADINGS
+        if not _is_non_actionable_heading(_clean_step_title(m.group(2).strip()))
         and _clean_step_title(m.group(2).strip())
     ]
 
@@ -486,7 +547,7 @@ def _parse_at_heading_level(
         if not title:
             continue
 
-        if title.lower() in NON_ACTIONABLE_HEADINGS:
+        if _is_non_actionable_heading(title):
             continue
 
         # Body extends to the next same-level heading (or end of file)
@@ -601,7 +662,7 @@ def _is_likely_actionable(title: str) -> bool:
 
     # Check for verb phrases common in task titles
     verb_patterns = [
-        r"^(?:create|add|implement|update|fix|refactor|migrate|convert|build|write|modify|remove|replace|move|setup|configure|deploy|test|verify|validate)\b",
+        r"^(?:create|add|implement|update|fix|refactor|migrate|convert|build|write|modify|remove|replace|move|setup|configure|deploy|test|verify|validate|define|wrap|extract|establish|introduce|extend|enable|scaffold|bootstrap|redesign|rewrite|consolidate|unify|decouple)\b",
         r"^(?:set up|clean up|wire up|hook up|plug in|roll out)\b",
     ]
     for pattern in verb_patterns:
@@ -798,7 +859,7 @@ def validate_plan_quality(content: str) -> PlanQualityReport:
         clean = _clean_step_title(heading)
         clean_lower = clean.lower()
 
-        if clean_lower in NON_ACTIONABLE_HEADINGS:
+        if _is_non_actionable_heading(clean):
             design_indicators += 1
             continue
 
@@ -899,8 +960,7 @@ def parse_and_generate_steps(
     # Post-filter: remove any remaining non-actionable steps
     filtered_steps: list[dict] = []
     for step in parsed.steps:
-        title_lower = step.title.lower()
-        if title_lower in NON_ACTIONABLE_HEADINGS:
+        if _is_non_actionable_heading(step.title):
             continue
         # Use raw_title (original heading) when available for fidelity
         title = step.raw_title if step.raw_title else step.title
