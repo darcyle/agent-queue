@@ -30,9 +30,10 @@ import sys
 
 from src.adapters import AdapterFactory
 from src.config import ConfigValidationError, load_config
-from src.discord.bot import AgentQueueBot
 from src.health import HealthCheckServer
 from src.logging_config import setup_logging
+from src.messaging import create_messaging_adapter
+from src.messaging.base import MessagingAdapter
 from src.models import AgentState, TaskStatus
 from src.orchestrator import Orchestrator
 
@@ -78,18 +79,22 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         raw_ctx = next((c for c in contexts if c["type"] == "plan_raw"), None)
         return raw_ctx["content"] if raw_ctx else None
 
+    # Create the messaging adapter for the configured platform
+    adapter = create_messaging_adapter(config, orch)
+    logger.info(
+        "Messaging platform: %s",
+        adapter.platform_name,
+    )
+
     health_server = HealthCheckServer(
         config=config.health_check,
-        health_provider=lambda: _health_checks(orch),
+        health_provider=lambda: _health_checks(orch, adapter),
         plan_content_provider=_plan_content,
     )
     await health_server.start()
 
     # Make health server accessible to orchestrator for plan URL generation
     orch._health_server = health_server
-
-    # Start Discord bot
-    bot = AgentQueueBot(config, orch)
 
     shutdown_event = asyncio.Event()
 
@@ -102,13 +107,13 @@ async def run(config_path: str, profile: str | None = None) -> bool:
 
     async def run_bot():
         try:
-            await bot.start(config.discord.bot_token)
+            await adapter.start()
         except asyncio.CancelledError:
             pass
 
     async def run_scheduler():
-        # Wait for the bot to be ready before scheduling
-        await bot.wait_until_ready()
+        # Wait for the messaging adapter to be ready before scheduling
+        await adapter.wait_until_ready()
         while not shutdown_event.is_set():
             await orch.run_one_cycle()
             try:
@@ -123,10 +128,10 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         # Wait until shutdown is signaled
         await shutdown_event.wait()
     finally:
-        # Shut down bot, health server, and orchestrator
+        # Shut down adapter, health server, and orchestrator
         restart = orch._restart_requested
         await health_server.stop()
-        await bot.close()
+        await adapter.close()
         bot_task.cancel()
         scheduler_task.cancel()
         await orch.shutdown()
@@ -134,13 +139,13 @@ async def run(config_path: str, profile: str | None = None) -> bool:
     return restart
 
 
-async def _health_checks(orch: Orchestrator) -> dict:
+async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
     """Gather health check results from the orchestrator for the health endpoint.
 
     Returns a dict of check names to check results, each with at minimum
     an ``ok`` key indicating whether that subsystem is healthy.
     """
-    checks = {}
+    checks: dict[str, dict] = {}
 
     # Database check
     try:
@@ -177,8 +182,13 @@ async def _health_checks(orch: Orchestrator) -> dict:
     except Exception as e:
         checks["tasks"] = {"ok": False, "error": str(e)}
 
-    # Discord check (basic — can we see the notify callback is set)
-    checks["discord"] = {"ok": orch._notify is not None}
+    # Messaging platform check — platform-agnostic via adapter
+    connected = adapter.is_connected()
+    checks["messaging"] = {
+        "ok": connected,
+        "platform": adapter.platform_name,
+        "connected": connected,
+    }
 
     return checks
 

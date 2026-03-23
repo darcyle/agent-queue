@@ -18,7 +18,7 @@ their results.  Each result should be a dict with at least an ``ok`` key::
 
     {
         "database": {"ok": True},
-        "discord": {"ok": True, "latency_ms": 42},
+        "messaging": {"ok": True, "platform": "discord", "connected": True},
         "orchestrator": {"ok": True, "paused": False},
         "agents": {"ok": True, "active": 2, "idle": 1},
         "tasks": {"ok": True, "in_progress": 3, "ready": 5},
@@ -64,7 +64,7 @@ class HealthCheckServer:
     interfaces (0.0.0.0) and responds to:
 
     - ``GET /health`` — full health status with all checks
-    - ``GET /ready`` — readiness probe (database + Discord connectivity)
+    - ``GET /ready`` — readiness probe (database + messaging connectivity)
     - Everything else — 404
     """
 
@@ -182,20 +182,20 @@ class HealthCheckServer:
     async def _handle_ready(self, writer: asyncio.StreamWriter) -> None:
         """Respond to GET /ready with readiness probe.
 
-        Readiness requires both Discord and database connectivity.
+        Readiness requires both messaging platform and database connectivity.
         Returns 200 when ready, 503 when not.
         """
         checks = await self._get_checks()
 
-        discord_ok = self._check_ok(checks.get("discord"))
+        messaging_ok = self._check_ok(checks.get("messaging"))
         database_ok = self._check_ok(checks.get("database"))
-        ready = discord_ok and database_ok
+        ready = messaging_ok and database_ok
 
         body = {
             "ready": ready,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "checks": {
-                "discord": checks.get("discord", {"ok": False}),
+                "messaging": checks.get("messaging", {"ok": False}),
                 "database": checks.get("database", {"ok": False}),
             },
         }

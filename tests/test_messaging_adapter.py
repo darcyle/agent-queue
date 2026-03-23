@@ -54,6 +54,13 @@ class DummyAdapter(MessagingAdapter):
     def get_supervisor(self) -> Any:
         return None
 
+    def is_connected(self) -> bool:
+        return True
+
+    @property
+    def platform_name(self) -> str:
+        return "dummy"
+
 
 # ---------------------------------------------------------------------------
 # MessagingAdapter ABC
@@ -97,6 +104,13 @@ class TestMessagingAdapterABC:
 
             def get_supervisor(self):
                 return None
+
+            def is_connected(self) -> bool:
+                return True
+
+            @property
+            def platform_name(self) -> str:
+                return "test"
 
         with pytest.raises(TypeError):
             AlmostComplete()  # type: ignore[abstract]

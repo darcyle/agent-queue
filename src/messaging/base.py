@@ -110,3 +110,19 @@ class MessagingAdapter(ABC):
     @abstractmethod
     def get_supervisor(self) -> Any:
         """Return the ``Supervisor`` instance wired to this adapter."""
+
+    # -------------------------------------------------------------------
+    # Health / diagnostics
+    # -------------------------------------------------------------------
+
+    @abstractmethod
+    def is_connected(self) -> bool:
+        """Return ``True`` when the platform connection is alive and ready.
+
+        Used by the health check endpoint to report messaging connectivity.
+        """
+
+    @property
+    @abstractmethod
+    def platform_name(self) -> str:
+        """Short lowercase platform identifier (e.g. ``"discord"``, ``"telegram"``)."""
