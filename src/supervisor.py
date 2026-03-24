@@ -723,9 +723,17 @@ Read the plan below and create one task per implementation phase using the creat
 
         Never raises — errors are caught, returns {"plan_found": False}.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+
         try:
             if project_id:
                 self.set_active_project(project_id)
+
+            logger.info(
+                "on_task_completed: processing task %s (project=%s, workspace=%s)",
+                task_id, project_id, workspace_path,
+            )
 
             result = await self.handler.execute(
                 "process_task_completion", {
@@ -734,10 +742,30 @@ Read the plan below and create one task per implementation phase using the creat
                 }
             )
 
+            # Log the result — surface errors that execute() may have wrapped
+            if isinstance(result, dict) and result.get("error"):
+                logger.error(
+                    "on_task_completed: process_task_completion returned error "
+                    "for task %s: %s",
+                    task_id, result["error"],
+                )
+            elif isinstance(result, dict):
+                logger.info(
+                    "on_task_completed: task %s result — plan_found=%s, reason=%s",
+                    task_id,
+                    result.get("plan_found"),
+                    result.get("reason", "n/a"),
+                )
+            else:
+                logger.warning(
+                    "on_task_completed: unexpected result type for task %s: %r",
+                    task_id, result,
+                )
+
             if self._provider:
                 trigger = "task.completed"
                 summary = f"Task {task_id} completed"
-                if result.get("plan_found"):
+                if isinstance(result, dict) and result.get("plan_found"):
                     summary += " — plan found, awaiting approval"
 
                 from src.tool_registry import ToolRegistry
@@ -753,7 +781,11 @@ Read the plan below and create one task per implementation phase using the creat
                 )
 
             return result if isinstance(result, dict) else {"plan_found": False}
-        except Exception:
+        except Exception as e:
+            logger.error(
+                "on_task_completed: unhandled exception for task %s: %s",
+                task_id, e, exc_info=True,
+            )
             return {"plan_found": False}
 
     async def observe(
