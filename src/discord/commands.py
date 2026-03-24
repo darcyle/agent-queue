@@ -2874,17 +2874,24 @@ def setup_commands(bot: commands.Bot) -> None:
         if "error" in result:
             await _send_error(interaction, result['error'])
             return
+        task_id = result['created']
         desc_preview = truncate(description, LIMIT_FIELD_VALUE)
         embed = success_embed(
             "Task Added",
             fields=[
-                ("ID", f"`{result['created']}`", True),
+                ("ID", f"`{task_id}`", True),
                 ("Project", f"`{result['project_id']}`", True),
                 ("Status", "🔵 READY", True),
                 ("Description", desc_preview, False),
             ],
         )
         await interaction.response.send_message(embed=embed)
+        # Track the message so the orchestrator can delete it when the task starts
+        try:
+            msg = await interaction.original_response()
+            handler.orchestrator._task_added_messages[task_id] = msg
+        except Exception:
+            pass  # Non-critical — message just won't be auto-deleted
 
     @bot.tree.command(name="edit-task", description="Edit a task's properties")
     @app_commands.describe(

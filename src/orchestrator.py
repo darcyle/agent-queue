@@ -182,6 +182,10 @@ class Orchestrator:
         self._task_exec_start: dict[str, float] = {}
         self._notify: NotifyCallback | None = None
         self._create_thread: CreateThreadCallback | None = None
+        # Discord message objects for task-added notifications, keyed by
+        # task_id.  Stored so we can delete the message when the task starts
+        # to keep the chat window clean.
+        self._task_added_messages: dict[str, Any] = {}
         # Discord message objects for task-started notifications, keyed by
         # task_id.  Stored so we can delete the message when the task finishes
         # to keep the chat window clean.
@@ -500,7 +504,14 @@ class Orchestrator:
             f"**Task Stopped:** `{task_id}` — {task.title}",
             project_id=task.project_id,
         )
-        # Delete the task-started message to reduce chat clutter
+        # Delete the task-added and task-started messages to reduce chat clutter
+        added_msg = self._task_added_messages.pop(task_id, None)
+        if added_msg is not None:
+            try:
+                await added_msg.delete()
+            except Exception as e:
+                logger.debug("Could not delete task-added message for %s: %s",
+                             task_id, e)
         started_msg = self._task_started_messages.pop(task_id, None)
         if started_msg is not None:
             try:
@@ -3230,6 +3241,16 @@ class Orchestrator:
         if started_discord_msg is not None:
             self._task_started_messages[task.id] = started_discord_msg
 
+        # Delete the task-added notification from Discord to reduce chat
+        # clutter — the task-started message supersedes it.
+        added_msg = self._task_added_messages.pop(task.id, None)
+        if added_msg is not None:
+            try:
+                await added_msg.delete()
+            except Exception as e:
+                logger.debug("Could not delete task-added message for %s: %s",
+                             task.id, e)
+
         # Create a thread for streaming agent output.  If this is a reopened
         # task, the callback will reuse the existing thread instead of creating
         # a new one.
@@ -3876,8 +3897,16 @@ class Orchestrator:
         self._adapters.pop(action.agent_id, None)
         self._task_exec_start.pop(action.task_id, None)
 
-        # Delete the task-started notification from Discord to reduce chat
-        # clutter — the completion/failure message provides the relevant info.
+        # Delete the task-added and task-started notifications from Discord to
+        # reduce chat clutter — the completion/failure message provides the
+        # relevant info.
+        added_msg = self._task_added_messages.pop(action.task_id, None)
+        if added_msg is not None:
+            try:
+                await added_msg.delete()
+            except Exception as e:
+                logger.debug("Could not delete task-added message for %s: %s",
+                             action.task_id, e)
         started_msg = self._task_started_messages.pop(action.task_id, None)
         if started_msg is not None:
             try:
