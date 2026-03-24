@@ -2,16 +2,8 @@
 
 import asyncio
 import os
-import sys
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
-
-for mod_name in [
-    "discord", "discord.ext", "discord.ext.commands",
-    "discord.app_commands", "discord.ui",
-    "aiosqlite", "anthropic", "ollama",
-]:
-    sys.modules.setdefault(mod_name, MagicMock())
 
 
 def _make_handler():

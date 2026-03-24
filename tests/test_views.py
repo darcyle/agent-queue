@@ -1,11 +1,4 @@
 """Tests for standalone Discord views."""
-import sys
-from unittest.mock import MagicMock
-
-# Stub discord before importing
-for mod in ["discord", "discord.ext", "discord.ext.commands",
-            "discord.app_commands", "discord.ui"]:
-    sys.modules.setdefault(mod, MagicMock())
 
 
 def test_suggestion_view_exists():

@@ -120,14 +120,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 
 def _get_command_handler():
-    """Import CommandHandler, mocking missing packages."""
-    # Stub out packages that may not be installed in test env
-    for mod_name in [
-        "discord", "discord.ext", "discord.ext.commands",
-        "discord.app_commands", "discord.ui",
-        "aiosqlite", "anthropic", "ollama",
-    ]:
-        sys.modules.setdefault(mod_name, MagicMock())
+    """Import CommandHandler."""
     from src.command_handler import CommandHandler
     return CommandHandler
 
