@@ -1259,6 +1259,15 @@ class _HookTriggerEditView(discord.ui.View):
         details_btn.callback = self._details_callback
         self.add_item(details_btn)
 
+        # Delete button
+        delete_btn = discord.ui.Button(
+            label="🗑️ Delete Hook",
+            style=discord.ButtonStyle.danger,
+            row=2,
+        )
+        delete_btn.callback = self._delete_callback
+        self.add_item(delete_btn)
+
         # Close button
         close_btn = discord.ui.Button(
             label="Close",
@@ -1329,6 +1338,51 @@ class _HookTriggerEditView(discord.ui.View):
             self._hook, self._handler, refresh_callback=self._refresh_callback,
         )
         await interaction.response.send_modal(modal)
+
+    async def _delete_callback(self, interaction: discord.Interaction) -> None:
+        """Show a confirmation prompt before deleting the hook."""
+        confirm_view = discord.ui.View(timeout=60)
+        yes_btn = discord.ui.Button(
+            label="Yes, delete it",
+            style=discord.ButtonStyle.danger,
+        )
+        no_btn = discord.ui.Button(
+            label="Cancel",
+            style=discord.ButtonStyle.secondary,
+        )
+
+        async def _confirm(confirm_interaction: discord.Interaction) -> None:
+            result = await self._handler.execute("delete_hook", {
+                "hook_id": self._hook["id"],
+            })
+            if "error" in result:
+                await confirm_interaction.response.edit_message(
+                    content=f"❌ {result['error']}", view=None,
+                )
+                return
+            hook_name = self._hook.get("name", self._hook["id"])
+            await confirm_interaction.response.edit_message(
+                content=f"🗑️ Hook **{hook_name}** deleted.", view=None,
+            )
+            if self._refresh_callback:
+                await self._refresh_callback(confirm_interaction)
+
+        async def _cancel(cancel_interaction: discord.Interaction) -> None:
+            self._rebuild()
+            await cancel_interaction.response.edit_message(
+                content=self.build_content(), view=self,
+            )
+
+        yes_btn.callback = _confirm
+        no_btn.callback = _cancel
+        confirm_view.add_item(yes_btn)
+        confirm_view.add_item(no_btn)
+
+        hook_name = self._hook.get("name", self._hook["id"])
+        await interaction.response.edit_message(
+            content=f"⚠️ Are you sure you want to delete hook **{hook_name}**? This cannot be undone.",
+            view=confirm_view,
+        )
 
     async def _close_callback(self, interaction: discord.Interaction) -> None:
         await interaction.response.edit_message(
