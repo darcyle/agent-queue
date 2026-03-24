@@ -2654,15 +2654,33 @@ class Orchestrator:
     async def _phase_plan_discover(self, ctx: PipelineContext) -> PhaseResult:
         """Delegate plan discovery to the Supervisor."""
         if not hasattr(self, '_supervisor') or not self._supervisor:
+            logger.info(
+                "Task %s: no supervisor available, using legacy plan discovery",
+                ctx.task.id,
+            )
             return await self._phase_plan_generate(ctx)  # Legacy fallback
 
+        logger.info(
+            "Task %s: starting plan discovery via supervisor (workspace=%s)",
+            ctx.task.id, ctx.workspace_path,
+        )
         result = await self._supervisor.on_task_completed(
             task_id=ctx.task.id,
             project_id=ctx.task.project_id or "",
             workspace_path=ctx.workspace_path,
         )
         if result and result.get("plan_found"):
+            logger.info(
+                "Task %s: plan found — will present for approval",
+                ctx.task.id,
+            )
             ctx.plan_needs_approval = True
+        else:
+            reason = result.get("reason", "unknown") if isinstance(result, dict) else "non-dict result"
+            logger.info(
+                "Task %s: no plan found (reason: %s)",
+                ctx.task.id, reason,
+            )
         return PhaseResult.CONTINUE
 
     async def _phase_plan_generate(self, ctx: PipelineContext) -> PhaseResult:
@@ -3485,10 +3503,15 @@ class Orchestrator:
                 project=project,
             )
 
-            # Run completion pipeline (commit → plan_generate → merge)
+            # Run completion pipeline (commit → plan_discover → merge)
+            logger.info("Task %s: running completion pipeline", task.id)
             pr_url, completed_ok = await self._run_completion_pipeline(ctx)
 
             if ctx.plan_needs_approval and completed_ok:
+                logger.info(
+                    "Task %s: plan needs approval — sending notification",
+                    task.id,
+                )
                 # Plan was discovered — present it to the user for approval
                 # instead of auto-creating subtasks.
                 await self.db.transition_task(
@@ -3502,6 +3525,12 @@ class Orchestrator:
                     task_id=action.task_id,
                     agent_id=action.agent_id,
                 )
+                # Notify in the task thread that a plan was found
+                if thread_send:
+                    await thread_send(
+                        "📋 **Plan detected** — processing for approval..."
+                    )
+
                 from src.discord.notifications import (
                     PlanApprovalView,
                     format_plan_approval_embed,
@@ -3515,6 +3544,12 @@ class Orchestrator:
                     (c for c in plan_contexts if c["type"] == "plan_raw"),
                     None,
                 )
+                if not raw_ctx:
+                    logger.warning(
+                        "Task %s: plan_needs_approval=True but no plan_raw "
+                        "context found — approval embed will be empty",
+                        task.id,
+                    )
                 # Generate a URL to view the full plan in a browser
                 plan_url = ""
                 health_server = getattr(self, "_health_server", None)

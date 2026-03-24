@@ -2872,14 +2872,25 @@ class CommandHandler:
 
         logger = logging.getLogger(__name__)
 
+        task_id = args.get("task_id")
+        workspace_path = args.get("workspace_path")
+
+        logger.info(
+            "process_task_completion: starting plan discovery for task %s "
+            "(workspace=%s)",
+            task_id, workspace_path,
+        )
+
         config = self.orchestrator.config.auto_task
 
         # Check if auto_task is enabled
         if not config.enabled:
+            logger.info(
+                "process_task_completion: auto-task disabled, skipping plan "
+                "discovery for task %s",
+                task_id,
+            )
             return {"plan_found": False, "reason": "Auto-task generation is disabled"}
-
-        task_id = args.get("task_id")
-        workspace_path = args.get("workspace_path")
 
         if not task_id or not workspace_path:
             return {"plan_found": False, "reason": "Missing required parameters"}
@@ -2919,7 +2930,18 @@ class CommandHandler:
         plan_file = plan_parser.find_plan_file(workspace_path, plan_patterns)
 
         if not plan_file:
+            logger.info(
+                "process_task_completion: no plan file found for task %s "
+                "(searched patterns: %s in %s)",
+                task_id, plan_patterns, workspace_path,
+            )
             return {"plan_found": False, "reason": "No plan file found"}
+
+        logger.info(
+            "process_task_completion: found plan file %s for task %s — "
+            "running validation checks",
+            plan_file, task_id,
+        )
 
         # Staleness check: compare the plan file's mtime against the
         # recorded execution start time.  If the plan file predates the
@@ -2992,6 +3014,12 @@ class CommandHandler:
             )
         except Exception as e:
             logger.warning("Failed to store plan context for task %s: %s", task_id, e)
+
+        logger.info(
+            "process_task_completion: plan stored for task %s — "
+            "plan_found=True, archived=%s, content_length=%d",
+            task_id, archived_path, len(content),
+        )
 
         return {
             "plan_found": True,
