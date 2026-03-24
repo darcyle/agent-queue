@@ -81,22 +81,29 @@ class MessagingAdapter(ABC):
     @abstractmethod
     async def create_task_thread(
         self,
-        task: Any,
-        project: Any,
-    ) -> tuple["ThreadSendCallback", "ThreadSendCallback"]:
+        thread_name: str,
+        initial_message: str,
+        project_id: str | None = None,
+        task_id: str | None = None,
+    ) -> tuple["ThreadSendCallback", "ThreadSendCallback"] | None:
         """Create a thread/topic for task output streaming.
 
         Parameters
         ----------
-        task:
-            The task model instance.
-        project:
-            The project model instance.
+        thread_name:
+            Display name for the thread/topic.
+        initial_message:
+            First message to post in the thread.
+        project_id:
+            Route to a project-specific channel when set.
+        task_id:
+            The task ID — used to reuse existing threads for reopened tasks.
 
         Returns
         -------
-        tuple[ThreadSendCallback, ThreadSendCallback]
-            ``(send_to_thread, notify_main_channel)`` callback pair.
+        tuple[ThreadSendCallback, ThreadSendCallback] | None
+            ``(send_to_thread, notify_main_channel)`` callback pair,
+            or None if thread creation failed.
         """
 
     # -------------------------------------------------------------------

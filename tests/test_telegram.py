@@ -311,9 +311,7 @@ class TestTelegramAdapterABC:
         mock_bot_cls.return_value = mock_bot
 
         adapter = TelegramMessagingAdapter(_make_config(), _make_orchestrator())
-        task = MagicMock(title="Test task", id="t1")
-        project = MagicMock(id="proj1")
-        result = await adapter.create_task_thread(task, project)
+        result = await adapter.create_task_thread("Test task", "Agent working on: Test task", "proj1", "t1")
         assert result is not None
         assert len(result) == 2
 
@@ -326,15 +324,9 @@ class TestTelegramAdapterABC:
         mock_bot_cls.return_value = mock_bot
 
         adapter = TelegramMessagingAdapter(_make_config(), _make_orchestrator())
-        task = MagicMock(title="Test", id="t1")
-        project = MagicMock(id="p1")
-        result = await adapter.create_task_thread(task, project)
-        # Should return noop callbacks, not None
-        assert result is not None
-        send_to_thread, notify_main = result
-        # Should not raise
-        await send_to_thread("test")
-        await notify_main("test")
+        result = await adapter.create_task_thread("Test", "Agent working on: Test", "p1", "t1")
+        # Should return None when topic creation failed
+        assert result is None
 
     @patch("src.telegram.bot.TelegramBot")
     def test_get_command_handler(self, mock_bot_cls):

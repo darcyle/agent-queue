@@ -45,7 +45,7 @@ class DummyAdapter(MessagingAdapter):
     async def send_message(self, text, project_id=None, *, embed=None, view=None):
         pass
 
-    async def create_task_thread(self, task, project):
+    async def create_task_thread(self, thread_name, initial_message, project_id=None, task_id=None):
         return (MagicMock(), MagicMock())
 
     def get_command_handler(self) -> Any:

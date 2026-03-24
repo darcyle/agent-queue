@@ -103,13 +103,8 @@ class TestDiscordAdapterDelegation:
 
     @pytest.mark.asyncio
     async def test_create_task_thread_delegates(self, adapter):
-        # create_task_thread now accepts (task, project) objects
-        task = MagicMock()
-        task.title = "thread-name"
-        task.id = "task1"
-        project = MagicMock()
-        project.id = "proj1"
-        result = await adapter.create_task_thread(task, project)
+        # create_task_thread accepts (thread_name, initial_message, project_id, task_id)
+        result = await adapter.create_task_thread("thread-name", "Agent working on: thread-name", "proj1", "task1")
         adapter._bot._create_task_thread.assert_awaited_once_with(
             "thread-name", "Agent working on: thread-name", "proj1", "task1"
         )

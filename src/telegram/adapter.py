@@ -68,27 +68,19 @@ class TelegramMessagingAdapter(MessagingAdapter):
 
     async def create_task_thread(
         self,
-        task: Any,
-        project: Any,
-    ) -> tuple["ThreadSendCallback", "ThreadSendCallback"]:
+        thread_name: str,
+        initial_message: str,
+        project_id: str | None = None,
+        task_id: str | None = None,
+    ) -> tuple["ThreadSendCallback", "ThreadSendCallback"] | None:
         """Create a forum topic or reply chain for task output.
 
-        Returns ``(send_to_thread, notify_main_channel)`` callback pair.
+        Returns ``(send_to_thread, notify_main_channel)`` callback pair,
+        or None if topic creation failed.
         """
-        task_title = getattr(task, "title", None) or getattr(task, "id", "task")
-        project_id = getattr(project, "id", None)
-        task_id = getattr(task, "id", None)
-        thread_name = str(task_title)[:128]
-        initial_message = f"Agent working on: {task_title}"
-
         result = await self._bot.create_task_topic(
             thread_name, initial_message, project_id, task_id
         )
-        if result is None:
-            # Return no-op callbacks if topic creation failed
-            async def noop(text: str) -> None:
-                pass
-            return noop, noop
         return result
 
     # -------------------------------------------------------------------

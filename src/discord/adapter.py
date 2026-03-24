@@ -73,26 +73,19 @@ class DiscordMessagingAdapter(MessagingAdapter):
 
     async def create_task_thread(
         self,
-        task: Any,
-        project: Any,
-    ) -> tuple["ThreadSendCallback", "ThreadSendCallback"]:
+        thread_name: str,
+        initial_message: str,
+        project_id: str | None = None,
+        task_id: str | None = None,
+    ) -> tuple["ThreadSendCallback", "ThreadSendCallback"] | None:
         """Create a Discord thread for task output streaming.
 
-        Returns ``(send_to_thread, notify_main_channel)`` callback pair.
+        Returns ``(send_to_thread, notify_main_channel)`` callback pair,
+        or None if thread creation failed.
         """
-        task_title = getattr(task, "title", None) or getattr(task, "id", "task")
-        project_id = getattr(project, "id", None)
-        task_id = getattr(task, "id", None)
-        thread_name = str(task_title)[:100]
-        initial_message = f"Agent working on: {task_title}"
-
         result = await self._bot._create_task_thread(
             thread_name, initial_message, project_id, task_id
         )
-        if result is None:
-            async def noop(text: str) -> None:
-                pass
-            return noop, noop
         return result
 
     # -------------------------------------------------------------------
