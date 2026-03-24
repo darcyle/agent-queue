@@ -5303,6 +5303,31 @@ class CommandHandler:
         except ValueError as e:
             return {"error": str(e)}
 
+    async def _cmd_toggle_project_hooks(self, args: dict) -> dict:
+        """Enable or disable all hooks in a project."""
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+        enabled = args.get("enabled")
+        if enabled is None:
+            return {"error": "'enabled' (true/false) is required"}
+        hooks = await self.db.list_hooks(project_id=project_id)
+        if not hooks:
+            return {"error": f"No hooks found for project '{project_id}'"}
+        updated = []
+        for hook in hooks:
+            if hook.enabled != enabled:
+                await self.db.update_hook(hook.id, enabled=enabled)
+                updated.append(hook.name or hook.id)
+        action = "enabled" if enabled else "disabled"
+        return {
+            "project_id": project_id,
+            "action": action,
+            "total_hooks": len(hooks),
+            "updated_count": len(updated),
+            "updated_hooks": updated,
+        }
+
     # -----------------------------------------------------------------------
     # Rule commands -- persistent autonomous behaviors stored as markdown.
     # Rules are the source of truth; active rules generate hooks.

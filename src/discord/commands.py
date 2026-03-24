@@ -5345,6 +5345,41 @@ def setup_commands(bot: commands.Bot) -> None:
             description=f"Hook `{hook_id}` fired — status: {result.get('status', 'running')}",
         )
 
+    @bot.tree.command(
+        name="toggle-hooks",
+        description="Enable or disable all hooks in a project",
+    )
+    @app_commands.describe(
+        project="Project ID",
+        enabled="True to enable all hooks, False to disable all hooks",
+    )
+    async def toggle_hooks_command(
+        interaction: discord.Interaction, project: str, enabled: bool
+    ):
+        result = await handler.execute(
+            "toggle_project_hooks", {"project_id": project, "enabled": enabled}
+        )
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        action = result["action"]
+        total = result["total_hooks"]
+        changed = result["updated_count"]
+        if changed == 0:
+            await _send_info(
+                interaction,
+                "No Changes",
+                description=f"All **{total}** hook(s) in `{project}` were already {action}.",
+            )
+        else:
+            await _send_success(
+                interaction,
+                f"Hooks {action.title()}",
+                description=(
+                    f"**{changed}** of **{total}** hook(s) in `{project}` {action}."
+                ),
+            )
+
     # ===================================================================
     # NOTES COMMANDS
     # ===================================================================
