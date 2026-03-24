@@ -3047,15 +3047,23 @@ class CommandHandler:
         }
 
     async def _cmd_approve_plan(self, args: dict) -> dict:
-        """Approve a plan and create subtasks from it.
+        """Approve a plan and activate its draft subtasks.
 
-        The task must be in AWAITING_PLAN_APPROVAL status.  The stored raw
-        plan content is fed to the supervisor LLM, which creates tasks via
-        ``create_task`` and ``add_dependency`` tool calls.  Falls back to
-        the legacy algorithmic parser if the supervisor is unavailable.
+        The task must be in AWAITING_PLAN_APPROVAL status.
 
-        The task is transitioned to COMPLETED after subtasks are created.
+        **Parse-first workflow (preferred):**
+        If ``_cmd_process_plan`` already created draft subtasks (stored in
+        ``plan_draft_subtasks`` context), approval simply transitions the
+        parent to COMPLETED — which unblocks the first subtask's dependency
+        on the parent and starts the chain.
+
+        **Legacy workflow (fallback):**
+        If no draft subtasks exist (e.g. plan came through the old auto-
+        detection path), the supervisor LLM is called to create tasks now,
+        falling back to the algorithmic parser if the supervisor is
+        unavailable.
         """
+        import json as _json
         import logging
 
         logger = logging.getLogger(__name__)
@@ -3073,37 +3081,70 @@ class CommandHandler:
             return {"error": "No stored plan content found for this task"}
 
         raw_plan = raw_ctx["content"]
-
-        # Determine workspace for subtasks
-        ws = await self.db.get_workspace_for_task(task.id)
-        workspace_id = ws.id if ws else None
-        if not workspace_id and task.project_id:
-            workspaces = await self.db.list_workspaces(project_id=task.project_id)
-            if workspaces:
-                workspace_id = workspaces[0].id
-
-        # Use supervisor LLM to break plan into tasks
         config = self.orchestrator.config.auto_task
-        supervisor = getattr(self.orchestrator, "_supervisor", None)
+
+        # ── Check for pre-created draft subtasks (parse-first workflow) ──
+        draft_ctx = next(
+            (c for c in contexts if c["type"] == "plan_draft_subtasks"), None
+        )
 
         created_info: list[dict] = []
-        if supervisor and supervisor.is_ready:
-            created_info = await supervisor.break_plan_into_tasks(
-                raw_plan=raw_plan,
-                parent_task_id=task.id,
-                project_id=task.project_id or "",
-                workspace_id=workspace_id,
-                chain_dependencies=config.chain_dependencies,
-                requires_approval=(
-                    task.requires_approval if config.inherit_approval else False
-                ),
-                base_priority=config.base_priority,
+
+        if draft_ctx:
+            # Draft subtasks were already created by _cmd_process_plan.
+            # They are blocked by a dependency on this parent task.
+            # Transitioning the parent to COMPLETED will unblock the chain.
+            created_info = _json.loads(draft_ctx["content"])
+            logger.info(
+                "approve_plan: found %d pre-created draft subtasks for %s",
+                len(created_info), task.id,
             )
 
-            if created_info:
-                # Handle downstream dependencies: any task that depends on the
-                # parent task should also depend on the final subtask.
-                if config.chain_dependencies and len(created_info) > 0:
+            # Handle downstream dependencies: any task that depends on the
+            # parent task should also depend on the final subtask so
+            # downstream work waits for the full chain to finish.
+            if config.chain_dependencies and created_info:
+                final_subtask_id = created_info[-1]["id"]
+                dependents = await self.db.get_dependents(task.id)
+                # Exclude draft subtasks themselves from downstream dep wiring
+                draft_ids = {t["id"] for t in created_info}
+                for dep_task_id in dependents:
+                    if dep_task_id in draft_ids:
+                        continue
+                    try:
+                        await self.db.add_dependency(
+                            dep_task_id, depends_on=final_subtask_id
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to add downstream dep %s→%s: %s",
+                            dep_task_id, final_subtask_id, e,
+                        )
+        else:
+            # ── Legacy workflow: create subtasks on approval ──
+            ws = await self.db.get_workspace_for_task(task.id)
+            workspace_id = ws.id if ws else None
+            if not workspace_id and task.project_id:
+                workspaces = await self.db.list_workspaces(project_id=task.project_id)
+                if workspaces:
+                    workspace_id = workspaces[0].id
+
+            supervisor = getattr(self.orchestrator, "_supervisor", None)
+
+            if supervisor and supervisor.is_ready:
+                created_info = await supervisor.break_plan_into_tasks(
+                    raw_plan=raw_plan,
+                    parent_task_id=task.id,
+                    project_id=task.project_id or "",
+                    workspace_id=workspace_id,
+                    chain_dependencies=config.chain_dependencies,
+                    requires_approval=(
+                        task.requires_approval if config.inherit_approval else False
+                    ),
+                    base_priority=config.base_priority,
+                )
+
+                if created_info and config.chain_dependencies:
                     final_subtask_id = created_info[-1]["id"]
                     dependents = await self.db.get_dependents(task.id)
                     for dep_task_id in dependents:
@@ -3116,45 +3157,48 @@ class CommandHandler:
                                 "Failed to add downstream dep %s→%s: %s",
                                 dep_task_id, final_subtask_id, e,
                             )
-
-                # Notify about created subtasks
-                task_lines = "\n".join(
-                    f"  {i+1}. `{t['id']}` — {t['title']}"
-                    for i, t in enumerate(created_info)
+            else:
+                # Fallback: use legacy algorithmic parser if supervisor unavailable
+                logger.warning(
+                    "approve_plan: supervisor unavailable, falling back to "
+                    "algorithmic parser for task %s",
+                    task.id,
                 )
-                await self.orchestrator._notify_channel(
-                    f"**Plan Approved:** Created {len(created_info)} subtask(s) from "
-                    f"`{task.id}` plan:\n{task_lines}",
-                    project_id=task.project_id,
-                )
+                created_tasks = await self.orchestrator._create_subtasks_from_stored_plan(task)
+                created_info = [{"id": t.id, "title": t.title} for t in created_tasks]
 
-                # Re-check DEFINED tasks so newly created subtasks get promoted
-                await self.orchestrator._check_defined_tasks()
-        else:
-            # Fallback: use legacy algorithmic parser if supervisor unavailable
-            logger.warning(
-                "approve_plan: supervisor unavailable, falling back to "
-                "algorithmic parser for task %s",
-                task.id,
+        # Notify about subtasks being activated
+        if created_info:
+            task_lines = "\n".join(
+                f"  {i+1}. `{t['id']}` — {t['title']}"
+                for i, t in enumerate(created_info)
             )
-            created_tasks = await self.orchestrator._create_subtasks_from_stored_plan(task)
-            created_info = [{"id": t.id, "title": t.title} for t in created_tasks]
+            await self.orchestrator._notify_channel(
+                f"**Plan Approved:** {len(created_info)} subtask(s) activated from "
+                f"`{task.id}` plan:\n{task_lines}",
+                project_id=task.project_id,
+            )
 
         # Delete the plan file from the workspace so it isn't picked up by
         # other tasks that may later run in the same workspace/branch.
         await self._cleanup_plan_files_after_approval(task)
 
-        # Transition to COMPLETED
+        # Transition to COMPLETED — this unblocks draft subtasks that
+        # depend on the parent (parse-first workflow).
         await self.db.transition_task(
             args["task_id"],
             TaskStatus.COMPLETED,
             context="plan_approved",
         )
+
+        # Re-check DEFINED tasks so subtasks get promoted to READY
+        await self.orchestrator._check_defined_tasks()
+
         await self.db.log_event(
             "plan_approved",
             project_id=task.project_id,
             task_id=task.id,
-            payload=f"Created {len(created_info)} subtask(s)",
+            payload=f"Activated {len(created_info)} subtask(s)",
         )
         return {
             "approved": args["task_id"],
@@ -3231,12 +3275,48 @@ class CommandHandler:
             except Exception as e:
                 logger.warning("Plan cleanup: failed to commit deletion for task %s: %s", task.id, e)
 
+    async def _delete_draft_subtasks(self, parent_task_id: str) -> int:
+        """Delete draft subtasks that were pre-created by ``_cmd_process_plan``.
+
+        Reads the ``plan_draft_subtasks`` task-context entry, deletes each
+        referenced task from the database, and returns the count of deleted
+        tasks.  Safe to call when no drafts exist (returns 0).
+        """
+        import json as _json
+
+        contexts = await self.db.get_task_contexts(parent_task_id)
+        draft_ctx = next(
+            (c for c in contexts if c["type"] == "plan_draft_subtasks"), None
+        )
+        if not draft_ctx:
+            return 0
+
+        draft_tasks: list[dict] = _json.loads(draft_ctx["content"])
+        deleted = 0
+        for entry in draft_tasks:
+            tid = entry.get("id")
+            if not tid:
+                continue
+            try:
+                await self.db.delete_task(tid)
+                deleted += 1
+            except Exception as e:
+                logger.warning(
+                    "delete_draft_subtasks: failed to delete %s: %s", tid, e
+                )
+        logger.info(
+            "delete_draft_subtasks: deleted %d/%d draft subtasks for %s",
+            deleted, len(draft_tasks), parent_task_id,
+        )
+        return deleted
+
     async def _cmd_reject_plan(self, args: dict) -> dict:
         """Reject a plan and reopen the task with feedback for revision.
 
         The task must be in AWAITING_PLAN_APPROVAL status.  The feedback is
         appended to the task description so the agent sees it on re-execution
-        and can revise the plan accordingly.
+        and can revise the plan accordingly.  Any draft subtasks created
+        during ``_cmd_process_plan`` are deleted.
         """
         task_id = args["task_id"]
         feedback = args.get("feedback", "")
@@ -3248,6 +3328,9 @@ class CommandHandler:
             return {"error": f"Task '{task_id}' not found"}
         if task.status != TaskStatus.AWAITING_PLAN_APPROVAL:
             return {"error": f"Task is not awaiting plan approval (status: {task.status.value})"}
+
+        # Delete any draft subtasks created during process_plan
+        deleted_count = await self._delete_draft_subtasks(task_id)
 
         # Append feedback to description (similar to reopen_with_feedback)
         separator = "\n\n---\n\n**Plan Revision Requested:**\n"
@@ -3282,19 +3365,24 @@ class CommandHandler:
             "title": task.title,
             "status": "READY",
             "feedback_added": True,
+            "draft_subtasks_deleted": deleted_count,
         }
 
     async def _cmd_delete_plan(self, args: dict) -> dict:
         """Delete a plan and complete the task without creating subtasks.
 
         The task must be in AWAITING_PLAN_APPROVAL status.  The task is
-        transitioned to COMPLETED and no subtasks are created.
+        transitioned to COMPLETED and no subtasks are created.  Any draft
+        subtasks created during ``_cmd_process_plan`` are deleted.
         """
         task = await self.db.get_task(args["task_id"])
         if not task:
             return {"error": f"Task '{args['task_id']}' not found"}
         if task.status != TaskStatus.AWAITING_PLAN_APPROVAL:
             return {"error": f"Task is not awaiting plan approval (status: {task.status.value})"}
+
+        # Delete any draft subtasks created during process_plan
+        deleted_count = await self._delete_draft_subtasks(task.id)
 
         # Clean up plan files from the workspace
         await self._cleanup_plan_files_after_approval(task)
@@ -3308,12 +3396,13 @@ class CommandHandler:
             "plan_deleted",
             project_id=task.project_id,
             task_id=task.id,
-            payload="Plan deleted by user — no subtasks created",
+            payload=f"Plan deleted by user — {deleted_count} draft subtask(s) removed",
         )
         return {
             "deleted": args["task_id"],
             "title": task.title,
             "status": "COMPLETED",
+            "draft_subtasks_deleted": deleted_count,
         }
 
     async def _cmd_process_plan(self, args: dict) -> dict:
@@ -3326,6 +3415,15 @@ class CommandHandler:
 
         If a specific task_id is provided, the plan is attached to that task.
         Otherwise a new synthetic "plan" task is created to hold the plan.
+
+        **Workflow (parse-first):**
+
+        1. Discover the plan file in the workspace.
+        2. Use the supervisor LLM to break the plan into **draft subtasks**
+           (with a dependency on the parent so they stay blocked).
+        3. Present the draft subtasks for user approval.
+        4. On approve → parent transitions to COMPLETED, unblocking the chain.
+           On reject/delete → draft subtasks are deleted.
         """
         from src.plan_parser import find_plan_file, read_plan_file
 
@@ -3453,10 +3551,73 @@ class CommandHandler:
             payload=f"Manual plan processing triggered — plan found at {plan_path}",
         )
 
-        # Parse the plan to extract phases for the approval embed
-        from src.plan_parser import parse_and_generate_steps
+        # ── Phase 1: Use supervisor LLM to break plan into draft subtasks ──
+        # This happens BEFORE approval so the user sees the proper task
+        # breakdown.  Draft subtasks are blocked by a dependency on the
+        # parent task (which is in AWAITING_PLAN_APPROVAL), so they won't
+        # execute until the plan is approved and the parent is COMPLETED.
+        config = self.orchestrator.config.auto_task
+        supervisor = getattr(self.orchestrator, "_supervisor", None)
+        created_info: list[dict] = []
 
-        parsed_steps, _quality = parse_and_generate_steps(raw)
+        if supervisor and supervisor.is_ready:
+            workspace_id = ws.id if ws else None
+            created_info = await supervisor.break_plan_into_tasks(
+                raw_plan=raw,
+                parent_task_id=task_id,
+                project_id=project_id,
+                workspace_id=workspace_id,
+                chain_dependencies=config.chain_dependencies,
+                requires_approval=(
+                    task.requires_approval if config.inherit_approval else False
+                ),
+                base_priority=config.base_priority,
+            )
+
+            if created_info:
+                # Add a dependency from the first subtask to the parent task.
+                # Since the parent is in AWAITING_PLAN_APPROVAL (not COMPLETED),
+                # this blocks the entire chain from executing until approval.
+                first_subtask_id = created_info[0]["id"]
+                try:
+                    await self.db.add_dependency(
+                        first_subtask_id, depends_on=task_id
+                    )
+                    logger.info(
+                        "process_plan: added blocking dep %s → %s (parent)",
+                        first_subtask_id, task_id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "process_plan: failed to add blocking dep %s → %s: %s",
+                        first_subtask_id, task_id, e,
+                    )
+
+                # Store draft subtask IDs so approve/delete/reject can find them
+                import json as _json
+                await self.db.add_task_context(
+                    task_id,
+                    type="plan_draft_subtasks",
+                    label="Draft Subtask IDs",
+                    content=_json.dumps(created_info),
+                )
+
+                logger.info(
+                    "process_plan: supervisor created %d draft subtasks for %s",
+                    len(created_info), task_id,
+                )
+
+        # Build the steps list for the approval embed.  Prefer the
+        # supervisor-created subtasks; fall back to algorithmic parsing.
+        if created_info:
+            parsed_steps = [
+                {"title": t["title"], "description": ""}
+                for t in created_info
+            ]
+        else:
+            from src.plan_parser import parse_and_generate_steps
+            parsed_steps, _quality = parse_and_generate_steps(raw)
+
         # Notify channel with approval embed
         try:
             from src.discord.notifications import format_plan_approval_embed, PlanApprovalView
@@ -3483,6 +3644,7 @@ class CommandHandler:
             "plan_path": plan_path,
             "title": task.title,
             "phases": len(parsed_steps),
+            "draft_subtasks": len(created_info),
         }
         if len(found_plans) > 1:
             result["additional_plans"] = len(found_plans) - 1
