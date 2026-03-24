@@ -129,6 +129,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "delete_hook": "hooks",
     "list_hook_runs": "hooks",
     "fire_hook": "hooks",
+    "hook_schedules": "hooks",
+    "fire_all_scheduled_hooks": "hooks",
     # memory
     "memory_stats": "memory",
     "memory_reindex": "memory",
@@ -1439,6 +1441,39 @@ _ALL_TOOL_DEFINITIONS = [
                 "hook_id": {"type": "string", "description": "Hook ID to fire"},
             },
             "required": ["hook_id"],
+        },
+    },
+    {
+        "name": "hook_schedules",
+        "description": (
+            "Show upcoming hook executions with human-readable next-run times. "
+            "Lists all enabled periodic hooks, their schedule constraints, last "
+            "run time, and when they are expected to fire next."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Optional project ID to filter hooks",
+                },
+            },
+        },
+    },
+    {
+        "name": "fire_all_scheduled_hooks",
+        "description": (
+            "Manually trigger all enabled periodic hooks, optionally filtered by project. "
+            "Useful for testing or forcing immediate execution."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Optional project ID to filter hooks",
+                },
+            },
         },
     },
     {
