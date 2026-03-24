@@ -1761,6 +1761,29 @@ class Database:
         await self._db.execute("DELETE FROM hooks WHERE id = ?", (hook_id,))
         await self._db.commit()
 
+    async def delete_hooks_by_id_prefix(self, prefix: str) -> int:
+        """Delete all hooks whose ID starts with *prefix*.
+
+        Returns the number of hooks deleted.  Used by the rule manager to
+        clean up orphaned hooks left behind by concurrent reconciliation runs.
+        """
+        cursor = await self._db.execute(
+            "SELECT id FROM hooks WHERE id LIKE ?", (prefix + "%",)
+        )
+        rows = await cursor.fetchall()
+        if not rows:
+            return 0
+        ids = [r["id"] for r in rows]
+        placeholders = ",".join("?" * len(ids))
+        await self._db.execute(
+            f"DELETE FROM hook_runs WHERE hook_id IN ({placeholders})", ids
+        )
+        await self._db.execute(
+            f"DELETE FROM hooks WHERE id IN ({placeholders})", ids
+        )
+        await self._db.commit()
+        return len(ids)
+
     def _row_to_hook(self, row) -> Hook:
         return Hook(
             id=row["id"],
