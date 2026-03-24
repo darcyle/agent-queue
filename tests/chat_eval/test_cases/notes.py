@@ -1,5 +1,12 @@
-"""Test cases for note tools: list_notes, write_note, delete_note, read_note,
-append_note, compare_specs_notes, promote_note.
+"""Test cases for note tools (supervisor evaluation).
+
+Covers: list_notes, write_note, delete_note, read_note, append_note,
+compare_specs_notes, promote_note.
+
+20 test cases: verified against current supervisor-based architecture.
+Notes are per-project knowledge bases managed through the memory tool category.
+
+Updated: supervisor refactor review — all tests confirmed relevant; no outdated patterns.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty

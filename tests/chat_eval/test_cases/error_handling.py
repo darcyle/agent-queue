@@ -1,8 +1,12 @@
-"""Test cases where the user provides incomplete or wrong information.
+"""Test cases where the user provides incomplete or wrong information (supervisor evaluation).
 
-These verify that the LLM still picks the correct tool even when required arguments
-are missing. The LLM should either request clarification or attempt the call with
-what it has (allowing the command handler to return an appropriate error).
+These verify that the Supervisor still picks the correct tool even when required
+arguments are missing. The Supervisor should either request clarification or
+attempt the call with what it has (allowing the command handler to return an error).
+
+18 test cases: verified against current supervisor-based architecture.
+
+Updated: supervisor refactor review — all tests confirmed relevant; no outdated patterns.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty

@@ -1,10 +1,13 @@
-"""Shared fixtures for the chat agent evaluation framework."""
+"""Shared fixtures for the supervisor evaluation framework.
+
+Updated: ChatAgent → Supervisor (post-supervisor refactor).
+"""
 
 from __future__ import annotations
 
 import pytest
 
-from src.chat_agent import ChatAgent
+from src.supervisor import Supervisor
 from src.config import AppConfig
 from src.models import AgentResult, AgentOutput
 from src.adapters.base import AgentAdapter
@@ -65,13 +68,13 @@ def scripted_provider():
 
 @pytest.fixture
 async def eval_agent(eval_orchestrator, eval_config, scripted_provider):
-    """ChatAgent with ScriptedProvider + RecordingCommandHandler.
+    """Supervisor with ScriptedProvider + RecordingCommandHandler.
 
     Returns (agent, recorder, provider) tuple.
     The agent's handler is replaced with a RecordingCommandHandler so tests
     can inspect which tools were called.
     """
-    agent = ChatAgent(eval_orchestrator, eval_config)
+    agent = Supervisor(eval_orchestrator, eval_config)
     # Replace the provider directly (bypass initialize which needs real API)
     agent._provider = scripted_provider
 

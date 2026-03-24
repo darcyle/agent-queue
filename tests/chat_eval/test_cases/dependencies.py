@@ -1,6 +1,11 @@
-"""Test cases for task dependency management tools.
+"""Test cases for task dependency management tools (supervisor evaluation).
 
-Covers: get_task_dependencies, add_dependency, remove_dependency, get_chain_health
+Covers: get_task_dependencies, add_dependency, remove_dependency, get_chain_health.
+
+13 test cases: verified against current supervisor-based architecture.
+Dependencies control task execution order in the queue.
+
+Updated: supervisor refactor review — all tests confirmed relevant; no outdated patterns.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty

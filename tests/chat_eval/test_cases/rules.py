@@ -1,6 +1,13 @@
-"""Test cases for rule and tool-discovery tools: browse_rules, load_rule,
-save_rule, delete_rule, browse_tools, load_tools, process_task_completion,
-send_message.
+"""Test cases for rule and tool-discovery tools (supervisor evaluation).
+
+Covers: browse_rules, load_rule, save_rule, delete_rule, browse_tools,
+load_tools, process_task_completion, send_message.
+
+9 test cases: verified against current supervisor-based architecture.
+Rules are active automation policies; browse_tools/load_tools enable
+on-demand tool category loading — a core supervisor capability.
+
+Updated: supervisor refactor review — added rule creation and modification tests.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty
@@ -150,6 +157,76 @@ CASES: list[TestCase] = [
             Turn(
                 user_message="send a message to the task thread saying 'build passed'",
                 expected_tools=[ExpectedTool(name="send_message")],
+            ),
+        ],
+    ),
+
+    # -----------------------------------------------------------------------
+    # Supervisor-specific rule management (post-refactor additions)
+    # -----------------------------------------------------------------------
+
+    # --- save_rule with natural language ---
+    TestCase(
+        id="rule-save-natural",
+        description="Create a rule using natural language description",
+        category="rules",
+        difficulty=Difficulty.MEDIUM,
+        tags=["save_rule", "natural-language"],
+        turns=[
+            Turn(
+                user_message="create a rule that runs tests after every task completion",
+                expected_tools=[ExpectedTool(name="save_rule")],
+            ),
+        ],
+    ),
+
+    # --- delete_rule by name ---
+    TestCase(
+        id="rule-delete-by-name",
+        description="Delete a rule by referencing its name",
+        category="rules",
+        difficulty=Difficulty.EASY,
+        tags=["delete_rule"],
+        turns=[
+            Turn(
+                user_message="delete the rule called post-task-tests",
+                expected_tools=[
+                    ExpectedTool(name="delete_rule", args={"rule_name": "post-task-tests"}),
+                ],
+            ),
+        ],
+    ),
+
+    # --- browse_rules for specific project ---
+    TestCase(
+        id="rule-browse-project",
+        description="Browse rules scoped to a specific project",
+        category="rules",
+        difficulty=Difficulty.EASY,
+        tags=["browse_rules", "project-scope"],
+        setup_commands=[("create_project", {"name": "RuleProj"})],
+        active_project="p-1",
+        turns=[
+            Turn(
+                user_message="what rules are active for this project?",
+                expected_tools=[ExpectedTool(name="browse_rules")],
+            ),
+        ],
+    ),
+
+    # --- load_rule to inspect details ---
+    TestCase(
+        id="rule-load-detail",
+        description="Load a specific rule to see its full definition",
+        category="rules",
+        difficulty=Difficulty.EASY,
+        tags=["load_rule"],
+        turns=[
+            Turn(
+                user_message="show me the details of the nightly-eval rule",
+                expected_tools=[
+                    ExpectedTool(name="load_rule", args={"rule_name": "nightly-eval"}),
+                ],
             ),
         ],
     ),

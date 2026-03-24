@@ -1,5 +1,11 @@
-"""Test cases for hook tools: create_hook, list_hooks, edit_hook, delete_hook,
-list_hook_runs, fire_hook.
+"""Test cases for hook tools (supervisor evaluation).
+
+Covers: create_hook, list_hooks, edit_hook, delete_hook, list_hook_runs, fire_hook.
+
+20 test cases: verified against current supervisor-based architecture.
+Hooks are automation triggers (periodic or event-driven) managed through the Supervisor.
+
+Updated: supervisor refactor review — all tests confirmed relevant; no outdated patterns.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty

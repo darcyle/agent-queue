@@ -1,6 +1,11 @@
-"""Test cases for agent management tools.
+"""Test cases for agent management tools (supervisor evaluation).
 
 Covers: list_agents, create_agent, edit_agent, pause_agent, resume_agent, delete_agent
+
+20 test cases: verified against current supervisor-based architecture.
+Agents are worker entities managed by the Supervisor and assigned tasks from the queue.
+
+Updated: supervisor refactor review — all tests confirmed relevant; no outdated patterns.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty

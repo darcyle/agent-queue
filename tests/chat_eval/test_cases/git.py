@@ -1,6 +1,13 @@
-"""Test cases for git tools: get_git_status, git_commit, git_push, git_create_branch,
+"""Test cases for git tools (supervisor evaluation).
+
+Covers: get_git_status, git_commit, git_push, git_pull, git_create_branch,
 git_merge, git_create_pr, git_changed_files, git_log, git_diff, checkout_branch,
 set_default_branch.
+
+40 test cases: verified against current supervisor-based architecture.
+Git tools are loaded on-demand via the 'git' tool category.
+
+Updated: supervisor refactor review — all tests confirmed relevant; no outdated patterns.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty

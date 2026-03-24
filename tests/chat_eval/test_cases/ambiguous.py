@@ -1,6 +1,12 @@
-"""Test cases with ambiguous or indirect phrasings where the correct tool is not obvious.
+"""Test cases with ambiguous or indirect phrasings (supervisor evaluation).
 
-These test higher-level reasoning about user intent. Many accept multiple valid tools.
+These test higher-level reasoning about user intent. Many accept multiple valid
+tools. The Supervisor must resolve ambiguity from natural language.
+
+25 test cases: verified against current supervisor-based architecture.
+
+Updated: supervisor refactor review — all tests confirmed relevant; added
+supervisor-specific ambiguous phrasing tests.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty
@@ -381,6 +387,53 @@ CASES: list[TestCase] = [
         ],
         category="ambiguous",
         tags=["tasks", "status", "indirect"],
+        difficulty=Difficulty.MEDIUM,
+    ),
+
+    # -----------------------------------------------------------------------
+    # Supervisor-specific ambiguous phrasings (post-refactor additions)
+    # -----------------------------------------------------------------------
+
+    TestCase(
+        id="ambiguous-supervisor-handle-it",
+        description="Vague delegation — 'handle it' should check status",
+        turns=[
+            Turn(
+                user_message="just handle it",
+                expected_tools=[ExpectedTool(name="get_status")],
+                not_expected_tools=["delete_task", "delete_project"],
+            ),
+        ],
+        category="ambiguous",
+        tags=["supervisor", "vague", "adversarial"],
+        difficulty=Difficulty.ADVERSARIAL,
+    ),
+    TestCase(
+        id="ambiguous-supervisor-anything-stuck",
+        description="Checking if anything needs attention — should inspect tasks or status",
+        turns=[
+            Turn(
+                user_message="is anything stuck or failing?",
+                expected_tools=[ExpectedTool(name="list_tasks")],
+                not_expected_tools=["delete_task", "create_task"],
+            ),
+        ],
+        category="ambiguous",
+        tags=["supervisor", "status", "indirect"],
+        difficulty=Difficulty.MEDIUM,
+    ),
+    TestCase(
+        id="ambiguous-supervisor-catch-me-up",
+        description="Briefing request — should provide recent events or status overview",
+        turns=[
+            Turn(
+                user_message="catch me up on what happened while I was away",
+                expected_tools=[ExpectedTool(name="get_recent_events")],
+                not_expected_tools=["create_task", "delete_task"],
+            ),
+        ],
+        category="ambiguous",
+        tags=["supervisor", "status", "events", "indirect"],
         difficulty=Difficulty.MEDIUM,
     ),
 ]

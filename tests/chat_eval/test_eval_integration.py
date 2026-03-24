@@ -2,6 +2,8 @@
 
 Parametrized over all test cases. Uses real ChatProvider from env vars.
 Run with: ANTHROPIC_API_KEY=... pytest tests/chat_eval/test_eval_integration.py -m eval -v
+
+Updated: ChatAgent → Supervisor (post-supervisor refactor).
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ import os
 
 import pytest
 
-from src.chat_agent import ChatAgent
+from src.supervisor import Supervisor
 from src.chat_providers import create_chat_provider
 from src.config import AppConfig, ChatProviderConfig
 from src.orchestrator import Orchestrator
@@ -42,7 +44,7 @@ def eval_provider_config():
 
 @pytest.fixture
 async def eval_setup(tmp_path, eval_provider_config):
-    """Set up orchestrator, provider, and fresh agent per test."""
+    """Set up orchestrator, provider, and fresh supervisor per test."""
     from tests.chat_eval.conftest import MockAdapterFactory
 
     config = AppConfig(
@@ -69,7 +71,7 @@ async def test_eval_case(eval_setup, case: TestCase):
     """Run a single eval case against a real LLM."""
     orch, config, provider = eval_setup
 
-    agent = ChatAgent(orch, config)
+    agent = Supervisor(orch, config)
     agent._provider = provider
 
     recorder = RecordingCommandHandler(orch, config)

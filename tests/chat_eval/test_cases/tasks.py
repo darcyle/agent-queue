@@ -1,7 +1,13 @@
-"""Test cases for task CRUD and inspection tools.
+"""Test cases for task CRUD and inspection tools (supervisor evaluation).
 
 Covers: list_tasks, list_active_tasks_all_projects, get_task_tree, create_task,
         get_task, edit_task, delete_task, get_task_result, get_task_diff, get_agent_error
+
+49 test cases: all verified against current supervisor-based architecture.
+Tasks are the core unit of work — users ask the Supervisor to create, inspect,
+and manage tasks which are then assigned to agents via the task queue.
+
+Updated: supervisor refactor review — all tests confirmed relevant; no outdated patterns.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty

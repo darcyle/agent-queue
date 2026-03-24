@@ -1,6 +1,8 @@
-"""Test orchestration and result collection for chat agent evaluation.
+"""Test orchestration and result collection for supervisor evaluation.
 
 Can be run as a module: python -m tests.chat_eval.runner --output tests/chat_eval/results/
+
+Updated: ChatAgent → Supervisor (post-supervisor refactor).
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ import os
 import sys
 import time
 
-from src.chat_agent import ChatAgent
+from src.supervisor import Supervisor
 from src.chat_providers.base import ChatProvider
 from src.config import AppConfig
 from src.orchestrator import Orchestrator
@@ -64,14 +66,14 @@ async def run_single_case(
 ) -> TestCaseResult:
     """Execute a single test case and evaluate results.
 
-    Each case gets a fresh ChatAgent to prevent cross-contamination.
+    Each case gets a fresh Supervisor to prevent cross-contamination.
     *max_tool_rounds* caps the tool-use loop in chat() — lower values
     fail faster when the model is off-track.
     """
     # Fresh agent per case — use a wrapper for verbose logging so we never
     # monkey-patch the shared provider object.
     wrapper = _VerboseProviderWrapper(provider) if verbose else None
-    agent = ChatAgent(orchestrator, config)
+    agent = Supervisor(orchestrator, config)
     agent._provider = wrapper if wrapper else provider
     agent._max_tool_rounds = max_tool_rounds
 

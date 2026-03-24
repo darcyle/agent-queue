@@ -1,4 +1,7 @@
-"""Core data types for the chat agent evaluation framework."""
+"""Core data types for the supervisor evaluation framework.
+
+Updated: terminology reflects supervisor-based architecture (post-refactor).
+"""
 
 from __future__ import annotations
 
