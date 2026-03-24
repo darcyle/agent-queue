@@ -644,10 +644,19 @@ class TestMemoryCompaction:
         tasks_dir = os.path.join(str(tmp_path), "memory", "proj", "tasks")
         os.makedirs(tasks_dir)
 
-        # Create medium-age files in the same ISO week (must be close enough
-        # in age to land in the same Mon-Sun window)
-        self._write_task_file(tasks_dir, "task-old1.md", "# Task 1\nSome work", age_days=8)
-        self._write_task_file(tasks_dir, "task-old2.md", "# Task 2\nMore work", age_days=10)
+        # Create medium-age files in the same ISO week.  We pick ages that
+        # land on the same Mon–Sun window regardless of what day the test runs
+        # by computing target dates that fall on Wed and Thu of the same week.
+        import datetime as _dt
+        today = _dt.date.today()
+        # Find a Wednesday that is 8-14 days ago (guaranteed medium tier)
+        days_since_wed = (today.weekday() - 2) % 7  # 0=Mon … 6=Sun; Wed=2
+        target_wed = today - _dt.timedelta(days=days_since_wed + 7)  # Wed of last-last week
+        target_thu = target_wed + _dt.timedelta(days=1)
+        age1 = (today - target_wed).days
+        age2 = (today - target_thu).days
+        self._write_task_file(tasks_dir, "task-old1.md", "# Task 1\nSome work", age_days=age1)
+        self._write_task_file(tasks_dir, "task-old2.md", "# Task 2\nMore work", age_days=age2)
 
         result = await mgr.compact("proj", str(tmp_path))
         assert result["status"] == "compacted"

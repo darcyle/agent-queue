@@ -1,6 +1,13 @@
-"""Test cases for system tools: get_status, get_recent_events, get_token_usage,
-read_file, run_command, search_files, restart_daemon, orchestrator_control,
-list_prompts, read_prompt, render_prompt.
+"""Test cases for system tools (supervisor evaluation).
+
+Covers: get_status, get_recent_events, get_token_usage, read_file, run_command,
+search_files, restart_daemon, orchestrator_control, list_prompts, read_prompt,
+render_prompt.
+
+28 test cases: verified against current supervisor-based architecture.
+System tools are loaded on-demand via the 'system' tool category.
+
+Updated: supervisor refactor review — all tests confirmed relevant; no outdated patterns.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty

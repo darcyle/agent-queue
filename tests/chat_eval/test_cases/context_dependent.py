@@ -1,8 +1,13 @@
-"""Test cases where behavior depends on the active_project context.
+"""Test cases where behavior depends on the active_project context (supervisor evaluation).
 
-These verify that when an active project is set, the LLM correctly passes the
+These verify that when an active project is set, the Supervisor correctly passes the
 project_id to tools that need it. Also tests behavior when no project is set,
 and context switching between projects across turns.
+
+12 test cases: verified against current supervisor-based architecture.
+Active project context is a core Supervisor concept set via set_active_project.
+
+Updated: supervisor refactor review — all tests confirmed relevant; no outdated patterns.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty

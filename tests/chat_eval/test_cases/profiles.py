@@ -1,4 +1,14 @@
-"""Test cases for agent profile management tools."""
+"""Test cases for agent profile management tools (supervisor evaluation).
+
+Covers: list_profiles, create_profile, get_profile, edit_profile, delete_profile,
+check_profile, install_profile, export_profile, import_profile, view_profile,
+regenerate_profile, list_available_tools.
+
+16 test cases: verified against current supervisor-based architecture.
+Profiles define agent configurations (model, tools, system prompt).
+
+Updated: supervisor refactor review — all tests confirmed relevant; no outdated patterns.
+"""
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty
 

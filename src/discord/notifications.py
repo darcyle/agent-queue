@@ -1387,28 +1387,31 @@ def format_plan_approval_embed(
     steps_json: str = "[]",
     raw_content: str = "",
     plan_url: str = "",
+    parsed_steps: list[dict] | None = None,
 ) -> discord.Embed:
     """Rich embed showing a plan awaiting user approval.
 
-    Displays the raw plan content (or a link to view it) so the user
-    can review before approving, requesting changes, or deleting.
-    When approved, the supervisor LLM will break the plan into tasks.
+    Shows a high-level summary and the list of tasks that will be
+    generated, with a link to the full plan for detailed review.
     """
+    # --- Build description: summary + plan link ---
     desc_lines = [
-        f"Task `{task.id}` generated an implementation plan.",
-        "",
+        f"Task `{task.id}` generated a **{len(parsed_steps or [])}-phase implementation plan**.",
     ]
 
+    # Extract a one-line summary from the plan title (first # heading)
+    if raw_content:
+        import re as _re
+        title_match = _re.match(r"^#\s+(.+)$", raw_content.strip(), _re.MULTILINE)
+        if title_match:
+            desc_lines.append(f"> {title_match.group(1).strip()}")
+
+    desc_lines.append("")
+
     if plan_url:
-        desc_lines.append(f"[**View Full Plan**]({plan_url})")
+        desc_lines.append(f"\U0001f4c4 [**View Full Plan**]({plan_url})")
         desc_lines.append("")
 
-    desc_lines.extend([
-        "Review the plan, then choose an action:",
-        "- **Approve Plan** — the supervisor will break this into subtasks",
-        "- **Request Changes** — reopen the task with your feedback",
-        "- **Delete Plan** — discard the plan and complete the task",
-    ])
     description = "\n".join(desc_lines)
 
     fields: list[tuple[str, str, bool]] = [
@@ -1416,25 +1419,36 @@ def format_plan_approval_embed(
         ("Project", f"`{task.project_id}`", True),
     ]
 
-    # Show a preview of the raw plan content
-    if raw_content:
-        # Extract a meaningful preview (first ~800 chars, stopping at a
-        # reasonable boundary)
+    # --- List the tasks that will be generated ---
+    if parsed_steps:
+        task_list_lines = []
+        for i, step in enumerate(parsed_steps, 1):
+            title = step.get("title", "Untitled")
+            # Truncate long titles
+            if len(title) > 80:
+                title = title[:77] + "..."
+            task_list_lines.append(f"`{i}.` {title}")
+
+        task_list = "\n".join(task_list_lines)
+        fields.append((
+            f"─── Subtasks ({len(parsed_steps)}) ───",
+            truncate(task_list, LIMIT_FIELD_VALUE),
+            False,
+        ))
+    elif raw_content:
+        # Fallback: no parsed steps available, show a brief preview
         preview = raw_content.strip()
-        if len(preview) > 800:
-            # Try to break at a line boundary
-            cut = preview[:800].rfind("\n")
-            if cut > 400:
+        if len(preview) > 400:
+            cut = preview[:400].rfind("\n")
+            if cut > 200:
                 preview = preview[:cut] + "\n..."
             else:
-                preview = preview[:800] + "..."
+                preview = preview[:400] + "..."
+        fields.append(("Preview", truncate(f"```md\n{preview}\n```", LIMIT_FIELD_VALUE), False))
 
-        fields.append(("─── Plan Preview ───", "\u200b", False))
-        fields.append(("Content", truncate(f"```md\n{preview}\n```", 1024), False))
-
-    # Link to full plan
-    if plan_url:
-        fields.append(("─── Full Plan ───", f"[View in browser]({plan_url})", False))
+    # Link to full plan (if not already in description)
+    if plan_url and not parsed_steps:
+        fields.append(("Full Plan", f"[View in browser]({plan_url})", False))
 
     _PLAN_APPROVAL_COLOR = 0xF39C12  # amber/orange to indicate "needs attention"
 

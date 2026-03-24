@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import time
 import urllib.request
 import uuid
 
@@ -34,6 +36,8 @@ class OllamaChatProvider(ChatProvider):
         self._client = AsyncOpenAI(base_url=base_url, api_key="ollama")
         self._model = model
         self._keep_alive = keep_alive
+        self._keep_alive_seconds = self._parse_duration(keep_alive)
+        self._last_request_at: float = 0.0  # monotonic timestamp of last successful response
         # Derive Ollama API root by stripping /v1 suffix
         self._ollama_api_root = base_url.rstrip("/").removesuffix("/v1")
 
@@ -44,10 +48,22 @@ class OllamaChatProvider(ChatProvider):
     async def is_model_loaded(self) -> bool:
         """Check if the configured model is currently loaded in Ollama.
 
-        Hits ``/api/ps`` to list running models.  Returns ``False`` if the
-        model is not in the list (cold start expected).  Fail-open: returns
-        ``True`` on any error so callers never block on a failed probe.
+        First checks whether we've communicated with the model recently
+        (within the keep_alive window).  If so, the model is guaranteed
+        to still be loaded and we skip the network probe entirely.
+
+        Otherwise hits ``/api/ps`` to list running models.  Returns
+        ``False`` if the model is not in the list (cold start / timed-out
+        model — reload will be needed).  Fail-open: returns ``True`` on
+        any error so callers never block on a failed probe.
         """
+        # Fast path: if we used the model recently, it's still loaded
+        if self._last_request_at > 0 and self._keep_alive_seconds > 0:
+            elapsed = time.monotonic() - self._last_request_at
+            # Use 90% of keep_alive as safety margin
+            if elapsed < self._keep_alive_seconds * 0.9:
+                return True
+
         def _probe() -> bool:
             url = f"{self._ollama_api_root}/api/ps"
             req = urllib.request.Request(url, method="GET")
@@ -87,6 +103,9 @@ class OllamaChatProvider(ChatProvider):
             kwargs["tools"] = anthropic_tools_to_openai(tools)
 
         resp = await self._client.chat.completions.create(**kwargs)
+        # Model just responded — record the time so is_model_loaded()
+        # can skip the /api/ps probe while the model is still warm.
+        self._last_request_at = time.monotonic()
 
         choice = resp.choices[0]
         content: list[TextBlock | ToolUseBlock] = []
@@ -106,6 +125,28 @@ class OllamaChatProvider(ChatProvider):
                 ))
 
         return ChatResponse(content=content)
+
+    @staticmethod
+    def _parse_duration(s: str) -> float:
+        """Parse an Ollama keep_alive duration string into seconds.
+
+        Supports Go-style durations (``1h``, ``30m``, ``5s``, ``1h30m``),
+        bare integers (seconds), ``-1`` (infinite), and ``0`` (immediate
+        unload).
+        """
+        s = s.strip()
+        if s == "-1":
+            return float("inf")
+        total = 0.0
+        for m in re.finditer(r"(\d+(?:\.\d+)?)\s*(h|m|s)", s):
+            val, unit = float(m.group(1)), m.group(2)
+            total += val * {"h": 3600, "m": 60, "s": 1}[unit]
+        if total == 0:
+            try:
+                total = float(s)  # bare number = seconds
+            except ValueError:
+                pass
+        return total
 
     @staticmethod
     def _convert_messages(messages: list[dict], system: str) -> list[dict]:

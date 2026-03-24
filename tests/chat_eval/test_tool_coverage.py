@@ -1,13 +1,16 @@
-"""Meta-tests to ensure all tools have test coverage and no typos exist."""
+"""Meta-tests to ensure all tools have test coverage and no typos exist.
+
+Updated: imports from src.supervisor instead of src.chat_agent (post-supervisor refactor).
+"""
 
 from __future__ import annotations
 
-from src.chat_agent import TOOLS
+from src.supervisor import TOOLS
 from tests.chat_eval.test_cases._loader import load_all_cases
 
 
 def _all_tool_names() -> set[str]:
-    """Extract all tool names from the TOOLS constant in chat_agent.py."""
+    """Extract all tool names from the TOOLS constant in supervisor.py."""
     return {tool["name"] for tool in TOOLS}
 
 

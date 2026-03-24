@@ -172,6 +172,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "approve_plan": "system",
     "reject_plan": "system",
     "delete_plan": "system",
+    "process_plan": "system",
     "skip_task": "system",
     "get_task_dependencies": "system",
     "add_dependency": "system",
@@ -994,6 +995,17 @@ _ALL_TOOL_DEFINITIONS = [
                 "task_id": {"type": "string", "description": "Task ID whose plan to delete"},
             },
             "required": ["task_id"],
+        },
+    },
+    {
+        "name": "process_plan",
+        "description": "Manually scan project workspaces for plan.md files and present them for approval. Use when the supervisor missed auto-detection or a plan was dropped into a workspace manually.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID to scan for plan files. Uses active project if omitted."},
+                "task_id": {"type": "string", "description": "Optional existing task ID to attach the plan to. If omitted, a new task is created."},
+            },
         },
     },
     {

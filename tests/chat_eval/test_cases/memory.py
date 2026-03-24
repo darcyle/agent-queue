@@ -1,4 +1,12 @@
-"""Test cases for memory tools: memory_search, memory_stats, memory_reindex."""
+"""Test cases for memory tools (supervisor evaluation).
+
+Covers: memory_search, memory_stats, memory_reindex, compact_memory.
+
+11 test cases: verified against current supervisor-based architecture.
+memory_search is a core tool (always loaded); other memory tools are on-demand.
+
+Updated: supervisor refactor review — all tests confirmed relevant; no outdated patterns.
+"""
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty
 

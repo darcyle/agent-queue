@@ -1,4 +1,13 @@
-"""Test cases for workspace management tools: add_workspace, list_workspaces, release_workspace, remove_workspace."""
+"""Test cases for workspace management tools (supervisor evaluation).
+
+Covers: add_workspace, list_workspaces, find_merge_conflict_workspaces,
+sync_workspaces, remove_workspace, release_workspace.
+
+19 test cases: verified against current supervisor-based architecture.
+Workspaces are git working directories assigned to agents for task execution.
+
+Updated: supervisor refactor review — all tests confirmed relevant; no outdated patterns.
+"""
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty
 

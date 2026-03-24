@@ -2872,14 +2872,25 @@ class CommandHandler:
 
         logger = logging.getLogger(__name__)
 
+        task_id = args.get("task_id")
+        workspace_path = args.get("workspace_path")
+
+        logger.info(
+            "process_task_completion: starting plan discovery for task %s "
+            "(workspace=%s)",
+            task_id, workspace_path,
+        )
+
         config = self.orchestrator.config.auto_task
 
         # Check if auto_task is enabled
         if not config.enabled:
+            logger.info(
+                "process_task_completion: auto-task disabled, skipping plan "
+                "discovery for task %s",
+                task_id,
+            )
             return {"plan_found": False, "reason": "Auto-task generation is disabled"}
-
-        task_id = args.get("task_id")
-        workspace_path = args.get("workspace_path")
 
         if not task_id or not workspace_path:
             return {"plan_found": False, "reason": "Missing required parameters"}
@@ -2919,7 +2930,18 @@ class CommandHandler:
         plan_file = plan_parser.find_plan_file(workspace_path, plan_patterns)
 
         if not plan_file:
+            logger.info(
+                "process_task_completion: no plan file found for task %s "
+                "(searched patterns: %s in %s)",
+                task_id, plan_patterns, workspace_path,
+            )
             return {"plan_found": False, "reason": "No plan file found"}
+
+        logger.info(
+            "process_task_completion: found plan file %s for task %s — "
+            "running validation checks",
+            plan_file, task_id,
+        )
 
         # Staleness check: compare the plan file's mtime against the
         # recorded execution start time.  If the plan file predates the
@@ -2992,6 +3014,12 @@ class CommandHandler:
             )
         except Exception as e:
             logger.warning("Failed to store plan context for task %s: %s", task_id, e)
+
+        logger.info(
+            "process_task_completion: plan stored for task %s — "
+            "plan_found=True, archived=%s, content_length=%d",
+            task_id, archived_path, len(content),
+        )
 
         return {
             "plan_found": True,
@@ -3268,6 +3296,175 @@ class CommandHandler:
             "title": task.title,
             "status": "COMPLETED",
         }
+
+    async def _cmd_process_plan(self, args: dict) -> dict:
+        """Manually scan project workspaces for plan files and present for approval.
+
+        This allows users to trigger plan processing via Discord when the
+        supervisor misses auto-detection (e.g. the task completed without
+        a plan file being detected, or a plan was dropped into a workspace
+        manually).
+
+        If a specific task_id is provided, the plan is attached to that task.
+        Otherwise a new synthetic "plan" task is created to hold the plan.
+        """
+        from src.plan_parser import find_plan_file, read_plan_file
+
+        project_id = args.get("project_id") or self._active_project_id
+        if not project_id:
+            return {"error": "project_id is required (no active project set)"}
+
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"error": f"Project '{project_id}' not found"}
+
+        # Scan all workspaces for the project
+        workspaces = await self.db.list_workspaces(project_id=project_id)
+        if not workspaces:
+            return {"error": f"No workspaces found for project '{project_id}'"}
+
+        plan_patterns = self.orchestrator.config.auto_task.plan_file_patterns
+
+        found_plans: list[dict] = []
+        for ws in workspaces:
+            if not ws.workspace_path or not os.path.isdir(ws.workspace_path):
+                continue
+            plan_path = find_plan_file(ws.workspace_path, plan_patterns)
+            if plan_path:
+                try:
+                    raw = read_plan_file(plan_path)
+                    if raw and raw.strip():
+                        found_plans.append({
+                            "workspace": ws,
+                            "plan_path": plan_path,
+                            "raw_content": raw,
+                        })
+                except Exception as e:
+                    logger.warning(
+                        "process_plan: failed to read plan file %s: %s",
+                        plan_path, e,
+                    )
+
+        if not found_plans:
+            return {
+                "status": "no_plans_found",
+                "project_id": project_id,
+                "workspaces_scanned": len(workspaces),
+                "message": f"No plan files found in {len(workspaces)} workspace(s) for project '{project_id}'",
+            }
+
+        # Process the first plan found (most common case: one workspace)
+        plan_info = found_plans[0]
+        ws = plan_info["workspace"]
+        plan_path = plan_info["plan_path"]
+        raw = plan_info["raw_content"]
+
+        # If a task_id is provided, attach the plan to that task
+        task_id = args.get("task_id")
+        if task_id:
+            task = await self.db.get_task(task_id)
+            if not task:
+                return {"error": f"Task '{task_id}' not found"}
+            if task.status == TaskStatus.AWAITING_PLAN_APPROVAL:
+                return {"error": f"Task '{task_id}' already has a plan awaiting approval"}
+        else:
+            # Create a synthetic task to hold the plan
+            task_id = await generate_task_id(self.db)
+            # Extract a title from the plan content (first heading or filename)
+            plan_title = "Manual plan processing"
+            for line in raw.splitlines():
+                line = line.strip()
+                if line.startswith("# "):
+                    plan_title = line[2:].strip()
+                    break
+
+            task = Task(
+                id=task_id,
+                project_id=project_id,
+                title=plan_title,
+                description=f"Plan discovered via manual /process-plan command.\n\nSource: `{plan_path}`",
+                priority=100,
+                status=TaskStatus.READY,
+                task_type=TaskType.PLAN,
+            )
+            await self.db.create_task(task)
+            logger.info(
+                "process_plan: created synthetic task %s for plan in %s",
+                task_id, plan_path,
+            )
+
+        # Archive the plan file
+        archived_path = None
+        try:
+            plans_dir = os.path.join(ws.workspace_path, ".claude", "plans")
+            os.makedirs(plans_dir, exist_ok=True)
+            archived_path = os.path.join(plans_dir, f"{task_id}-plan.md")
+            os.rename(plan_path, archived_path)
+            logger.info("process_plan: archived plan to %s", archived_path)
+        except OSError as e:
+            logger.warning("process_plan: failed to archive plan %s: %s", plan_path, e)
+
+        # Store the raw plan content as task_context
+        await self.db.add_task_context(
+            task_id,
+            type="plan_raw",
+            label="Plan Raw Content",
+            content=raw,
+        )
+        if archived_path:
+            await self.db.add_task_context(
+                task_id,
+                type="plan_archived_path",
+                label="Plan Archived Path",
+                content=archived_path,
+            )
+
+        # Transition to AWAITING_PLAN_APPROVAL
+        await self.db.transition_task(
+            task_id,
+            TaskStatus.AWAITING_PLAN_APPROVAL,
+            context="manual_process_plan",
+        )
+
+        await self.db.log_event(
+            "plan_discovered",
+            project_id=project_id,
+            task_id=task_id,
+            payload=f"Manual plan processing triggered — plan found at {plan_path}",
+        )
+
+        # Notify channel with approval embed
+        try:
+            from src.discord.notifications import format_plan_approval_embed, PlanApprovalView
+
+            plan_view = PlanApprovalView(task_id, handler=self)
+            plan_embed = format_plan_approval_embed(
+                task=task if not args.get("task_id") else await self.db.get_task(task_id),
+                raw_content=raw,
+            )
+            await self.orchestrator._notify_channel(
+                "",
+                project_id=project_id,
+                embed=plan_embed,
+                view=plan_view,
+            )
+        except Exception as e:
+            logger.warning("process_plan: failed to send approval notification: %s", e)
+
+        result = {
+            "status": "plan_found",
+            "task_id": task_id,
+            "project_id": project_id,
+            "plan_path": plan_path,
+            "title": task.title,
+        }
+        if len(found_plans) > 1:
+            result["additional_plans"] = len(found_plans) - 1
+            result["note"] = (
+                f"Found {len(found_plans)} plan files total. "
+                f"Processing the first one. Run again to process others."
+            )
+        return result
 
     async def _cmd_set_task_status(self, args: dict) -> dict:
         task_id = args["task_id"]

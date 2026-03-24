@@ -1,6 +1,12 @@
-"""Test cases for task lifecycle/workflow tools.
+"""Test cases for task lifecycle/workflow tools (supervisor evaluation).
 
-Covers: stop_task, restart_task, reopen_with_feedback, approve_task, skip_task
+Covers: stop_task, restart_task, reopen_with_feedback, approve_task, skip_task,
+approve_plan, reject_plan, delete_plan.
+
+24 test cases: verified against current supervisor-based architecture.
+These test the core task state machine that the Supervisor controls.
+
+Updated: supervisor refactor review — all tests confirmed relevant; no outdated patterns.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty

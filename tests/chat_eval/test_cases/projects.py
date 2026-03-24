@@ -1,7 +1,13 @@
-"""Test cases for project management tools.
+"""Test cases for project management tools (supervisor evaluation).
 
 Covers: list_projects, create_project, pause_project, resume_project,
         edit_project, get_project_channels, get_project_for_channel, delete_project
+
+26 test cases: verified against current supervisor-based architecture.
+Projects are the top-level organizational unit. The Supervisor manages them
+and uses the active_project context for scoped operations.
+
+Updated: supervisor refactor review — all tests confirmed relevant; no outdated patterns.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty
