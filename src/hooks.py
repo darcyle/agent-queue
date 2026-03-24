@@ -457,6 +457,12 @@ class HookEngine:
         The pipeline renders ``{{event.*}}`` placeholders in the prompt
         template, then invokes the supervisor LLM with full tool access.
 
+        Hook output is streamed into a dedicated Discord thread (matching
+        task execution behavior), keeping the main channel clean.  The thread
+        is created at the start and all progress/results are posted there.
+        A brief completion/failure notification is posted back to the main
+        channel as a reply to the thread-root message.
+
         Error handling: any exception is caught, logged, and recorded as a
         "failed" HookRun.  Individual hook failures do not propagate to the
         caller (tick/event handler).
@@ -472,9 +478,40 @@ class HookEngine:
         )
         await self.db.create_hook_run(run)
 
-        # Log to the project's chat channel that the hook is running
         orchestrator = getattr(self, "_orchestrator", None)
-        if orchestrator:
+
+        # Create a Discord thread for streaming hook output (mirrors task
+        # execution behavior).  Falls back to _notify_channel if thread
+        # creation is unavailable or fails.
+        thread_send = None
+        thread_main_notify = None
+        if orchestrator and getattr(orchestrator, "_create_thread", None):
+            try:
+                thread_name = f"🪝 Hook: {hook.name}"[:100]
+                initial_msg = (
+                    f"**Hook running** — trigger: `{trigger_reason}`\n"
+                    f"Project: `{hook.project_id}`"
+                )
+                thread_result = await orchestrator._create_thread(
+                    thread_name, initial_msg, hook.project_id, None,
+                )
+                if thread_result:
+                    thread_send, thread_main_notify = thread_result
+                    logger.debug(
+                        "Created thread for hook %s (%s)",
+                        hook.name, hook.id,
+                    )
+                else:
+                    logger.warning(
+                        "Thread creation returned None for hook %s", hook.name,
+                    )
+            except Exception as e:
+                logger.error(
+                    "Failed to create thread for hook %s: %s",
+                    hook.name, e, exc_info=True,
+                )
+        elif orchestrator:
+            # No thread callback — fall back to main channel notification
             await orchestrator._notify_channel(
                 f"🪝 Hook **{hook.name}** is running (trigger: `{trigger_reason}`).",
                 project_id=hook.project_id,
@@ -491,6 +528,9 @@ class HookEngine:
             async def _on_hook_progress(event: str, detail: str | None) -> None:
                 if event == "tool_use" and detail:
                     tool_labels.append(detail)
+                    # Stream tool-use updates into the thread
+                    if thread_send:
+                        await thread_send(f"🔧 `{detail}`")
 
             response, tokens = await self._invoke_llm(
                 hook, prompt, trigger_reason=trigger_reason,
@@ -509,19 +549,28 @@ class HookEngine:
                 "Hook %s completed, tokens=%d", hook.name, tokens
             )
 
-            # Notify completion with tool calls and response summary
-            if orchestrator:
-                parts = [f"🪝 Hook **{hook.name}** completed."]
-                if tool_labels:
-                    chain = " → ".join(f"`{t}`" for t in tool_labels)
-                    parts.append(f"🔧 {chain}")
-                if response:
-                    # Use a generous limit — _send_long_message handles
-                    # Discord's 2000-char message cap by splitting/attaching.
-                    summary = response if len(response) <= 4000 else response[:4000] + "…"
-                    parts.append(f"> {summary}")
+            # Build completion message
+            parts = [f"🪝 Hook **{hook.name}** completed."]
+            if tool_labels:
+                chain = " → ".join(f"`{t}`" for t in tool_labels)
+                parts.append(f"🔧 {chain}")
+            if response:
+                summary = response if len(response) <= 4000 else response[:4000] + "…"
+                parts.append(f"> {summary}")
+            completion_msg = "\n".join(parts)
+
+            if thread_send:
+                # Post full result in the thread
+                await thread_send(completion_msg)
+                # Post brief notification back to main channel
+                if thread_main_notify:
+                    brief = f"🪝 Hook **{hook.name}** completed — tokens: {tokens:,}"
+                    if tool_labels:
+                        brief += f" | tools: {len(tool_labels)}"
+                    await thread_main_notify(brief)
+            elif orchestrator:
                 await orchestrator._notify_channel(
-                    "\n".join(parts),
+                    completion_msg,
                     project_id=hook.project_id,
                 )
 
@@ -533,10 +582,21 @@ class HookEngine:
                 llm_response=str(e),
                 completed_at=time.time(),
             )
-            if orchestrator:
+            error_msg = f"🪝 Hook **{hook.name}** failed: {e}"
+            if thread_send:
+                try:
+                    await thread_send(error_msg)
+                except Exception:
+                    pass
+                if thread_main_notify:
+                    try:
+                        await thread_main_notify(error_msg)
+                    except Exception:
+                        pass
+            elif orchestrator:
                 try:
                     await orchestrator._notify_channel(
-                        f"🪝 Hook **{hook.name}** failed: {e}",
+                        error_msg,
                         project_id=hook.project_id,
                     )
                 except Exception:
