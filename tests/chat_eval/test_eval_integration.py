@@ -8,7 +8,9 @@ Updated: ChatAgent → Supervisor (post-supervisor refactor).
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -23,12 +25,38 @@ from tests.chat_eval.recording_handler import RecordingCommandHandler
 from tests.chat_eval.test_cases._loader import load_all_cases, case_ids
 from tests.chat_eval.test_cases._types import TestCase
 
-# Skip entire module if no API key
+
+def _has_eval_credentials() -> bool:
+    """Check if any valid credentials are available for eval tests.
+
+    Checks (in priority order):
+    1. ANTHROPIC_API_KEY env var
+    2. EVAL_PROVIDER env var (indicates a provider is explicitly configured)
+    3. Claude Code OAuth credentials (~/.claude/.credentials.json)
+    """
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return True
+    if os.environ.get("EVAL_PROVIDER"):
+        return True
+    # Check for Claude Code OAuth credentials
+    for name in (".credentials.json", "credentials.json"):
+        cred_path = Path.home() / ".claude" / name
+        if cred_path.exists():
+            try:
+                creds = json.loads(cred_path.read_text())
+                if creds.get("claudeAiOauth", {}).get("accessToken"):
+                    return True
+            except Exception:
+                pass
+    return False
+
+
+# Skip entire module if no credentials available
 pytestmark = [
     pytest.mark.eval,
     pytest.mark.skipif(
-        not os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("EVAL_PROVIDER"),
-        reason="No API key configured for eval tests",
+        not _has_eval_credentials(),
+        reason="No API key or OAuth credentials configured for eval tests",
     ),
 ]
 
