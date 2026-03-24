@@ -484,7 +484,6 @@ class HookEngine:
         # execution behavior).  Falls back to _notify_channel if thread
         # creation is unavailable or fails.
         thread_send = None
-        thread_main_notify = None
         if orchestrator and getattr(orchestrator, "_create_thread", None):
             try:
                 thread_name = f"🪝 Hook: {hook.name}"[:100]
@@ -496,7 +495,7 @@ class HookEngine:
                     thread_name, initial_msg, hook.project_id, None,
                 )
                 if thread_result:
-                    thread_send, thread_main_notify = thread_result
+                    thread_send, _thread_main_notify = thread_result
                     logger.debug(
                         "Created thread for hook %s (%s)",
                         hook.name, hook.id,
@@ -560,14 +559,10 @@ class HookEngine:
             completion_msg = "\n".join(parts)
 
             if thread_send:
-                # Post full result in the thread
+                # Post full result in the thread — no main-channel reply
+                # to avoid notification spam (the thread-root "Agent working"
+                # message already provides visibility; details live in-thread).
                 await thread_send(completion_msg)
-                # Post brief notification back to main channel
-                if thread_main_notify:
-                    brief = f"🪝 Hook **{hook.name}** completed — tokens: {tokens:,}"
-                    if tool_labels:
-                        brief += f" | tools: {len(tool_labels)}"
-                    await thread_main_notify(brief)
             elif orchestrator:
                 await orchestrator._notify_channel(
                     completion_msg,
@@ -588,11 +583,6 @@ class HookEngine:
                     await thread_send(error_msg)
                 except Exception:
                     pass
-                if thread_main_notify:
-                    try:
-                        await thread_main_notify(error_msg)
-                    except Exception:
-                        pass
             elif orchestrator:
                 try:
                     await orchestrator._notify_channel(

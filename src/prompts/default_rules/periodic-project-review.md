@@ -4,7 +4,7 @@
 Regularly review project health and catch issues before they become problems.
 
 ## Trigger
-Check every 15 minutes.
+Check every 30 minutes.
 
 ## Logic
 1. Check for stuck tasks (tasks in ASSIGNED or IN_PROGRESS for too long)
