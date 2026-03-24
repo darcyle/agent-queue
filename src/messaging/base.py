@@ -21,10 +21,7 @@ Lifecycle::
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from src.messaging.types import ThreadSendCallback
+from typing import Any
 
 
 class MessagingAdapter(ABC):
@@ -63,7 +60,7 @@ class MessagingAdapter(ABC):
         *,
         embed: Any = None,
         view: Any = None,
-    ) -> None:
+    ) -> Any:
         """Send a notification message to the appropriate channel/chat.
 
         Parameters
@@ -76,27 +73,25 @@ class MessagingAdapter(ABC):
             Platform-specific rich embed (Discord Embed, etc.).
         view:
             Platform-specific interactive view (Discord View, etc.).
+
+        Returns
+        -------
+        The platform-specific message object, or ``None`` if no channel was
+        available.
         """
 
     @abstractmethod
     async def create_task_thread(
         self,
-        task: Any,
-        project: Any,
-    ) -> tuple["ThreadSendCallback", "ThreadSendCallback"]:
+        thread_name: str,
+        initial_message: str,
+        project_id: str | None = None,
+        task_id: str | None = None,
+    ) -> Any:
         """Create a thread/topic for task output streaming.
 
-        Parameters
-        ----------
-        task:
-            The task model instance.
-        project:
-            The project model instance.
-
-        Returns
-        -------
-        tuple[ThreadSendCallback, ThreadSendCallback]
-            ``(send_to_thread, notify_main_channel)`` callback pair.
+        Returns platform-specific callback(s) for sending messages into the
+        thread, or ``None`` if no channel is available.
         """
 
     # -------------------------------------------------------------------

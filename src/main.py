@@ -7,9 +7,10 @@ Startup sequence:
      - Applies environment-specific overlay (config.{env}.yaml) if present
   3. Initialize the Orchestrator (database, event bus, scheduler)
   4. Start the health check HTTP server (if enabled)
-  5. Start the Discord bot (connects to gateway, registers commands)
-  6. Run the scheduler loop (~5s cycle: promote tasks, assign agents, execute)
-  7. Wait for SIGTERM/SIGINT to trigger graceful shutdown
+  5. Start the messaging adapter (Discord, Telegram, etc.) via factory
+  6. Register orchestrator callbacks through the adapter (platform-agnostic)
+  7. Run the scheduler loop (~5s cycle: promote tasks, assign agents, execute)
+  8. Wait for SIGTERM/SIGINT to trigger graceful shutdown
 
 On shutdown, the bot, health check server, and orchestrator are closed cleanly.
 If a restart was requested (via the /restart Discord command), the process
@@ -114,6 +115,17 @@ async def run(config_path: str, profile: str | None = None) -> bool:
     async def run_scheduler():
         # Wait for the messaging adapter to be ready before scheduling
         await adapter.wait_until_ready()
+
+        # Register orchestrator callbacks through the adapter.
+        # This is done here (rather than inside on_ready) so the
+        # registration path is platform-agnostic.  The Discord bot's
+        # on_ready handler detects these are already set and skips
+        # its own registration.
+        orch.set_notify_callback(adapter.send_message)
+        orch.set_create_thread_callback(adapter.create_task_thread)
+        orch.set_command_handler(adapter.get_command_handler())
+        orch.set_supervisor(adapter.get_supervisor())
+
         while not shutdown_event.is_set():
             await orch.run_one_cycle()
             try:

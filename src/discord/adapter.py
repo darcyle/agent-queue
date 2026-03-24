@@ -13,7 +13,6 @@ from src.messaging.base import MessagingAdapter
 
 if TYPE_CHECKING:
     from src.config import AppConfig
-    from src.messaging.types import ThreadSendCallback
     from src.orchestrator import Orchestrator
 
 
@@ -34,6 +33,11 @@ class DiscordMessagingAdapter(MessagingAdapter):
 
         self._bot = AgentQueueBot(config, orchestrator)
         self._config = config
+
+    @property
+    def bot(self) -> Any:
+        """Direct access to the underlying bot for Discord-specific needs."""
+        return self._bot
 
     # -------------------------------------------------------------------
     # Lifecycle
@@ -62,33 +66,21 @@ class DiscordMessagingAdapter(MessagingAdapter):
         *,
         embed: Any = None,
         view: Any = None,
-    ) -> None:
+    ) -> Any:
         """Send a notification to the appropriate Discord channel."""
-        await self._bot._send_message(text, project_id, embed=embed, view=view)
+        return await self._bot._send_message(text, project_id, embed=embed, view=view)
 
     async def create_task_thread(
         self,
-        task: Any,
-        project: Any,
-    ) -> tuple["ThreadSendCallback", "ThreadSendCallback"]:
-        """Create a Discord thread for task output streaming.
-
-        Returns ``(send_to_thread, notify_main_channel)`` callback pair.
-        """
-        task_title = getattr(task, "title", None) or getattr(task, "id", "task")
-        project_id = getattr(project, "id", None)
-        task_id = getattr(task, "id", None)
-        thread_name = str(task_title)[:100]
-        initial_message = f"Agent working on: {task_title}"
-
-        result = await self._bot._create_task_thread(
-            thread_name, initial_message, project_id, task_id
+        thread_name: str,
+        initial_message: str,
+        project_id: str | None = None,
+        task_id: str | None = None,
+    ) -> Any:
+        """Create a Discord thread for task output streaming."""
+        return await self._bot._create_task_thread(
+            thread_name, initial_message, project_id=project_id, task_id=task_id
         )
-        if result is None:
-            async def noop(text: str) -> None:
-                pass
-            return noop, noop
-        return result
 
     # -------------------------------------------------------------------
     # Component access
