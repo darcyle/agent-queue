@@ -3556,14 +3556,25 @@ class Orchestrator:
                 if health_server and self.config.health_check.enabled:
                     plan_url = health_server.get_plan_url(task.id)
 
+                # Parse the plan into steps so we can show a task list
+                parsed_steps: list[dict] = []
+                if raw_ctx:
+                    from src.plan_parser import parse_plan as _parse_plan_for_embed
+                    _parsed = _parse_plan_for_embed(raw_ctx["content"])
+                    parsed_steps = [
+                        {"title": s.raw_title or s.title, "description": s.description}
+                        for s in _parsed.steps
+                        if s.title
+                    ]
+
                 plan_embed = format_plan_approval_embed(
                     task,
                     raw_content=raw_ctx["content"] if raw_ctx else "",
                     plan_url=plan_url,
+                    parsed_steps=parsed_steps,
                 )
                 await self._notify_channel(
-                    f"📋 **Plan Awaiting Approval:** Task `{task.id}` — {task.title}\n"
-                    f"A plan has been generated and needs your review before subtasks are created.",
+                    f"📋 **Plan ready for review:** `{task.id}` — {task.title}",
                     project_id=action.project_id,
                     embed=plan_embed,
                     view=plan_view,
