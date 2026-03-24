@@ -6292,6 +6292,76 @@ def setup_commands(bot: commands.Bot) -> None:
         await interaction.response.send_modal(modal)
 
     # ===================================================================
+    # PLAN PROCESSING
+    # ===================================================================
+
+    @bot.tree.command(
+        name="process-plan",
+        description="Scan project workspaces for plan files and present for approval",
+    )
+    @app_commands.describe(
+        project_id="Project to scan (uses channel's project if omitted)",
+        task_id="Existing task to attach the plan to (creates new task if omitted)",
+    )
+    async def process_plan_command(
+        interaction: discord.Interaction,
+        project_id: str | None = None,
+        task_id: str | None = None,
+    ):
+        resolved_project = await _resolve_project_from_context(interaction, project_id)
+        if not resolved_project:
+            await _send_error(interaction, _NO_PROJECT_MSG)
+            return
+
+        await interaction.response.defer()
+
+        cmd_args: dict = {"project_id": resolved_project}
+        if task_id:
+            cmd_args["task_id"] = task_id
+
+        result = await handler.execute("process_plan", cmd_args)
+
+        if "error" in result:
+            await _send_error(interaction, result["error"], followup=True)
+            return
+
+        status = result.get("status")
+        if status == "no_plans_found":
+            await _send_info(
+                interaction,
+                "No Plans Found",
+                description=(
+                    f"Scanned {result.get('workspaces_scanned', 0)} workspace(s) "
+                    f"for project `{resolved_project}` — no plan files found.\n\n"
+                    "Plan files are expected at: `.claude/plan.md`, `plan.md`, "
+                    "`docs/plan.md`, `docs/plans/*.md`, or `plans/*.md`."
+                ),
+                followup=True,
+            )
+            return
+
+        # Plan found and queued for approval
+        desc_lines = [
+            f"📋 Found plan in workspace and queued for approval.",
+            f"",
+            f"**Task:** `{result['task_id']}`",
+            f"**Title:** {result.get('title', 'N/A')}",
+            f"**Source:** `{result.get('plan_path', 'N/A')}`",
+        ]
+        if result.get("additional_plans"):
+            desc_lines.append(
+                f"\n⚠️ {result['additional_plans']} additional plan file(s) found. "
+                f"Run `/process-plan` again to process them."
+            )
+
+        await _send_success(
+            interaction,
+            "Plan Queued for Approval",
+            description="\n".join(desc_lines),
+            followup=True,
+        )
+
+    # ===================================================================
     # INTERACTIVE MENU
     # ===================================================================
 
