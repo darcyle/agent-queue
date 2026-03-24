@@ -29,7 +29,7 @@ class TestDiscordAdapterABC:
         from src.discord.adapter import DiscordMessagingAdapter
         assert issubclass(DiscordMessagingAdapter, MessagingAdapter)
 
-    @patch("src.discord.adapter.AgentQueueBot")
+    @patch("src.discord.bot.AgentQueueBot")
     def test_instantiation(self, mock_bot_cls):
         """Adapter wraps an AgentQueueBot instance."""
         from src.discord.adapter import DiscordMessagingAdapter
@@ -51,7 +51,7 @@ class TestDiscordAdapterDelegation:
 
     @pytest.fixture
     def adapter(self):
-        with patch("src.discord.adapter.AgentQueueBot") as mock_bot_cls:
+        with patch("src.discord.bot.AgentQueueBot") as mock_bot_cls:
             config = MagicMock()
             config.discord.bot_token = "test-token"
             orch = MagicMock()
@@ -126,7 +126,7 @@ class TestDiscordAdapterDelegation:
 class TestFactoryCreatesDiscordAdapter:
     """create_messaging_adapter returns a DiscordMessagingAdapter for 'discord'."""
 
-    @patch("src.discord.adapter.AgentQueueBot")
+    @patch("src.discord.bot.AgentQueueBot")
     def test_factory_discord_default(self, mock_bot_cls):
         """Factory creates Discord adapter when messaging_platform is 'discord'."""
         config = MagicMock()
@@ -139,32 +139,33 @@ class TestFactoryCreatesDiscordAdapter:
         assert isinstance(result, DiscordMessagingAdapter)
         mock_bot_cls.assert_called_once_with(config, orch)
 
-    @patch("src.discord.adapter.AgentQueueBot")
-    def test_factory_discord_when_no_attribute(self, mock_bot_cls):
-        """Factory defaults to discord when messaging_platform attr is missing."""
+    def test_factory_raises_when_no_attribute(self):
+        """Factory raises when messaging_platform attr is missing."""
         config = MagicMock(spec=[])  # No attributes
         orch = MagicMock()
 
-        result = create_messaging_adapter(config, orch)
-
-        from src.discord.adapter import DiscordMessagingAdapter
-        assert isinstance(result, DiscordMessagingAdapter)
+        with pytest.raises(AttributeError):
+            create_messaging_adapter(config, orch)
 
     def test_factory_unsupported_platform(self):
         config = MagicMock()
         config.messaging_platform = "slack"
         orch = MagicMock()
 
-        with pytest.raises(ValueError, match="Unsupported messaging platform"):
+        with pytest.raises(ValueError, match="Unknown messaging platform"):
             create_messaging_adapter(config, orch)
 
-    def test_factory_telegram_not_implemented(self):
+    @patch("src.telegram.bot.TelegramBot")
+    def test_factory_telegram(self, mock_tg_bot_cls):
+        """Factory creates Telegram adapter when messaging_platform is 'telegram'."""
+        from src.telegram.adapter import TelegramMessagingAdapter
+
         config = MagicMock()
         config.messaging_platform = "telegram"
         orch = MagicMock()
 
-        with pytest.raises(NotImplementedError, match="Telegram adapter"):
-            create_messaging_adapter(config, orch)
+        result = create_messaging_adapter(config, orch)
+        assert isinstance(result, TelegramMessagingAdapter)
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +195,7 @@ class TestMessagingAdapterABCEnforcement:
 class TestCallbackRegistration:
     """Orchestrator callbacks are registered through the adapter path."""
 
-    @patch("src.discord.adapter.AgentQueueBot")
+    @patch("src.discord.bot.AgentQueueBot")
     def test_callbacks_set_through_adapter(self, mock_bot_cls):
         """Simulates what main.py does after adapter.wait_until_ready()."""
         from src.discord.adapter import DiscordMessagingAdapter
