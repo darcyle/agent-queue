@@ -381,12 +381,30 @@ class RuleManager:
             logger.info("No parseable trigger in rule %s", rule_id)
             return []
 
+        # Capture last_triggered_at from existing hooks before deleting,
+        # so periodic hooks don't re-fire immediately after reconciliation.
+        # We store the most recent timestamp per project_id since new hooks
+        # are created per-project.
+        prefix = f"rule-{rule_id}-"
+        preserved_timestamps: dict[str, float] = {}  # project_id -> last_triggered_at
+        try:
+            existing_hooks = await self._db.list_hooks_by_id_prefix(prefix)
+            for old_hook in existing_hooks:
+                if old_hook.last_triggered_at:
+                    prev = preserved_timestamps.get(old_hook.project_id, 0)
+                    if old_hook.last_triggered_at > prev:
+                        preserved_timestamps[old_hook.project_id] = old_hook.last_triggered_at
+        except Exception as e:
+            logger.debug(
+                "Could not read old hook timestamps for rule %s: %s",
+                rule_id, e,
+            )
+
         # Delete ALL hooks for this rule by ID prefix.  This catches
         # orphaned hooks left behind by concurrent reconciliation runs
         # (on_ready fires on every Discord reconnect, and two overlapping
         # reconciliations can each create hooks that the other doesn't
         # track in the frontmatter).
-        prefix = f"rule-{rule_id}-"
         try:
             deleted = await self._db.delete_hooks_by_id_prefix(prefix)
             if deleted:
@@ -460,6 +478,9 @@ class RuleManager:
 
         for pid in target_project_ids:
             hook_id = f"rule-{rule_id}-{uuid.uuid4().hex[:6]}"
+            # Restore last_triggered_at from the old hook (if any) so periodic
+            # hooks don't re-fire immediately after reconciliation/restart.
+            restored_ts = preserved_timestamps.get(pid)
             hook = Hook(
                 id=hook_id,
                 project_id=pid,
@@ -468,6 +489,7 @@ class RuleManager:
                 context_steps="[]",
                 prompt_template=prompt_template,
                 cooldown_seconds=trigger_config.get("interval_seconds", 3600) // 2,
+                last_triggered_at=restored_ts,
             )
             await self._db.create_hook(hook)
             all_hook_ids.append(hook_id)

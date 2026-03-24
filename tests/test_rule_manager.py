@@ -193,6 +193,7 @@ def mock_db():
     db.create_hook = AsyncMock()
     db.delete_hook = AsyncMock()
     db.get_hook = AsyncMock(return_value=None)
+    db.list_hooks_by_id_prefix = AsyncMock(return_value=[])
     return db
 
 
@@ -270,6 +271,48 @@ def test_reconcile_regenerates_hooks(rule_manager_with_db, mock_db):
     assert result["rules_scanned"] > 0
     assert result["hooks_regenerated"] > 0
     mock_db.create_hook.assert_called()
+
+
+def test_reconcile_preserves_last_triggered_at(storage_root, mock_db):
+    """Reconciliation preserves last_triggered_at from old hooks.
+
+    When hooks are deleted and recreated during reconciliation, the new hooks
+    should inherit the last_triggered_at timestamp from the old hooks so
+    periodic hooks don't re-fire immediately after a restart.
+    """
+    from src.models import Hook
+    from src.rule_manager import RuleManager
+
+    # Simulate an old hook with a recent last_triggered_at
+    old_timestamp = time.time() - 300  # 5 minutes ago
+    old_hook = Hook(
+        id="rule-my-rule-abc123",
+        project_id="proj",
+        name="Rule: My Rule",
+        trigger='{"type": "periodic", "interval_seconds": 3600}',
+        last_triggered_at=old_timestamp,
+    )
+    mock_db.list_hooks_by_id_prefix = AsyncMock(return_value=[old_hook])
+    mock_db.delete_hooks_by_id_prefix = AsyncMock(return_value=1)
+
+    rm = RuleManager(storage_root=storage_root, db=mock_db)
+
+    rm.save_rule(
+        id="my-rule",
+        project_id="proj",
+        rule_type="active",
+        content=(
+            "# My Rule\n\n## Trigger\nEvery 60 minutes."
+            "\n\n## Logic\nDo something."
+        ),
+    )
+
+    result = asyncio.run(rm.reconcile())
+    assert result["hooks_regenerated"] > 0
+
+    # The newly created hook should have the old timestamp
+    created_hook = mock_db.create_hook.call_args[0][0]
+    assert created_hook.last_triggered_at == old_timestamp
 
 
 def test_hook_generation_uses_llm_expansion(storage_root, mock_db):

@@ -1704,12 +1704,12 @@ class Database:
         await self._db.execute(
             "INSERT INTO hooks (id, project_id, name, enabled, trigger, "
             "context_steps, prompt_template, llm_config, cooldown_seconds, "
-            "max_tokens_per_run, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "max_tokens_per_run, last_triggered_at, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (hook.id, hook.project_id, hook.name, int(hook.enabled),
              hook.trigger, hook.context_steps, hook.prompt_template,
              hook.llm_config, hook.cooldown_seconds, hook.max_tokens_per_run,
-             now, now),
+             hook.last_triggered_at, now, now),
         )
         await self._db.commit()
 
@@ -1760,6 +1760,18 @@ class Database:
         await self._db.execute("DELETE FROM hook_runs WHERE hook_id = ?", (hook_id,))
         await self._db.execute("DELETE FROM hooks WHERE id = ?", (hook_id,))
         await self._db.commit()
+
+    async def list_hooks_by_id_prefix(self, prefix: str) -> list[Hook]:
+        """Return all hooks whose ID starts with *prefix*.
+
+        Used by the rule manager to capture last_triggered_at timestamps
+        before deleting and recreating hooks during reconciliation.
+        """
+        cursor = await self._db.execute(
+            "SELECT * FROM hooks WHERE id LIKE ?", (prefix + "%",)
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_hook(r) for r in rows]
 
     async def delete_hooks_by_id_prefix(self, prefix: str) -> int:
         """Delete all hooks whose ID starts with *prefix*.
