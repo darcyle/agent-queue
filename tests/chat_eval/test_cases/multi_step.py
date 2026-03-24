@@ -1,7 +1,13 @@
-"""Multi-turn conversation test cases where context from previous turns matters.
+"""Multi-turn conversation test cases for the Supervisor (context carry-over).
 
-Each TestCase contains multiple Turns that build on each other, testing the LLM's
-ability to carry forward context (project names, task IDs, etc.) across turns.
+Each TestCase contains multiple Turns that build on each other, testing the
+Supervisor's ability to carry forward context (project names, task IDs, etc.)
+across turns — essential for the supervisor-based workflow.
+
+20 test cases: verified against current supervisor-based architecture.
+
+Updated: supervisor refactor review — added supervisor-specific multi-step tests
+for task creation→approval and rule creation workflows.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty
@@ -490,5 +496,97 @@ CASES: list[TestCase] = [
         category="multi_step",
         tags=["workspace", "list", "release", "context-carry"],
         difficulty=Difficulty.HARD,
+    ),
+
+    # -----------------------------------------------------------------------
+    # Supervisor-specific multi-step workflows (post-refactor additions)
+    # -----------------------------------------------------------------------
+
+    # --- Create task then approve it ---
+    TestCase(
+        id="multi-create-task-then-approve",
+        description="Create a task requiring approval, then approve it after completion",
+        setup_commands=[("create_project", {"name": "ApprovalProj"})],
+        active_project="p-1",
+        turns=[
+            Turn(
+                user_message="create a task to refactor the auth module, require approval before merge",
+                expected_tools=[
+                    ExpectedTool(name="create_task", args={"require_approval": True}),
+                ],
+            ),
+            Turn(
+                user_message="looks good, approve that task",
+                expected_tools=[ExpectedTool(name="approve_task")],
+            ),
+        ],
+        category="multi_step",
+        tags=["task", "approval", "supervisor-workflow", "context-carry"],
+        difficulty=Difficulty.MEDIUM,
+    ),
+
+    # --- Create task then reopen with feedback ---
+    TestCase(
+        id="multi-create-task-then-reopen",
+        description="Create a task, then send it back for rework with feedback",
+        setup_commands=[("create_project", {"name": "ReworkProj"})],
+        active_project="p-1",
+        turns=[
+            Turn(
+                user_message="create a task to add unit tests for the scheduler",
+                expected_tools=[ExpectedTool(name="create_task")],
+            ),
+            Turn(
+                user_message="that task needs more work — also cover edge cases for empty queues",
+                expected_tools=[
+                    ExpectedTool(name="reopen_with_feedback"),
+                ],
+            ),
+        ],
+        category="multi_step",
+        tags=["task", "reopen", "feedback", "supervisor-workflow", "context-carry"],
+        difficulty=Difficulty.MEDIUM,
+    ),
+
+    # --- Search memory then create task from findings ---
+    TestCase(
+        id="multi-memory-search-then-task",
+        description="Search memory for context, then create a task based on findings",
+        setup_commands=[("create_project", {"name": "MemProj"})],
+        active_project="p-1",
+        turns=[
+            Turn(
+                user_message="search memory for recent test failures",
+                expected_tools=[ExpectedTool(name="memory_search")],
+            ),
+            Turn(
+                user_message="ok, create a task to fix those test failures",
+                expected_tools=[ExpectedTool(name="create_task")],
+            ),
+        ],
+        category="multi_step",
+        tags=["memory", "task", "supervisor-workflow", "context-carry"],
+        difficulty=Difficulty.MEDIUM,
+    ),
+
+    # --- Browse tools then load a category ---
+    TestCase(
+        id="multi-browse-tools-then-load",
+        description="Browse available tool categories, then load one",
+        turns=[
+            Turn(
+                user_message="what tool categories are available?",
+                expected_tools=[ExpectedTool(name="browse_tools")],
+            ),
+            Turn(
+                user_message="load the git tools",
+                expected_tools=[
+                    ExpectedTool(name="load_tools", args={"category": "git"}),
+                ],
+            ),
+        ],
+        category="multi_step",
+        tags=["tools", "browse", "load", "supervisor-workflow", "context-carry"],
+        difficulty=Difficulty.EASY,
     ),
 ]

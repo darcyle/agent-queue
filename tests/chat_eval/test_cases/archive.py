@@ -1,4 +1,11 @@
-"""Test cases for archive operations: archive_tasks, archive_task, list_archived, restore_task."""
+"""Test cases for archive operations (supervisor evaluation).
+
+Covers: archive_tasks, archive_task, list_archived, restore_task.
+
+12 test cases: verified against current supervisor-based architecture.
+
+Updated: supervisor refactor review — all tests confirmed relevant; no outdated patterns.
+"""
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty
 

@@ -1,4 +1,4 @@
-"""Deterministic tests for chat loop mechanics (no LLM needed).
+"""Deterministic tests for supervisor loop mechanics (no LLM needed).
 
 Uses ScriptedProvider to return pre-built responses. Tests verify:
 - Single tool call + text response
@@ -7,6 +7,8 @@ Uses ScriptedProvider to return pre-built responses. Tests verify:
 - Tool error propagation back to LLM
 - Active project in system prompt
 - History threading across turns
+
+Updated: ChatAgent → Supervisor (post-supervisor refactor).
 """
 
 from __future__ import annotations
@@ -338,10 +340,10 @@ class TestEmptyResponse:
 
     async def test_no_provider_raises(self):
         """Test that chat() raises if provider not initialized."""
-        from src.chat_agent import ChatAgent
+        from src.supervisor import Supervisor
 
-        # Create agent without initializing provider
-        agent = ChatAgent.__new__(ChatAgent)
+        # Create supervisor without initializing provider
+        agent = Supervisor.__new__(Supervisor)
         agent._provider = None
 
         with pytest.raises(RuntimeError, match="LLM provider not initialized"):

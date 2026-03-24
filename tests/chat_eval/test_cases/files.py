@@ -1,5 +1,11 @@
-"""Test cases for filesystem tools: read_file, write_file, edit_file,
-glob_files, grep, search_files, list_directory.
+"""Test cases for filesystem tools (supervisor evaluation).
+
+Covers: read_file, write_file, edit_file, glob_files, grep, search_files, list_directory.
+
+8 test cases: verified against current supervisor-based architecture.
+File tools are loaded on-demand via the 'files' tool category.
+
+Updated: supervisor refactor review — all tests confirmed relevant; no outdated patterns.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty
