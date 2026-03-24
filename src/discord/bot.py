@@ -58,6 +58,9 @@ class CachedMessage:
     content: str
     created_at: float    # UTC timestamp
     attachment_paths: list[str] | None = None  # local paths to downloaded attachments
+    reference_id: int | None = None        # message ID this is replying to (Discord reply)
+    reference_author: str | None = None    # author of the referenced message
+    reference_snippet: str | None = None   # first ~120 chars of the referenced message
 
 
 class AgentQueueBot(commands.Bot):
@@ -1047,6 +1050,16 @@ class AgentQueueBot(commands.Bot):
         if len(buf) > COMPACT_THRESHOLD:
             self._maybe_trigger_summarization(channel_id)
 
+    def _find_cached_message(self, channel_id: int, message_id: int) -> CachedMessage | None:
+        """Look up a message by ID in the channel's local buffer."""
+        buf = self._channel_buffers.get(channel_id)
+        if not buf:
+            return None
+        for m in reversed(buf):  # recent messages more likely to be referenced
+            if m.id == message_id:
+                return m
+        return None
+
     def _maybe_trigger_summarization(self, channel_id: int) -> None:
         """Start a background summarization task if none is already running."""
         existing = self._summarization_tasks.get(channel_id)
@@ -1085,7 +1098,10 @@ class AgentQueueBot(commands.Bot):
 
         lines = []
         for m in older:
-            lines.append(f"{m.author_name}: {m.content}")
+            prefix = ""
+            if m.reference_author and m.reference_snippet:
+                prefix = f"(replying to {m.reference_author}: \"{m.reference_snippet[:60]}\") "
+            lines.append(f"{m.author_name}: {prefix}{m.content}")
         transcript = "\n".join(lines)
 
         summary = await self.agent.summarize(transcript)
@@ -1121,6 +1137,21 @@ class AgentQueueBot(commands.Bot):
         # both user AND bot messages for the local history cache.
         channel_id = message.channel.id
         if self._should_buffer(channel_id, message):
+            # Capture Discord reply reference so the LLM can follow
+            # reply chains (e.g. user replying to a bot message).
+            ref_id, ref_author, ref_snippet = None, None, None
+            if message.reference and message.reference.message_id:
+                ref_id = message.reference.message_id
+                # Try to get the referenced message content from cache first
+                ref_msg = self._find_cached_message(channel_id, ref_id)
+                if ref_msg:
+                    ref_author = ref_msg.author_name
+                    ref_snippet = ref_msg.content[:120]
+                elif message.reference.resolved and isinstance(message.reference.resolved, discord.Message):
+                    # Discord sometimes pre-resolves the reference
+                    resolved = message.reference.resolved
+                    ref_author = "AgentQueue" if resolved.author == self.user else resolved.author.display_name
+                    ref_snippet = resolved.content[:120] if resolved.content else None
             self._append_to_buffer(channel_id, CachedMessage(
                 id=message.id,
                 author_name="AgentQueue" if message.author == self.user else message.author.display_name,
@@ -1128,6 +1159,9 @@ class AgentQueueBot(commands.Bot):
                 content=message.content,
                 created_at=message.created_at.timestamp(),
                 attachment_paths=downloaded_paths or None,
+                reference_id=ref_id,
+                reference_author=ref_author,
+                reference_snippet=ref_snippet,
             ))
 
         # Emit chat.message event for the chat observer (before any guards).
@@ -1458,14 +1492,34 @@ class AgentQueueBot(commands.Bot):
                     "content": "Understood, I have the conversation context.",
                 })
 
-        # Add recent messages verbatim
+        # Add recent messages verbatim, with reply-chain annotations
         for msg in recent:
+            # Build reply context prefix so the LLM can follow reply chains
+            reply_prefix = ""
+            if msg.reference_id:
+                if msg.reference_author and msg.reference_snippet:
+                    reply_prefix = (
+                        f"[replying to {msg.reference_author}: "
+                        f"\"{msg.reference_snippet}\"]\n"
+                    )
+                else:
+                    # Reference exists but content not cached — try buffer lookup
+                    ref = self._find_cached_message(channel_id, msg.reference_id)
+                    if ref:
+                        reply_prefix = (
+                            f"[replying to {ref.author_name}: "
+                            f"\"{ref.content[:120]}\"]\n"
+                        )
+                    else:
+                        reply_prefix = "[replying to an earlier message]\n"
+
             if msg.is_bot:
-                messages.append({"role": "assistant", "content": msg.content})
+                content = f"{reply_prefix}{msg.content}" if reply_prefix else msg.content
+                messages.append({"role": "assistant", "content": content})
             else:
                 messages.append({
                     "role": "user",
-                    "content": f"[from {msg.author_name}]: {msg.content}",
+                    "content": f"{reply_prefix}[from {msg.author_name}]: {msg.content}",
                 })
 
         # Merge consecutive same-role messages (Anthropic API requirement)
@@ -1493,16 +1547,28 @@ class AgentQueueBot(commands.Bot):
             return
 
         buf = collections.deque(maxlen=MAX_HISTORY_MESSAGES)
+        # First pass: build messages without reference content
         for msg in raw:
+            ref_id = None
+            if msg.reference and msg.reference.message_id:
+                ref_id = msg.reference.message_id
             buf.append(CachedMessage(
                 id=msg.id,
                 author_name="AgentQueue" if msg.author == self.user else msg.author.display_name,
                 is_bot=msg.author == self.user,
                 content=msg.content,
                 created_at=msg.created_at.timestamp(),
+                reference_id=ref_id,
             ))
         self._channel_buffers[channel.id] = buf
         self._buffer_last_access[channel.id] = time.monotonic()
+        # Second pass: resolve reference authors/snippets from the buffer
+        for cached in buf:
+            if cached.reference_id:
+                ref = self._find_cached_message(channel.id, cached.reference_id)
+                if ref:
+                    cached.reference_author = ref.author_name
+                    cached.reference_snippet = ref.content[:120]
 
     async def _get_or_create_summary_from_cache(
         self, channel_id: int, older_messages: list[CachedMessage]
@@ -1520,10 +1586,13 @@ class AgentQueueBot(commands.Bot):
         if cached and cached[0] >= last_id:
             return cached[1]
 
-        # Build a transcript to summarize
+        # Build a transcript to summarize (include reply context)
         lines = []
         for msg in older_messages:
-            lines.append(f"{msg.author_name}: {msg.content}")
+            prefix = ""
+            if msg.reference_author and msg.reference_snippet:
+                prefix = f"(replying to {msg.reference_author}: \"{msg.reference_snippet[:60]}\") "
+            lines.append(f"{msg.author_name}: {prefix}{msg.content}")
         transcript = "\n".join(lines)
 
         summary = await self.agent.summarize(transcript)
