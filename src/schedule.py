@@ -341,3 +341,78 @@ def describe_schedule(schedule: dict) -> str:
         parts.append(f"on day(s) {dom_str}")
 
     return " ".join(parts) if parts else "No schedule constraints"
+
+
+def next_run_time(
+    schedule: dict[str, Any],
+    now: datetime | None = None,
+    last_run: datetime | None = None,
+    tolerance_seconds: int = 60,
+    max_lookahead_hours: int = 168,
+) -> datetime | None:
+    """Calculate when a schedule will next match.
+
+    Walks forward from *now* in one-minute increments until the schedule
+    matches, returning the first matching datetime.  Returns ``None`` if
+    no match is found within *max_lookahead_hours* (default 7 days).
+
+    Args:
+        schedule: Schedule dict (same format as ``matches_schedule``).
+        now: Current datetime (UTC). Defaults to utcnow().
+        last_run: Last run time, used for dedup checks.
+        tolerance_seconds: Passed through to ``matches_schedule``.
+        max_lookahead_hours: How many hours ahead to search.
+
+    Returns:
+        The next matching UTC datetime, or None.
+    """
+    from datetime import timedelta
+
+    if not schedule:
+        return None  # Pure interval hooks — no deterministic next time
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    # Snap to next whole minute to start scanning
+    candidate = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    end = now + timedelta(hours=max_lookahead_hours)
+
+    while candidate <= end:
+        if matches_schedule(schedule, now=candidate, last_run=last_run,
+                            tolerance_seconds=tolerance_seconds):
+            return candidate
+        candidate += timedelta(minutes=1)
+
+    return None
+
+
+def format_next_run(dt: datetime | None) -> str:
+    """Format a next-run datetime for human-readable display.
+
+    Returns a string like "in 2h 15m (14:30 UTC)" or "no upcoming run".
+    """
+    if dt is None:
+        return "no upcoming run"
+    from datetime import timedelta
+
+    now = datetime.now(timezone.utc)
+    delta = dt - now
+    if delta.total_seconds() < 0:
+        return f"overdue ({dt.strftime('%H:%M UTC')})"
+
+    total_minutes = int(delta.total_seconds()) // 60
+    hours, minutes = divmod(total_minutes, 60)
+    days, hours = divmod(hours, 24)
+
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes or not parts:
+        parts.append(f"{minutes}m")
+
+    return f"in {' '.join(parts)} ({dt.strftime('%H:%M UTC %a')})"

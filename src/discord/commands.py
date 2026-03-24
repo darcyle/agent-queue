@@ -967,6 +967,37 @@ class MenuView(discord.ui.View):
         await _send_long_interaction(msg, interaction.followup.send, view=view, ephemeral=True)
 
     @discord.ui.button(
+        label="Schedules",
+        style=discord.ButtonStyle.secondary,
+        emoji="📅",
+        row=1,
+    )
+    async def schedules_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        """Show upcoming hook executions with next-run times."""
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute("hook_schedules", {})
+        hooks = result.get("hooks", [])
+        if not hooks:
+            await interaction.followup.send(
+                "No scheduled periodic hooks found.", ephemeral=True
+            )
+            return
+
+        lines = ["**📅 Hook Schedules**\n"]
+        for h in hooks:
+            status_icon = "🟢" if "imminent" in h["next_run"] or "in 0m" in h["next_run"] else "🕐"
+            lines.append(
+                f"{status_icon} **{h['name']}** (`{h['hook_id']}`)\n"
+                f"    Schedule: {h['schedule']}\n"
+                f"    Last run: {h['last_run']} · Next: {h['next_run']}"
+            )
+        await _send_long_interaction(
+            "\n".join(lines), interaction.followup.send, ephemeral=True
+        )
+
+    @discord.ui.button(
         label="Toggle Orchestrator",
         style=discord.ButtonStyle.secondary,
         emoji="⏯️",

@@ -95,6 +95,25 @@ def _count_by(items, key_fn) -> dict[str, int]:
     return counts
 
 
+def _format_interval(seconds: int) -> str:
+    """Format an interval in seconds as a human-readable string (e.g. '2h 30m')."""
+    if seconds <= 0:
+        return "0s"
+    parts: list[str] = []
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, secs = divmod(seconds, 60)
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if secs and not parts:
+        parts.append(f"{secs}s")
+    return " ".join(parts) if parts else "0s"
+
+
 # ---------------------------------------------------------------------------
 # Tree-view text formatting
 # ---------------------------------------------------------------------------
@@ -5302,6 +5321,106 @@ class CommandHandler:
             return {"fired": hook_id, "status": "running"}
         except ValueError as e:
             return {"error": str(e)}
+
+    async def _cmd_hook_schedules(self, args: dict) -> dict:
+        """Show upcoming hook executions with human-readable next-run times.
+
+        Lists all enabled periodic hooks and their schedule constraints,
+        last run time, and when they are expected to fire next.
+        """
+        from src.schedule import (
+            describe_schedule,
+            format_next_run,
+            next_run_time,
+            parse_schedule,
+        )
+
+        project_id = args.get("project_id")
+        hooks = await self.db.list_hooks(project_id=project_id, enabled=True)
+        if not hooks:
+            return {"hooks": [], "message": "No enabled hooks found."}
+
+        results = []
+        for h in hooks:
+            try:
+                trigger = json.loads(h.trigger)
+            except (json.JSONDecodeError, TypeError):
+                trigger = {}
+
+            if trigger.get("type") != "periodic":
+                continue
+
+            schedule = parse_schedule(trigger)
+            interval = trigger.get("interval_seconds", 0)
+
+            # Build last-run info
+            last_run_str = "never"
+            last_dt = None
+            if h.last_triggered_at:
+                from datetime import datetime as _dt, timezone as _tz
+                last_dt = _dt.fromtimestamp(h.last_triggered_at, tz=_tz.utc)
+                ago_seconds = int(time.time() - h.last_triggered_at)
+                if ago_seconds < 60:
+                    last_run_str = f"{ago_seconds}s ago"
+                elif ago_seconds < 3600:
+                    last_run_str = f"{ago_seconds // 60}m ago"
+                elif ago_seconds < 86400:
+                    last_run_str = f"{ago_seconds // 3600}h {(ago_seconds % 3600) // 60}m ago"
+                else:
+                    last_run_str = f"{ago_seconds // 86400}d ago"
+
+            # Compute next run
+            if schedule:
+                nxt = next_run_time(schedule, last_run=last_dt)
+                next_str = format_next_run(nxt)
+                schedule_desc = describe_schedule(schedule)
+            else:
+                # Pure interval hook: next = last_run + interval
+                if h.last_triggered_at:
+                    from datetime import datetime as _dt, timezone as _tz
+                    nxt = _dt.fromtimestamp(
+                        h.last_triggered_at + interval, tz=_tz.utc
+                    )
+                    next_str = format_next_run(nxt)
+                else:
+                    next_str = "imminent (never run)"
+                schedule_desc = f"every {_format_interval(interval)}"
+
+            results.append({
+                "hook_id": h.id,
+                "name": h.name,
+                "project_id": h.project_id,
+                "schedule": schedule_desc,
+                "interval": _format_interval(interval),
+                "last_run": last_run_str,
+                "next_run": next_str,
+            })
+
+        return {"hooks": results}
+
+    async def _cmd_fire_all_scheduled_hooks(self, args: dict) -> dict:
+        """Manually trigger all scheduled hooks that match the current time."""
+        hooks_engine = self.orchestrator.hooks
+        if not hooks_engine:
+            return {"error": "Hook engine is not enabled"}
+
+        project_id = args.get("project_id")
+        hooks = await self.db.list_hooks(project_id=project_id, enabled=True)
+        fired = []
+        for h in hooks:
+            try:
+                trigger = json.loads(h.trigger)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if trigger.get("type") != "periodic":
+                continue
+            try:
+                await hooks_engine.fire_hook(h.id)
+                fired.append(h.name or h.id)
+            except (ValueError, RuntimeError):
+                pass
+
+        return {"fired": fired, "count": len(fired)}
 
     async def _cmd_toggle_project_hooks(self, args: dict) -> dict:
         """Enable or disable all hooks in a project."""
