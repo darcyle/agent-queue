@@ -201,6 +201,7 @@ CREATE TABLE IF NOT EXISTS hooks (
     llm_config TEXT,
     cooldown_seconds INTEGER NOT NULL DEFAULT 3600,
     max_tokens_per_run INTEGER,
+    last_triggered_at REAL,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -329,6 +330,7 @@ class Database:
             "ALTER TABLE archived_tasks ADD COLUMN preferred_workspace_id TEXT",
             "ALTER TABLE tasks ADD COLUMN attachments TEXT DEFAULT '[]'",
             "ALTER TABLE archived_tasks ADD COLUMN attachments TEXT DEFAULT '[]'",
+            "ALTER TABLE hooks ADD COLUMN last_triggered_at REAL",
         ]:
             try:
                 await self._db.execute(migration)
@@ -1771,6 +1773,7 @@ class Database:
             llm_config=row["llm_config"],
             cooldown_seconds=row["cooldown_seconds"],
             max_tokens_per_run=row["max_tokens_per_run"],
+            last_triggered_at=row["last_triggered_at"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

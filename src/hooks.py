@@ -126,12 +126,19 @@ class HookEngine:
         """
         self.bus.subscribe("*", self._on_event)
         self.bus.subscribe("config.reloaded", self._on_config_reloaded)
-        # Pre-populate last run times from DB
+        # Pre-populate last run times from DB.
+        # Prefer the hook's own last_triggered_at field (persisted directly on
+        # the hook row) over the hook_runs table.  This is faster and survives
+        # hook_run pruning.  Fall back to the most recent hook_run for hooks
+        # that existed before the last_triggered_at column was added.
         hooks = await self.db.list_hooks(enabled=True)
         for hook in hooks:
-            last_run = await self.db.get_last_hook_run(hook.id)
-            if last_run:
-                self._last_run_time[hook.id] = last_run.started_at
+            if hook.last_triggered_at:
+                self._last_run_time[hook.id] = hook.last_triggered_at
+            else:
+                last_run = await self.db.get_last_hook_run(hook.id)
+                if last_run:
+                    self._last_run_time[hook.id] = last_run.started_at
 
         # Initialize FileWatcher for file/folder change event hooks
         if self.config.hook_engine.file_watcher_enabled:
@@ -394,14 +401,26 @@ class HookEngine:
 
         Records the launch time immediately (before the task runs) so that
         cooldown checks in subsequent ticks/events see the hook as recently
-        fired.  The asyncio Task is stored in ``_running`` so ``tick()`` can
-        reap it and surface any exceptions.
+        fired.  The timestamp is persisted to the database so it survives
+        daemon restarts.  The asyncio Task is stored in ``_running`` so
+        ``tick()`` can reap it and surface any exceptions.
         """
-        self._last_run_time[hook.id] = time.time()
+        now = time.time()
+        self._last_run_time[hook.id] = now
+        # Persist to DB so the timestamp survives daemon restarts.
+        # Fire-and-forget — errors are logged but don't block hook launch.
+        asyncio.create_task(self._persist_last_triggered(hook.id, now))
         task = asyncio.create_task(
             self._execute_hook(hook, trigger_reason, event_data)
         )
         self._running[hook.id] = task
+
+    async def _persist_last_triggered(self, hook_id: str, ts: float) -> None:
+        """Persist last_triggered_at to the hooks table."""
+        try:
+            await self.db.update_hook(hook_id, last_triggered_at=ts)
+        except Exception as e:
+            logger.warning("Failed to persist last_triggered_at for hook %s: %s", hook_id, e)
 
     async def _execute_hook(
         self,
@@ -733,7 +752,9 @@ class HookEngine:
         if hook.id in self._running:
             raise ValueError(f"Hook '{hook_id}' is already running")
 
-        self._last_run_time[hook.id] = time.time()
+        now = time.time()
+        self._last_run_time[hook.id] = now
+        asyncio.create_task(self._persist_last_triggered(hook.id, now))
         task = asyncio.create_task(
             self._execute_hook(hook, "manual")
         )

@@ -518,3 +518,149 @@ class TestPausedProjectSkipping:
         await asyncio.sleep(0.1)
 
         assert hook.id not in engine._running
+
+
+# --- Persistence across restarts ---
+
+
+class TestLastTriggeredAtPersistence:
+    """Verify that hook last-run times survive daemon restarts."""
+
+    @pytest.mark.asyncio
+    async def test_last_triggered_at_persisted_on_launch(self, db, engine):
+        """_launch_hook should persist last_triggered_at to the DB."""
+        await _create_project(db)
+        hook = await _create_hook(
+            db,
+            trigger='{"type": "periodic", "interval_seconds": 10}',
+            cooldown_seconds=0,
+        )
+        engine._last_run_time.pop(hook.id, None)
+
+        # Fire the hook
+        await engine.tick()
+        assert hook.id in engine._running
+
+        # Give the fire-and-forget persist task time to complete
+        await asyncio.sleep(0.1)
+
+        # Verify the DB was updated
+        updated = await db.get_hook(hook.id)
+        assert updated.last_triggered_at is not None
+        assert updated.last_triggered_at > 0
+
+    @pytest.mark.asyncio
+    async def test_initialize_restores_from_last_triggered_at(self, db, bus, config):
+        """A new HookEngine should read last_triggered_at from the DB on init."""
+        await _create_project(db)
+        # Create a hook with a known last_triggered_at
+        past_time = time.time() - 500
+        hook = await _create_hook(
+            db,
+            trigger='{"type": "periodic", "interval_seconds": 3600}',
+            cooldown_seconds=3600,
+        )
+        await db.update_hook(hook.id, last_triggered_at=past_time)
+
+        # Create a fresh engine (simulates daemon restart)
+        engine2 = HookEngine(db, bus, config)
+        engine2._orchestrator = MagicMock()
+        engine2._orchestrator._notify_channel = AsyncMock()
+        await engine2.initialize()
+
+        # The engine should have restored the last run time from DB
+        assert hook.id in engine2._last_run_time
+        assert abs(engine2._last_run_time[hook.id] - past_time) < 0.01
+
+        await engine2.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_hook_respects_persisted_interval_after_restart(self, db, bus, config):
+        """After restart, a periodic hook should NOT fire if its interval hasn't elapsed."""
+        await _create_project(db)
+        recent_time = time.time() - 60  # 60 seconds ago
+        hook = await _create_hook(
+            db,
+            trigger='{"type": "periodic", "interval_seconds": 3600}',
+            cooldown_seconds=0,
+        )
+        await db.update_hook(hook.id, last_triggered_at=recent_time)
+
+        # Simulate a fresh daemon start
+        engine2 = HookEngine(db, bus, config)
+        engine2._orchestrator = MagicMock()
+        engine2._orchestrator._notify_channel = AsyncMock()
+        await engine2.initialize()
+
+        await engine2.tick()
+
+        # Hook should NOT have fired — interval not elapsed
+        assert hook.id not in engine2._running
+
+        await engine2.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_hook_fires_after_interval_elapsed_post_restart(self, db, bus, config):
+        """After restart, a periodic hook SHOULD fire if its interval has elapsed."""
+        await _create_project(db)
+        old_time = time.time() - 7200  # 2 hours ago
+        hook = await _create_hook(
+            db,
+            trigger='{"type": "periodic", "interval_seconds": 3600}',
+            cooldown_seconds=0,
+        )
+        await db.update_hook(hook.id, last_triggered_at=old_time)
+
+        # Simulate a fresh daemon start
+        engine2 = HookEngine(db, bus, config)
+        engine2._orchestrator = MagicMock()
+        engine2._orchestrator._notify_channel = AsyncMock()
+        await engine2.initialize()
+
+        await engine2.tick()
+
+        # Hook SHOULD have fired — interval has elapsed
+        assert hook.id in engine2._running
+
+        await engine2.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_fallback_to_hook_runs_if_no_last_triggered_at(self, db, bus, config):
+        """Hooks without last_triggered_at should fall back to hook_runs table."""
+        await _create_project(db)
+        hook = await _create_hook(
+            db,
+            trigger='{"type": "periodic", "interval_seconds": 3600}',
+            cooldown_seconds=3600,
+        )
+        # Don't set last_triggered_at, but create a hook_run
+        run_time = time.time() - 100
+        run = HookRun(
+            id="run-fallback", hook_id=hook.id, project_id="test-project",
+            trigger_reason="periodic", started_at=run_time,
+        )
+        await db.create_hook_run(run)
+
+        engine2 = HookEngine(db, bus, config)
+        engine2._orchestrator = MagicMock()
+        engine2._orchestrator._notify_channel = AsyncMock()
+        await engine2.initialize()
+
+        # Should have fallen back to hook_run's started_at
+        assert hook.id in engine2._last_run_time
+        assert abs(engine2._last_run_time[hook.id] - run_time) < 0.01
+
+        await engine2.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_manual_fire_persists_last_triggered_at(self, db, engine):
+        """fire_hook() should also persist last_triggered_at."""
+        await _create_project(db)
+        hook = await _create_hook(db, cooldown_seconds=0)
+
+        await engine.fire_hook(hook.id)
+        await asyncio.sleep(0.1)
+
+        updated = await db.get_hook(hook.id)
+        assert updated.last_triggered_at is not None
+        assert updated.last_triggered_at > 0

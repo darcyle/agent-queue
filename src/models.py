@@ -413,6 +413,7 @@ class Hook:
     llm_config: str | None = None  # JSON: {"provider": "anthropic", "model": "..."}
     cooldown_seconds: int = 3600
     max_tokens_per_run: int | None = None
+    last_triggered_at: float | None = None  # epoch seconds; persisted across restarts
     created_at: float = 0.0
     updated_at: float = 0.0
 
