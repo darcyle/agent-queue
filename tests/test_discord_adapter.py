@@ -90,7 +90,8 @@ class TestDiscordAdapterDelegation:
         adapter._bot._send_message.assert_awaited_once_with(
             "hello", "proj1", embed=embed, view=view
         )
-        assert result is adapter._bot._send_message.return_value
+        # send_message is fire-and-forget (returns None)
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_send_message_minimal(self, adapter):
@@ -102,11 +103,15 @@ class TestDiscordAdapterDelegation:
 
     @pytest.mark.asyncio
     async def test_create_task_thread_delegates(self, adapter):
-        result = await adapter.create_task_thread(
-            "thread-name", "initial msg", project_id="proj1", task_id="task1"
-        )
+        # create_task_thread now accepts (task, project) objects
+        task = MagicMock()
+        task.title = "thread-name"
+        task.id = "task1"
+        project = MagicMock()
+        project.id = "proj1"
+        result = await adapter.create_task_thread(task, project)
         adapter._bot._create_task_thread.assert_awaited_once_with(
-            "thread-name", "initial msg", project_id="proj1", task_id="task1"
+            "thread-name", "Agent working on: thread-name", "proj1", "task1"
         )
         assert result == ("send_cb", "notify_cb")
 
