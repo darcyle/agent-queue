@@ -3384,7 +3384,7 @@ class CommandHandler:
                 title=plan_title,
                 description=f"Plan discovered via manual /process-plan command.\n\nSource: `{plan_path}`",
                 priority=100,
-                status=TaskStatus.READY,
+                status=TaskStatus.AWAITING_PLAN_APPROVAL,
                 task_type=TaskType.PLAN,
             )
             await self.db.create_task(task)
@@ -3419,12 +3419,13 @@ class CommandHandler:
                 content=archived_path,
             )
 
-        # Transition to AWAITING_PLAN_APPROVAL
-        await self.db.transition_task(
-            task_id,
-            TaskStatus.AWAITING_PLAN_APPROVAL,
-            context="manual_process_plan",
-        )
+        # If we attached to an existing task, transition it to AWAITING_PLAN_APPROVAL
+        if args.get("task_id"):
+            await self.db.transition_task(
+                task_id,
+                TaskStatus.AWAITING_PLAN_APPROVAL,
+                context="manual_process_plan",
+            )
 
         await self.db.log_event(
             "plan_discovered",

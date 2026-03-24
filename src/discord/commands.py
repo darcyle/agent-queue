@@ -6308,12 +6308,12 @@ def setup_commands(bot: commands.Bot) -> None:
         project_id: str | None = None,
         task_id: str | None = None,
     ):
+        await interaction.response.defer()
+
         resolved_project = await _resolve_project_from_context(interaction, project_id)
         if not resolved_project:
-            await _send_error(interaction, _NO_PROJECT_MSG)
+            await _send_error(interaction, _NO_PROJECT_MSG, followup=True)
             return
-
-        await interaction.response.defer()
 
         cmd_args: dict = {"project_id": resolved_project}
         if task_id:

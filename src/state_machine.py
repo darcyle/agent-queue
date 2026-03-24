@@ -55,6 +55,7 @@ VALID_TASK_TRANSITIONS: dict[tuple[TaskStatus, TaskEvent], TaskStatus] = {
     (TaskStatus.AWAITING_APPROVAL, TaskEvent.PR_MERGED): TaskStatus.COMPLETED,
     # --- Plan approval lifecycle ---
     (TaskStatus.VERIFYING, TaskEvent.PLAN_FOUND): TaskStatus.AWAITING_PLAN_APPROVAL,
+    (TaskStatus.READY, TaskEvent.PLAN_FOUND): TaskStatus.AWAITING_PLAN_APPROVAL,  # manual /process-plan
     (TaskStatus.AWAITING_PLAN_APPROVAL, TaskEvent.PLAN_APPROVED): TaskStatus.COMPLETED,
     (TaskStatus.AWAITING_PLAN_APPROVAL, TaskEvent.PLAN_REJECTED): TaskStatus.READY,
     (TaskStatus.AWAITING_PLAN_APPROVAL, TaskEvent.PLAN_DELETED): TaskStatus.COMPLETED,
