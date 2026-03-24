@@ -3433,6 +3433,11 @@ class CommandHandler:
             payload=f"Manual plan processing triggered — plan found at {plan_path}",
         )
 
+        # Parse the plan to extract phases for the approval embed
+        from src.plan_parser import parse_and_generate_steps
+
+        parsed_steps, _quality = parse_and_generate_steps(raw)
+
         # Notify channel with approval embed
         try:
             from src.discord.notifications import format_plan_approval_embed, PlanApprovalView
@@ -3441,6 +3446,7 @@ class CommandHandler:
             plan_embed = format_plan_approval_embed(
                 task=task if not args.get("task_id") else await self.db.get_task(task_id),
                 raw_content=raw,
+                parsed_steps=parsed_steps,
             )
             await self.orchestrator._notify_channel(
                 "",
@@ -3457,6 +3463,7 @@ class CommandHandler:
             "project_id": project_id,
             "plan_path": plan_path,
             "title": task.title,
+            "phases": len(parsed_steps),
         }
         if len(found_plans) > 1:
             result["additional_plans"] = len(found_plans) - 1
