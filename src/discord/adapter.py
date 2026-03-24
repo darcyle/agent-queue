@@ -35,6 +35,11 @@ class DiscordMessagingAdapter(MessagingAdapter):
         self._bot = AgentQueueBot(config, orchestrator)
         self._config = config
 
+    @property
+    def bot(self) -> Any:
+        """Direct access to the underlying bot for Discord-specific needs."""
+        return self._bot
+
     # -------------------------------------------------------------------
     # Lifecycle
     # -------------------------------------------------------------------

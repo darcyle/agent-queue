@@ -6315,6 +6315,7 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, _NO_PROJECT_MSG, followup=True)
             return
 
+
         cmd_args: dict = {"project_id": resolved_project}
         if task_id:
             cmd_args["task_id"] = task_id

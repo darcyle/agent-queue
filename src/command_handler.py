@@ -3438,7 +3438,6 @@ class CommandHandler:
         from src.plan_parser import parse_and_generate_steps
 
         parsed_steps, _quality = parse_and_generate_steps(raw)
-
         # Notify channel with approval embed
         try:
             from src.discord.notifications import format_plan_approval_embed, PlanApprovalView
