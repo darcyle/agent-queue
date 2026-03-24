@@ -381,14 +381,32 @@ class RuleManager:
             logger.info("No parseable trigger in rule %s", rule_id)
             return []
 
-        # Delete old hooks for this rule
-        loaded = self.load_rule(rule_id)
-        old_hooks = loaded.get("hooks", []) if loaded else []
-        for hid in old_hooks:
-            try:
-                await self._db.delete_hook(hid)
-            except Exception:
-                pass
+        # Delete ALL hooks for this rule by ID prefix.  This catches
+        # orphaned hooks left behind by concurrent reconciliation runs
+        # (on_ready fires on every Discord reconnect, and two overlapping
+        # reconciliations can each create hooks that the other doesn't
+        # track in the frontmatter).
+        prefix = f"rule-{rule_id}-"
+        try:
+            deleted = await self._db.delete_hooks_by_id_prefix(prefix)
+            if deleted:
+                logger.debug(
+                    "Deleted %d existing hooks for rule %s (prefix: %s)",
+                    deleted, rule_id, prefix,
+                )
+        except Exception as e:
+            logger.warning(
+                "Prefix-based hook cleanup failed for rule %s: %s",
+                rule_id, e,
+            )
+            # Fall back to frontmatter-based cleanup
+            loaded = self.load_rule(rule_id)
+            old_hooks = loaded.get("hooks", []) if loaded else []
+            for hid in old_hooks:
+                try:
+                    await self._db.delete_hook(hid)
+                except Exception:
+                    pass
 
         # Try LLM expansion via the supervisor (done once, shared across hooks)
         prompt_template = None
