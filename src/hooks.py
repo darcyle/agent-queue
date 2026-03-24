@@ -15,7 +15,9 @@ Two trigger types are supported:
 - **Periodic**: fires on a timer (``interval_seconds``), checked every
   orchestrator tick (~5s).  Actual firing granularity is bounded by the
   tick interval — a 10s periodic hook will fire every 10-15s, not exactly
-  every 10s.
+  every 10s.  Optionally, a ``schedule`` block can constrain *when* the
+  hook is eligible to fire — by time-of-day, day-of-week, day-of-month,
+  or cron expression.  See ``src/schedule.py`` for details.
 - **Event**: fires when a matching EventBus event arrives (e.g.
   ``task.completed``).  Events are delivered asynchronously via
   ``_on_event``, which re-queries all enabled hooks for matches.
@@ -73,6 +75,7 @@ from src.event_bus import EventBus
 from src.file_watcher import FileWatcher, WatchRule
 from src.logging_config import CorrelationContext
 from src.models import Hook, HookRun, ProjectStatus
+from src.schedule import matches_schedule, parse_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +278,22 @@ class HookEngine:
                 last = self._last_run_time.get(hook.id, 0)
                 if now - last >= interval:
                     if self._check_cooldown(hook, now):
+                        # Check schedule constraints (if any)
+                        schedule = parse_schedule(trigger)
+                        if schedule is not None:
+                            now_dt = datetime.fromtimestamp(
+                                now, tz=timezone.utc
+                            )
+                            last_dt = (
+                                datetime.fromtimestamp(last, tz=timezone.utc)
+                                if last
+                                else None
+                            )
+                            if not matches_schedule(
+                                schedule, now=now_dt, last_run=last_dt
+                            ):
+                                continue  # Schedule doesn't match — skip
+
                         now_iso = datetime.fromtimestamp(
                             now, tz=timezone.utc
                         ).isoformat()
