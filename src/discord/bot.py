@@ -823,7 +823,7 @@ class AgentQueueBot(commands.Bot):
                     """Reply in thread only — no main channel noise for reopened tasks."""
                     try:
                         if embed is not None:
-                            await thread.send(text, embed=embed)
+                            await thread.send(embed=embed)
                         else:
                             await self._send_long_message(thread, text)
                     except Exception as e:
@@ -869,17 +869,25 @@ class AgentQueueBot(commands.Bot):
         async def notify_main_channel(
             text: str, *, embed: discord.Embed | None = None
         ) -> None:
-            """Reply to the thread-root message with a brief notification."""
+            """Reply to the thread-root message with a brief notification.
+
+            When an embed is provided, only the embed is sent to avoid
+            redundant plain-text + embed duplication.  The *text* is kept
+            as a fallback when no embed is available.
+            """
             try:
-                kwargs = {}
                 if embed is not None:
-                    kwargs["embed"] = embed
-                await msg.reply(text, **kwargs)
+                    await msg.reply(embed=embed)
+                else:
+                    await msg.reply(text)
             except Exception as e:
                 print(f"Main channel notify error: {e}")
                 # Fallback: plain message in the notifications channel
                 try:
-                    await channel.send(text, **kwargs)
+                    if embed is not None:
+                        await channel.send(embed=embed)
+                    else:
+                        await channel.send(text)
                 except Exception as e2:
                     print(f"Fallback notify error: {e2}")
 
