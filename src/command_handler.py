@@ -3214,28 +3214,48 @@ class CommandHandler:
         }
 
     async def _cleanup_plan_files_after_approval(self, task) -> None:
-        """Delete plan files from the workspace after a plan is approved.
+        """Delete ALL plan files from all workspaces after a plan is approved/deleted.
 
-        Removes both the archived plan file (in ``.claude/plans/``) and any
-        original plan file that may still exist (e.g. if archival failed).
-        Commits the deletion so the plan file doesn't persist on the branch
+        Removes:
+        1. All plan files that were enumerated during ``_cmd_process_plan``
+           (stored in ``plan_all_enumerated_paths`` task context).
+        2. The archived plan file (in ``.claude/plans/``).
+        3. Any original plan files matching configured patterns (safety net).
+
+        Commits the deletions so plan files don't persist on the branch
         and get picked up by other tasks running in the same workspace.
         """
         logger = logging.getLogger(__name__)
-        ws = await self.db.get_workspace_for_task(task.id)
-        if ws and ws.workspace_path:
-            workspace = ws.workspace_path
-        else:
-            # Workspace lock may have been released (e.g. task is in
-            # AWAITING_PLAN_APPROVAL after the agent finished).  Fall back
-            # to the project's default workspace path.
-            workspace = await self.db.get_project_workspace_path(task.project_id)
-        if not workspace:
-            return
         deleted_any = False
+        workspaces_with_deletions: set[str] = set()
 
-        # 1. Delete the archived plan file if it exists
         contexts = await self.db.get_task_contexts(task.id)
+
+        # 1. Delete ALL enumerated plan files (from process_plan discovery)
+        enumerated_ctx = next(
+            (c for c in contexts if c["type"] == "plan_all_enumerated_paths"), None
+        )
+        if enumerated_ctx:
+            import json as _json_cleanup
+            try:
+                enumerated_paths = _json_cleanup.loads(enumerated_ctx["content"])
+            except (ValueError, TypeError):
+                enumerated_paths = []
+            for plan_path in enumerated_paths:
+                try:
+                    if os.path.isfile(plan_path):
+                        os.remove(plan_path)
+                        deleted_any = True
+                        # Track the workspace directory for committing
+                        workspaces_with_deletions.add(os.path.dirname(
+                            os.path.dirname(plan_path) if ".claude" in plan_path
+                            else plan_path
+                        ))
+                        logger.info("Plan cleanup: deleted enumerated plan file %s", plan_path)
+                except OSError as e:
+                    logger.warning("Plan cleanup: failed to delete enumerated plan %s: %s", plan_path, e)
+
+        # 2. Delete the archived plan file if it exists
         archived_ctx = next((c for c in contexts if c["type"] == "plan_archived_path"), None)
         if archived_ctx:
             archived_path = archived_ctx["content"]
@@ -3247,39 +3267,69 @@ class CommandHandler:
             except OSError as e:
                 logger.warning("Plan cleanup: failed to delete archived plan %s: %s", archived_path, e)
 
-        # 2. Delete any original plan file that may still exist (in case
-        #    archival failed or there's a leftover copy).  Use the full
-        #    set of configured plan file patterns, not just hardcoded ones.
-        import glob as _glob
-        plan_patterns = self.orchestrator.config.auto_task.plan_file_patterns
-        for pattern in plan_patterns:
-            full_pattern = os.path.join(workspace, pattern)
-            # Support glob patterns (e.g. "docs/plans/*.md")
-            matches = _glob.glob(full_pattern)
-            if not matches:
-                # Also check as a literal path (no glob chars)
-                if os.path.isfile(full_pattern):
-                    matches = [full_pattern]
-            for plan_path in matches:
-                try:
-                    if os.path.isfile(plan_path):
-                        os.remove(plan_path)
-                        deleted_any = True
-                        logger.info("Plan cleanup: deleted original plan file %s", plan_path)
-                except OSError as e:
-                    logger.warning("Plan cleanup: failed to delete plan %s: %s", plan_path, e)
+        # 3. Safety net: also check configured plan patterns in all project workspaces
+        ws = await self.db.get_workspace_for_task(task.id)
+        if ws and ws.workspace_path:
+            workspace = ws.workspace_path
+        else:
+            workspace = await self.db.get_project_workspace_path(task.project_id)
 
-        # 3. Commit the deletions so the plan file is gone from the branch
+        if workspace:
+            import glob as _glob
+            plan_patterns = self.orchestrator.config.auto_task.plan_file_patterns
+            for pattern in plan_patterns:
+                full_pattern = os.path.join(workspace, pattern)
+                matches = _glob.glob(full_pattern)
+                if not matches:
+                    if os.path.isfile(full_pattern):
+                        matches = [full_pattern]
+                for plan_path in matches:
+                    try:
+                        if os.path.isfile(plan_path):
+                            os.remove(plan_path)
+                            deleted_any = True
+                            workspaces_with_deletions.add(workspace)
+                            logger.info("Plan cleanup: deleted plan file %s", plan_path)
+                    except OSError as e:
+                        logger.warning("Plan cleanup: failed to delete plan %s: %s", plan_path, e)
+
+            # Also scan all project workspaces for any remaining plan files
+            all_ws = await self.db.list_workspaces(project_id=task.project_id)
+            for ws_entry in all_ws:
+                if not ws_entry.workspace_path or not os.path.isdir(ws_entry.workspace_path):
+                    continue
+                from src.plan_parser import find_all_plan_files
+                remaining = find_all_plan_files(ws_entry.workspace_path)
+                for pf in remaining:
+                    try:
+                        if os.path.isfile(pf["path"]):
+                            os.remove(pf["path"])
+                            deleted_any = True
+                            workspaces_with_deletions.add(ws_entry.workspace_path)
+                            logger.info("Plan cleanup: deleted remaining plan file %s", pf["path"])
+                    except OSError as e:
+                        logger.warning("Plan cleanup: failed to delete remaining plan %s: %s", pf["path"], e)
+
+        # 4. Commit the deletions in each workspace that had files deleted
         if deleted_any and task.branch_name:
-            try:
-                if await self.orchestrator.git.avalidate_checkout(workspace):
-                    await self.orchestrator.git.acommit_all(
-                        workspace,
-                        f"chore: delete plan file after approval\n\nTask-Id: {task.id}",
-                    )
-                    logger.info("Plan cleanup: committed plan file deletion for task %s", task.id)
-            except Exception as e:
-                logger.warning("Plan cleanup: failed to commit deletion for task %s: %s", task.id, e)
+            # Determine which workspaces to commit in
+            commit_workspaces: set[str] = set()
+            if workspace:
+                commit_workspaces.add(workspace)
+            commit_workspaces.update(workspaces_with_deletions)
+
+            for ws_path in commit_workspaces:
+                if not os.path.isdir(ws_path):
+                    continue
+                try:
+                    if await self.orchestrator.git.avalidate_checkout(ws_path):
+                        await self.orchestrator.git.acommit_all(
+                            ws_path,
+                            f"chore: delete plan files after approval\n\nTask-Id: {task.id}",
+                        )
+                        logger.info("Plan cleanup: committed plan file deletion in %s for task %s", ws_path, task.id)
+                except Exception as e:
+                    logger.warning("Plan cleanup: failed to commit deletion in %s for task %s: %s", ws_path, task.id, e)
 
     async def _delete_draft_subtasks(self, parent_task_id: str) -> int:
         """Delete draft subtasks that were pre-created by ``_cmd_process_plan``.
@@ -3431,7 +3481,7 @@ class CommandHandler:
         4. On approve → parent transitions to COMPLETED, unblocking the chain.
            On reject/delete → draft subtasks are deleted.
         """
-        from src.plan_parser import find_plan_file, read_plan_file
+        from src.plan_parser import find_all_plan_files, read_plan_file
 
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
@@ -3441,34 +3491,22 @@ class CommandHandler:
         if not project:
             return {"error": f"Project '{project_id}' not found"}
 
-        # Scan all workspaces for the project
+        # Scan ALL workspaces for the project, collecting every plan file
         workspaces = await self.db.list_workspaces(project_id=project_id)
         if not workspaces:
             return {"error": f"No workspaces found for project '{project_id}'"}
 
-        plan_patterns = self.orchestrator.config.auto_task.plan_file_patterns
-
-        found_plans: list[dict] = []
-        for ws in workspaces:
-            if not ws.workspace_path or not os.path.isdir(ws.workspace_path):
+        # Collect all plan files across all workspaces with their timestamps
+        all_plan_files: list[dict] = []  # {path, ctime, workspace}
+        for ws_candidate in workspaces:
+            if not ws_candidate.workspace_path or not os.path.isdir(ws_candidate.workspace_path):
                 continue
-            plan_path = find_plan_file(ws.workspace_path, plan_patterns)
-            if plan_path:
-                try:
-                    raw = read_plan_file(plan_path)
-                    if raw and raw.strip():
-                        found_plans.append({
-                            "workspace": ws,
-                            "plan_path": plan_path,
-                            "raw_content": raw,
-                        })
-                except Exception as e:
-                    logger.warning(
-                        "process_plan: failed to read plan file %s: %s",
-                        plan_path, e,
-                    )
+            ws_plans = find_all_plan_files(ws_candidate.workspace_path)
+            for pf in ws_plans:
+                pf["workspace"] = ws_candidate
+                all_plan_files.append(pf)
 
-        if not found_plans:
+        if not all_plan_files:
             return {
                 "status": "no_plans_found",
                 "project_id": project_id,
@@ -3476,11 +3514,34 @@ class CommandHandler:
                 "message": f"No plan files found in {len(workspaces)} workspace(s) for project '{project_id}'",
             }
 
-        # Process the first plan found (most common case: one workspace)
-        plan_info = found_plans[0]
-        ws = plan_info["workspace"]
-        plan_path = plan_info["plan_path"]
-        raw = plan_info["raw_content"]
+        # Sort all plan files by ctime (newest first) and pick the newest
+        all_plan_files.sort(key=lambda f: f["ctime"], reverse=True)
+        newest = all_plan_files[0]
+
+        # Read the newest plan file
+        try:
+            raw = read_plan_file(newest["path"])
+            if not raw or not raw.strip():
+                return {
+                    "status": "no_plans_found",
+                    "project_id": project_id,
+                    "workspaces_scanned": len(workspaces),
+                    "message": f"Newest plan file is empty: {newest['path']}",
+                }
+        except Exception as e:
+            return {"error": f"Failed to read newest plan file {newest['path']}: {e}"}
+
+        ws = newest["workspace"]
+        plan_path = newest["path"]
+
+        logger.info(
+            "process_plan: found %d plan file(s) across %d workspace(s), "
+            "picking newest: %s (ctime=%.0f)",
+            len(all_plan_files), len(workspaces), plan_path, newest["ctime"],
+        )
+
+        # Track ALL enumerated plan file paths for cleanup later
+        all_enumerated_paths = [pf["path"] for pf in all_plan_files]
 
         # If a task_id is provided, attach the plan to that task
         task_id = args.get("task_id")
@@ -3541,6 +3602,15 @@ class CommandHandler:
                 label="Plan Archived Path",
                 content=archived_path,
             )
+
+        # Store ALL enumerated plan file paths so cleanup can delete them all
+        import json as _json_ctx
+        await self.db.add_task_context(
+            task_id,
+            type="plan_all_enumerated_paths",
+            label="All Enumerated Plan File Paths",
+            content=_json_ctx.dumps(all_enumerated_paths),
+        )
 
         # If we attached to an existing task, transition it to AWAITING_PLAN_APPROVAL
         if args.get("task_id"):
@@ -3663,12 +3733,12 @@ class CommandHandler:
             "title": task.title,
             "phases": len(parsed_steps),
             "draft_subtasks": len(created_info),
+            "total_plan_files_found": len(all_plan_files),
         }
-        if len(found_plans) > 1:
-            result["additional_plans"] = len(found_plans) - 1
+        if len(all_plan_files) > 1:
             result["note"] = (
-                f"Found {len(found_plans)} plan files total. "
-                f"Processing the first one. Run again to process others."
+                f"Found {len(all_plan_files)} plan file(s) total across all workspaces. "
+                f"Selected the newest one. All will be cleaned up on approve/delete."
             )
         return result
 

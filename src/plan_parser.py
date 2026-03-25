@@ -227,6 +227,51 @@ def find_plan_file(workspace: str, patterns: list[str] | None = None) -> str | N
     return None
 
 
+def find_all_plan_files(workspace: str) -> list[dict]:
+    """Search a workspace for ALL plan files and return them with timestamps.
+
+    Looks for:
+    - ``.claude/plan.md`` (the canonical plan location)
+    - ``plan.md`` (root-level plan)
+    - Any ``.md`` files under ``.claude/plans/``
+
+    Returns a list of dicts with keys: ``path``, ``ctime`` (file creation
+    time, falling back to mtime on Linux where birthtime isn't available).
+    The list is sorted newest-first by ctime.
+    """
+    import glob as _glob
+
+    found: list[dict] = []
+
+    # Check canonical plan file locations
+    for candidate in (".claude/plan.md", "plan.md"):
+        full_path = os.path.join(workspace, candidate)
+        if os.path.isfile(full_path):
+            try:
+                stat = os.stat(full_path)
+                # Use birthtime if available (macOS), otherwise mtime
+                ctime = getattr(stat, "st_birthtime", None) or stat.st_mtime
+                found.append({"path": full_path, "ctime": ctime})
+            except OSError:
+                pass
+
+    # Check all .md files under .claude/plans/
+    plans_dir = os.path.join(workspace, ".claude", "plans")
+    if os.path.isdir(plans_dir):
+        for md_path in _glob.glob(os.path.join(plans_dir, "*.md")):
+            if os.path.isfile(md_path):
+                try:
+                    stat = os.stat(md_path)
+                    ctime = getattr(stat, "st_birthtime", None) or stat.st_mtime
+                    found.append({"path": md_path, "ctime": ctime})
+                except OSError:
+                    pass
+
+    # Sort newest first
+    found.sort(key=lambda f: f["ctime"], reverse=True)
+    return found
+
+
 def _deep_scan_for_plan(
     workspace: str, max_age_seconds: int = 1800,
 ) -> str | None:
