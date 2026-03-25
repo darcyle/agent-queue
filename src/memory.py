@@ -25,6 +25,7 @@ execution.
 
 from __future__ import annotations
 
+import asyncio
 import glob
 import json
 import logging
@@ -185,7 +186,12 @@ class MemoryManager:
 
             paths = self._memory_paths(project_id, workspace_path)
 
-            instance = MemSearch(
+            # MemSearch.__init__ makes a synchronous HTTP call to the
+            # embedding provider (e.g. Ollama embed) to discover the
+            # vector dimension.  Run in a thread to avoid blocking the
+            # asyncio event loop and starving the Discord gateway heartbeat.
+            instance = await asyncio.to_thread(
+                MemSearch,
                 paths=paths,
                 embedding_provider=self.config.embedding_provider,
                 embedding_model=self.config.embedding_model or None,
