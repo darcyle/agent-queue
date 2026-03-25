@@ -3164,14 +3164,12 @@ class CommandHandler:
                 finally:
                     self.orchestrator._plan_processing_locks.discard(_lock_project)
             else:
-                # Fallback: use legacy algorithmic parser if supervisor unavailable
-                logger.warning(
-                    "approve_plan: supervisor unavailable, falling back to "
-                    "algorithmic parser for task %s",
+                logger.error(
+                    "approve_plan: supervisor unavailable — cannot create "
+                    "subtasks for task %s",
                     task.id,
                 )
-                created_tasks = await self.orchestrator._create_subtasks_from_stored_plan(task)
-                created_info = [{"id": t.id, "title": t.title} for t in created_tasks]
+                return {"error": "Supervisor is not available. Cannot create subtasks from plan."}
 
         # Notify about subtasks being activated
         if created_info:
@@ -3695,16 +3693,13 @@ class CommandHandler:
                 # so _check_defined_tasks can safely evaluate these subtasks.
                 self.orchestrator._plan_processing_locks.discard(project_id)
 
-        # Build the steps list for the approval embed.  Prefer the
-        # supervisor-created subtasks; fall back to algorithmic parsing.
-        if created_info:
-            parsed_steps = [
-                {"title": t["title"], "description": ""}
-                for t in created_info
-            ]
-        else:
-            from src.plan_parser import parse_and_generate_steps
-            parsed_steps, _quality = parse_and_generate_steps(raw)
+        # Build the steps list for the approval embed from supervisor-created
+        # subtasks.  If supervisor didn't create any, the embed will show the
+        # raw plan content only.
+        parsed_steps = [
+            {"title": t["title"], "description": ""}
+            for t in created_info
+        ]
 
         # Notify channel with approval embed
         try:
