@@ -109,6 +109,8 @@ async def _approve_plan_for_task(orch, task_id: str) -> list:
         return []
     created = await orch._create_subtasks_from_stored_plan(task)
     await orch.db.transition_task(task_id, TaskStatus.COMPLETED, context="plan_approved")
+    # Mirror _cmd_approve_plan: re-check DEFINED tasks so subtasks get promoted
+    await orch._check_defined_tasks()
     return created
 
 

@@ -248,6 +248,12 @@ class Orchestrator:
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).
         self._command_handler: Any = None
+        # Project IDs currently undergoing plan processing (supervisor is
+        # creating subtasks).  ``_check_defined_tasks`` skips DEFINED tasks
+        # in these projects to prevent race conditions where subtasks are
+        # promoted to READY before the blocking dependency on the parent
+        # plan task has been established.
+        self._plan_processing_locks: set[str] = set()
         # Tracks per-project budget warning thresholds already sent so we
         # don't spam the same warning.  Keyed by project_id, value is the
         # highest threshold percentage (e.g. 80, 95) already notified.
@@ -1171,11 +1177,30 @@ class Orchestrator:
         - Tasks with dependencies are promoted only when every upstream
           dependency has reached COMPLETED status.
 
+        Tasks are skipped (not promoted) in two cases:
+        - The task's project is currently being plan-processed (supervisor is
+          creating subtasks and blocking dependencies haven't been wired yet).
+        - The task is a plan subtask whose parent is still in
+          AWAITING_PLAN_APPROVAL (defense-in-depth against stale state).
+
         This runs after ``_check_awaiting_approval`` so that freshly-merged
         PRs can unblock their dependents in the same cycle.
         """
         defined = await self.db.list_tasks(status=TaskStatus.DEFINED)
         for task in defined:
+            # Skip tasks in projects where plan processing is in-flight.
+            # The supervisor is creating subtasks and the blocking dependency
+            # on the parent hasn't been established yet.
+            if task.project_id in self._plan_processing_locks:
+                continue
+
+            # Defense-in-depth: skip plan subtasks whose parent plan hasn't
+            # been approved yet, even if the dependency was somehow missed.
+            if task.is_plan_subtask and task.parent_task_id:
+                parent = await self.db.get_task(task.parent_task_id)
+                if parent and parent.status == TaskStatus.AWAITING_PLAN_APPROVAL:
+                    continue
+
             deps = await self.db.get_dependencies(task.id)
             if not deps:
                 # No dependencies — promote to READY
