@@ -83,6 +83,11 @@ class DiscordConfig:
     per_project_channels: PerProjectChannelsConfig = field(
         default_factory=PerProjectChannelsConfig
     )
+    # Invalid request rate guard thresholds (Discord bans IPs at 10,000
+    # invalid responses per 10 minutes).
+    rate_guard_warn: int = 1000
+    rate_guard_critical: int = 5000
+    rate_guard_halt: int = 8000
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -1087,6 +1092,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             channels=raw_channels,
             authorized_users=d.get("authorized_users", []),
             per_project_channels=ppc,
+            rate_guard_warn=int(d.get("rate_guard_warn", 1000)),
+            rate_guard_critical=int(d.get("rate_guard_critical", 5000)),
+            rate_guard_halt=int(d.get("rate_guard_halt", 8000)),
         )
 
     if "telegram" in raw:

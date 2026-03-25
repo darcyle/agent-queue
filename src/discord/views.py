@@ -145,64 +145,72 @@ class SuggestionView(discord.ui.View):
                 pass
 
         # Execute the suggestion based on type
-        if self.suggestion_type == "answer":
-            await interaction.channel.send(
-                f"\U0001f4a1 **Suggested answer:**\n{self.suggestion_text}"
-            )
-            await interaction.followup.send("Suggestion accepted!", ephemeral=True)
-
-        elif self.suggestion_type == "task" and self._handler:
-            title = self.task_title or self.suggestion_text[:80]
-            result = await self._handler.execute("create_task", {
-                "project_id": self.project_id,
-                "title": title,
-                "description": self.suggestion_text,
-            })
-            if "error" in result:
-                await interaction.followup.send(
-                    f"Could not create task: {result['error']}", ephemeral=True
+        try:
+            if self.suggestion_type == "answer":
+                await interaction.channel.send(
+                    f"\U0001f4a1 **Suggested answer:**\n{self.suggestion_text}"
                 )
+                await interaction.followup.send("Suggestion accepted!", ephemeral=True)
+
+            elif self.suggestion_type == "task" and self._handler:
+                title = self.task_title or self.suggestion_text[:80]
+                result = await self._handler.execute("create_task", {
+                    "project_id": self.project_id,
+                    "title": title,
+                    "description": self.suggestion_text,
+                })
+                if "error" in result:
+                    await interaction.followup.send(
+                        f"Could not create task: {result['error']}", ephemeral=True
+                    )
+                else:
+                    task_id = result.get("task_id", "?")
+                    await interaction.followup.send(
+                        f"\U0001f4cb Task `{task_id}` created: {title}", ephemeral=True
+                    )
+
+            elif self.suggestion_type == "context":
+                # Post an informational embed with the context
+                context_embed = discord.Embed(
+                    title="\U0001f4ce Relevant Context",
+                    description=truncate(self.suggestion_text, LIMIT_DESCRIPTION),
+                    color=_SUGGESTION_TYPE_COLORS["context"],
+                )
+                context_embed.set_footer(text=f"Project: {self.project_id}")
+                await interaction.channel.send(embed=context_embed)
+                await interaction.followup.send("Context posted!", ephemeral=True)
+
+            elif self.suggestion_type == "warning":
+                await interaction.channel.send(
+                    f"\u26a0\ufe0f **Heads up:**\n{self.suggestion_text}"
+                )
+                await interaction.followup.send(
+                    "Warning acknowledged! Use `/create-task` if you'd like to "
+                    "create a task to address this.",
+                    ephemeral=True,
+                )
+
             else:
-                task_id = result.get("task_id", "?")
-                await interaction.followup.send(
-                    f"\U0001f4cb Task `{task_id}` created: {title}", ephemeral=True
-                )
-
-        elif self.suggestion_type == "context":
-            # Post an informational embed with the context
-            context_embed = discord.Embed(
-                title="\U0001f4ce Relevant Context",
-                description=truncate(self.suggestion_text, LIMIT_DESCRIPTION),
-                color=_SUGGESTION_TYPE_COLORS["context"],
-            )
-            context_embed.set_footer(text=f"Project: {self.project_id}")
-            await interaction.channel.send(embed=context_embed)
-            await interaction.followup.send("Context posted!", ephemeral=True)
-
-        elif self.suggestion_type == "warning":
-            await interaction.channel.send(
-                f"\u26a0\ufe0f **Heads up:**\n{self.suggestion_text}"
-            )
+                await interaction.followup.send("Suggestion accepted.", ephemeral=True)
+        except (discord.Forbidden, discord.HTTPException):
             await interaction.followup.send(
-                "Warning acknowledged! Use `/create-task` if you'd like to "
-                "create a task to address this.",
-                ephemeral=True,
+                "Could not post suggestion (Discord error).", ephemeral=True,
             )
-
-        else:
-            await interaction.followup.send("Suggestion accepted.", ephemeral=True)
 
         # Update embed to show accepted state and disable buttons
-        if interaction.message and interaction.message.embeds:
-            embed = interaction.message.embeds[0]
-            embed.title = f"\u2705 Suggestion Accepted"
-            for child in self.children:
-                child.disabled = True
-            await interaction.message.edit(embed=embed, view=self)
-        else:
-            for child in self.children:
-                child.disabled = True
-            await interaction.message.edit(view=self)
+        try:
+            if interaction.message and interaction.message.embeds:
+                embed = interaction.message.embeds[0]
+                embed.title = f"\u2705 Suggestion Accepted"
+                for child in self.children:
+                    child.disabled = True
+                await interaction.message.edit(embed=embed, view=self)
+            else:
+                for child in self.children:
+                    child.disabled = True
+                await interaction.message.edit(view=self)
+        except (discord.NotFound, discord.HTTPException):
+            pass  # Message may have been deleted
 
     async def _on_dismiss(self, interaction: discord.Interaction) -> None:
         """Handle the Dismiss button press."""
@@ -220,17 +228,20 @@ class SuggestionView(discord.ui.View):
         await interaction.followup.send("Suggestion dismissed.", ephemeral=True)
 
         # Grey out the embed and disable buttons to show dismissed state
-        if interaction.message and interaction.message.embeds:
-            embed = interaction.message.embeds[0]
-            embed.title = "\u274c Suggestion Dismissed"
-            embed.color = _DISMISSED_COLOR
-            for child in self.children:
-                child.disabled = True
-            await interaction.message.edit(embed=embed, view=self)
-        else:
-            for child in self.children:
-                child.disabled = True
-            await interaction.message.edit(view=self)
+        try:
+            if interaction.message and interaction.message.embeds:
+                embed = interaction.message.embeds[0]
+                embed.title = "\u274c Suggestion Dismissed"
+                embed.color = _DISMISSED_COLOR
+                for child in self.children:
+                    child.disabled = True
+                await interaction.message.edit(embed=embed, view=self)
+            else:
+                for child in self.children:
+                    child.disabled = True
+                await interaction.message.edit(view=self)
+        except (discord.NotFound, discord.HTTPException):
+            pass  # Message may have been deleted
 
 
 # Backward-compatible alias

@@ -28,6 +28,7 @@ import os
 import shutil
 import signal
 import sys
+import time
 
 from src.adapters import AdapterFactory
 from src.config import ConfigValidationError, load_config
@@ -111,10 +112,20 @@ async def run(config_path: str, profile: str | None = None) -> bool:
             await adapter.start()
         except asyncio.CancelledError:
             pass
+        except Exception:
+            logger.exception("Messaging adapter failed to start — triggering shutdown")
+            shutdown_event.set()
 
     async def run_scheduler():
-        # Wait for the messaging adapter to be ready before scheduling
-        await adapter.wait_until_ready()
+        # Wait for the messaging adapter to be ready before scheduling.
+        # Use a timeout so the scheduler doesn't hang forever if the bot
+        # fails to connect (e.g. Discord rate-limits the initial login).
+        try:
+            await asyncio.wait_for(adapter.wait_until_ready(), timeout=120)
+        except asyncio.TimeoutError:
+            logger.error("Messaging adapter not ready after 120s — triggering shutdown")
+            shutdown_event.set()
+            return
 
         # Register orchestrator callbacks through the adapter.
         # This is done here (rather than inside on_ready) so the
@@ -202,6 +213,18 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
         "connected": connected,
     }
 
+    # Discord rate guard — tracks invalid requests (401/403/429) toward
+    # the 10,000 / 10 min Cloudflare ban threshold.
+    from src.discord.rate_guard import get_tracker
+
+    tracker = get_tracker()
+    rate_state = tracker.state
+    checks["discord_rate_guard"] = {
+        "ok": rate_state in ("ok", "warn"),
+        "state": rate_state,
+        "invalid_count": tracker.count,
+    }
+
     return checks
 
 
@@ -268,7 +291,13 @@ def main():
 
     restart = asyncio.run(run(config_path, profile=profile))
     if restart:
-        print("Restart requested — exec'ing new process...")
+        # Wait before re-exec to let platform rate limits settle.
+        # Discord in particular rate-limits the initial GET /users/@me
+        # when a bot reconnects too quickly after disconnecting.
+        delay = 15
+        print(f"Restart requested — waiting {delay}s for rate limits to settle...")
+        time.sleep(delay)
+        print("exec'ing new process...")
         # Resolve the entry point to an absolute path for execv
         exe = shutil.which(sys.argv[0]) or os.path.abspath(sys.argv[0])
         os.execv(exe, sys.argv)

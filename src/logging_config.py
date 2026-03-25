@@ -273,3 +273,14 @@ def setup_logging(
         logging.getLogger(noisy).setLevel(
             max(log_level, logging.WARNING)
         )
+
+    # Attach the Discord rate-guard log handler so we can count 429
+    # responses that discord.py retries internally (never reaching our
+    # application code).  Uses a lazy import to avoid circular deps at
+    # module load time.
+    from src.discord.rate_guard import DiscordHTTPLogHandler, get_tracker
+
+    discord_http_logger = logging.getLogger("discord.http")
+    # Avoid duplicate handlers on repeated setup_logging() calls
+    if not any(isinstance(h, DiscordHTTPLogHandler) for h in discord_http_logger.handlers):
+        discord_http_logger.addHandler(DiscordHTTPLogHandler(get_tracker()))

@@ -2610,7 +2610,14 @@ def setup_commands(bot: commands.Bot) -> None:
                             )
                             archived.append(f"#{channel.name} ({ch_type})")
                         except discord.Forbidden:
+                            from src.discord.rate_guard import get_tracker
+                            get_tracker().record(403)
                             archived.append(f"#{channel.name} ({ch_type}) — no permission to archive")
+                        except discord.HTTPException as exc:
+                            from src.discord.rate_guard import get_tracker
+                            if exc.status in (401, 429):
+                                get_tracker().record(exc.status)
+                            archived.append(f"#{channel.name} ({ch_type}) — archive failed (HTTP {exc.status})")
 
         desc = f"Project **{result.get('name', project_id)}** (`{project_id}`) deleted."
         if archived:

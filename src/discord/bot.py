@@ -25,6 +25,7 @@ import asyncio
 import collections
 import hashlib
 import json
+import logging
 import os
 import time
 import traceback
@@ -86,6 +87,14 @@ class AgentQueueBot(commands.Bot):
         # Wire Supervisor into HookEngine for LLM invocations
         if hasattr(self.orchestrator, 'hooks') and self.orchestrator.hooks:
             self.orchestrator.hooks.set_supervisor(self.agent)
+        # Discord invalid-request rate guard — tracks 401/403/429 responses
+        # in a 10-minute sliding window to prevent Cloudflare IP bans.
+        from src.discord.rate_guard import configure_tracker
+        self._rate_tracker = configure_tracker(
+            warn=config.discord.rate_guard_warn,
+            critical=config.discord.rate_guard_critical,
+            halt=config.discord.rate_guard_halt,
+        )
         self._channel: discord.TextChannel | None = None
         # Per-project channel cache: project_id -> channel
         self._project_channels: dict[str, discord.TextChannel] = {}
@@ -505,8 +514,55 @@ class AgentQueueBot(commands.Bot):
         except Exception:
             pass  # Fail-open on cleanup
 
-    @staticmethod
+    async def _safe_api_call(
+        self,
+        coro,
+        *,
+        critical: bool = True,
+        context: str = "",
+    ):
+        """Execute a Discord API coroutine with rate-guard protection.
+
+        Checks the invalid-request tracker before calling and records any
+        error responses (401/403/429) after.  Non-critical calls are
+        silently dropped when the tracker reaches the critical threshold;
+        all calls are blocked at the halt threshold.
+
+        Returns the coroutine's result on success, or ``None`` when the
+        call is suppressed or fails with a trackable error.
+        """
+        tracker = self._rate_tracker
+        if not tracker.should_allow(critical=critical):
+            if context:
+                logging.getLogger(__name__).debug(
+                    "Rate guard blocked %s API call: %s (state=%s, count=%d)",
+                    "critical" if critical else "non-critical",
+                    context, tracker.state, tracker.count,
+                )
+            return None
+        try:
+            return await coro
+        except discord.NotFound:
+            raise  # 404 doesn't count toward invalid request limit
+        except discord.Forbidden as exc:
+            tracker.record(403)
+            logging.getLogger(__name__).warning(
+                "Discord 403 Forbidden%s: %s",
+                f" ({context})" if context else "", exc,
+            )
+            return None
+        except discord.HTTPException as exc:
+            if exc.status in (401, 429):
+                tracker.record(exc.status)
+            logging.getLogger(__name__).warning(
+                "Discord HTTP %d%s: %s",
+                exc.status,
+                f" ({context})" if context else "", exc,
+            )
+            return None
+
     async def _send_long_message(
+        self,
         channel: discord.abc.Messageable,
         text: str,
         *,
@@ -521,9 +577,13 @@ class AgentQueueBot(commands.Bot):
         """
         if len(text) <= 2000:
             if reply_to:
-                await reply_to.reply(text)
+                await self._safe_api_call(
+                    reply_to.reply(text), critical=False, context="send_long_message reply",
+                )
             else:
-                await channel.send(text)
+                await self._safe_api_call(
+                    channel.send(text), critical=False, context="send_long_message",
+                )
             return
 
         # Very long content → attach as file with a short preview
@@ -540,9 +600,15 @@ class AgentQueueBot(commands.Bot):
             )
             msg = f"{preview}\n\n*Full response attached ({len(text):,} chars)*"
             if reply_to:
-                await reply_to.reply(msg, file=file)
+                await self._safe_api_call(
+                    reply_to.reply(msg, file=file),
+                    critical=False, context="send_long_message file reply",
+                )
             else:
-                await channel.send(msg, file=file)
+                await self._safe_api_call(
+                    channel.send(msg, file=file),
+                    critical=False, context="send_long_message file",
+                )
             return
 
         # Medium-length content → split into multiple messages at line boundaries
@@ -565,9 +631,13 @@ class AgentQueueBot(commands.Bot):
 
         for i, chunk in enumerate(chunks):
             if i == 0 and reply_to:
-                await reply_to.reply(chunk)
+                await self._safe_api_call(
+                    reply_to.reply(chunk), critical=False, context="send_long_message chunk",
+                )
             else:
-                await channel.send(chunk)
+                await self._safe_api_call(
+                    channel.send(chunk), critical=False, context="send_long_message chunk",
+                )
 
     async def _resolve_project_channels(self) -> None:
         """Resolve per-project Discord channels from the database.
@@ -651,7 +721,10 @@ class AgentQueueBot(commands.Bot):
                 kwargs = {"embed": embed}
                 if view is not None:
                     kwargs["view"] = view
-                return await channel.send(**kwargs)
+                return await self._safe_api_call(
+                    channel.send(**kwargs),
+                    critical=True, context="send_message embed",
+                )
             else:
                 return await self._send_long_message(channel, text)
         return None
@@ -848,11 +921,26 @@ class AgentQueueBot(commands.Bot):
         )
         # Create the thread-root message in the notifications channel, then open
         # a thread on it so all streaming output stays inside the thread.
-        msg = await channel.send(
-            f"**Agent working:** {display_name}"
-        )
-        thread = await msg.create_thread(name=display_name[:100])
-        await thread.send(initial_message)
+        try:
+            msg = await self._safe_api_call(
+                channel.send(f"**Agent working:** {display_name}"),
+                critical=True, context="create_task_thread root",
+            )
+            if msg is None:
+                return None
+            thread = await self._safe_api_call(
+                msg.create_thread(name=display_name[:100]),
+                critical=True, context="create_task_thread thread",
+            )
+            if thread is None:
+                return None
+            await self._safe_api_call(
+                thread.send(initial_message),
+                critical=True, context="create_task_thread initial",
+            )
+        except Exception as e:
+            print(f"Thread creation failed: {e}")
+            return None
         print(f"Thread created: {thread.id}")
 
         # Track the thread ↔ task mapping for thread message detection
@@ -1555,10 +1643,25 @@ class AgentQueueBot(commands.Bot):
     ) -> None:
         """Cold-start fallback: fetch from Discord API and populate the buffer."""
         raw: list[discord.Message] = []
-        async for msg in channel.history(
-            limit=MAX_HISTORY_MESSAGES, before=before
-        ):
-            raw.append(msg)
+        try:
+            async for msg in channel.history(
+                limit=MAX_HISTORY_MESSAGES, before=before
+            ):
+                raw.append(msg)
+        except discord.Forbidden:
+            self._rate_tracker.record(403)
+            logging.getLogger(__name__).warning(
+                "Cold-start history fetch forbidden for channel %s", channel.id,
+            )
+            return
+        except discord.HTTPException as exc:
+            if exc.status in (401, 429):
+                self._rate_tracker.record(exc.status)
+            logging.getLogger(__name__).warning(
+                "Cold-start history fetch failed (HTTP %d) for channel %s",
+                exc.status, channel.id,
+            )
+            return
         raw.reverse()  # oldest first
 
         if not raw:

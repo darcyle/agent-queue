@@ -800,7 +800,10 @@ class TaskStartedView(discord.ui.View):
             # Disable button after action
             for child in self.children:
                 child.disabled = True
-            await interaction.message.edit(view=self)
+            try:
+                await interaction.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
 
 class TaskFailedView(discord.ui.View):
@@ -846,7 +849,10 @@ class TaskFailedView(discord.ui.View):
             # Disable buttons after action
             for child in self.children:
                 child.disabled = True
-            await interaction.message.edit(view=self)
+            try:
+                await interaction.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
     @discord.ui.button(
         label="Skip Task",
@@ -877,7 +883,10 @@ class TaskFailedView(discord.ui.View):
             await interaction.followup.send(msg, ephemeral=True)
             for child in self.children:
                 child.disabled = True
-            await interaction.message.edit(view=self)
+            try:
+                await interaction.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
     @discord.ui.button(
         label="View Error",
@@ -951,7 +960,10 @@ class TaskApprovalView(discord.ui.View):
             )
             for child in self.children:
                 child.disabled = True
-            await interaction.message.edit(view=self)
+            try:
+                await interaction.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
     @discord.ui.button(
         label="Restart",
@@ -981,7 +993,10 @@ class TaskApprovalView(discord.ui.View):
             )
             for child in self.children:
                 child.disabled = True
-            await interaction.message.edit(view=self)
+            try:
+                await interaction.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
 
 class AgentReplyModal(discord.ui.Modal, title="Reply to Agent"):
@@ -1093,7 +1108,10 @@ class TaskBlockedView(discord.ui.View):
             )
             for child in self.children:
                 child.disabled = True
-            await interaction.message.edit(view=self)
+            try:
+                await interaction.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
     @discord.ui.button(
         label="Skip Task",
@@ -1124,7 +1142,10 @@ class TaskBlockedView(discord.ui.View):
             await interaction.followup.send(msg, ephemeral=True)
             for child in self.children:
                 child.disabled = True
-            await interaction.message.edit(view=self)
+            try:
+                await interaction.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
 
 class AgentQuestionModal(discord.ui.Modal, title="Reply to Agent"):
@@ -1224,7 +1245,10 @@ class AgentQuestionView(discord.ui.View):
             await interaction.followup.send(msg, ephemeral=True)
             for child in self.children:
                 child.disabled = True
-            await interaction.message.edit(view=self)
+            try:
+                await interaction.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
 
 # ---------------------------------------------------------------------------
