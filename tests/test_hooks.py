@@ -664,3 +664,94 @@ class TestLastTriggeredAtPersistence:
         updated = await db.get_hook(hook.id)
         assert updated.last_triggered_at is not None
         assert updated.last_triggered_at > 0
+
+
+# --- Reconciliation resilience ---
+
+
+class TestReconciliationResilience:
+    """Verify hooks don't re-fire after rule reconciliation regenerates hook IDs."""
+
+    @pytest.mark.asyncio
+    async def test_resolve_last_run_uses_db_timestamp_for_new_hook_id(
+        self, db, engine
+    ):
+        """After reconciliation creates a hook with a new UUID, _resolve_last_run
+        should use the DB-persisted last_triggered_at instead of defaulting to 0."""
+        await _create_project(db)
+        recent = time.time() - 300  # 5 minutes ago
+        hook = await _create_hook(
+            db,
+            id="rule-test-abc123",
+            last_triggered_at=recent,
+        )
+
+        # Simulate reconciliation: _last_run_time has NO entry for this hook
+        engine._last_run_time.pop(hook.id, None)
+
+        result = engine._resolve_last_run(hook)
+        assert result == recent
+        # Should also cache it for subsequent calls
+        assert engine._last_run_time[hook.id] == recent
+
+    @pytest.mark.asyncio
+    async def test_periodic_hook_respects_db_timestamp_after_reconciliation(
+        self, db, engine
+    ):
+        """A periodic hook with a recent last_triggered_at in the DB should NOT
+        fire if its interval hasn't elapsed, even when the in-memory cache has
+        no entry (simulating post-reconciliation state)."""
+        await _create_project(db)
+        recent = time.time() - 60  # 1 minute ago
+        hook = await _create_hook(
+            db,
+            id="rule-test-def456",
+            trigger='{"type": "periodic", "interval_seconds": 3600}',
+            cooldown_seconds=60,
+            last_triggered_at=recent,
+        )
+
+        # Clear in-memory cache to simulate reconciliation creating new hook ID
+        engine._last_run_time.pop(hook.id, None)
+
+        await engine.tick()
+
+        # Should NOT have fired — interval (3600s) hasn't elapsed
+        assert hook.id not in engine._running
+
+    @pytest.mark.asyncio
+    async def test_orphaned_running_hook_cancelled_after_reconciliation(
+        self, db, engine
+    ):
+        """When reconciliation deletes a hook from the DB, its in-flight asyncio
+        task should be cancelled and removed from _running."""
+        await _create_project(db)
+
+        # Create a hook and simulate it being in-flight
+        hook = await _create_hook(
+            db,
+            id="rule-test-old-id",
+            trigger='{"type": "periodic", "interval_seconds": 3600}',
+            cooldown_seconds=60,
+        )
+
+        # Put a fake running task in _running
+        fake_task = asyncio.create_task(asyncio.sleep(999))
+        engine._running["rule-test-old-id"] = fake_task
+
+        # Now delete the hook from DB (simulating reconciliation)
+        await db.delete_hook("rule-test-old-id")
+
+        # tick() should detect the orphaned _running entry and cancel it
+        await engine.tick()
+
+        # Give the cancelled task time to finish
+        try:
+            await asyncio.wait_for(fake_task, timeout=0.1)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+
+        assert fake_task.done()
+        # Next tick should clean up the finished orphaned entry
+        await engine.tick()
+        assert "rule-test-old-id" not in engine._running

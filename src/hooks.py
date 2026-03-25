@@ -255,6 +255,29 @@ class HookEngine:
         now = time.time()
         max_concurrent = self.config.hook_engine.max_concurrent_hooks
 
+        # Phase 1b: Prune _running entries for hooks that no longer exist in
+        # the DB (e.g., deleted and recreated during rule reconciliation).
+        # Without this, the orphaned _running entry blocks a concurrency slot
+        # and the old asyncio task may keep running alongside the new hook.
+        active_hook_ids = {h.id for h in hooks}
+        orphaned = [
+            hid for hid in self._running
+            if hid not in active_hook_ids and not self._running[hid].done()
+        ]
+        for hid in orphaned:
+            logger.warning(
+                "Cancelling orphaned hook task %s (hook no longer exists in DB)",
+                hid,
+            )
+            self._running[hid].cancel()
+        # Also clean up finished orphaned entries
+        stale = [
+            hid for hid in self._running
+            if hid not in active_hook_ids and self._running[hid].done()
+        ]
+        for hid in stale:
+            self._running.pop(hid, None)
+
         # Pre-fetch project statuses to skip hooks for paused projects.
         checked_projects: dict[str, bool] = {}  # project_id -> is_paused
         for hook in hooks:
@@ -282,7 +305,7 @@ class HookEngine:
 
             if trigger_type == "periodic":
                 interval = trigger.get("interval_seconds", 3600)
-                last = self._last_run_time.get(hook.id, 0)
+                last = self._resolve_last_run(hook)
                 if now - last >= interval:
                     if self._check_cooldown(hook, now):
                         # Check schedule constraints (if any)
@@ -386,9 +409,28 @@ class HookEngine:
                 event_data=data,
             )
 
+    def _resolve_last_run(self, hook: Hook) -> float:
+        """Return the last-run timestamp for a hook, checking both in-memory cache and DB.
+
+        After rule reconciliation, hooks get new UUIDs.  The in-memory
+        ``_last_run_time`` dict won't have an entry for the new ID, but
+        the hook's ``last_triggered_at`` field (preserved from the old hook
+        during reconciliation) still holds the correct timestamp.  Without
+        this fallback, newly reconciled hooks would default to epoch 0 and
+        fire immediately on every Discord reconnect.
+        """
+        ts = self._last_run_time.get(hook.id)
+        if ts is not None:
+            return ts
+        # Fallback: use the DB-persisted timestamp from the hook row.
+        if hook.last_triggered_at:
+            self._last_run_time[hook.id] = hook.last_triggered_at
+            return hook.last_triggered_at
+        return 0
+
     def _check_cooldown(self, hook: Hook, now: float) -> bool:
         """Return True if enough time has passed since last run."""
-        last = self._last_run_time.get(hook.id, 0)
+        last = self._resolve_last_run(hook)
         return (now - last) >= hook.cooldown_seconds
 
     def _launch_hook(
