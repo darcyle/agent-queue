@@ -355,9 +355,9 @@ Third step: write comprehensive tests for all components.
         # Sort by priority_hint (priority field)
         subtasks.sort(key=lambda t: t.priority)
 
-        # First task should have no dependencies
+        # First task should depend on the parent (blocking dep)
         deps_a = await orch.db.get_dependencies(subtasks[0].id)
-        assert len(deps_a) == 0
+        assert "t-1" in deps_a, "First subtask should depend on parent task"
 
         # Second task should depend on first
         deps_b = await orch.db.get_dependencies(subtasks[1].id)
@@ -542,9 +542,14 @@ Implement JWT-based sessions.
         subtasks = await orch.db.get_subtasks("t-1")
         assert len(subtasks) == 2
 
-        for st in subtasks:
-            deps = await orch.db.get_dependencies(st.id)
-            assert len(deps) == 0
+        # With chain_dependencies=False, subtasks have no inter-step deps.
+        # But all subtasks' first task still has the blocking dep on the parent.
+        first_deps = await orch.db.get_dependencies(subtasks[0].id)
+        assert first_deps == {"t-1"}, "First subtask should only depend on parent"
+
+        # Second subtask should have no dependencies (no chaining)
+        second_deps = await orch.db.get_dependencies(subtasks[1].id)
+        assert len(second_deps) == 0, "Second subtask should have no deps when chain disabled"
 
         await orch.shutdown()
 
@@ -1043,6 +1048,140 @@ class TestRecursionGuard:
 
         generated = await _discover_and_create_subtasks(orch, root, str(workspace))
         assert len(generated) == 1
+
+
+class TestPlanApprovalBlocking:
+    """Tests that plan subtasks are NOT promoted until the plan is approved."""
+
+    @pytest.fixture
+    async def orch_with_workspace(self, tmp_path):
+        workspace = tmp_path / "workspaces"
+        workspace.mkdir()
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(workspace),
+        )
+        config.auto_task = AutoTaskConfig(enabled=True, chain_dependencies=True)
+        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        await o.initialize()
+        yield o, workspace
+        await _drain_running_tasks(o)
+        await o.shutdown()
+
+    async def test_subtasks_blocked_while_parent_awaiting_plan_approval(
+        self, orch_with_workspace
+    ):
+        """Plan subtasks must stay DEFINED when parent is AWAITING_PLAN_APPROVAL."""
+        orch, workspace = orch_with_workspace
+
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
+
+        # Create parent task in AWAITING_PLAN_APPROVAL
+        parent = Task(
+            id="t-plan", project_id="p-1", title="Plan Task",
+            description="Create plan", status=TaskStatus.AWAITING_PLAN_APPROVAL,
+        )
+        await orch.db.create_task(parent)
+
+        # Create subtasks that would normally be promoted
+        sub1 = Task(
+            id="t-sub-1", project_id="p-1", title="Sub 1",
+            description="First subtask", status=TaskStatus.DEFINED,
+            parent_task_id="t-plan", is_plan_subtask=True,
+        )
+        sub2 = Task(
+            id="t-sub-2", project_id="p-1", title="Sub 2",
+            description="Second subtask", status=TaskStatus.DEFINED,
+            parent_task_id="t-plan", is_plan_subtask=True,
+        )
+        await orch.db.create_task(sub1)
+        await orch.db.create_task(sub2)
+        # First subtask has blocking dep on parent, second on first
+        await orch.db.add_dependency("t-sub-1", depends_on="t-plan")
+        await orch.db.add_dependency("t-sub-2", depends_on="t-sub-1")
+
+        # Run _check_defined_tasks — subtasks should NOT be promoted
+        await orch._check_defined_tasks()
+
+        s1 = await orch.db.get_task("t-sub-1")
+        s2 = await orch.db.get_task("t-sub-2")
+        assert s1.status == TaskStatus.DEFINED, "Sub 1 should stay DEFINED"
+        assert s2.status == TaskStatus.DEFINED, "Sub 2 should stay DEFINED"
+
+    async def test_subtasks_promoted_after_plan_approved(
+        self, orch_with_workspace
+    ):
+        """After parent transitions to COMPLETED, first subtask gets promoted."""
+        orch, workspace = orch_with_workspace
+
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
+
+        # Create parent in AWAITING_PLAN_APPROVAL
+        parent = Task(
+            id="t-plan", project_id="p-1", title="Plan Task",
+            description="Create plan", status=TaskStatus.AWAITING_PLAN_APPROVAL,
+        )
+        await orch.db.create_task(parent)
+
+        # Create chained subtasks with blocking dep on parent
+        sub1 = Task(
+            id="t-sub-1", project_id="p-1", title="Sub 1",
+            description="First subtask", status=TaskStatus.DEFINED,
+            parent_task_id="t-plan", is_plan_subtask=True,
+        )
+        sub2 = Task(
+            id="t-sub-2", project_id="p-1", title="Sub 2",
+            description="Second subtask", status=TaskStatus.DEFINED,
+            parent_task_id="t-plan", is_plan_subtask=True,
+        )
+        await orch.db.create_task(sub1)
+        await orch.db.create_task(sub2)
+        await orch.db.add_dependency("t-sub-1", depends_on="t-plan")
+        await orch.db.add_dependency("t-sub-2", depends_on="t-sub-1")
+
+        # Simulate plan approval: transition parent to COMPLETED
+        await orch.db.transition_task("t-plan", TaskStatus.COMPLETED,
+                                       context="plan_approved")
+
+        # Now run _check_defined_tasks — first subtask should promote
+        await orch._check_defined_tasks()
+
+        s1 = await orch.db.get_task("t-sub-1")
+        s2 = await orch.db.get_task("t-sub-2")
+        assert s1.status == TaskStatus.READY, "Sub 1 should be READY after approval"
+        assert s2.status == TaskStatus.DEFINED, "Sub 2 should stay DEFINED (deps not met)"
+
+    async def test_first_subtask_has_blocking_dep_on_parent(
+        self, orch_with_workspace
+    ):
+        """_create_subtasks_from_stored_plan adds a blocking dep from first subtask to parent."""
+        orch, workspace = orch_with_workspace
+
+        claude_dir = workspace / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "plan.md").write_text(
+            "## Add database models\n\n"
+            "Create the User and Post models in models.py with all fields.\n\n"
+            "## Build API endpoints\n\n"
+            "Add REST endpoints for CRUD operations and handlers.\n"
+        )
+
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
+        parent = Task(
+            id="t-plan", project_id="p-1", title="Plan Task",
+            description="Create plan", status=TaskStatus.AWAITING_PLAN_APPROVAL,
+        )
+        await orch.db.create_task(parent)
+
+        # Discover and store plan
+        await orch._discover_and_store_plan(parent, str(workspace))
+        # Create subtasks from stored plan
+        created = await orch._create_subtasks_from_stored_plan(parent)
+        assert len(created) >= 1
+
+        # First subtask should depend on parent
+        deps = await orch.db.get_dependencies(created[0].id)
+        assert "t-plan" in deps, "First subtask must have blocking dep on parent"
 
 
 class TestIsLastSubtask:

@@ -2456,13 +2456,35 @@ class Orchestrator:
             created_tasks.append(new_task)
             prev_task_id = new_id
 
+        # Block the first subtask on the parent task.  When the parent is in
+        # AWAITING_PLAN_APPROVAL it hasn't reached COMPLETED yet, so this
+        # dependency keeps the entire chain from executing until the plan is
+        # approved and the parent transitions to COMPLETED.
+        if created_tasks:
+            first_subtask_id = created_tasks[0].id
+            try:
+                await self.db.add_dependency(first_subtask_id, depends_on=task.id)
+                logger.info(
+                    "create_subtasks: added blocking dep %s → %s (parent)",
+                    first_subtask_id, task.id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "create_subtasks: failed to add blocking dep %s → %s: %s",
+                    first_subtask_id, task.id, e,
+                )
+
         # Auto-add downstream dependencies: any task that depends on the root
         # (parent) task should also depend on the final subtask, so it waits
         # for the entire subtask chain (including merge) to complete.
+        # Exclude the created subtasks themselves from downstream dep wiring.
         if created_tasks and config.chain_dependencies:
             final_subtask_id = created_tasks[-1].id
+            created_ids = {t.id for t in created_tasks}
             dependents = await self.db.get_dependents(task.id)
             for dep_task_id in dependents:
+                if dep_task_id in created_ids:
+                    continue
                 try:
                     await self.db.add_dependency(dep_task_id, depends_on=final_subtask_id)
                 except Exception as e:
@@ -2483,8 +2505,10 @@ class Orchestrator:
                 project_id=task.project_id,
             )
 
-        # Re-check DEFINED tasks so newly created subtasks get promoted
-        await self._check_defined_tasks()
+        # NOTE: Callers are responsible for transitioning the parent task
+        # to COMPLETED and then calling _check_defined_tasks() to promote
+        # subtasks.  The first subtask has a blocking dependency on the
+        # parent, so promotion will fail until the parent is COMPLETED.
 
         return created_tasks
 
