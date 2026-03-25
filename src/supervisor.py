@@ -30,6 +30,7 @@ from src.chat_providers import ChatProvider, LoggedChatProvider, create_chat_pro
 from src.command_handler import CommandHandler
 from src.config import AppConfig
 from src.llm_logger import LLMLogger
+from src.models import TaskStatus
 from src.orchestrator import Orchestrator
 from src.reflection import ReflectionEngine, ReflectionVerdict
 
@@ -684,7 +685,11 @@ Read the plan below and create one task per implementation phase using the creat
             )
             return []
 
-        # Post-process: set parent_task_id and is_plan_subtask on new tasks
+        # Post-process: set parent_task_id and is_plan_subtask on new tasks,
+        # then demote from READY to DEFINED.  create_task creates tasks as
+        # READY, but plan subtasks must stay in DEFINED until the blocking
+        # dependency on the parent (added by _cmd_process_plan after this
+        # method returns) allows promotion.
         created_info = []
         for task in new_tasks:
             try:
@@ -693,6 +698,13 @@ Read the plan below and create one task per implementation phase using the creat
                     parent_task_id=parent_task_id,
                     is_plan_subtask=1,
                 )
+                # Demote to DEFINED so the plan processing lock and the
+                # parent dependency gate both protect this task.
+                if task.status == TaskStatus.READY:
+                    await self.handler.db.transition_task(
+                        task.id, TaskStatus.DEFINED,
+                        context="plan_subtask_demote",
+                    )
                 created_info.append({"id": task.id, "title": task.title})
             except Exception as e:
                 logger.warning(

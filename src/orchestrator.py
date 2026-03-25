@@ -1519,6 +1519,19 @@ class Orchestrator:
         tasks = await self.db.list_tasks()
         agents = await self.db.list_agents()
 
+        # Exclude READY tasks in projects with active plan processing.
+        # create_task creates tasks as READY, so the lock check in
+        # _check_defined_tasks (which only applies to DEFINED → READY
+        # promotion) doesn't protect them.  We must also filter here
+        # to prevent the scheduler from assigning plan subtasks before
+        # the blocking dependency on the parent has been established.
+        if self._plan_processing_locks:
+            tasks = [
+                t for t in tasks
+                if t.status != TaskStatus.READY
+                or t.project_id not in self._plan_processing_locks
+            ]
+
         # Token usage within the rolling window — this is the "actual usage"
         # that the deficit-based scheduler compares against each project's
         # credit_weight target ratio to achieve proportional fairness.

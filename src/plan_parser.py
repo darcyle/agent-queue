@@ -255,10 +255,16 @@ def find_all_plan_files(workspace: str) -> list[dict]:
             except OSError:
                 pass
 
-    # Check all .md files under .claude/plans/
+    # Check all .md files under .claude/plans/ — but skip archived plans
+    # from previous task runs (format: {task-id}-plan.md or stale-{task-id}-plan.md).
+    # These accumulate as tasks complete and would cause the same plan to be
+    # re-discovered on every process_plan invocation.
     plans_dir = os.path.join(workspace, ".claude", "plans")
     if os.path.isdir(plans_dir):
         for md_path in _glob.glob(os.path.join(plans_dir, "*.md")):
+            basename = os.path.basename(md_path)
+            if basename.startswith("stale-") or basename.endswith("-plan.md"):
+                continue
             if os.path.isfile(md_path):
                 try:
                     stat = os.stat(md_path)
