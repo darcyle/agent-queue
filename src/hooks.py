@@ -10,7 +10,7 @@ The supervisor has shell, file I/O, and task management tools, so hooks can
 create tasks, check status, run commands, etc. -- anything a human user can
 do via Discord chat, a hook can do autonomously.
 
-Two trigger types are supported:
+Three trigger types are supported:
 
 - **Periodic**: fires on a timer (``interval_seconds``), checked every
   orchestrator tick (~5s).  Actual firing granularity is bounded by the
@@ -21,6 +21,10 @@ Two trigger types are supported:
 - **Event**: fires when a matching EventBus event arrives (e.g.
   ``task.completed``).  Events are delivered asynchronously via
   ``_on_event``, which re-queries all enabled hooks for matches.
+- **Scheduled**: fires once at a specific epoch timestamp (``fire_at``),
+  then auto-deletes itself.  Used for deferred one-shot work — e.g.
+  "remind me to check the deploy in 30 minutes" or "run this prompt
+  tomorrow at 9am".  Created via the ``schedule_hook`` command.
 
 Concurrency and cooldown interaction::
 
@@ -341,6 +345,31 @@ class HookEngine:
                             hook, "periodic", event_data=timing_data
                         )
 
+            elif trigger_type == "scheduled":
+                fire_at = trigger.get("fire_at")
+                if fire_at is not None and now >= fire_at:
+                    if self._check_cooldown(hook, now):
+                        now_iso = datetime.fromtimestamp(
+                            now, tz=timezone.utc
+                        ).isoformat()
+                        scheduled_iso = datetime.fromtimestamp(
+                            fire_at, tz=timezone.utc
+                        ).isoformat()
+                        timing_data: dict = {
+                            "current_time": now_iso,
+                            "current_time_epoch": now,
+                            "scheduled_for": scheduled_iso,
+                            "scheduled_for_epoch": fire_at,
+                        }
+                        self._launch_hook(
+                            hook, "scheduled", event_data=timing_data
+                        )
+                        # Auto-delete the hook after launching (one-shot).
+                        # Use fire-and-forget so tick() doesn't block.
+                        asyncio.create_task(
+                            self._delete_scheduled_hook(hook.id, hook.name)
+                        )
+
         # Phase 3: Poll file watcher for filesystem changes.
         # The file watcher emits file.changed / folder.changed events on
         # the EventBus, which are then picked up by _on_event like any
@@ -463,6 +492,29 @@ class HookEngine:
             await self.db.update_hook(hook_id, last_triggered_at=ts)
         except Exception as e:
             logger.warning("Failed to persist last_triggered_at for hook %s: %s", hook_id, e)
+
+    async def _delete_scheduled_hook(self, hook_id: str, hook_name: str) -> None:
+        """Delete a one-shot scheduled hook after it has been launched.
+
+        Called as a fire-and-forget task from ``tick()`` when a scheduled
+        hook's ``fire_at`` time has been reached and the hook has been
+        launched.  The hook is removed from the database so it won't fire
+        again on the next tick.  Run history is preserved.
+        """
+        try:
+            # Only delete the hook row, not its run history — keep the
+            # audit trail.  Use update to disable first in case the delete
+            # races with another tick.
+            await self.db.update_hook(hook_id, enabled=False)
+            await self.db.delete_hook(hook_id)
+            logger.info(
+                "Auto-deleted scheduled hook %s (%s) after firing",
+                hook_id, hook_name,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to auto-delete scheduled hook %s: %s", hook_id, e
+            )
 
     async def _execute_hook(
         self,
@@ -703,9 +755,19 @@ class HookEngine:
             if project and project.repo_default_branch else ""
         )
 
-        # Build timing context for periodic hooks
+        # Build timing context for periodic and scheduled hooks
         timing_line = ""
-        if event_data and trigger_reason == "periodic":
+        if event_data and trigger_reason == "scheduled":
+            parts = []
+            if event_data.get("current_time"):
+                parts.append(f"Current time: `{event_data['current_time']}`")
+            if event_data.get("scheduled_for"):
+                parts.append(
+                    f"Originally scheduled for: `{event_data['scheduled_for']}`"
+                )
+            parts.append("This is a one-shot scheduled hook — it will auto-delete after this run.")
+            timing_line = "\n".join(parts) + "\n"
+        elif event_data and trigger_reason == "periodic":
             parts = []
             if event_data.get("current_time"):
                 parts.append(f"Current time: `{event_data['current_time']}`")

@@ -95,6 +95,32 @@ def _count_by(items, key_fn) -> dict[str, int]:
     return counts
 
 
+def _parse_delay(delay_str: str) -> int:
+    """Parse a human-friendly delay string into seconds.
+
+    Accepts formats like: '30s', '5m', '2h', '1d', '2h30m', '1d6h'.
+    Plain integers are treated as seconds.
+    """
+    delay_str = delay_str.strip()
+    # Plain integer → seconds
+    if delay_str.isdigit():
+        return int(delay_str)
+
+    import re as _re
+    total = 0
+    pattern = _re.compile(r'(\d+)\s*([smhd])', _re.IGNORECASE)
+    matches = pattern.findall(delay_str)
+    if not matches:
+        raise ValueError(
+            f"Cannot parse delay '{delay_str}'. "
+            "Use formats like '30s', '5m', '2h', '1d', or '2h30m'."
+        )
+    multipliers = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
+    for value, unit in matches:
+        total += int(value) * multipliers[unit.lower()]
+    return total
+
+
 def _format_interval(seconds: int) -> str:
     """Format an interval in seconds as a human-readable string (e.g. '2h 30m')."""
     if seconds <= 0:
@@ -5592,7 +5618,31 @@ class CommandHandler:
             except (json.JSONDecodeError, TypeError):
                 trigger = {}
 
-            if trigger.get("type") != "periodic":
+            trigger_type = trigger.get("type")
+
+            # Include scheduled (one-shot) hooks in the schedule view
+            if trigger_type == "scheduled":
+                fire_at = trigger.get("fire_at", 0)
+                from datetime import datetime as _dt, timezone as _tz
+                fire_at_iso = _dt.fromtimestamp(fire_at, tz=_tz.utc).isoformat()
+                remaining = fire_at - time.time()
+                if remaining > 0:
+                    next_str = f"in {_format_interval(int(remaining))}"
+                else:
+                    next_str = "overdue (imminent)"
+                results.append({
+                    "hook_id": h.id,
+                    "name": h.name,
+                    "project_id": h.project_id,
+                    "schedule": "one-shot",
+                    "interval": "once",
+                    "last_run": "never",
+                    "next_run": next_str,
+                    "type": "scheduled",
+                })
+                continue
+
+            if trigger_type != "periodic":
                 continue
 
             schedule = parse_schedule(trigger)
@@ -5691,6 +5741,170 @@ class CommandHandler:
             "updated_count": len(updated),
             "updated_hooks": updated,
         }
+
+    # -----------------------------------------------------------------------
+    # Scheduled hook commands — one-shot deferred hooks that auto-delete
+    # -----------------------------------------------------------------------
+
+    async def _cmd_schedule_hook(self, args: dict) -> dict:
+        """Create a one-shot scheduled hook that fires at a specific time.
+
+        Accepts either:
+        - ``fire_at``: epoch timestamp or ISO-8601 datetime string
+        - ``delay``: human-friendly duration string (e.g. '30m', '2h', '1d')
+
+        The hook fires once when the scheduled time arrives, then auto-deletes.
+        """
+        project_id = args["project_id"]
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"error": f"Project '{project_id}' not found"}
+
+        name = args.get("name", "scheduled-hook")
+        prompt_template = args["prompt_template"]
+
+        # Resolve fire_at from either fire_at or delay
+        fire_at = args.get("fire_at")
+        delay = args.get("delay")
+
+        if fire_at is not None and delay is not None:
+            return {"error": "Provide either 'fire_at' or 'delay', not both"}
+        if fire_at is None and delay is None:
+            return {"error": "Provide either 'fire_at' (epoch/ISO) or 'delay' (e.g. '30m', '2h')"}
+
+        now = time.time()
+
+        if delay is not None:
+            try:
+                delay_seconds = _parse_delay(str(delay))
+            except ValueError as e:
+                return {"error": str(e)}
+            if delay_seconds <= 0:
+                return {"error": "Delay must be positive"}
+            fire_at_epoch = now + delay_seconds
+        else:
+            # fire_at could be epoch (number) or ISO string
+            if isinstance(fire_at, (int, float)):
+                fire_at_epoch = float(fire_at)
+            elif isinstance(fire_at, str):
+                try:
+                    from datetime import datetime as _dt, timezone as _tz
+                    # Try ISO format
+                    dt = _dt.fromisoformat(fire_at.replace('Z', '+00:00'))
+                    fire_at_epoch = dt.timestamp()
+                except ValueError:
+                    # Try as plain number
+                    try:
+                        fire_at_epoch = float(fire_at)
+                    except ValueError:
+                        return {"error": f"Cannot parse fire_at '{fire_at}'. Use epoch timestamp or ISO-8601 format."}
+            else:
+                return {"error": f"Invalid fire_at type: {type(fire_at).__name__}"}
+
+            if fire_at_epoch <= now:
+                return {"error": "fire_at must be in the future"}
+
+        # Generate a unique hook ID
+        import uuid
+        hook_id = f"sched-{name.lower().replace(' ', '-')}-{uuid.uuid4().hex[:6]}"
+
+        trigger = {"type": "scheduled", "fire_at": fire_at_epoch}
+        context_steps = args.get("context_steps", [])
+        llm_config = args.get("llm_config")
+
+        hook = Hook(
+            id=hook_id,
+            project_id=project_id,
+            name=name,
+            trigger=json.dumps(trigger),
+            context_steps=json.dumps(context_steps),
+            prompt_template=prompt_template,
+            cooldown_seconds=0,  # One-shot — no cooldown needed
+            llm_config=json.dumps(llm_config) if llm_config else None,
+            created_at=now,
+            updated_at=now,
+        )
+        await self.db.create_hook(hook)
+
+        from datetime import datetime as _dt, timezone as _tz
+        fire_at_iso = _dt.fromtimestamp(fire_at_epoch, tz=_tz.utc).isoformat()
+        delay_human = _format_interval(int(fire_at_epoch - now))
+
+        return {
+            "created": hook_id,
+            "name": name,
+            "project_id": project_id,
+            "fire_at": fire_at_iso,
+            "fire_at_epoch": fire_at_epoch,
+            "fires_in": delay_human,
+        }
+
+    async def _cmd_list_scheduled(self, args: dict) -> dict:
+        """List all pending scheduled (one-shot) hooks."""
+        project_id = args.get("project_id")
+        hooks = await self.db.list_hooks(project_id=project_id, enabled=True)
+        now = time.time()
+
+        results = []
+        for h in hooks:
+            try:
+                trigger = json.loads(h.trigger)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if trigger.get("type") != "scheduled":
+                continue
+
+            fire_at = trigger.get("fire_at", 0)
+            from datetime import datetime as _dt, timezone as _tz
+            fire_at_iso = _dt.fromtimestamp(fire_at, tz=_tz.utc).isoformat()
+
+            remaining = fire_at - now
+            if remaining > 0:
+                fires_in = _format_interval(int(remaining))
+                status = "pending"
+            else:
+                fires_in = "overdue"
+                status = "overdue"
+
+            results.append({
+                "hook_id": h.id,
+                "name": h.name,
+                "project_id": h.project_id,
+                "fire_at": fire_at_iso,
+                "fire_at_epoch": fire_at,
+                "fires_in": fires_in,
+                "status": status,
+                "prompt_template": h.prompt_template[:200] + ("..." if len(h.prompt_template) > 200 else ""),
+            })
+
+        # Sort by fire_at
+        results.sort(key=lambda r: r["fire_at_epoch"])
+        return {"scheduled_hooks": results, "count": len(results)}
+
+    async def _cmd_cancel_scheduled(self, args: dict) -> dict:
+        """Cancel a scheduled hook before it fires."""
+        hook_id = args["hook_id"]
+        hook = await self.db.get_hook(hook_id)
+        if not hook:
+            return {"error": f"Scheduled hook '{hook_id}' not found"}
+
+        try:
+            trigger = json.loads(hook.trigger)
+        except (json.JSONDecodeError, TypeError):
+            trigger = {}
+
+        if trigger.get("type") != "scheduled":
+            return {"error": f"Hook '{hook_id}' is not a scheduled hook (type: {trigger.get('type', 'unknown')})"}
+
+        # Cancel if it's currently running
+        hooks_engine = self.orchestrator.hooks
+        if hooks_engine and hook_id in hooks_engine._running:
+            task = hooks_engine._running.pop(hook_id)
+            if not task.done():
+                task.cancel()
+
+        await self.db.delete_hook(hook_id)
+        return {"cancelled": hook_id, "name": hook.name}
 
     # -----------------------------------------------------------------------
     # Rule commands -- persistent autonomous behaviors stored as markdown.

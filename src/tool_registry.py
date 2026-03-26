@@ -131,6 +131,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "fire_hook": "hooks",
     "hook_schedules": "hooks",
     "fire_all_scheduled_hooks": "hooks",
+    "schedule_hook": "hooks",
+    "list_scheduled": "hooks",
+    "cancel_scheduled": "hooks",
     # memory
     "memory_stats": "memory",
     "memory_reindex": "memory",
@@ -1474,6 +1477,78 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Optional project ID to filter hooks",
                 },
             },
+        },
+    },
+    {
+        "name": "schedule_hook",
+        "description": (
+            "Schedule a one-shot hook to fire at a specific time or after a delay. "
+            "The hook runs once, executes its prompt with full tool access, then auto-deletes. "
+            "Use for deferred work: reminders, delayed checks, timed actions. "
+            "Provide either 'fire_at' (epoch/ISO datetime) or 'delay' (e.g. '30m', '2h', '1d')."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "name": {
+                    "type": "string",
+                    "description": "Descriptive name for the scheduled hook (optional, used as ID slug)",
+                    "default": "scheduled-hook",
+                },
+                "prompt_template": {
+                    "type": "string",
+                    "description": "Prompt template to execute when the scheduled time arrives",
+                },
+                "fire_at": {
+                    "type": ["number", "string"],
+                    "description": "When to fire: epoch timestamp (number) or ISO-8601 datetime string. Mutually exclusive with 'delay'.",
+                },
+                "delay": {
+                    "type": "string",
+                    "description": "Delay before firing: e.g. '30s', '5m', '2h', '1d', '2h30m'. Mutually exclusive with 'fire_at'.",
+                },
+                "context_steps": {
+                    "type": "array",
+                    "description": "Optional context-gathering steps (same as create_hook)",
+                    "items": {"type": "object"},
+                },
+                "llm_config": {
+                    "type": "object",
+                    "description": "Optional LLM config override: {provider, model, base_url}",
+                },
+            },
+            "required": ["project_id", "prompt_template"],
+        },
+    },
+    {
+        "name": "list_scheduled",
+        "description": (
+            "List all pending scheduled (one-shot) hooks. Shows when each will fire, "
+            "how long until it fires, and a preview of the prompt."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Optional project ID to filter scheduled hooks",
+                },
+            },
+        },
+    },
+    {
+        "name": "cancel_scheduled",
+        "description": "Cancel a scheduled hook before it fires. Removes it from the queue.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hook_id": {
+                    "type": "string",
+                    "description": "Scheduled hook ID to cancel",
+                },
+            },
+            "required": ["hook_id"],
         },
     },
     {
