@@ -75,7 +75,7 @@ async def run_single_case(
     wrapper = _VerboseProviderWrapper(provider) if verbose else None
     agent = Supervisor(orchestrator, config)
     agent._provider = wrapper if wrapper else provider
-    agent._max_tool_rounds = max_tool_rounds
+    config.supervisor.max_tool_rounds = max_tool_rounds
 
     recorder = RecordingCommandHandler(orchestrator, config)
     agent.handler = recorder

@@ -343,7 +343,7 @@ class Supervisor:
         tool_actions: list[str] = []
         # Accumulated tool results for reflection
         accumulated_tool_results: list[dict] = []
-        max_rounds = getattr(self, "_max_tool_rounds", 10)
+        max_rounds = self.config.supervisor.max_tool_rounds
         # Track how many times we've nudged the LLM to call reply_to_user
         nudge_count = 0
         max_nudges = 2

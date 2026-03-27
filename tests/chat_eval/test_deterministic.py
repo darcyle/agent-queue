@@ -95,10 +95,12 @@ class TestMultiToolSequence:
 
 
 class TestMaxIterations:
-    """Test the 10-iteration safety limit."""
+    """Test the max_tool_rounds safety limit."""
 
     async def test_max_iterations_with_tool_actions(self, eval_agent):
         agent, recorder, provider = eval_agent
+        # Override to a small limit for testing
+        agent.config.supervisor.max_tool_rounds = 10
 
         # Queue 11 tool calls (exceeds limit of 10)
         for i in range(11):
@@ -112,6 +114,8 @@ class TestMaxIterations:
 
     async def test_max_iterations_returns_fallback(self, eval_agent):
         agent, recorder, provider = eval_agent
+        # Override to a small limit for testing
+        agent.config.supervisor.max_tool_rounds = 10
 
         # Queue exactly 10 tool calls (no reply_to_user)
         for _ in range(10):
