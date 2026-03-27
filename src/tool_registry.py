@@ -2401,6 +2401,35 @@ class ToolRegistry:
                     "required": ["channel_id", "content"],
                 },
             }
+        # reply_to_user — mandatory response delivery tool
+        if "reply_to_user" not in self._all_tools:
+            self._all_tools["reply_to_user"] = {
+                "name": "reply_to_user",
+                "description": (
+                    "Deliver your final response to the user. You MUST call "
+                    "this tool when you are done processing a request. Do not "
+                    "stop calling tools until you have gathered enough "
+                    "information to provide a complete answer, then call this "
+                    "tool with your response. The message should directly "
+                    "address the user's request — not just list what tools "
+                    "you called."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "message": {
+                            "type": "string",
+                            "description": (
+                                "The complete response to send to the user. "
+                                "Must directly answer their question or "
+                                "confirm the action taken with relevant "
+                                "details."
+                            ),
+                        },
+                    },
+                    "required": ["message"],
+                },
+            }
         # Rule stubs (Phase 2 placeholders)
         for rule_tool in self._get_rule_tool_stubs():
             if rule_tool["name"] not in self._all_tools:

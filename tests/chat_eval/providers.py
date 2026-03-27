@@ -63,14 +63,28 @@ class ScriptedProvider(ChatProvider):
         ]
         self._queue.append(ChatResponse(content=blocks))
 
+    def add_reply(self, message: str) -> None:
+        """Queue a reply_to_user tool call response.
+
+        The supervisor requires reply_to_user to deliver responses after
+        tool use.  This is the standard way to end a tool-use sequence.
+        """
+        self._queue.append(ChatResponse(content=[
+            ToolUseBlock(
+                id=f"toolu_{uuid.uuid4().hex[:12]}",
+                name="reply_to_user",
+                input={"message": message},
+            ),
+        ]))
+
     def add_tool_then_text(self, name: str, args: dict, text: str) -> None:
-        """Queue a tool call response followed by a text response.
+        """Queue a tool call followed by a reply_to_user delivery.
 
         This queues TWO responses: the tool call (which triggers execution),
-        then the text response (returned after the tool result).
+        then a reply_to_user call to deliver the text as the final response.
         """
         self.add_tool_call(name, args)
-        self.add_text(text)
+        self.add_reply(text)
 
     async def create_message(
         self,

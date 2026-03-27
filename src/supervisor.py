@@ -20,7 +20,6 @@ Design boundaries:
 from __future__ import annotations
 
 import json
-import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -304,9 +303,12 @@ class Supervisor:
 
         # Multi-turn tool-use loop
         tool_actions: list[str] = []
-        # Accumulated tool results for synthesis and reflection
+        # Accumulated tool results for reflection
         accumulated_tool_results: list[dict] = []
         max_rounds = getattr(self, "_max_tool_rounds", 10)
+        # Track how many times we've nudged the LLM to call reply_to_user
+        nudge_count = 0
+        max_nudges = 2
 
         for round_num in range(max_rounds):
             # Notify caller that the LLM is thinking
@@ -328,98 +330,58 @@ class Supervisor:
                     await on_progress("responding", None)
                 response = "\n".join(resp.text_parts).strip()
 
-                # If the LLM returned no text after tool use, ask it to
-                # synthesize a proper response from the tool results instead
-                # of falling back to the generic "Done. Actions taken: ..."
-                synthesis_attempted = False
-                if not response and tool_actions:
-                    synthesis_attempted = True
-                    response = await self._synthesize_response(
-                        user_text=text,
-                        tool_actions=tool_actions,
-                        accumulated_results=accumulated_tool_results,
-                        messages=messages,
-                        active_tools=active_tools,
-                    )
-
-                # --- Reflection pass (after tool use) ---
-                if tool_actions:
+                # If the LLM stopped calling tools without reply_to_user
+                # after having used tools, nudge it to call reply_to_user
+                if tool_actions and nudge_count < max_nudges:
+                    nudge_count += 1
                     messages.append({
                         "role": "assistant",
-                        "content": response or "Done.",
+                        "content": response or "(no text)",
                     })
-                    verdict = await self.reflect(
-                        trigger=_reflection_trigger,
-                        action_summary=", ".join(tool_actions),
-                        action_results=accumulated_tool_results,
-                        messages=messages,
-                        active_tools=active_tools,
-                    )
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[system]: You must call the `reply_to_user` tool "
+                            "to deliver your response. Do not just stop — "
+                            "compose a complete answer that addresses the "
+                            "user's request and call `reply_to_user` with it."
+                        ),
+                    })
+                    continue  # Re-enter the loop
 
-                    # If reflection failed and we haven't retried yet,
-                    # re-enter the tool loop with feedback context
-                    if (verdict and not verdict.passed
-                            and not getattr(self, "_reflection_retry_active", False)):
-                        self._reflection_retry_active = True
-                        try:
-                            retry_prompt = (
-                                "Your previous response was evaluated and found "
-                                "inadequate.\n\n"
-                                f"**Reflection feedback:** {verdict.reason}\n"
-                            )
-                            if verdict.suggested_followup:
-                                retry_prompt += (
-                                    f"**Suggested followup:** "
-                                    f"{verdict.suggested_followup}\n"
-                                )
-                            retry_prompt += (
-                                f"\n**Original user request:** {text}\n\n"
-                                "Please try again, addressing the feedback above."
-                            )
-                            return await self.chat(
-                                text=retry_prompt,
-                                user_name="system:reflection-retry",
-                                history=messages,
-                                on_progress=on_progress,
-                                _reflection_trigger=_reflection_trigger,
-                            )
-                        finally:
-                            self._reflection_retry_active = False
-
-                # --- Adequacy safety net ---
-                # Catches obviously inadequate responses even when
-                # reflection is disabled or the circuit-breaker tripped.
-                # Skip if synthesis already ran — its fallback ("Done.
-                # Actions taken: ...") would trigger re-synthesis in a loop.
-                if (response and tool_actions
-                        and not synthesis_attempted
-                        and not self._check_response_adequacy(
-                            text, response, tool_actions)):
-                    synthesized = await self._synthesize_response(
-                        user_text=text,
-                        tool_actions=tool_actions,
-                        accumulated_results=accumulated_tool_results,
-                        messages=messages,
-                        active_tools=active_tools,
-                    )
-                    if synthesized:
-                        response = synthesized
-
+                # No tools were used at all — direct conversational response
                 if response:
                     return response
                 return "Done."
 
-            # Only keep tool_use blocks in assistant message (drop pre-tool commentary)
-            messages.append({"role": "assistant", "content": resp.tool_uses})
-
-            tool_results = []
+            # Check if reply_to_user is among the tool calls
+            reply_message = None
+            other_tool_uses = []
             for tool_use in resp.tool_uses:
+                if tool_use.name == "reply_to_user":
+                    reply_message = (tool_use.input or {}).get("message", "")
+                else:
+                    other_tool_uses.append(tool_use)
+
+            # Execute non-reply tools first
+            messages.append({"role": "assistant", "content": resp.tool_uses})
+            tool_results = []
+
+            for tool_use in resp.tool_uses:
+                if tool_use.name == "reply_to_user":
+                    # Acknowledge the reply tool call but don't execute it
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_use.id,
+                        "content": json.dumps({"status": "delivered"}),
+                    })
+                    continue
+
                 label = _tool_label(tool_use.name, tool_use.input)
                 if on_progress:
                     await on_progress("tool_use", label)
                 result = await self._execute_tool(tool_use.name, tool_use.input)
                 tool_actions.append(label)
-                # Accumulate for synthesis and reflection
                 accumulated_tool_results.append({
                     "tool": label,
                     "result": result,
@@ -441,16 +403,59 @@ class Supervisor:
 
             messages.append({"role": "user", "content": tool_results})
 
-        # Max rounds exhausted — synthesize instead of generic fallback
-        if tool_actions:
-            return await self._synthesize_response(
-                user_text=text,
-                tool_actions=tool_actions,
-                accumulated_results=accumulated_tool_results,
-                messages=messages,
-                active_tools=active_tools,
-            )
-        return "Done."
+            # If reply_to_user was called, deliver the response
+            if reply_message is not None:
+                if on_progress:
+                    await on_progress("responding", None)
+                response = reply_message.strip()
+
+                # --- Reflection pass (after tool use) ---
+                if tool_actions:
+                    messages.append({
+                        "role": "assistant",
+                        "content": response or "Done.",
+                    })
+                    verdict = await self.reflect(
+                        trigger=_reflection_trigger,
+                        action_summary=", ".join(tool_actions),
+                        action_results=accumulated_tool_results,
+                        messages=messages,
+                        active_tools=active_tools,
+                    )
+
+                    if (verdict and not verdict.passed
+                            and not getattr(self, "_reflection_retry_active", False)):
+                        self._reflection_retry_active = True
+                        try:
+                            retry_prompt = (
+                                "Your previous response was evaluated and found "
+                                "inadequate.\n\n"
+                                f"**Reflection feedback:** {verdict.reason}\n"
+                            )
+                            if verdict.suggested_followup:
+                                retry_prompt += (
+                                    f"**Suggested followup:** "
+                                    f"{verdict.suggested_followup}\n"
+                                )
+                            retry_prompt += (
+                                f"\n**Original user request:** {text}\n\n"
+                                "Please try again, addressing the feedback above. "
+                                "Remember to call reply_to_user with your response."
+                            )
+                            return await self.chat(
+                                text=retry_prompt,
+                                user_name="system:reflection-retry",
+                                history=messages,
+                                on_progress=on_progress,
+                                _reflection_trigger=_reflection_trigger,
+                            )
+                        finally:
+                            self._reflection_retry_active = False
+
+                return response if response else "Done."
+
+        # Max rounds exhausted — return whatever text we have or a fallback
+        return "I was unable to complete processing your request within the allowed number of steps. Please try again or simplify your request."
 
     async def summarize(self, transcript: str) -> str | None:
         """Summarize a conversation transcript. Returns None on failure."""
@@ -876,110 +881,6 @@ Read the plan below and create one task per implementation phase using the creat
             pass
         return {"action": "ignore"}
 
-    def _check_response_adequacy(
-        self,
-        user_text: str,
-        response: str,
-        tool_actions: list[str],
-    ) -> bool:
-        """Cheap deterministic check for obviously inadequate responses.
-
-        Returns ``True`` if the response looks adequate, ``False`` if it is
-        clearly too thin to be useful.  This is a safety net that catches
-        cases even when reflection is disabled or the circuit-breaker has
-        tripped.
-        """
-        # 1. Generic fallback pattern: "Done. Actions taken: ..."
-        if re.match(r"^Done\.\s*Actions taken:\s*", response):
-            return False
-
-        # 2. User asked multiple things (3+ numbered/bullet items) but
-        #    the response is very short — almost certainly didn't address them.
-        bullet_pattern = re.findall(
-            r"(?:^|\n)\s*(?:\d+[\.\)]\s|[-*•]\s)", user_text,
-        )
-        if len(bullet_pattern) >= 3 and len(response) < 100:
-            return False
-
-        # 3. Response contains nothing beyond tool names — no domain content.
-        #    Strip out tool names (the part before any parenthesised detail)
-        #    and common filler words, then check if anything meaningful remains.
-        cleaned = response
-        for action in tool_actions:
-            # Remove both the full label "tool(detail)" and just "tool"
-            tool_name = action.split("(")[0]
-            cleaned = cleaned.replace(action, "")
-            cleaned = cleaned.replace(tool_name, "")
-        # Strip markdown, punctuation, whitespace, and common filler words
-        cleaned = re.sub(r"[*_`#\-•\d\.\,\:\;\!\?\(\)\[\]]", " ", cleaned)
-        filler = {
-            "done", "actions", "taken", "completed", "ok", "okay",
-            "ran", "called", "executed", "the", "a", "an", "and",
-            "or", "is", "was", "were", "has", "have", "had", "i",
-            "it", "to", "for", "of", "in", "on", "with", "that",
-            "this", "successfully", "finished", "result", "results",
-        }
-        words = [w for w in cleaned.lower().split() if w not in filler]
-        if tool_actions and not words:
-            return False
-
-        return True
-
-    async def _synthesize_response(
-        self,
-        user_text: str,
-        tool_actions: list[str],
-        accumulated_results: list[dict],
-        messages: list[dict],
-        active_tools: dict[str, dict],
-    ) -> str:
-        """Ask the LLM to synthesize a user-facing response from tool results.
-
-        Called when the LLM stopped calling tools but produced no text response,
-        or when the max tool rounds were exhausted. Instead of returning a
-        generic "Done. Actions taken: ..." message, this prompts the LLM to
-        compose a meaningful summary that addresses the user's original request.
-        """
-        # Build a concise summary of tool results for the synthesis prompt
-        results_summary_parts = []
-        for entry in accumulated_results:
-            result_str = json.dumps(entry["result"])
-            # Truncate very large results to keep the synthesis prompt manageable
-            if len(result_str) > 500:
-                result_str = result_str[:497] + "..."
-            results_summary_parts.append(f"- **{entry['tool']}**: {result_str}")
-        results_summary = "\n".join(results_summary_parts) or "No results."
-
-        synthesis_prompt = (
-            "You used tools but did not provide a text response to the user. "
-            "Please compose a helpful response that directly addresses the "
-            "user's original request.\n\n"
-            f"**User's request:** {user_text}\n\n"
-            f"**Tools called and their results:**\n{results_summary}\n\n"
-            "Respond naturally. Summarize findings, report what actions were "
-            "taken, and address each part of the user's request. If you could "
-            "not fully complete the request, explain what was done and what "
-            "remains."
-        )
-
-        messages_copy = list(messages)
-        messages_copy.append({"role": "user", "content": synthesis_prompt})
-
-        try:
-            resp = await self._provider.create_message(
-                messages=messages_copy,
-                system=self._build_system_prompt(),
-                tools=list(active_tools.values()),
-                max_tokens=1024,
-            )
-            response = "\n".join(resp.text_parts).strip()
-            if response:
-                return response
-        except Exception:
-            pass  # Synthesis failure falls through to basic fallback
-
-        # Last-resort fallback — still better than just tool names
-        return f"Done. Actions taken: {', '.join(tool_actions)}"
 
     async def _execute_tool(self, name: str, input_data: dict) -> dict:
         """Execute a tool call via the shared CommandHandler.

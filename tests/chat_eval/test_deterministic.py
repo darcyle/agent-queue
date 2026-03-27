@@ -71,8 +71,8 @@ class TestMultiToolSequence:
         provider.add_tool_call("list_projects", {})
         # Second LLM response: another tool call
         provider.add_tool_call("list_agents", {})
-        # Third LLM response: text
-        provider.add_text("Here's the status overview.")
+        # Third LLM response: reply_to_user
+        provider.add_reply("Here's the status overview.")
 
         response = await agent.chat("give me a system overview", user_name="test")
 
@@ -87,7 +87,7 @@ class TestMultiToolSequence:
             ("list_projects", {}),
             ("list_agents", {}),
         ])
-        provider.add_text("Done.")
+        provider.add_reply("Done.")
 
         response = await agent.chat("status", user_name="test")
 
@@ -103,27 +103,23 @@ class TestMaxIterations:
         # Queue 11 tool calls (exceeds limit of 10)
         for i in range(11):
             provider.add_tool_call("list_projects", {})
-        # After max rounds, synthesis is attempted
-        provider.add_text("I completed 10 rounds of listing.")
 
         response = await agent.chat("keep going", user_name="test")
 
         # Should have stopped at 10 tool iterations
         assert len(recorder.calls) == 10
-        assert response  # Should have a meaningful response from synthesis
+        assert response  # Should have a fallback response
 
-    async def test_max_iterations_returns_actions(self, eval_agent):
+    async def test_max_iterations_returns_fallback(self, eval_agent):
         agent, recorder, provider = eval_agent
 
-        # Queue exactly 10 tool calls
+        # Queue exactly 10 tool calls (no reply_to_user)
         for _ in range(10):
             provider.add_tool_call("list_projects", {})
-        # After max rounds, synthesis is attempted — provide a response
-        provider.add_text("I listed projects 10 times.")
 
         response = await agent.chat("keep listing", user_name="test")
 
-        assert "listed" in response.lower() or "list_projects" in response
+        assert "unable to complete" in response.lower()
 
 
 class TestToolErrorPropagation:
@@ -134,7 +130,7 @@ class TestToolErrorPropagation:
 
         # Call a tool with bad args that will error
         provider.add_tool_call("get_task", {"task_id": "nonexistent"})
-        provider.add_text("Sorry, that task wasn't found.")
+        provider.add_reply("Sorry, that task wasn't found.")
 
         response = await agent.chat("show task nonexistent", user_name="test")
 
@@ -152,7 +148,7 @@ class TestToolErrorPropagation:
         agent, recorder, provider = eval_agent
 
         provider.add_tool_call("nonexistent_tool", {})
-        provider.add_text("I couldn't do that.")
+        provider.add_reply("I couldn't do that.")
 
         response = await agent.chat("do something weird", user_name="test")
 
@@ -230,7 +226,7 @@ class TestHistoryThreading:
         agent, recorder, provider = eval_agent
 
         provider.add_tool_call("list_projects", {})
-        provider.add_text("Found projects.")
+        provider.add_reply("Found projects.")
 
         await agent.chat("list projects", user_name="test")
 
@@ -251,7 +247,7 @@ class TestRecorderFunctionality:
 
         provider.add_tool_call("list_projects", {})
         provider.add_tool_call("list_agents", {})
-        provider.add_text("Done.")
+        provider.add_reply("Done.")
 
         await agent.chat("overview", user_name="test")
 
@@ -278,7 +274,7 @@ class TestRecorderFunctionality:
 
         provider.add_tool_call("list_projects", {})
         provider.add_tool_call("list_projects", {})
-        provider.add_text("Done.")
+        provider.add_reply("Done.")
 
         await agent.chat("list twice", user_name="test")
 
@@ -293,7 +289,7 @@ class TestShowAllMapping:
         agent, recorder, provider = eval_agent
 
         provider.add_tool_call("list_tasks", {"show_all": True})
-        provider.add_text("Here are all tasks.")
+        provider.add_reply("Here are all tasks.")
 
         await agent.chat("show all tasks", user_name="test")
 
@@ -308,35 +304,33 @@ class TestShowAllMapping:
 class TestEmptyResponse:
     """Test edge case where provider returns empty content."""
 
-    async def test_empty_text_with_actions(self, eval_agent):
+    async def test_empty_text_after_tools_triggers_nudge(self, eval_agent):
         agent, recorder, provider = eval_agent
 
         provider.add_tool_call("list_projects", {})
-        # Empty text response — triggers synthesis
+        # Empty text response — triggers nudge to call reply_to_user
         provider.add_response(ChatResponse(content=[TextBlock(text="")]))
-        # Synthesis call returns a proper response
-        provider.add_text("Here are the projects I found.")
+        # After nudge, LLM calls reply_to_user
+        provider.add_reply("Here are the projects I found.")
 
         response = await agent.chat("do something", user_name="test")
 
-        # Synthesis should produce a meaningful response
         assert "projects" in response.lower()
 
-    async def test_empty_text_synthesis_fallback(self, eval_agent):
-        """When synthesis also returns empty, fall back to actions list."""
+    async def test_empty_text_exhausts_nudges(self, eval_agent):
+        """When nudges are exhausted, returns final text or Done."""
         agent, recorder, provider = eval_agent
 
         provider.add_tool_call("list_projects", {})
-        # Empty text response — triggers synthesis
+        # Empty text responses exhaust nudges (max 2)
         provider.add_response(ChatResponse(content=[TextBlock(text="")]))
-        # Synthesis also returns empty — should fall back
+        provider.add_response(ChatResponse(content=[TextBlock(text="")]))
+        # Third empty text — nudges exhausted, returns directly
         provider.add_response(ChatResponse(content=[TextBlock(text="")]))
 
         response = await agent.chat("do something", user_name="test")
 
-        # Last-resort fallback
-        assert "Done." in response
-        assert "list_projects" in response
+        assert response == "Done."
 
     async def test_no_provider_raises(self):
         """Test that chat() raises if provider not initialized."""
