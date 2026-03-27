@@ -13,6 +13,9 @@ dependencies = [
 telegram = [
     "python-telegram-bot[ext]>=20.0",
 ]
+mcp = [
+    "mcp>=1.0.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -29,13 +32,14 @@ docs = [
 
 [project.scripts]
 agent-queue = "src.main:main"
+agent-queue-mcp = "packages.mcp_server.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests", "packages"]
 markers = [
     "functional: tests that launch real Claude CLI (require auth + API key)",
     "functional_mcp: functional tests requiring npm/npx for MCP servers",
