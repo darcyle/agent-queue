@@ -497,6 +497,45 @@ class AgentQueueBot(commands.Bot):
             embed=format_server_started_embed(),
         )
 
+    class ThinkingView(discord.ui.View):
+        """Attached to the thinking indicator message with a Cancel button.
+
+        When clicked, calls ``Supervisor.cancel()`` to immediately terminate
+        the response loop.  The view disables itself after use.
+        """
+
+        def __init__(self, supervisor: Supervisor):
+            super().__init__(timeout=300)  # 5-minute timeout
+            self._supervisor = supervisor
+            self._cancelled = False
+
+        @discord.ui.button(
+            label="Cancel", style=discord.ButtonStyle.danger, emoji="✖️",
+        )
+        async def cancel_button(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ) -> None:
+            if self._cancelled:
+                await interaction.response.send_message(
+                    "Already cancelled.", ephemeral=True,
+                )
+                return
+            self._cancelled = True
+            self._supervisor.cancel()
+            button.disabled = True
+            button.label = "Cancelled"
+            try:
+                await interaction.response.edit_message(
+                    content="🚫 Cancelling...", view=self,
+                )
+            except Exception:
+                try:
+                    await interaction.response.send_message(
+                        "Cancelling...", ephemeral=True,
+                    )
+                except Exception:
+                    pass
+
     @staticmethod
     async def _delete_thinking_msg(msg: discord.Message | None) -> None:
         """Silently delete a thinking indicator message.
@@ -1391,6 +1430,7 @@ class AgentQueueBot(commands.Bot):
                 pass  # fail-open — skip notification silently
 
             thinking_msg: discord.Message | None = None
+            thinking_view: AgentQueueBot.ThinkingView | None = None
             async with message.channel.typing():
                 try:
                     if not self.agent.is_ready:
@@ -1452,7 +1492,11 @@ class AgentQueueBot(commands.Bot):
                     # Send a thinking indicator that updates as the agent works.
                     # This gives users real-time feedback on what the agent is
                     # doing: thinking, calling tools, or composing a reply.
-                    thinking_msg = await message.reply("💭 Thinking...")
+                    # Includes a Cancel button to abort the supervisor mid-thought.
+                    thinking_view = self.ThinkingView(self.agent)
+                    thinking_msg = await message.reply(
+                        "💭 Thinking...", view=thinking_view,
+                    )
                     tool_names_used: list[str] = []
 
                     async def _on_progress(event: str, detail: str | None) -> None:
@@ -1463,12 +1507,19 @@ class AgentQueueBot(commands.Bot):
                         - "thinking" (detail="round N"): subsequent LLM round
                         - "tool_use" (detail=tool_name): a tool is being called
                         - "responding": LLM is producing final text response
+                        - "cancelled": supervisor was cancelled via button
                         """
                         nonlocal thinking_msg
                         if thinking_msg is None:
                             return
                         try:
-                            if event == "thinking" and not detail:
+                            if event == "cancelled":
+                                thinking_view.stop()
+                                await thinking_msg.edit(
+                                    content="🚫 Cancelled.", view=None,
+                                )
+                                return
+                            elif event == "thinking" and not detail:
                                 # Initial thinking — already showing "Thinking..."
                                 pass
                             elif event == "thinking" and detail:
@@ -1519,14 +1570,31 @@ class AgentQueueBot(commands.Bot):
                         else:
                             raise
 
-                    # Delete the thinking indicator and send the actual response
-                    await self._delete_thinking_msg(thinking_msg)
-                    thinking_msg = None
+                    # Clean up the thinking view
+                    thinking_view.stop()
 
-                    await self._send_long_message(
-                        message.channel, response, reply_to=message
-                    )
+                    if response == "Cancelled.":
+                        # Cancelled — update the thinking msg instead of
+                        # deleting it, so the user sees feedback in-place.
+                        if thinking_msg:
+                            try:
+                                await thinking_msg.edit(
+                                    content="🚫 Cancelled.", view=None,
+                                )
+                            except Exception:
+                                await self._delete_thinking_msg(thinking_msg)
+                        thinking_msg = None
+                    else:
+                        # Normal response — delete thinking indicator and reply
+                        await self._delete_thinking_msg(thinking_msg)
+                        thinking_msg = None
+
+                        await self._send_long_message(
+                            message.channel, response, reply_to=message
+                        )
                 except Exception as e:
+                    if thinking_view is not None:
+                        thinking_view.stop()
                     await self._delete_thinking_msg(thinking_msg)
                     thinking_msg = None
                     print(f"LLM error: {e}\n{traceback.format_exc()}")

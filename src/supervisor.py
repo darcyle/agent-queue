@@ -19,6 +19,7 @@ Design boundaries:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import TYPE_CHECKING
 
@@ -134,6 +135,7 @@ class Supervisor:
         self._llm_logger = llm_logger
         self.handler = CommandHandler(orchestrator, config)
         self.reflection = ReflectionEngine(config.supervisor.reflection)
+        self._cancel_event: asyncio.Event | None = None
 
     def initialize(self) -> bool:
         """Create LLM provider. Returns True if provider is ready."""
@@ -169,6 +171,22 @@ class Supervisor:
     def reload_credentials(self) -> bool:
         """Re-create the LLM provider (e.g. after token refresh). Returns True on success."""
         return self.initialize()
+
+    def cancel(self) -> None:
+        """Cancel the current chat() call.
+
+        Sets the internal cancel event so the response loop exits
+        immediately at the next checkpoint.  Safe to call from any
+        coroutine — the event is checked between LLM calls and tool
+        executions.
+        """
+        if self._cancel_event is not None:
+            self._cancel_event.set()
+
+    @property
+    def is_chatting(self) -> bool:
+        """True while a ``chat()`` call is in progress."""
+        return self._cancel_event is not None and not self._cancel_event.is_set()
 
     def _build_system_prompt(self) -> str:
         from src.prompt_builder import PromptBuilder
@@ -284,6 +302,26 @@ class Supervisor:
         if not self._provider:
             raise RuntimeError("LLM provider not initialized — call initialize() first")
 
+        # Set up cancellation for this chat session
+        self._cancel_event = asyncio.Event()
+
+        try:
+            return await self._chat_inner(
+                text, user_name, history, on_progress, _reflection_trigger,
+            )
+        finally:
+            self._cancel_event = None
+
+    async def _chat_inner(
+        self,
+        text: str,
+        user_name: str,
+        history: list[dict] | None = None,
+        on_progress: "Callable[[str, str | None], Awaitable[None]] | None" = None,
+        _reflection_trigger: str = "user.request",
+    ) -> str:
+        """Inner implementation of chat() — separated so chat() can manage
+        the cancel event lifecycle in a try/finally."""
         from src.tool_registry import ToolRegistry
         registry = ToolRegistry()
 
@@ -311,6 +349,12 @@ class Supervisor:
         max_nudges = 2
 
         for round_num in range(max_rounds):
+            # Check for cancellation before each round
+            if self._cancel_event.is_set():
+                if on_progress:
+                    await on_progress("cancelled", None)
+                return "Cancelled."
+
             # Notify caller that the LLM is thinking
             if on_progress:
                 if round_num == 0:
@@ -402,6 +446,12 @@ class Supervisor:
                 })
 
             messages.append({"role": "user", "content": tool_results})
+
+            # Check for cancellation after tool execution
+            if self._cancel_event.is_set():
+                if on_progress:
+                    await on_progress("cancelled", None)
+                return "Cancelled."
 
             # If reply_to_user was called, deliver the response
             if reply_message is not None:
