@@ -371,6 +371,7 @@ class MemoryContext:
     notes: str = ""  # Relevant notes matched by semantic search
     recent_tasks: str = ""  # Recent task summaries for continuity
     search_results: str = ""  # Semantic search results (current behavior)
+    memory_folder: str = ""  # Path to project memory folder for agent reference
 
     def to_context_block(self) -> str:
         """Assemble all tiers into a single markdown context block."""
@@ -385,11 +386,22 @@ class MemoryContext:
             sections.append(f"## Recent Tasks\n{self.recent_tasks}")
         if self.search_results:
             sections.append(f"## Relevant Context from Project Memory\n{self.search_results}")
+        if self.memory_folder:
+            sections.append(
+                "## Project Memory Reference\n"
+                "This project has a memory system with historical context, past decisions, "
+                "and institutional knowledge from previous work. The context above was "
+                "automatically retrieved based on relevance to your task.\n\n"
+                "If you need additional historical context, you can browse markdown files "
+                "in the memory folder using the Read tool:\n"
+                f"- **Task memories:** `{self.memory_folder}tasks/`\n"
+                f"- **Project profile:** `{self.memory_folder}profile.md`"
+            )
         return "\n\n".join(sections)
 
     @property
     def is_empty(self) -> bool:
-        return not any([self.profile, self.project_docs, self.notes, self.recent_tasks, self.search_results])
+        return not any([self.profile, self.project_docs, self.notes, self.recent_tasks, self.search_results, self.memory_folder])
 
 
 @dataclass

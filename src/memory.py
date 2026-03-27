@@ -914,6 +914,11 @@ class MemoryManager:
         """
         ctx = MemoryContext()
 
+        # Set the memory folder path so agents know where to find more context
+        memory_dir = self._project_memory_dir(project_id)
+        if os.path.isdir(memory_dir):
+            ctx.memory_folder = memory_dir if memory_dir.endswith("/") else memory_dir + "/"
+
         # Tier 1: Project Profile
         if self.config.profile_enabled:
             profile = await self.get_profile(project_id)
