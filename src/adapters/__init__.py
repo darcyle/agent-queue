@@ -55,4 +55,5 @@ class AdapterFactory:
             allowed_tools=(
                 profile.allowed_tools or self._claude_config.allowed_tools
             ),
+            max_turns=self._claude_config.max_turns,
         )

@@ -178,6 +178,7 @@ class ClaudeAdapterConfig:
     allowed_tools: list[str] = field(default_factory=lambda: [
         "Read", "Write", "Edit", "Bash", "Glob", "Grep",
     ])
+    max_turns: int = 20000  # Allow long-running multi-step tasks (100x default)
 
 
 class ClaudeAdapter(AgentAdapter):
@@ -242,6 +243,7 @@ class ClaudeAdapter(AgentAdapter):
             options = ClaudeAgentOptions(
                 allowed_tools=self._config.allowed_tools,
                 permission_mode=self._config.permission_mode,
+                max_turns=self._config.max_turns,
                 cwd=self._task.checkout_path or None,
                 cli_path=system_claude,  # None → falls back to bundled binary
             )
