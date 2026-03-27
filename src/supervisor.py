@@ -311,6 +311,31 @@ class Supervisor:
             )
         finally:
             self._cancel_event = None
+            # Clear conversation context so it doesn't leak to future calls
+            self.handler._current_conversation_context = None
+
+    @staticmethod
+    def _serialize_conversation_context(messages: list[dict]) -> str:
+        """Extract a human-readable conversation transcript from LLM messages.
+
+        Filters out tool-use blocks and tool-result blocks, keeping only the
+        textual user/assistant exchanges so the downstream agent gets the
+        conversational thread without noise from tool invocations.
+        """
+        lines: list[str] = []
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            # Skip tool_result messages (list of dicts with type: tool_result)
+            if isinstance(content, list):
+                continue
+            if not isinstance(content, str) or not content.strip():
+                continue
+            if role == "user":
+                lines.append(f"**User:** {content}")
+            elif role == "assistant":
+                lines.append(f"**Assistant:** {content}")
+        return "\n\n".join(lines) if lines else ""
 
     async def _chat_inner(
         self,
@@ -338,6 +363,12 @@ class Supervisor:
             messages[-1]["content"] += "\n" + current["content"]
         else:
             messages.append(current)
+
+        # Set the conversation context on the handler so that any tasks
+        # created during this chat session inherit the thread chain.
+        self.handler._current_conversation_context = (
+            self._serialize_conversation_context(messages)
+        )
 
         # Multi-turn tool-use loop
         tool_actions: list[str] = []
@@ -707,12 +738,21 @@ Read the plan below and create one task per implementation phase using the creat
                 prev_caller = self._provider._caller
                 self._provider._caller = "supervisor.break_plan"
 
+            # Suppress conversation context during plan splitting — subtasks
+            # should inherit the *parent's* conversation context (set in
+            # post-processing below), not the plan-splitter's internal prompt.
+            saved_conv_ctx = self.handler._current_conversation_context
+            self.handler._current_conversation_context = None
+
             response = await self.chat(
                 text=prompt,
                 user_name="system:plan-splitter",
                 on_progress=on_progress,
                 _reflection_trigger="plan.split",
             )
+
+            # Restore (chat() finally-block clears it, so just ensure clean)
+            self.handler._current_conversation_context = saved_conv_ctx
 
             if prev_caller is not None and isinstance(self._provider, LoggedChatProvider):
                 self._provider._caller = prev_caller
@@ -740,6 +780,20 @@ Read the plan below and create one task per implementation phase using the creat
             )
             return []
 
+        # Propagate conversation_context from the parent task to subtasks
+        # so each subtask agent gets the same thread chain context.
+        parent_conv_ctx = None
+        try:
+            parent_contexts = await self.handler.db.get_task_contexts(parent_task_id)
+            parent_conv = next(
+                (c for c in parent_contexts if c["type"] == "conversation_context"),
+                None,
+            )
+            if parent_conv:
+                parent_conv_ctx = parent_conv["content"]
+        except Exception:
+            pass  # Non-fatal
+
         # Post-process: set parent_task_id and is_plan_subtask on new tasks,
         # then demote from READY to DEFINED.  create_task creates tasks as
         # READY, but plan subtasks must stay in DEFINED until the blocking
@@ -759,6 +813,14 @@ Read the plan below and create one task per implementation phase using the creat
                     await self.handler.db.transition_task(
                         task.id, TaskStatus.DEFINED,
                         context="plan_subtask_demote",
+                    )
+                # Propagate parent conversation context to subtask
+                if parent_conv_ctx:
+                    await self.handler.db.add_task_context(
+                        task.id,
+                        type="conversation_context",
+                        label="Conversation Thread Context",
+                        content=parent_conv_ctx,
                     )
                 created_info.append({"id": task.id, "title": task.title})
             except Exception as e:

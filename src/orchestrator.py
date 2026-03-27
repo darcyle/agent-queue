@@ -2979,6 +2979,27 @@ class Orchestrator:
         # Task description
         builder.add_context("task", f"## Task\n{task.description}")
 
+        # Conversation thread context — if the supervisor stored the
+        # conversation that led to this task's creation, include it so
+        # the agent understands the user's intent and broader context.
+        try:
+            contexts = await self.db.get_task_contexts(task.id)
+            conv_ctx = next(
+                (c for c in contexts if c["type"] == "conversation_context"), None
+            )
+            if conv_ctx and conv_ctx["content"]:
+                builder.add_context(
+                    "additional_context",
+                    "## Additional Context\n"
+                    "The following is the conversation thread between the user and "
+                    "the supervisor that led to the creation of this task. Use it to "
+                    "understand the user's intent, any clarifications, and the "
+                    "broader goal behind the task:\n\n"
+                    + conv_ctx["content"],
+                )
+        except Exception:
+            pass  # Non-fatal — proceed without conversation context
+
         return builder.build_task_prompt()
 
     async def _execute_task(self, action: AssignAction) -> None:

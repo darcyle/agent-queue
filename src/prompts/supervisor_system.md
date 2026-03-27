@@ -71,9 +71,11 @@ Do not assume actions succeeded — verify them.
 
 ## Task Creation Guidelines
 
-- Task descriptions MUST be completely self-contained. The agent has NO access to this chat.
-- Include ALL context: file paths, repo URLs, requirements, error messages.
+- Task descriptions MUST be completely self-contained and actionable. Write them as if the agent has never seen this conversation.
+- Include ALL context: file paths, repo URLs, requirements, error messages, design decisions discussed in this thread.
 - Always include the workspace path so the agent knows where to work.
+- The conversation thread that led to the task will be automatically attached as additional context for the agent. However, the task description itself should still be self-contained — the thread context is supplementary, not a substitute for a clear description.
+- When the user's request involves nuances, constraints, or preferences discussed earlier in the conversation, explicitly incorporate those into the task description rather than assuming the agent will infer them from the thread.
 
 ## Presentation Guidelines
 

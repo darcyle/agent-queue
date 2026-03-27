@@ -841,6 +841,11 @@ class CommandHandler:
         # Signature: async callback(project_id, note_filename, note_path) -> None
         # The Discord bot registers this to auto-refresh viewed notes.
         self.on_note_written: Callable | None = None
+        # Conversation context set by the Supervisor during its chat loop.
+        # When set, _cmd_create_task stores it as task_context so agents
+        # have the same thread chain context that the supervisor had when
+        # creating the task.
+        self._current_conversation_context: str | None = None
 
     @property
     def db(self):
@@ -2186,6 +2191,18 @@ class CommandHandler:
             attachments=attachments,
         )
         await self.db.create_task(task)
+
+        # If the supervisor set conversation context (the thread chain it was
+        # responding to), store it as task_context so the executing agent gets
+        # the same conversational backdrop the supervisor had.
+        if self._current_conversation_context:
+            await self.db.add_task_context(
+                task_id,
+                type="conversation_context",
+                label="Conversation Thread Context",
+                content=self._current_conversation_context,
+            )
+
         result = {
             "created": task_id,
             "title": task.title,
