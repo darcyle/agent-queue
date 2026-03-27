@@ -670,15 +670,20 @@ class TestCallbackDataParsing:
 class TestTaskStartedKeyboard:
     """Test task_started_keyboard builder."""
 
-    def test_has_stop_button(self):
+    def test_has_view_context_and_stop_buttons(self):
         from src.telegram.views import task_started_keyboard
 
         kb = task_started_keyboard("t1")
         buttons = kb.inline_keyboard
         assert len(buttons) == 1
-        assert "Stop" in buttons[0][0].text
-        assert "stop_task" in buttons[0][0].callback_data
+        # First button: View Context
+        assert "View Context" in buttons[0][0].text
+        assert "view_context" in buttons[0][0].callback_data
         assert "t1" in buttons[0][0].callback_data
+        # Second button: Stop Task
+        assert "Stop" in buttons[0][1].text
+        assert "stop_task" in buttons[0][1].callback_data
+        assert "t1" in buttons[0][1].callback_data
 
 
 class TestTaskFailedKeyboard:

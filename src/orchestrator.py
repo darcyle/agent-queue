@@ -3084,6 +3084,7 @@ class Orchestrator:
         # Detect whether this is a reopened task (via thread feedback) so we
         # can suppress noisy main-channel notifications for reopened work.
         _is_reopened = False
+        contexts: list[dict] = []
         try:
             contexts = await self.db.get_task_contexts(task.id)
             _is_reopened = any(
@@ -3103,7 +3104,12 @@ class Orchestrator:
                 start_msg,
                 project_id=action.project_id,
                 embed=format_task_started_embed(task, agent, workspace=ws_obj),
-                view=TaskStartedView(task.id, handler=handler_ref),
+                view=TaskStartedView(
+                    task.id,
+                    handler=handler_ref,
+                    task_description=task.description or "",
+                    task_contexts=contexts if contexts else None,
+                ),
             )
         # Store the message so we can delete it when the task finishes
         if started_discord_msg is not None:

@@ -758,18 +758,90 @@ def format_push_failed_embed(
 # ---------------------------------------------------------------------------
 
 
-class TaskStartedView(discord.ui.View):
-    """Action button attached to task-started notifications.
+def _split_message(text: str, *, limit: int = 1900) -> list[str]:
+    """Split *text* into chunks that fit within Discord's message limit.
 
-    Provides a one-click "Stop Task" button so the user can cancel a running
-    task directly from the notification message without needing to find the
-    task ID or type a slash command — especially useful on mobile.
+    Tries to break on newline boundaries for readability.  Falls back to
+    hard-splitting at *limit* when a single line exceeds it.
+    """
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit:
+            if current:
+                chunks.append(current)
+            # If the single line itself exceeds the limit, hard-split it.
+            while len(line) > limit:
+                chunks.append(line[:limit])
+                line = line[limit:]
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks or [text]
+
+
+class TaskStartedView(discord.ui.View):
+    """Action buttons attached to task-started notifications.
+
+    Provides a one-click "Stop Task" button and a "View Context" button.
+    Stop Task cancels the running task. View Context opens an ephemeral
+    message showing the full task description and all context passed to the
+    agent — useful for reviewing exactly what the agent was told to do.
     """
 
-    def __init__(self, task_id: str, handler=None) -> None:
+    def __init__(
+        self,
+        task_id: str,
+        handler=None,
+        task_description: str = "",
+        task_contexts: list[dict] | None = None,
+    ) -> None:
         super().__init__(timeout=86400)  # 24 hours
         self.task_id = task_id
         self._handler = handler
+        self._task_description = task_description
+        self._task_contexts = task_contexts or []
+
+    @discord.ui.button(
+        label="View Context",
+        style=discord.ButtonStyle.secondary,
+        emoji="📋",
+    )
+    async def view_context_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        """Show the full task description and attached context."""
+        parts: list[str] = []
+        parts.append(f"## Task `{self.task_id}`\n")
+
+        desc = self._task_description.strip() if self._task_description else ""
+        if desc:
+            parts.append(f"### Description\n{desc}\n")
+        else:
+            parts.append("*No description available.*\n")
+
+        # Show attached context entries (e.g. additional context, docs,
+        # reopen feedback, etc.) that were passed to the agent.
+        if self._task_contexts:
+            for ctx_entry in self._task_contexts:
+                label = ctx_entry.get("label") or ctx_entry.get("type") or "Context"
+                content = ctx_entry.get("content", "")
+                if content:
+                    parts.append(f"### {label}\n{content}\n")
+
+        full_text = "\n".join(parts)
+
+        # Discord ephemeral messages are capped at 2000 chars; split into
+        # multiple follow-ups if needed.
+        chunks = _split_message(full_text, limit=1900)
+        await interaction.response.send_message(chunks[0], ephemeral=True)
+        for chunk in chunks[1:]:
+            await interaction.followup.send(chunk, ephemeral=True)
 
     @discord.ui.button(
         label="Stop Task",

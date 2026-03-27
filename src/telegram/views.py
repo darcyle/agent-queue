@@ -87,16 +87,22 @@ def parse_callback_data(data: str) -> tuple[str, dict[str, str]]:
 def task_started_keyboard(task_id: str) -> Any:
     """Inline keyboard for a task-started notification.
 
-    Buttons: Stop Task
+    Buttons: View Context | Stop Task
 
     Mirrors ``TaskStartedView`` from Discord.
     """
     _ensure_imports()
     return _InlineKeyboardMarkup([
-        [_InlineKeyboardButton(
-            text="\u23f9 Stop Task",
-            callback_data=_make_callback_data("stop_task", task_id=task_id),
-        )],
+        [
+            _InlineKeyboardButton(
+                text="\U0001f4cb View Context",
+                callback_data=_make_callback_data("view_context", task_id=task_id),
+            ),
+            _InlineKeyboardButton(
+                text="\u23f9 Stop Task",
+                callback_data=_make_callback_data("stop_task", task_id=task_id),
+            ),
+        ],
     ])
 
 
