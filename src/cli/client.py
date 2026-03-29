@@ -49,7 +49,7 @@ def _default_db_path() -> str:
             pass
 
     # 3. Well-known default
-    return os.path.join(config_dir, "agentqueue.db")
+    return os.path.join(config_dir, "agent-queue.db")
 
 
 class CLIClient:
