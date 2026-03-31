@@ -321,15 +321,22 @@ class Supervisor:
         if not self._provider:
             raise RuntimeError("LLM provider not initialized — call initialize() first")
 
-        # Set up cancellation for this chat session
-        self._cancel_event = asyncio.Event()
+        # Set up cancellation for this chat session.
+        # Store in both self (so cancel() can find it) and a local var
+        # (so concurrent chat() calls can't null it out mid-loop).
+        cancel_event = asyncio.Event()
+        self._cancel_event = cancel_event
 
         try:
             return await self._chat_inner(
                 text, user_name, history, on_progress, _reflection_trigger,
+                cancel_event=cancel_event,
             )
         finally:
-            self._cancel_event = None
+            # Only clear if we still own the slot (another call may have
+            # overwritten it already).
+            if self._cancel_event is cancel_event:
+                self._cancel_event = None
             # Clear conversation context so it doesn't leak to future calls
             self.handler._current_conversation_context = None
 
@@ -363,9 +370,16 @@ class Supervisor:
         history: list[dict] | None = None,
         on_progress: "Callable[[str, str | None], Awaitable[None]] | None" = None,
         _reflection_trigger: str = "user.request",
+        *,
+        cancel_event: asyncio.Event | None = None,
     ) -> str:
         """Inner implementation of chat() — separated so chat() can manage
-        the cancel event lifecycle in a try/finally."""
+        the cancel event lifecycle in a try/finally.
+
+        ``cancel_event`` is the per-call event created in ``chat()``.
+        Using a local reference avoids a race where a concurrent ``chat()``
+        call sets ``self._cancel_event = None`` while this loop is running.
+        """
         from src.tool_registry import ToolRegistry
         registry = ToolRegistry()
 
@@ -400,7 +414,7 @@ class Supervisor:
         round_num = 0
         while True:  # No step limit — agents run until they finish
             # Check for cancellation before each round
-            if self._cancel_event.is_set():
+            if cancel_event is not None and cancel_event.is_set():
                 if on_progress:
                     await on_progress("cancelled", None)
                 return "Cancelled."
@@ -498,7 +512,7 @@ class Supervisor:
             messages.append({"role": "user", "content": tool_results})
 
             # Check for cancellation after tool execution
-            if self._cancel_event.is_set():
+            if cancel_event is not None and cancel_event.is_set():
                 if on_progress:
                     await on_progress("cancelled", None)
                 return "Cancelled."
