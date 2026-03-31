@@ -122,7 +122,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "find_merge_conflict_workspaces": "project",
     "release_workspace": "project",
     "remove_workspace": "project",
-    "sync_workspaces": "project",
     "queue_sync_workspaces": "project",
     "set_active_project": "project",
     # agent
@@ -654,29 +653,6 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["workspace_id"],
-        },
-    },
-    {
-        "name": "sync_workspaces",
-        "description": (
-            "Synchronize all project workspaces to the latest main branch. "
-            "Fetches latest changes, pushes any unpushed local commits, and rebases "
-            "feature branches onto the updated main. Locked workspaces (in use by agents) "
-            "are skipped. Workspaces with unresolvable conflicts are reported for manual "
-            "intervention. Returns a per-workspace status report."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Project ID to sync workspaces for (optional if active project is set)",
-                },
-                "skip_locked": {
-                    "type": "boolean",
-                    "description": "Skip workspaces locked by an agent (default: true). Set to false to sync all workspaces.",
-                },
-            },
         },
     },
     {

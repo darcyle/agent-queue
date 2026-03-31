@@ -550,27 +550,6 @@ async def list_workspaces(project_id: str = "") -> str:
 
 
 @mcp.tool()
-async def sync_workspaces(project_id: str) -> str:
-    """Discover and register workspace directories for a project.
-
-    Scans the project's workspace base path for git repos and registers them.
-
-    Args:
-        project_id: ID of the project to sync workspaces for
-    """
-    db = await _get_db()
-    project = await db.get_project(project_id)
-    if not project:
-        return json.dumps({"error": f"Project not found: {project_id}"})
-    # Return current workspace state — actual sync requires orchestrator
-    workspaces = await db.list_workspaces(project_id)
-    return json.dumps({
-        "message": f"Found {len(workspaces)} workspace(s) for {project_id}",
-        "workspaces": [workspace_to_dict(w) for w in workspaces],
-    })
-
-
-@mcp.tool()
 async def find_merge_conflicts(project_id: str = "") -> str:
     """Check workspaces for merge conflicts.
 

@@ -1195,49 +1195,6 @@ All git operations are run via `asyncio.to_thread(subprocess.run, ...)` since th
 
 ---
 
-#### `sync_workspaces`
-
-Synchronizes all workspaces for a project to the latest main branch.
-
-**Parameters:**
-- `project_id` (optional): Falls back to `_active_project_id`.
-- `skip_locked` (optional, default `True`): Skip workspaces locked by an agent.
-
-**Behavior:** Delegates to `_sync_single_workspace` for each workspace. Uses a mix of `git._arun()` for standard git operations and `asyncio.to_thread(subprocess.run, ...)` for status checks.
-
-Per-workspace sync logic:
-1. Validates the workspace is a valid git repo directory.
-2. Skips workspaces locked by an agent (unless `skip_locked=False`).
-3. Fetches latest from origin via `git._arun(["fetch", "origin", "--prune"])`.
-4. Gets current branch via `git.aget_current_branch()`.
-5. Checks for uncommitted changes and active merge conflicts via `git status --porcelain`.
-6. **If on the default branch:** stashes uncommitted changes if present, then hard-resets to `origin/<default_branch>`.
-7. **If on a feature branch:**
-   - Auto-commits uncommitted changes via `git.acommit_all()`.
-   - Pushes the branch to origin via `git.apush_branch(force_with_lease=True)`.
-   - Updates the local default branch reference (in worktrees, uses `git update-ref`; in normal repos, checks out default, hard-resets, then returns to the feature branch).
-   - Attempts to rebase the feature branch onto `origin/<default_branch>`. If rebase conflicts, aborts and leaves the branch as-is.
-
-**Returns on success:**
-```python
-{
-    "project_id": <str>,
-    "default_branch": <str>,
-    "total_workspaces": <int>,
-    "synced": <int>,
-    "skipped": <int>,
-    "errors": <int>,
-    "workspaces": [<per-workspace result dicts>, ...],
-}
-```
-
-Per-workspace result dicts include `workspace_id`, `workspace_name`, `workspace_path`, `status` (`"synced"`, `"skipped"`, `"conflict"`, or `"error"`), and additional fields depending on the action taken.
-
-**Errors:**
-- `project_id` not provided and no active project set.
-- Project not found.
-- No workspaces found for the project.
-
 ---
 
 ### Git Low-Level Commands
