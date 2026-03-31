@@ -458,6 +458,7 @@ class AgentQueueBot(commands.Bot):
                     if self.orchestrator._notify is None:
                         self.orchestrator.set_notify_callback(self._send_message)
                         self.orchestrator.set_create_thread_callback(self._create_task_thread)
+                        self.orchestrator.set_get_thread_url_callback(self.get_thread_last_message_url)
                         # Pass command handler ref so interactive views
                         # (Retry/Skip/Approve buttons) can execute commands.
                         self.orchestrator.set_command_handler(self.agent.handler)
