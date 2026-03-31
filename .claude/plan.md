@@ -2,158 +2,127 @@
 auto_tasks: true
 ---
 
-# Consolidate Discord Task Notifications Into Single Post With Thread
+# Documentation Consistency Audit & Update Plan
 
-## Background
+## Background & Scope
 
-### Current Behavior (3 separate messages per task)
+This plan systematically addresses documentation inconsistencies across Agent Queue's four documentation layers:
 
-Looking at the screenshot, a single task (`smart-torrent`) produces three separate messages in the channel:
+1. **Root docs** — `README.md`, `CLAUDE.md`, `profile.md`
+2. **User-facing guides** — `docs/` (index.md, getting-started.md, architecture.md, discord-commands.md, hook-pipeline.md, migrations.md, git-sync-*.md)
+3. **Specs** — `specs/` (source of truth for behavior)
+4. **API reference** — `docs/api/` (auto-generated from source docstrings via mkdocstrings)
 
-1. **Task Added embed** (green, "Task Added") — posted by the `/add-task` slash command response (`src/discord/commands.py:2878-2887`). Shows ID, Project, Status (READY), and Description.
-2. **Task Started embed** (amber, "Task Started") — posted by `_execute_task()` in `src/orchestrator.py:3205` via `_notify_channel()`. Shows Task ID, Project, Agent, Status (IN_PROGRESS), Workspace, Branch, plus a Stop button.
-3. **"Agent working" message + thread** — posted by `_create_task_thread()` in `src/discord/bot.py:841-844`. A plain text message ("**Agent working:** task-id | title") with a thread created underneath it.
+### Key Issues Identified
 
-When the task completes, the Task Started message is **deleted** (`orchestrator.py:3835-3841`) and a Task Completed embed is posted as a reply to the thread-root message (via `_notify_brief`/`thread_main_notify`).
+- **ChatAgent → Supervisor rename** not reflected consistently across docs
+- **9 specs missing from mkdocs.yml nav** (supervisor.md, agent-profiles.md, chat-analyzer.md, chat-observer.md, llm-logging.md, prompt-builder.md, reflection.md, rule-system.md, setup-wizard.md, tiered-tools.md)
+- **19 source modules missing API docs** (supervisor, command_handler, memory, tool_registry, prompt_builder, etc.)
+- **docs/specs/ is a stale copy** of specs/ — missing newer specs, has a file (adapters/development-guide.md) not in specs/
+- **profile.md codebase map** lists `chat_agent.py` as core but doesn't mention supervisor.py, tool_registry.py, prompt_builder.py, or other newer modules
+- **CLAUDE.md** still lists `chat_agent.py` in core files
+- **State machine spec** doesn't note that transitions are advisory-only (not enforced)
+- **mkdocs nav** still references `specs/chat-agent.md` under "Chat Agent" — should be "Supervisor"
+- **Hook pipeline guide** references may be out of date with current hook spec
 
-This means **three messages are posted to the channel for every task lifecycle**, cluttering the channel significantly when multiple tasks are in flight.
+### Conventions to Follow
 
-### Desired Behavior (1 message, edited through lifecycle)
-
-1. **Task Added** — Post a single "Task Added" embed in the main channel. Create a thread below it (thread stays empty initially — no "Agent working" preamble message inside the thread).
-2. **Task Started** — **Edit** the same message to show the Task Started embed (with Stop button). No new message.
-3. **Task Completed/Failed/Blocked** — **Edit** the same message to show the final status embed. No new message.
-
-This means **one Discord message per task lifecycle**, keeping the channel clean.
-
-### Key Constraints
-
-- The `/add-task` slash command uses `interaction.response.send_message()` which returns an `InteractionMessage`. We can retrieve it via `await interaction.original_response()` for later editing.
-- Tasks created via chat (Supervisor `create_task` tool) don't currently post a "Task Added" notification to the channel — the LLM response serves as confirmation. We need to handle these too.
-- The orchestrator is decoupled from Discord via callbacks (`_notify`/`_create_thread`). We need a new callback mechanism to **edit** an existing message by task_id.
-- Thread creation currently posts an "Agent working" message and creates the thread on it. Instead, we'll create the thread directly on the Task Added embed message.
-- The `_task_started_messages` dict in orchestrator.py currently stores messages for later deletion. This will be replaced by a lifecycle message tracking system.
-
-### Key Files
-
-| File | Role in Change |
-|------|---------------|
-| `src/discord/notifications.py` | Add `format_task_added_embed()`, modify views |
-| `src/discord/commands.py` | Refactor `/add-task` to post lifecycle message |
-| `src/discord/bot.py` | Add lifecycle message tracking, refactor `_create_task_thread()` |
-| `src/orchestrator.py` | Use edit-in-place for started/completed/failed instead of post+delete |
+- Specs are source of truth → update specs first, then docs
+- `docs/specs/` files should mirror `specs/` exactly (or be replaced with symlinks/includes)
+- API docs use mkdocstrings `::: src.module` directives
+- All source modules should have Google-style docstrings
+- Mermaid diagrams for architecture/state machines
+- Async-first language (use `a`-prefixed method names)
 
 ---
 
-## Phase 1: Add `format_task_added_embed()` and lifecycle message tracking infrastructure
+## Phase 1: Root Documentation & Naming Consistency
 
-**Goal:** Create the Task Added embed formatter and add infrastructure to track task_id to Discord message for later editing.
+Update the three root-level docs to reflect current architecture, especially the ChatAgent → Supervisor rename.
 
-### Changes:
+**Files to update:**
+- `CLAUDE.md` — Replace `chat_agent.py` with `supervisor.py` in core files list; add newer subsystems (tokens, memory, prompt_builder, tool_registry, rule_manager); verify all referenced files still exist
+- `profile.md` — Update codebase map: add supervisor.py, tool_registry.py, prompt_builder.py, rule_manager.py, reflection.py, chat_observer.py, llm_logger.py, schedule.py; remove or note chat_agent.py as backward-compat shim; update architecture diagram if needed; update database schema table count; review design decisions section for accuracy
+- `README.md` — Verify feature list matches current capabilities; update any references to ChatAgent; ensure Discord example commands still work
 
-**`src/discord/notifications.py`:**
-- Add `format_task_added_embed(task_id: str, project_id: str, title: str, description: str | None = None) -> discord.Embed` function. Uses `status_embed()` with `TaskStatus.READY.value` to get the blue color. Fields: Task ID, Project, Status (READY), and optionally Description (truncated).
+**Validation:** Each file should be internally consistent and cross-reference correctly.
 
-**`src/discord/bot.py`:**
-- Add `_task_lifecycle_messages: dict[str, discord.Message] = {}` to `__init__` — maps task_id to the single channel message that tracks its lifecycle.
-- Add method `async def store_task_lifecycle_message(self, task_id: str, message: discord.Message) -> None` — stores the message in the dict.
-- Add method `async def edit_task_lifecycle_message(self, task_id: str, *, embed: discord.Embed, view: discord.ui.View | None = None) -> bool` — looks up the stored message and calls `await message.edit(embed=embed, view=view)`. Returns True on success, False on failure (message deleted, permissions, etc.). On failure, removes the entry from the dict.
-- Add method `def get_task_lifecycle_message(self, task_id: str) -> discord.Message | None` — returns the stored message for thread creation purposes.
+## Phase 2: Sync docs/specs/ with specs/ and Update mkdocs.yml Nav
 
-**`src/orchestrator.py`:**
-- Add new callback types:
-  - `StoreLifecycleCallback = Callable[[str, Any], Awaitable[None]]` (task_id, message)
-  - `EditLifecycleCallback = Callable[[str, Any, Any | None], Awaitable[bool]]` (task_id, embed, view)
-  - `GetLifecycleCallback = Callable[[str], Any | None]` (task_id to message)
-- Add `set_lifecycle_callbacks(store, edit, get)` method that stores all three.
-- Wire these in `bot.py`'s `on_ready()` alongside the existing callbacks:
-  ```python
-  self.orchestrator.set_lifecycle_callbacks(
-      store=self.store_task_lifecycle_message,
-      edit=self.edit_task_lifecycle_message,
-      get=self.get_task_lifecycle_message,
-  )
-  ```
+The `docs/specs/` directory is a partial copy of `specs/` that has drifted. Sync it and add all missing specs to the mkdocs navigation.
 
----
+**Tasks:**
+- Copy all specs from `specs/` to `docs/specs/` to ensure they match (or set up a build step to do this automatically — document whichever approach is chosen)
+- Check if `docs/specs/adapters/development-guide.md` exists only in docs/specs — if so, move it to `specs/adapters/` as the canonical location
+- Add the 9 missing specs to `mkdocs.yml` nav under appropriate sections:
+  - Orchestration: supervisor.md, prompt-builder.md, reflection.md, rule-system.md, tiered-tools.md, chat-analyzer.md, chat-observer.md
+  - Core: agent-profiles.md, llm-logging.md
+  - Guides or Setup: setup-wizard.md
+- Rename the nav entry "Chat Agent" → "Supervisor" (or "Supervisor (Chat Agent)")
+- Verify all nav entries point to files that exist
 
-## Phase 2: Refactor `/add-task` to post the lifecycle message with thread
+## Phase 3: Add Missing API Reference Docs
 
-**Goal:** The `/add-task` command posts the Task Added embed as the lifecycle message and creates a thread on it.
+Create mkdocstrings stub files for the 19 source modules missing from `docs/api/`, and add them to the mkdocs.yml nav.
 
-### Changes:
+**Modules needing API docs:**
+- `supervisor.py`, `command_handler.py`, `memory.py`, `tool_registry.py`, `prompt_builder.py`, `prompt_manager.py`
+- `rule_manager.py`, `reflection.py`, `chat_observer.py`, `llm_logger.py`, `schedule.py`
+- `setup_wizard.py`, `health.py`, `file_watcher.py`, `logging_config.py`
+- `agent_names.py`, `task_names.py`, `known_tools.py`, `chat_agent.py` (shim — note as deprecated alias)
 
-**`src/discord/commands.py`** — In `add_task_command()`:
-- Use the interaction response as the lifecycle message. After `await interaction.response.send_message(embed=embed)`, call `msg = await interaction.original_response()` to get the Message object.
-- Call `bot.store_task_lifecycle_message(task_id, msg)` to register it.
-- Create a thread on the lifecycle message: `thread = await msg.create_thread(name=f"{task_id} | {title}"[:100])`. Store the thread mapping in `bot._task_threads[thread.id] = task_id` and `bot._task_thread_objects[task_id] = thread`. The thread stays **empty** — no initial message posted inside it.
+**For each module:**
+1. Create `docs/api/<module>.md` with standard mkdocstrings directive (`::: src.<module>`)
+2. Add to `mkdocs.yml` nav under the appropriate API Reference subsection
+3. Verify the source module has adequate Google-style docstrings — if a module docstring is missing or minimal, add one following the pattern established by orchestrator.py and models.py
 
-This approach reuses the interaction response as the lifecycle message, avoiding a second message in the channel.
+**Validation:** Run `mkdocs build` to verify all API docs render without errors.
 
----
+## Phase 4: User Guide Content Audit
 
-## Phase 3: Refactor `_create_task_thread()` and `_execute_task()` for edit-in-place
+Review each user-facing guide for accuracy against current specs and source code.
 
-**Goal:** When a task starts, edit the lifecycle message to Task Started instead of posting a new message. Thread creation reuses the lifecycle message instead of posting "Agent working".
+**Files to audit:**
+- `docs/index.md` — Verify feature claims match implementation; update any screenshots if architecture has changed
+- `docs/getting-started.md` — Verify setup steps still work; add mention of Supervisor (not just implicit chat); verify config file paths and example commands
+- `docs/architecture.md` — Update mermaid diagram to include newer components (Supervisor, PromptBuilder, RuleManager, Reflection, ChatObserver); verify component descriptions
+- `docs/discord-commands.md` — Cross-reference every command against `specs/command-handler.md` and `src/discord/commands.py`; flag any commands that are documented but not implemented (or vice versa); verify parameter names and types
+- `docs/hook-pipeline.md` — Cross-reference against `specs/hooks.md`; verify all context step types, trigger types, and config fields are accurate
+- `docs/migrations.md` — Check which migrations have been completed and remove them; verify remaining migration plan is accurate against current `database.py`
+- `docs/git-sync-current-state.md` and `docs/git-sync-gaps.md` — Verify which gaps have been resolved; update status of each gap
 
-### Changes:
+**For each file:** Document what changed and why in the commit message.
 
-**`src/discord/bot.py`** — In `_create_task_thread()`:
-- At the start, check if a lifecycle message already exists for this `task_id` via `self.get_task_lifecycle_message(task_id)`.
-- **If it exists:** Use it as the thread root. Check if a thread already exists (from Phase 2 — `_task_thread_objects.get(task_id)`). If a thread already exists, reuse it. If not, create one on the lifecycle message. Skip posting the "Agent working" message. Skip posting `initial_message` into the thread. Return the `(send_to_thread, notify_main_channel)` callbacks as before, where `notify_main_channel` edits the lifecycle message embed rather than replying.
-- **If it doesn't exist:** Fall back to current behavior (post "Agent working" message, create thread on it), but also store this message as the lifecycle message via `store_task_lifecycle_message()`.
+## Phase 5: Spec Internal Consistency Pass
 
-**`src/orchestrator.py`** — In `_execute_task()` (around line 3199-3213):
-- Before posting a new Task Started notification via `_notify_channel()`, try to **edit** the lifecycle message: `success = await self._edit_lifecycle(task.id, embed=format_task_started_embed(...), view=TaskStartedView(...))`.
-- If editing succeeds, skip the `_notify_channel()` call. The started embed is now shown on the existing message.
-- If editing fails (no lifecycle message — task created via chat, auto-generated subtask, etc.), fall back to current behavior: post a new Task Started message via `_notify_channel()`.
-- Either way, store a reference in `self._task_started_messages[task.id]` for backward compatibility with the stop button logic.
+Review each spec for internal consistency and accuracy against current implementation.
 
----
+**Priority specs to audit:**
+- `specs/chat-agent.md` — Verify it properly redirects to supervisor.md; consider whether it should be removed entirely or kept as a deprecation notice
+- `specs/supervisor.md` — Verify it accurately describes the current Supervisor class behavior, tool-use loop, activation modes
+- `specs/models-and-state-machine.md` — Add note that state machine transitions are advisory/logged, not enforced; verify all enum values match source; verify all dataclass fields match source
+- `specs/command-handler.md` — Verify all command signatures match implementation; check plan approval workflow documentation
+- `specs/orchestrator.md` — Verify task lifecycle, plan parsing, workspace preparation steps match current code
+- `specs/database.md` — Verify table count, schema, and migration list match current `database.py`
 
-## Phase 4: Edit lifecycle message on completion/failure instead of delete + post
+**For newer specs** (agent-profiles, chat-analyzer, chat-observer, llm-logging, prompt-builder, reflection, rule-system, setup-wizard, tiered-tools):
+- Verify each spec has a corresponding implementation in `src/`
+- If the spec describes unimplemented features, mark those sections clearly as "Planned" or "Not yet implemented"
 
-**Goal:** Task completion, failure, blocked, and stopped states edit the lifecycle message in place.
+## Phase 6: Source Docstring Standardization
 
-### Changes:
+Ensure all source modules have consistent, comprehensive docstrings that generate good API docs.
 
-**`src/orchestrator.py`** — Result handling section (after `_execute_task` returns):
+**Standards (based on existing good examples in orchestrator.py, models.py, database.py):**
+- Module-level docstring: 1-line summary, blank line, description of purpose/responsibilities, key design decisions, reference to spec file
+- Class-level docstring: purpose, key attributes, usage pattern
+- Method-level docstring: Google-style with Args/Returns/Raises sections for public methods
+- All async methods should note they are coroutines
 
-**Completion path** (~line 3574-3606):
-- Before calling `_notify_brief()`, try to edit the lifecycle message with `format_task_completed_embed(task, agent, output)` and `TaskCompletedView`.
-- If edit succeeds, skip posting a new completion embed to the channel via `_notify_brief`.
-- Still post the detailed summary to the thread (via `thread_send`).
-- Remove the `_task_started_messages.pop()` + `started_msg.delete()` cleanup (line 3835-3841) — we no longer delete, we edit in place.
+**Modules most likely to need docstring improvements** (based on being newer or missing API docs):
+- `supervisor.py`, `tool_registry.py`, `prompt_builder.py`, `prompt_manager.py`
+- `rule_manager.py`, `reflection.py`, `chat_observer.py`, `llm_logger.py`
+- `memory.py`, `schedule.py`, `setup_wizard.py`
+- `health.py`, `file_watcher.py`, `command_handler.py`
 
-**Failure path:**
-- Same pattern — edit lifecycle message with `format_task_failed_embed()` + `TaskFailedView`.
-
-**Blocked path:**
-- Edit lifecycle message with `format_task_blocked_embed()`.
-
-**`stop_task()`** (~line 499-510):
-- Instead of posting "Task Stopped" as a new message and deleting the started message, edit the lifecycle message with a stopped/blocked embed.
-- Remove the `_task_started_messages.pop()` + `started_msg.delete()` block.
-
-**Cleanup:**
-- Remove `_task_started_messages` dict entirely — all paths now use lifecycle message callbacks.
-- Add cleanup to remove entries from `_task_lifecycle_messages` after terminal states (COMPLETED, FAILED, BLOCKED) to prevent memory leaks. After editing to a terminal state, remove the entry from the dict.
-
----
-
-## Phase 5: Handle non-slash-command task creation paths
-
-**Goal:** Tasks created via chat (Supervisor), auto-generated plan subtasks, and dependency-defined tasks also get lifecycle messages.
-
-### Changes:
-
-**`src/orchestrator.py`** — In `_execute_task()`:
-- After the lifecycle edit attempt for Task Started, if no lifecycle message existed, and we fell back to posting a new Task Started message via `_notify_channel()`, **store that message** as the lifecycle message via `_store_lifecycle(task.id, started_msg)`. This way, the Task Started message becomes the lifecycle message for subsequent edits (completion/failure).
-
-This handles all paths uniformly:
-- **`/add-task` slash command:** Lifecycle message created at Task Added time (Phase 2), edited to Task Started, edited to Completed.
-- **Chat-created tasks:** Lifecycle message created at Task Started time (this phase), edited to completion/failure.
-- **Auto-generated plan subtasks:** Same as chat-created.
-- **DEFINED to READY promotion:** Same as chat-created.
-
-The only difference is that chat-created tasks won't show a "Task Added" to "Task Started" transition — they'll appear directly as "Task Started". This is acceptable since the chat response already confirms task creation.
+**Validation:** Run `mkdocs build` after changes to verify docstrings render correctly.
