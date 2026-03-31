@@ -112,9 +112,10 @@ TASK_TYPE_VALUES = frozenset(t.value for t in TaskType)
 class AgentState(Enum):
     """Tracks the runtime state of an agent process from the orchestrator's perspective.
 
-    The orchestrator uses this to decide which agents are available for task
-    assignment (IDLE) and to detect dead agents via heartbeat checks (BUSY
-    agents that stop heartbeating are presumed crashed).
+    .. deprecated::
+        Legacy enum — will be removed once the orchestrator is fully migrated
+        to the workspace-as-agent model.  New code should use workspace
+        lock state (locked = busy, unlocked = idle) instead.
     """
 
     IDLE = "IDLE"
@@ -257,9 +258,10 @@ class Task:
 class Agent:
     """Represents a registered agent process (e.g., a Claude Code instance).
 
-    The orchestrator tracks agent state, heartbeats, and token usage. When an
-    agent is IDLE, the scheduler may assign it a task. Per-project workspace
-    paths are managed via project-scoped Workspaces with dynamic locking.
+    .. deprecated::
+        Legacy dataclass — will be removed once the orchestrator is fully
+        migrated to the workspace-as-agent model.  New code should use
+        :class:`WorkspaceAgent` instead.
     """
 
     id: str
@@ -271,6 +273,23 @@ class Agent:
     last_heartbeat: float | None = None
     total_tokens_used: int = 0
     session_tokens_used: int = 0
+
+
+@dataclass
+class WorkspaceAgent:
+    """A workspace viewed as an agent slot — the new workspace-as-agent model.
+
+    An "agent" is simply a workspace execution context.  Idle (unlocked)
+    workspaces are idle agents; locked workspaces are busy agents.  There is
+    no separate agent registry — agents are derived from the workspaces table.
+    """
+
+    workspace_id: str
+    project_id: str
+    workspace_name: str | None
+    state: str  # "idle" or "busy"
+    current_task_id: str | None = None
+    current_task_title: str | None = None
 
 
 @dataclass

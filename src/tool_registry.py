@@ -124,13 +124,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "remove_workspace": "project",
     "queue_sync_workspaces": "project",
     "set_active_project": "project",
-    # agent
+    # agent (workspace-as-agent model — CRUD commands removed)
     "list_agents": "agent",
-    "create_agent": "agent",
-    "edit_agent": "agent",
-    "pause_agent": "agent",
-    "resume_agent": "agent",
-    "delete_agent": "agent",
     "get_agent_error": "agent",
     "list_profiles": "agent",
     "create_profile": "agent",
@@ -678,80 +673,19 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "list_agents",
-        "description": "List all configured agents and their current state.",
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "create_agent",
         "description": (
-            "Register a new agent. If no name is provided, a creative unique "
-            "name is auto-generated. Agents start in IDLE state and immediately "
-            "begin receiving tasks. Agents dynamically acquire workspace locks "
-            "from available project workspaces when assigned tasks."
+            "List agent slots for a project. Each workspace is an agent slot: "
+            "locked workspaces are 'busy', unlocked are 'idle'. "
+            "Requires project_id (or an active project)."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {
+                "project_id": {
                     "type": "string",
-                    "description": "Agent display name. Leave empty to auto-generate a creative name.",
+                    "description": "Project ID to list agents for (optional if active project is set)",
                 },
             },
-        },
-    },
-    {
-        "name": "edit_agent",
-        "description": (
-            "Edit an agent's properties: name or agent_type. "
-            "Use this to rename agents or change their type."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "agent_id": {"type": "string", "description": "Agent ID"},
-                "name": {"type": "string", "description": "New display name (optional)"},
-                "agent_type": {
-                    "type": "string",
-                    "description": "New agent type: claude, codex, cursor, aider (optional)",
-                },
-            },
-            "required": ["agent_id"],
-        },
-    },
-    {
-        "name": "pause_agent",
-        "description": (
-            "Pause an agent so it stops receiving new tasks. If the agent is "
-            "currently BUSY, it will finish its current task then stay paused."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "agent_id": {"type": "string", "description": "Agent ID to pause"},
-            },
-            "required": ["agent_id"],
-        },
-    },
-    {
-        "name": "resume_agent",
-        "description": "Resume a paused agent so it can receive tasks again.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "agent_id": {"type": "string", "description": "Agent ID to resume"},
-            },
-            "required": ["agent_id"],
-        },
-    },
-    {
-        "name": "delete_agent",
-        "description": "Delete an agent and all its workspace mappings. Cannot delete a BUSY agent — stop its task first.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "agent_id": {"type": "string", "description": "Agent ID to delete"},
-            },
-            "required": ["agent_id"],
         },
     },
     {

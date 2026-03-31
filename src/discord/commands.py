@@ -837,26 +837,23 @@ class MenuView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         await interaction.response.defer(ephemeral=True)
+        # list_agents requires project_id — use active project from handler
         result = await self._handler.execute("list_agents", {})
+        if "error" in result:
+            await interaction.followup.send(f"⚠️ {result['error']}", ephemeral=True)
+            return
         agents = result.get("agents", [])
         if not agents:
-            await interaction.followup.send("No agents configured.", ephemeral=True)
+            await interaction.followup.send("No agent slots (workspaces) configured.", ephemeral=True)
             return
-        lines = ["**Agents:**"]
+        lines = [f"**Agent Slots** (project: `{result.get('project_id', '?')}`)"]
         for a in agents:
-            working_on = a.get("working_on")
-            if working_on:
-                desc = working_on.get("description", "")
-                desc_preview = f" — {desc[:80]}…" if len(desc) > 80 else (f" — {desc}" if desc else "")
-                task_info = (
-                    f" → **{working_on['project_id']}** / "
-                    f"`{working_on['task_id']}`{desc_preview}"
-                )
-            elif a.get("current_task"):
-                task_info = f" → `{a['current_task']}`"
-            else:
-                task_info = ""
-            lines.append(f"• **{a['name']}** ({a['state']}){task_info}")
+            task_info = ""
+            if a.get("current_task_id"):
+                title = a.get("current_task_title", "")
+                task_info = f" → `{a['current_task_id']}`" + (f" — {title}" if title else "")
+            state_emoji = "🔴" if a["state"] == "busy" else "🟢"
+            lines.append(f"• {state_emoji} **{a['name']}** ({a['state']}){task_info}")
         await interaction.followup.send("\n".join(lines), ephemeral=True)
 
     # --- Row 2: Actions ---
@@ -2362,17 +2359,34 @@ def setup_commands(bot: commands.Bot) -> None:
             lines.append(line)
         await interaction.response.send_message("\n".join(lines))
 
-    @bot.tree.command(name="agents", description="List all agents")
-    async def agents_command(interaction: discord.Interaction):
-        result = await handler.execute("list_agents", {})
+    @bot.tree.command(name="agents", description="List agent slots for a project")
+    @app_commands.describe(project_id="Project ID (optional if active project is set)")
+    async def agents_command(
+        interaction: discord.Interaction,
+        project_id: str | None = None,
+    ):
+        args: dict = {}
+        if project_id:
+            args["project_id"] = project_id
+        result = await handler.execute("list_agents", args)
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
         agents = result.get("agents", [])
         if not agents:
-            await _send_info(interaction, "No Agents", description="No agents configured.")
+            await _send_info(
+                interaction, "No Agent Slots",
+                description=f"No workspaces configured for project `{result.get('project_id', '?')}`.",
+            )
             return
-        lines = []
+        lines = [f"**Agent Slots** — project `{result.get('project_id', '?')}`"]
         for a in agents:
-            task_info = f" → `{a['current_task']}`" if a.get("current_task") else ""
-            lines.append(f"• **{a['name']}** (`{a['id']}`) — {a['state']}{task_info}")
+            task_info = ""
+            if a.get("current_task_id"):
+                title = a.get("current_task_title", "")
+                task_info = f" → `{a['current_task_id']}`" + (f" — {title}" if title else "")
+            state_emoji = "🔴" if a["state"] == "busy" else "🟢"
+            lines.append(f"• {state_emoji} **{a['name']}** ({a['state']}){task_info}")
         await interaction.response.send_message("\n".join(lines))
 
     @bot.tree.command(

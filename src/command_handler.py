@@ -42,8 +42,9 @@ from src.discord.embeds import STATUS_EMOJIS, progress_bar
 from src.discord.notifications import classify_error
 from src.git.manager import GitError
 from src.models import (
-    Agent, AgentProfile, AgentState, Hook, Project, ProjectStatus, RepoSourceType,
+    AgentProfile, Hook, Project, ProjectStatus, RepoSourceType,
     Task, TaskStatus, TaskType, VerificationType, TASK_TYPE_VALUES, Workspace,
+    WorkspaceAgent,
 )
 from src.orchestrator import Orchestrator
 from src.logging_config import CorrelationContext
@@ -1189,26 +1190,37 @@ class CommandHandler:
 
     async def _cmd_get_status(self, args: dict) -> dict:
         projects = await self.db.list_projects()
-        agents = await self.db.list_agents()
         tasks = await self.db.list_tasks()
 
+        # Build agent view from workspaces across all projects
         agent_details = []
-        for a in agents:
-            info = {
-                "id": a.id,
-                "name": a.name,
-                "state": a.state.value,
-            }
-            if a.current_task_id:
-                current_task = await self.db.get_task(a.current_task_id)
-                if current_task:
-                    info["working_on"] = {
-                        "task_id": current_task.id,
-                        "title": current_task.title,
-                        "project_id": current_task.project_id,
-                        "status": current_task.status.value,
+        for p in projects:
+            workspaces = await self.db.list_workspaces(project_id=p.id)
+            for ws in workspaces:
+                if ws.locked_by_task_id:
+                    state = "busy"
+                    task = await self.db.get_task(ws.locked_by_task_id)
+                    info: dict = {
+                        "workspace_id": ws.id,
+                        "name": ws.name or ws.id,
+                        "project_id": p.id,
+                        "state": state,
                     }
-            agent_details.append(info)
+                    if task:
+                        info["working_on"] = {
+                            "task_id": task.id,
+                            "title": task.title,
+                            "project_id": task.project_id,
+                            "status": task.status.value,
+                        }
+                else:
+                    info = {
+                        "workspace_id": ws.id,
+                        "name": ws.name or ws.id,
+                        "project_id": p.id,
+                        "state": "idle",
+                    }
+                agent_details.append(info)
 
         in_progress = [
             {"id": t.id, "title": t.title, "project_id": t.project_id,
@@ -4012,77 +4024,72 @@ class CommandHandler:
         return info
 
     # -----------------------------------------------------------------------
-    # Agent commands -- registration and listing.
-    # Agents are the worker processes (Claude Code instances) that execute
-    # tasks.  These commands register new agents and inspect their state;
-    # the orchestrator handles actual agent lifecycle management.
+    # Agent commands -- workspace-as-agent model.
+    # Agents are derived from project workspaces: each workspace is an
+    # agent slot.  CRUD commands (create/delete/pause/resume) are deprecated
+    # and return helpful error messages pointing to workspace commands.
     # -----------------------------------------------------------------------
 
     async def _cmd_list_agents(self, args: dict) -> dict:
-        agents = await self.db.list_agents()
+        """List agent slots derived from project workspaces.
+
+        Requires ``project_id`` (or active project).  Each workspace is an
+        agent slot: locked workspaces are "busy", unlocked are "idle".
+        """
+        project_id = args.get("project_id") or self._active_project_id
+        if not project_id:
+            return {"error": "project_id is required (or set an active project)"}
+
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"error": f"Project '{project_id}' not found"}
+
+        workspaces = await self.db.list_workspaces(project_id=project_id)
         agent_list = []
-        for a in agents:
-            info: dict = {
-                "id": a.id,
-                "name": a.name,
-                "type": a.agent_type,
-                "state": a.state.value,
-                "current_task": a.current_task_id,
-            }
-            if a.current_task_id:
-                task = await self.db.get_task(a.current_task_id)
-                if task:
-                    info["working_on"] = {
-                        "task_id": task.id,
-                        "title": task.title,
-                        "project_id": task.project_id,
-                        "description": (task.description or "")[:120],
-                    }
+        for ws in workspaces:
+            if ws.locked_by_task_id:
+                state = "busy"
+                task = await self.db.get_task(ws.locked_by_task_id)
+                info: dict = {
+                    "workspace_id": ws.id,
+                    "project_id": project_id,
+                    "name": ws.name or ws.id,
+                    "state": state,
+                    "current_task_id": ws.locked_by_task_id,
+                    "current_task_title": task.title if task else None,
+                }
+            else:
+                info = {
+                    "workspace_id": ws.id,
+                    "project_id": project_id,
+                    "name": ws.name or ws.id,
+                    "state": "idle",
+                    "current_task_id": None,
+                    "current_task_title": None,
+                }
             agent_list.append(info)
-        return {"agents": agent_list}
+        return {"agents": agent_list, "project_id": project_id}
 
     async def _cmd_create_agent(self, args: dict) -> dict:
-        from .agent_names import generate_unique_agent_name
+        """Deprecated — agents are now derived from workspaces.
 
-        name = args.get("name")
-        if not name:
-            name = await generate_unique_agent_name(self.db)
-
-        agent_id = name.lower().replace(" ", "-")
-
-        # Agents start directly as IDLE — workspace acquisition is dynamic
-        agent = Agent(
-            id=agent_id,
-            name=name,
-            agent_type="claude",
-            state=AgentState.IDLE,
-        )
-        await self.db.create_agent(agent)
-
-        return {"created": agent_id, "name": agent.name, "state": "IDLE"}
+        Use ``add_workspace`` to add agent capacity to a project.
+        """
+        return {
+            "error": (
+                "create_agent is no longer supported. Agents are now derived "
+                "from project workspaces. Use 'add_workspace' to add agent "
+                "capacity to a project."
+            )
+        }
 
     async def _cmd_edit_agent(self, args: dict) -> dict:
-        """Edit an agent's properties (name, agent_type)."""
-        agent_id = args["agent_id"]
-        agent = await self.db.get_agent(agent_id)
-        if not agent:
-            return {"error": f"Agent '{agent_id}' not found"}
-
-        updates = {}
-        if "name" in args:
-            updates["name"] = args["name"]
-        if "agent_type" in args:
-            updates["agent_type"] = args["agent_type"]
-
-        if not updates:
-            return {"error": "No fields to update. Provide name or agent_type."}
-
-        await self.db.update_agent(agent_id, **updates)
-
+        """Deprecated — agents are now derived from workspaces."""
         return {
-            "updated": agent_id,
-            "fields": list(updates.keys()),
-            "name": args.get("name", agent.name),
+            "error": (
+                "edit_agent is no longer supported. Agents are derived from "
+                "project workspaces. Use workspace management commands instead."
+            )
         }
 
     async def _cmd_add_workspace(self, args: dict) -> dict:
@@ -4468,54 +4475,32 @@ feature work stuck on feature branches across multiple workspaces.
         }
 
     async def _cmd_pause_agent(self, args: dict) -> dict:
-        """Pause an agent so it stops receiving new tasks.
-
-        The agent finishes its current task (if any) but won't be assigned
-        new work until resumed.
-        """
-        agent_id = args["agent_id"]
-        agent = await self.db.get_agent(agent_id)
-        if not agent:
-            return {"error": f"Agent '{agent_id}' not found"}
-        if agent.state == AgentState.PAUSED:
-            return {"error": f"Agent '{agent_id}' is already paused"}
-        if agent.state == AgentState.BUSY:
-            await self.db.update_agent(agent_id, state=AgentState.PAUSED)
-            return {
-                "agent_id": agent_id,
-                "state": "PAUSED",
-                "note": "Agent will finish its current task, then stay paused.",
-            }
-        await self.db.update_agent(agent_id, state=AgentState.PAUSED)
-        return {"agent_id": agent_id, "state": "PAUSED"}
+        """Deprecated — agents are now derived from workspaces."""
+        return {
+            "error": (
+                "pause_agent is no longer supported. Agents are derived from "
+                "project workspaces. To pause work, pause the project instead."
+            )
+        }
 
     async def _cmd_resume_agent(self, args: dict) -> dict:
-        """Resume a paused agent so it can receive tasks again."""
-        agent_id = args["agent_id"]
-        agent = await self.db.get_agent(agent_id)
-        if not agent:
-            return {"error": f"Agent '{agent_id}' not found"}
-        if agent.state != AgentState.PAUSED:
-            return {"error": f"Agent '{agent_id}' is {agent.state.value}, not PAUSED"}
-        await self.db.update_agent(agent_id, state=AgentState.IDLE)
-        return {"agent_id": agent_id, "state": "IDLE"}
+        """Deprecated — agents are now derived from workspaces."""
+        return {
+            "error": (
+                "resume_agent is no longer supported. Agents are derived from "
+                "project workspaces. To resume work, resume the project instead."
+            )
+        }
 
     async def _cmd_delete_agent(self, args: dict) -> dict:
-        """Delete an agent and all its dependent records.
-
-        Refuses to delete an agent that is currently BUSY with a task.
-        """
-        agent_id = args["agent_id"]
-        agent = await self.db.get_agent(agent_id)
-        if not agent:
-            return {"error": f"Agent '{agent_id}' not found"}
-        if agent.state == AgentState.BUSY:
-            return {
-                "error": f"Agent '{agent_id}' is BUSY with task "
-                f"'{agent.current_task_id}'. Stop the task first.",
-            }
-        await self.db.delete_agent(agent_id)
-        return {"deleted": agent_id, "name": agent.name}
+        """Deprecated — agents are now derived from workspaces."""
+        return {
+            "error": (
+                "delete_agent is no longer supported. Agents are derived from "
+                "project workspaces. Use 'remove_workspace' to remove agent "
+                "capacity from a project."
+            )
+        }
 
     # -----------------------------------------------------------------------
     # Events and token usage -- observability into system activity and
