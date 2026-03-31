@@ -114,6 +114,20 @@ class MessagingAdapter(ABC):
         """
         return None
 
+    async def edit_thread_root_message(
+        self,
+        task_id: str,
+        content: str | None = None,
+        embed: Any = None,
+    ) -> None:
+        """Edit the thread-root message (e.g. "Agent working: ...").
+
+        Used to update the root message when a task completes or fails,
+        changing it from "Agent working" to a completion/failure status.
+
+        Override in platform-specific adapters.  Default is a no-op.
+        """
+
     # -------------------------------------------------------------------
     # Component access
     # -------------------------------------------------------------------
