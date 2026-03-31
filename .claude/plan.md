@@ -2,203 +2,180 @@
 auto_tasks: true
 ---
 
-# Documentation Consistency Audit, Deprecation Cleanup & Update Plan
+# Plan: Dynamic Per-Project Agent Pools
 
-## Background & Scope
+## Background & Design
 
-This plan systematically addresses documentation inconsistencies across Agent Queue's four documentation layers, **removes deprecated code and specs**, and ensures specs describe the current codebase (not historical artifacts).
+### Current State
+- Agents are globally defined entities stored in an `agents` table, created manually via `/create-agent`
+- Any agent can work on any project's tasks — they're a shared pool
+- The scheduler picks an IDLE agent + READY task and creates an `AssignAction`
+- Workspaces are per-project and dynamically acquired by agents via optimistic locking
+- Agent lifecycle: CREATE → IDLE → BUSY → IDLE → ... → DELETE
 
-### Documentation Layers
+### Target State
+- No persistent global agent registry — agents are ephemeral, created on-demand per project
+- Each project has its own agent pool, sized by its workspace count
+- A project with 3 workspaces gets up to 3 concurrent agents
+- Agent type is always `"claude"` (configurable later via project settings)
+- `/create-agent` and `/delete-agent` commands are removed
+- `/agents` (or `/list-agents`) becomes project-scoped, showing only agents for that project
+- Agent identity is derived from workspace assignment (e.g., `{project_id}-agent-{n}` or workspace-based)
 
-1. **Root docs** — `README.md`, `CLAUDE.md`, `profile.md`
-2. **User-facing guides** — `docs/` (index.md, getting-started.md, architecture.md, discord-commands.md, hook-pipeline.md, migrations.md, git-sync-*.md)
-3. **Specs** — `specs/` (source of truth for behavior)
-4. **API reference** — `docs/api/` (auto-generated from source docstrings via mkdocstrings)
+### Key Design Decisions
 
-### Deprecated Items Inventory
+1. **Agents = Workspace Slots**: Rather than managing agents as separate entities, an "agent" is simply an active execution context tied to a locked workspace. When a workspace is locked for a task, that *is* the agent.
 
-The following are deprecated and should be **removed** (not just marked):
+2. **Virtual Agent Model**: We keep a lightweight representation of "agents" for display purposes (`/agents` command), but they aren't persistent DB entities requiring manual lifecycle management. An "agent" is a workspace — idle workspaces are idle agents, locked workspaces are busy agents.
 
-#### Code to Remove
+3. **Scheduler Changes**: Instead of finding IDLE agents from a global pool, the scheduler finds projects with READY tasks and available (unlocked) workspaces, then creates ephemeral agent contexts. The `AssignAction` uses a workspace-derived agent ID.
 
-| Item | Location | Replacement | Notes |
-|------|----------|-------------|-------|
-| `chat_agent.py` shim | `src/chat_agent.py` | `src/supervisor.py` | Backward-compat re-export of `Supervisor as ChatAgent`. Nothing in production imports from `chat_agent.py` that can't import from `supervisor.py` directly. |
-| `ChatAnalyzerConfig` | `src/config.py` | `supervisor.observation` config | Full class with validation — emits deprecation warning. Remove the class, the `chat_analyzer` field on `AppConfig`, its validation, its reload, and its presence in `KNOWN_CONFIG_SECTIONS`. |
-| `ChatAnalyzerSuggestion` model | `src/models.py` | None (observation mode uses different model) | Dataclass for the old analyzer's suggestion table. |
-| Deprecated analyzer commands | `src/command_handler.py` | None | `analyzer_status()`, `analyzer_toggle()`, `analyzer_history()` — all return deprecation messages. Remove the methods and their registration. |
-| Deprecated analyzer tools | `src/tool_registry.py` | None | `analyzer_status`, `analyzer_toggle`, `analyzer_history` tool definitions (commented out / marked deprecated Phase 6). |
-| `chat_analyzer_suggestions` DB table | `src/database.py` | None | If schema still defines it, add a migration to drop it. |
-| Legacy `_discover_and_store_plan` | `src/orchestrator.py` | `_phase_plan_discover` via Supervisor | The "12a-legacy" fallback path. All production uses go through Supervisor now. |
-| Legacy `_phase_plan_generate` | `src/orchestrator.py` | Supervisor-based plan discovery | Old single-step plan generation. |
-| `discord_control_channel_id` column | `src/database.py` | `discord_channel_id` | Legacy column with fallback logic in `_row_to_project`. If any rows still use it, migrate them to `discord_channel_id` then drop the column. |
-| `workspace_path` on projects table | `src/database.py` | `workspaces` table | Deprecated/unused column per spec. Remove from schema and `_row_to_project`. |
-| Git sync methods | `src/git/manager.py` | Async `a`-prefixed methods | Synchronous API retained "for backward compat and tests only." Update tests to use async, then remove sync wrappers. |
+4. **Backwards Compatibility**: The `token_ledger` and `task_results` tables currently reference `agent_id`. We'll use workspace-derived IDs (e.g., `ws-{workspace_id}`) as the agent_id for these records.
 
-#### Specs to Remove
+5. **Agent Type**: Always `"claude"` for now. Later, a `default_agent_type` field on the project model can override this.
 
-| Spec | Reason |
-|------|--------|
-| `specs/chat-agent.md` | Fully replaced by `specs/supervisor.md`. Currently a 389-line deprecated spec kept "for historical reference" — but it actively misleads since it describes the old architecture in detail. Delete it. |
-| `specs/chat-analyzer.md` | Replaced by `specs/chat-observer.md`. Code is already removed/commented out. |
+### What Stays the Same
+- Workspace model and locking mechanism (this is the foundation)
+- Adapter layer (still creates ClaudeAdapter instances per task)
+- Profile resolution (task → project → default)
+- Task lifecycle and state machine
+- Rate limit retry logic
+- The scheduler's proportional fair-share algorithm (adapted to not need agent list)
 
-#### Spec Sections to Remove/Rewrite
-
-| Spec | Section | Action |
-|------|---------|--------|
-| `specs/supervisor.md` §Backward Compatibility | Lines about `chat_agent.py` re-export | Remove after `chat_agent.py` is deleted |
-| `specs/tiered-tools.md` | References to `src/chat_agent.py` | Update to reference `src/supervisor.py` |
-| `specs/hooks.md` §LLM Invocation | References to `ChatAgent` | Rewrite to reference `Supervisor` |
-| `specs/llm-logging.md` §5.2 | "ChatAgent (`src/chat_agent.py`)" section | Rewrite as "Supervisor (`src/supervisor.py`)" |
-| `specs/chat-providers/providers.md` | References to `ChatAgent` | Update to `Supervisor` |
-| `specs/command-handler.md` | References to `ChatAgent` | Update to `Supervisor` |
-| `specs/discord/discord.md` | `ChatAgent` constructor references | Update to `Supervisor` |
-| `specs/database.md` | `workspace_path` and `discord_control_channel_id` docs | Remove deprecated column documentation after columns are dropped |
-| `specs/database.md` | Legacy migration entries | Remove entries for migrations that add now-dropped columns |
-| `specs/orchestrator.md` §12a-legacy | Legacy plan discovery fallback | Remove entire section after code is removed |
-| `specs/config.md` | `chat_analyzer` config section | Remove after code cleanup |
-
-### Conventions to Follow
-
-- Specs are source of truth → update specs first, then docs
-- `docs/specs/` files should mirror `specs/` exactly (or be replaced with symlinks/includes)
-- API docs use mkdocstrings `::: src.module` directives
-- All source modules should have Google-style docstrings
-- Mermaid diagrams for architecture/state machines
-- Async-first language (use `a`-prefixed method names)
+### Key Files Reference
+- `src/models.py` — `Agent` dataclass (lines 257-274), `AgentState` enum (lines 112-124), `Workspace` dataclass (lines 277-293)
+- `src/database.py` — `agents` table schema (lines 120-133), agent CRUD methods (lines 1207-1304), `workspaces` table (lines 180-191), `acquire_workspace()` (lines 1369-1464)
+- `src/scheduler.py` — `SchedulerState` (lines 88-150+), `AssignAction` (lines 75-86), `Scheduler.schedule()`
+- `src/orchestrator.py` — `_schedule()` (line 1520), `_execute_task()` (line 3344), `_free_agent()`, `_prepare_workspace()` (line 1638)
+- `src/command_handler.py` — `_cmd_create_agent` (lines 4044-4062), `_cmd_delete_agent` (lines 4503-4518), `_cmd_list_agents` (lines 4021-4042), `_cmd_pause_agent`/`_cmd_resume_agent` (lines 4470-4501)
+- `src/adapters/__init__.py` — `AdapterFactory` (lines 20-59)
+- `src/agent_names.py` — Agent name generation
 
 ---
 
-## Phase 1: Remove Deprecated Code — ChatAgent & ChatAnalyzer
+## Phase 1: Remove Global Agent CRUD Commands and Introduce Workspace-Agent Identity
 
-Remove all deprecated code related to the ChatAgent→Supervisor rename and the ChatAnalyzer→ChatObserver replacement.
+Remove `/create-agent`, `/delete-agent`, `/pause-agent`, `/resume-agent` commands. Replace the `Agent` model with a lightweight `WorkspaceAgent` view model for display purposes.
 
-**Removals:**
-- Delete `src/chat_agent.py` entirely
-- Update all imports that reference `chat_agent` to import from `supervisor` directly:
-  - `src/hooks.py` — update `ChatAgent` import to `Supervisor`
-  - `src/chat_providers/__init__.py` — update docstring references
-  - `src/chat_providers/types.py` — update docstring references
-  - Any test files that import from `chat_agent`
-- Remove `ChatAnalyzerConfig` class from `src/config.py` and the `chat_analyzer` field from `AppConfig`
-- Remove `chat_analyzer` from `KNOWN_CONFIG_SECTIONS` in `src/config.py`
-- Remove `check_deprecations()` method (or just the chat_analyzer warning from it)
-- Remove deprecated analyzer commands from `src/command_handler.py`: `analyzer_status()`, `analyzer_toggle()`, `analyzer_history()`
-- Remove deprecated analyzer tool definitions from `src/tool_registry.py`
-- Remove `ChatAnalyzerSuggestion` dataclass from `src/models.py`
-- Add a database migration to drop `chat_analyzer_suggestions` table if it exists
-- In `src/supervisor.py`: remove backward-compat comments about `chat_agent.py`, clean up `SYSTEM_PROMPT_TEMPLATE` stub
+**Files to modify:**
 
-**Validation:** `pytest tests/` passes. `ruff check src/` clean. No remaining imports of `chat_agent`.
+- **`src/models.py`**:
+  - Remove `Agent` dataclass and `AgentState` enum
+  - Keep `AgentResult` enum (used for task results, not agent lifecycle)
+  - Add `WorkspaceAgent` dataclass for display:
+    ```python
+    @dataclass
+    class WorkspaceAgent:
+        workspace_id: str
+        project_id: str
+        workspace_name: str | None
+        state: str  # "idle" or "busy"
+        current_task_id: str | None = None
+        current_task_title: str | None = None
+    ```
 
-## Phase 2: Remove Deprecated Database Columns & Legacy Orchestrator Code
+- **`src/command_handler.py`**:
+  - Remove `_cmd_create_agent`, `_cmd_delete_agent`, `_cmd_pause_agent`, `_cmd_resume_agent` methods and their command registrations
+  - Rewrite `_cmd_list_agents` to be project-scoped (require `project_id`), build agent view from workspaces:
+    1. List all workspaces for the project via `db.list_workspaces(project_id=project_id)`
+    2. For locked workspaces, look up task via `locked_by_task_id` → show as "busy"
+    3. For unlocked workspaces → show as "idle"
+    4. Return list of `WorkspaceAgent`-style dicts
+  - Remove agent-related tool definitions from the supervisor tool registry (tools exposed to the chat LLM for creating/deleting agents)
 
-**Database cleanup:**
-- Remove `discord_control_channel_id` from the projects schema in `src/database.py`
-- Add migration to copy any non-null `discord_control_channel_id` values to `discord_channel_id`, then drop the column
-- Remove `workspace_path` from the projects schema
-- Remove the fallback logic in `_row_to_project` that reads `discord_control_channel_id`
-- Remove the `workspace_path` ignore in `_row_to_project`
-- Remove legacy migration entries that add these now-dropped columns (or mark them as no-ops)
+- **`src/agent_names.py`** — Keep for now (may be useful for workspace display names), but remove any imports in the removed command methods.
 
-**Orchestrator cleanup:**
-- Remove `_discover_and_store_plan` (the legacy 12a fallback) from `src/orchestrator.py`
-- Remove `_phase_plan_generate` if it still exists
-- Remove the "no supervisor available, using legacy plan discovery" fallback path
-- Update the plan discovery flow to require Supervisor (it's always present now)
+- **`src/tool_registry.py`** — Remove tool definitions for `create_agent`, `delete_agent`, `pause_agent`, `resume_agent` if they're registered there.
 
-**Git manager consideration:**
-- Audit sync methods in `src/git/manager.py` — if tests have been migrated to async, remove sync wrappers. If not, note this as a future cleanup (don't block on test migration in this phase).
+---
 
-**Validation:** `pytest tests/` passes. Database migrations run cleanly.
+## Phase 2: Update Scheduler to Use Workspace-Based Capacity
 
-## Phase 3: Delete Deprecated Specs & Update All Specs for Current Code
+Remove the need for an `agents` list in the scheduler. Available capacity is determined by workspace availability.
 
-**Delete:**
-- `specs/chat-agent.md` — fully replaced by `specs/supervisor.md`
-- `specs/chat-analyzer.md` — fully replaced by `specs/chat-observer.md`
+**Files to modify:**
 
-**Rewrite `specs/supervisor.md`:**
-- Remove all "Backward Compatibility" section referencing `chat_agent.py`
-- Expand the spec to be comprehensive (the current spec is only ~80 lines vs the old chat-agent.md's 389 lines). It should cover:
-  - Full tool-use loop behavior (currently only mentioned briefly)
-  - System prompt construction (reference to prompt-builder but document the flow)
-  - History compaction interface
-  - Active project handling
-  - All three activation modes in detail
-  - Initialization and provider setup
-  - Streaming behavior (or lack thereof)
+- **`src/scheduler.py`**:
+  - Remove `agents` field from `SchedulerState`
+  - The scheduler already tracks `workspace_available` per project and `active_agents_per_project` — these are sufficient
+  - Currently the scheduler matches IDLE agents to tasks. Instead, it should determine how many more agents each project can run (= available workspaces, minus any per-project cap) and create `AssignAction` entries without a real agent_id
+  - `AssignAction.agent_id` can be set to a placeholder (e.g., `"ephemeral"`) since the real identity comes from workspace acquisition. Or generate a UUID-based ID.
+  - The key constraint becomes: a project can run N concurrent tasks where N = min(available_workspaces, max_concurrent_agents)
+  - Remove any logic that iterates over idle agents to find matches
 
-**Update specs that referenced ChatAgent:**
-- `specs/hooks.md` — Replace all `ChatAgent`/`chat_agent` references with `Supervisor`/`supervisor`
-- `specs/llm-logging.md` — Rewrite §5.2 as "Supervisor" section; update caller strings
-- `specs/chat-providers/providers.md` — Replace `ChatAgent` with `Supervisor` throughout
-- `specs/command-handler.md` — Replace `ChatAgent` references with `Supervisor`
-- `specs/discord/discord.md` — Replace `ChatAgent` constructor/initialization references with `Supervisor`
-- `specs/tiered-tools.md` — Replace `src/chat_agent.py` references with `src/supervisor.py`
-- `specs/config.md` — Remove `chat_analyzer` config documentation
-- `specs/database.md` — Remove `workspace_path` and `discord_control_channel_id` documentation; update table count; remove legacy migration entries for dropped columns; remove `chat_analyzer_suggestions` table docs
-- `specs/orchestrator.md` — Remove §12a-legacy entirely; update §12a to be the sole plan discovery path (via Supervisor, no fallback)
+- **`src/orchestrator.py` `_schedule()` method**:
+  - Stop fetching `agents = await self.db.list_agents()`
+  - Build `SchedulerState` without agents
+  - The number of "idle agents" is effectively the total available workspaces across all projects (or can be computed per-project)
 
-**Validation:** Every spec file references only current code. No mentions of `ChatAgent` (except in git history). `grep -r "ChatAgent\|chat_agent\|chat-agent\|chat_analyzer\|ChatAnalyzer\|chat-analyzer" specs/` returns zero results.
+---
 
-## Phase 4: Root Documentation & Naming Consistency
+## Phase 3: Update Orchestrator Task Execution Pipeline
 
-Update the three root-level docs to reflect the cleaned-up architecture.
+Refactor the execution pipeline to work without the `agents` table. The "agent" is an ephemeral context created when a workspace is acquired.
 
-**Files to update:**
-- `CLAUDE.md` — Replace `chat_agent.py` with `supervisor.py` in core files list; add newer subsystems (tokens, memory, prompt_builder, tool_registry, rule_manager); verify all referenced files still exist; remove any ChatAnalyzer mentions
-- `profile.md` — Update codebase map: add supervisor.py, tool_registry.py, prompt_builder.py, rule_manager.py, reflection.py, chat_observer.py, llm_logger.py, schedule.py; remove chat_agent.py entirely (no longer exists); update architecture diagram; update database schema table count; review design decisions section
-- `README.md` — Verify feature list matches current capabilities; remove any references to ChatAgent or ChatAnalyzer; ensure Discord example commands still work
+**Files to modify:**
 
-**Validation:** Each file is internally consistent and references only files that exist.
+- **`src/orchestrator.py`**:
+  - `_execute_task_safe()` / `_execute_task()`: Instead of using a pre-existing `agent_id` from the agents table, generate an ephemeral agent identifier from the workspace (e.g., `f"ws-{workspace.id}"` or `f"{project_id}-{workspace.name}"`)
+  - Remove calls to `db.assign_task_to_agent()` — replace with direct task status update + workspace acquisition
+  - `self._adapters` dict: Key by `task_id` instead of `agent_id` (simplifies stop-task lookups)
+  - `_free_agent()`: Replace with workspace release + task status update. No agent state to update.
+  - Remove agent heartbeat/liveness checks — workspace lock staleness can be checked instead if needed
+  - Token recording in `token_ledger`: Use the workspace-derived agent_id string (this is just for record-keeping, no FK constraint needed)
+  - Ensure `/stop-task` admin command looks up adapter by `task_id`
 
-## Phase 5: Sync docs/specs/ with specs/ and Update mkdocs.yml Nav
+- **`src/database.py`**:
+  - `assign_task_to_agent()`: Simplify to just update task status (READY → ASSIGNED/IN_PROGRESS) and set `assigned_agent_id` to the workspace-derived ID. Don't update any agents table.
+  - Or rename to `assign_task(task_id, agent_label)` to clarify it no longer touches an agents row.
+  - Remove `create_agent()`, `get_agent()`, `list_agents()`, `update_agent()`, `delete_agent()` methods
+  - Drop the `agents` table from the schema (add migration)
+  - Update `workspaces` table: `locked_by_agent_id` becomes a plain text column (no FK to agents table). Keep the column name for compatibility but it stores the workspace-derived agent label.
+  - `token_ledger.agent_id` and `task_results.agent_id`: Remove FK constraint, keep as plain text
 
-The `docs/specs/` directory is a partial copy of `specs/` that has drifted. Sync it after the spec cleanup.
+---
 
-**Tasks:**
-- Copy all specs from `specs/` to `docs/specs/` to ensure they match (or set up a build step to do this automatically)
-- Remove `docs/specs/chat-agent.md` and `docs/specs/chat-analyzer.md` (they were deleted from `specs/` in Phase 3)
-- Check if `docs/specs/adapters/development-guide.md` exists only in docs/specs — if so, move it to `specs/adapters/` as the canonical location
-- Add the missing specs to `mkdocs.yml` nav: supervisor.md, agent-profiles.md, chat-observer.md, llm-logging.md, prompt-builder.md, reflection.md, rule-system.md, setup-wizard.md, tiered-tools.md
-- Remove the nav entry for "Chat Agent" — replace with "Supervisor"
-- Remove any nav entry for "Chat Analyzer"
-- Verify all nav entries point to files that exist
+## Phase 4: Update `/agents` Display and Discord Formatting
 
-## Phase 6: User Guide Content Audit
+Make the agents view project-scoped and workspace-based.
 
-Review each user-facing guide for accuracy against current specs and source code.
+**Files to modify:**
 
-**Files to audit:**
-- `docs/index.md` — Verify feature claims match implementation; remove any ChatAgent/ChatAnalyzer references
-- `docs/getting-started.md` — Verify setup steps still work; verify config file paths and example commands
-- `docs/architecture.md` — Update mermaid diagram to include Supervisor, PromptBuilder, RuleManager, Reflection, ChatObserver; remove ChatAgent/ChatAnalyzer from diagrams
-- `docs/discord-commands.md` — Cross-reference every command against `specs/command-handler.md` and `src/discord/commands.py`; remove deprecated analyzer commands
-- `docs/hook-pipeline.md` — Cross-reference against `specs/hooks.md`; replace ChatAgent references with Supervisor
-- `docs/migrations.md` — Check which migrations have been completed and remove them; verify remaining migration plan
-- `docs/git-sync-current-state.md` and `docs/git-sync-gaps.md` — Verify which gaps have been resolved; update status
+- **`src/command_handler.py`** — The rewritten `_cmd_list_agents` from Phase 1. Ensure it:
+  - Requires project context (from active project in chat, or explicit project_id parameter)
+  - Shows each workspace as an "agent slot" with status
+  - For busy agents, shows task ID, title, and brief description
+  - Example output format:
+    ```
+    Agents for "my-app" (3 slots):
+      my-app-1 (ws-main)     BUSY  — "Add rate limiting" (keen-harbor)
+      my-app-2 (ws-clone-1)  BUSY  — "Fix login bug" (swift-peak)
+      my-app-3 (ws-clone-2)  IDLE  — Available
+    ```
 
-## Phase 7: Add Missing API Reference Docs & Standardize Docstrings
+- **`src/discord/formatters.py`** — Update agent list formatting if it has agent-specific formatting functions. Adapt to `WorkspaceAgent` data shape.
 
-Create mkdocstrings stub files for source modules missing from `docs/api/`, and ensure all modules have good docstrings.
+- **Supervisor tool registry** — Update the `list_agents` tool to document it's project-scoped and describe the new output format.
 
-**Modules needing API docs:**
-- `supervisor.py`, `command_handler.py`, `memory.py`, `tool_registry.py`, `prompt_builder.py`, `prompt_manager.py`
-- `rule_manager.py`, `reflection.py`, `chat_observer.py`, `llm_logger.py`, `schedule.py`
-- `setup_wizard.py`, `health.py`, `file_watcher.py`, `logging_config.py`
-- `agent_names.py`, `task_names.py`, `known_tools.py`
-- Do NOT create an API doc for `chat_agent.py` (deleted in Phase 1)
+---
 
-**For each module:**
-1. Create `docs/api/<module>.md` with standard mkdocstrings directive (`::: src.<module>`)
-2. Add to `mkdocs.yml` nav under the appropriate API Reference subsection
-3. Verify the source module has adequate Google-style docstrings — if a module docstring is missing or minimal, add one
+## Phase 5: Clean Up References, Tests, and Documentation
 
-**Docstring standards (based on orchestrator.py, models.py, database.py):**
-- Module-level: 1-line summary, blank line, purpose/responsibilities, key design decisions, reference to spec
-- Class-level: purpose, key attributes, usage pattern
-- Method-level: Google-style with Args/Returns/Raises for public methods
-- All async methods should note they are coroutines
+Remove all remaining references to the old `Agent` model and global agent pool.
 
-**Validation:** Run `mkdocs build` to verify all API docs render without errors.
+**Files to modify:**
+- **`src/orchestrator.py`** — Remove any remaining `Agent` imports, agent state enum references
+- **`src/command_handler.py`** — Final cleanup of any agent references
+- **`tests/`** — Update all tests:
+  - Remove test fixtures that create `Agent` objects
+  - Update scheduler tests to not provide agents in `SchedulerState`
+  - Update orchestrator tests to work without agent creation
+  - Update command handler tests for removed commands and updated `/agents`
+  - Update database tests: remove agent CRUD tests, add workspace-agent view tests
+- **`specs/`** — Update any specs referencing the global agent model (likely `specs/orchestrator.md`, `specs/command-handler.md`, `specs/database.md`)
+- **`profile.md`** — Update architecture description
+- **`README.md`** — Remove the "create agent claude-1 and assign it to my-app" example. Update with new flow where workspaces define agent capacity.
+- **`CLAUDE.md`** — Update if it references agent commands
+- **`setup.sh`** — Remove any agent creation steps from the setup wizard
+- **`src/setup_wizard.py`** — Remove agent creation from the setup wizard flow if present
+- **`src/agent_names.py`** — Can be removed if workspace names or indices are used instead. If kept, update imports.
