@@ -3218,12 +3218,9 @@ class CommandHandler:
         # already updates the original embed in-place to show approval status
         # and subtask count, avoiding duplicate messages.
 
-        # Delete the plan file from the workspace so it isn't picked up by
-        # other tasks that may later run in the same workspace/branch.
-        await self._cleanup_plan_files_after_approval(task)
-
         # Transition to COMPLETED — this unblocks draft subtasks that
         # depend on the parent (parse-first workflow).
+        # Do this BEFORE cleanup so the response is fast and interactive.
         await self.db.transition_task(
             args["task_id"],
             TaskStatus.COMPLETED,
@@ -3239,6 +3236,21 @@ class CommandHandler:
             task_id=task.id,
             payload=f"Activated {len(created_info)} subtask(s)",
         )
+
+        # Schedule heavy cleanup work (file deletion + git commits) in the
+        # background so the approve command returns immediately and the
+        # Discord UI feels responsive.
+        async def _background_cleanup():
+            try:
+                await self._cleanup_plan_files_after_approval(task)
+            except Exception as e:
+                logger.warning(
+                    "Background plan cleanup failed for task %s: %s",
+                    task.id, e,
+                )
+
+        asyncio.create_task(_background_cleanup())
+
         return {
             "approved": args["task_id"],
             "title": task.title,

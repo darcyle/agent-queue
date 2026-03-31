@@ -1406,6 +1406,19 @@ class PlanApprovalView(discord.ui.View):
             )
             return
         await interaction.response.defer(ephemeral=True)
+
+        # Immediately update the message to remove buttons and show processing
+        # state — this makes the interaction feel responsive even if the
+        # backend work takes a few seconds.
+        embed = interaction.message.embeds[0] if interaction.message.embeds else None
+        if embed is not None:
+            embed.title = "⏳ Approving Plan..."
+            embed.color = 0xF1C40F  # yellow/pending
+        try:
+            await interaction.message.edit(embed=embed, view=None)
+        except Exception:
+            pass  # Best-effort; the final update below will fix it
+
         result = await self._handler.execute(
             "approve_plan", {"task_id": self.task_id}
         )
@@ -1413,6 +1426,14 @@ class PlanApprovalView(discord.ui.View):
             await interaction.followup.send(
                 f"Could not approve plan: {result['error']}", ephemeral=True
             )
+            # Restore the buttons on error so user can retry
+            if embed is not None:
+                embed.title = "📋 Plan Awaiting Approval"
+                embed.color = 0x3498DB  # blue
+            try:
+                await interaction.message.edit(embed=embed, view=self)
+            except Exception:
+                pass
         else:
             count = result.get("subtask_count", 0)
             await interaction.followup.send(
@@ -1420,12 +1441,14 @@ class PlanApprovalView(discord.ui.View):
                 f"{count} subtask(s) created.",
                 ephemeral=True,
             )
-            # Update the message: remove buttons and mark as approved
-            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            # Final update with the actual subtask count
             if embed is not None:
                 embed.title = f"✅ Plan Approved — {count} Subtask(s) Created"
                 embed.color = 0x2ECC71  # green
-            await interaction.message.edit(embed=embed, view=None)
+            try:
+                await interaction.message.edit(embed=embed, view=None)
+            except Exception:
+                pass  # Already removed buttons in the immediate update
 
     @discord.ui.button(
         label="Request Changes",

@@ -545,6 +545,15 @@ class Orchestrator:
             except Exception as e:
                 logger.debug("Could not delete task-started message for %s: %s",
                              task_id, e)
+        # Update the thread root message to reflect the stop
+        if self._edit_thread_root:
+            try:
+                await self._edit_thread_root(
+                    task_id, f"🛑 **Work stopped:** {task.title}", None,
+                )
+            except Exception as e:
+                logger.debug("Could not edit thread root for %s: %s",
+                             task_id, e)
         # Check if stopping this task blocks a dependency chain
         await self._notify_stuck_chain(task)
         return None
