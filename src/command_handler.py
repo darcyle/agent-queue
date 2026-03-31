@@ -3188,7 +3188,7 @@ class CommandHandler:
                         requires_approval=(
                             task.requires_approval if config.inherit_approval else False
                         ),
-                        base_priority=config.base_priority,
+                        base_priority=task.priority,
                     )
 
                     if created_info and config.chain_dependencies:
@@ -3688,7 +3688,7 @@ class CommandHandler:
                     requires_approval=(
                         task.requires_approval if config.inherit_approval else False
                     ),
-                    base_priority=config.base_priority,
+                    base_priority=task.priority,
                 )
 
                 if created_info:
