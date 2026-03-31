@@ -1865,6 +1865,28 @@ def setup_commands(bot: commands.Bot) -> None:
             view.tasks_by_status = tasks_by_status
             view.total = result.get("total", len(tasks))
             view._all_tasks = tasks
+            # Refresh thread URLs
+            view._thread_urls = bot.get_task_thread_urls()
+            # Refresh header lines if this is a status view
+            if view._header_lines is not None:
+                status_result = await self._handler.execute("get_status", {})
+                header: list[str] = []
+                if status_result.get("orchestrator_paused"):
+                    header.append("⏸ **Orchestrator is PAUSED** — scheduling suspended")
+                agents = status_result.get("agents", [])
+                if agents:
+                    header.append("**Agents:**")
+                    for a in agents:
+                        working_on = a.get("working_on")
+                        if working_on:
+                            header.append(
+                                f"• **{a['name']}** ({a['state']}) → "
+                                f"**{working_on['project_id']}** / "
+                                f"`{working_on['task_id']}` — {working_on['title']}"
+                            )
+                        else:
+                            header.append(f"• **{a['name']}** ({a['state']})")
+                view._header_lines = header
             # Rebuild subtask maps
             view._subtask_ids = set()
             view._subtask_map = {}
@@ -2007,12 +2029,16 @@ def setup_commands(bot: commands.Bot) -> None:
             all_tasks: list | None = None,
             handler=None,
             project_id: str | None = None,
+            thread_urls: dict[str, str] | None = None,
+            header_lines: list[str] | None = None,
         ) -> None:
             super().__init__(timeout=600)
             self.tasks_by_status = tasks_by_status
             self.total = total
             self._handler = handler
             self._project_id = project_id
+            self._thread_urls: dict[str, str] = thread_urls or {}
+            self._header_lines: list[str] = header_lines or []
             # Build parent→subtask lookup for tree view
             self._all_tasks = all_tasks or []
             self._subtask_ids: set[str] = set()
@@ -2085,7 +2111,10 @@ def setup_commands(bot: commands.Bot) -> None:
             """Format a task with optional tree-view subtasks."""
             tag = self._get_type_tag(t)
             tag_str = f"{tag} " if tag else ""
-            lines = [f"{tag_str}**{t['title']}** `{t['id']}`"]
+            # Add thread link for active/completed tasks
+            thread_url = self._thread_urls.get(t["id"])
+            thread_link = f" — [thread]({thread_url})" if thread_url else ""
+            lines = [f"{tag_str}**{t['title']}** `{t['id']}`{thread_link}"]
 
             # Show inline subtask count if parent has children
             children = self._subtask_map.get(t["id"], [])
@@ -2112,6 +2141,10 @@ def setup_commands(bot: commands.Bot) -> None:
 
         def build_content(self) -> str:
             lines: list[str] = []
+            # Add optional header (e.g. agent status, orchestrator state)
+            if self._header_lines:
+                lines.extend(self._header_lines)
+                lines.append("")
             # Add progress summary at top — use _all_tasks for accurate totals
             # since tasks_by_status may be filtered (e.g. completed hidden).
             if self._all_tasks:
@@ -2340,9 +2373,80 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(name="status", description="Show system status overview")
     async def status_command(interaction: discord.Interaction):
-        result = await handler.execute("get_status", {})
-        view = StatusReportView(result, handler)
-        await interaction.response.send_message(view.build_content(), view=view)
+        await interaction.response.defer()
+        try:
+            # Get agent/orchestrator status for the header
+            status_result = await handler.execute("get_status", {})
+
+            # Build header lines from status info
+            header_lines: list[str] = []
+            if status_result.get("orchestrator_paused"):
+                header_lines.append("⏸ **Orchestrator is PAUSED** — scheduling suspended")
+
+            agents = status_result.get("agents", [])
+            if agents:
+                header_lines.append("**Agents:**")
+                for a in agents:
+                    working_on = a.get("working_on")
+                    if working_on:
+                        header_lines.append(
+                            f"• **{a['name']}** ({a['state']}) → "
+                            f"**{working_on['project_id']}** / "
+                            f"`{working_on['task_id']}` — {working_on['title']}"
+                        )
+                    else:
+                        header_lines.append(f"• **{a['name']}** ({a['state']})")
+
+            # Resolve project from channel context (like /tasks does)
+            project_id = await _resolve_project_from_context(interaction, None)
+
+            # Fetch tasks using the same backend as /tasks
+            args: dict = {
+                "include_completed": True,
+                "display_mode": "flat",
+            }
+            if project_id:
+                args["project_id"] = project_id
+
+            result = await handler.execute("list_tasks", args)
+
+            if "error" in result:
+                await interaction.followup.send(
+                    embed=error_embed("Error", description=result["error"]),
+                )
+                return
+
+            tasks = result.get("tasks", [])
+
+            # Get thread URLs from the bot
+            thread_urls = bot.get_task_thread_urls()
+
+            if not tasks:
+                # Still show header even if no tasks
+                content = "\n".join(header_lines) if header_lines else "No tasks found."
+                await interaction.followup.send(content)
+                return
+
+            # Group tasks by status for the interactive report view
+            tasks_by_status: dict[str, list] = {}
+            for t in tasks:
+                tasks_by_status.setdefault(t["status"], []).append(t)
+            total = result.get("total", len(tasks))
+            view_widget = TaskReportView(
+                tasks_by_status, total,
+                all_tasks=tasks, handler=handler, project_id=project_id,
+                thread_urls=thread_urls, header_lines=header_lines,
+            )
+            content = view_widget.build_content()
+            await interaction.followup.send(content, view=view_widget)
+        except Exception as e:
+            print(f"ERROR in /status: {e!r}\n{traceback.format_exc()}")
+            try:
+                await interaction.followup.send(
+                    embed=error_embed("Error", description=f"Failed to get status: {e}"),
+                )
+            except Exception:
+                pass
 
     @bot.tree.command(name="projects", description="List all projects")
     async def projects_command(interaction: discord.Interaction):
@@ -2863,12 +2967,19 @@ def setup_commands(bot: commands.Bot) -> None:
                 )
                 return
 
+            # Get thread URLs from the bot
+            thread_urls = bot.get_task_thread_urls()
+
             # Group tasks by status for the interactive report view
             tasks_by_status: dict[str, list] = {}
             for t in tasks:
                 tasks_by_status.setdefault(t["status"], []).append(t)
             total = result.get("total", len(tasks))
-            view_widget = TaskReportView(tasks_by_status, total, all_tasks=tasks, handler=handler, project_id=project_id)
+            view_widget = TaskReportView(
+                tasks_by_status, total,
+                all_tasks=tasks, handler=handler, project_id=project_id,
+                thread_urls=thread_urls,
+            )
             content = view_widget.build_content()
             await interaction.followup.send(content, view=view_widget)
         except Exception as e:
