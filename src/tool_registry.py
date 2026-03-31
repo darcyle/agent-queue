@@ -696,11 +696,6 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Agent display name. Leave empty to auto-generate a creative name.",
                 },
-                "agent_type": {
-                    "type": "string",
-                    "description": "Agent type (claude, codex, cursor, aider)",
-                    "default": "claude",
-                },
             },
         },
     },

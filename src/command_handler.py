@@ -4054,7 +4054,7 @@ class CommandHandler:
         agent = Agent(
             id=agent_id,
             name=name,
-            agent_type=args.get("agent_type", "claude"),
+            agent_type="claude",
             state=AgentState.IDLE,
         )
         await self.db.create_agent(agent)

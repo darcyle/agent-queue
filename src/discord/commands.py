@@ -3532,24 +3532,14 @@ def setup_commands(bot: commands.Bot) -> None:
     @bot.tree.command(name="create-agent", description="Register a new agent")
     @app_commands.describe(
         name="Agent display name (leave empty for auto-generated creative name)",
-        agent_type="Agent type (claude, codex, cursor, aider)",
     )
-    @app_commands.choices(agent_type=[
-        app_commands.Choice(name="claude", value="claude"),
-        app_commands.Choice(name="codex",  value="codex"),
-        app_commands.Choice(name="cursor", value="cursor"),
-        app_commands.Choice(name="aider",  value="aider"),
-    ])
     async def create_agent_command(
         interaction: discord.Interaction,
         name: str | None = None,
-        agent_type: app_commands.Choice[str] | None = None,
     ):
         args: dict = {}
         if name:
             args["name"] = name
-        if agent_type:
-            args["agent_type"] = agent_type.value
         result = await handler.execute("create_agent", args)
         if "error" in result:
             await _send_error(interaction, result['error'])
@@ -3557,7 +3547,6 @@ def setup_commands(bot: commands.Bot) -> None:
         agent_fields: list[tuple[str, str, bool]] = [
             ("Name", result.get("name", name), True),
             ("ID", f"`{result['created']}`", True),
-            ("Type", args.get("agent_type", "claude"), True),
             ("State", result.get("state", "IDLE"), True),
         ]
         embed = success_embed("Agent Registered", fields=agent_fields)
