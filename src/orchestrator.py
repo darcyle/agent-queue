@@ -84,7 +84,7 @@ from src.config import AppConfig, ConfigWatcher
 from src.llm_logger import LLMLogger
 from src.database import Database
 from src.discord.notifications import (
-    format_task_started, format_task_completed, format_task_failed,
+    format_task_started, format_task_failed,
     format_task_blocked, format_pr_created, format_agent_question,
     format_chain_stuck, format_stuck_defined_task,
     format_budget_warning,
@@ -101,6 +101,7 @@ from src.messaging.types import (
     ThreadSendCallback as _ThreadSendCallbackType,
     CreateThreadCallback as _CreateThreadCallbackType,
     GetThreadUrlCallback as _GetThreadUrlCallbackType,
+    EditThreadRootCallback as _EditThreadRootCallbackType,
 )
 from src.git.manager import GitError, GitManager
 from src.models import (
@@ -124,6 +125,7 @@ NotifyCallback = _NotifyCallbackType
 ThreadSendCallback = _ThreadSendCallbackType
 CreateThreadCallback = _CreateThreadCallbackType
 GetThreadUrlCallback = _GetThreadUrlCallbackType
+EditThreadRootCallback = _EditThreadRootCallbackType
 
 
 class Orchestrator:
@@ -185,6 +187,7 @@ class Orchestrator:
         self._notify: NotifyCallback | None = None
         self._create_thread: CreateThreadCallback | None = None
         self._get_thread_url: GetThreadUrlCallback | None = None
+        self._edit_thread_root: EditThreadRootCallback | None = None
         # Discord message objects for task-added notifications, keyed by
         # task_id.  Stored so we can delete the message when the task starts
         # to keep the chat window clean.
@@ -413,6 +416,14 @@ class Orchestrator:
         in a task's thread.  Used by the plan approval flow to link to the
         agent's final output instead of showing truncated plan content."""
         self._get_thread_url = callback
+
+    def set_edit_thread_root_callback(self, callback: EditThreadRootCallback) -> None:
+        """Inject a callback that edits the thread-root message for a task.
+
+        Used to update the "Agent working: ..." message to reflect task
+        completion or failure (e.g. "✅ Work completed: ...").
+        """
+        self._edit_thread_root = callback
 
     async def skip_task(self, task_id: str) -> tuple[str | None, list[Task]]:
         """Skip a BLOCKED or FAILED task to unblock its dependency chain.
@@ -3399,6 +3410,13 @@ class Orchestrator:
         #   PAUSED_*         → schedule a resume_after timestamp
         #   WAITING_INPUT    → pause and notify for human response
         # ------------------------------------------------------------------ #
+
+        # Track the final embed/root text for editing the Task Started message
+        # and thread root on completion.  Set in the result branches below;
+        # consumed in the cleanup section.
+        _final_started_embed: Any = None       # replaces Task Started embed
+        _final_root_content: str | None = None  # replaces "Agent working: ..." text
+
         if output.result == AgentResult.COMPLETED:
             await self.db.transition_task(action.task_id, TaskStatus.VERIFYING,
                                           context="agent_completed")
@@ -3556,24 +3574,6 @@ class Orchestrator:
                                         project_id=action.project_id,
                                         task_id=action.task_id,
                                         agent_id=action.agent_id)
-                if thread_send:
-                    summary_lines = [
-                        f"**Task Completed:** `{task.id}` — {task.title}",
-                        f"Agent: {agent.name} | Tokens: {output.tokens_used:,}",
-                    ]
-                    if output.summary:
-                        summary_lines.append(f"\n**Summary:**\n{output.summary}")
-                    if output.files_changed:
-                        summary_lines.append(
-                            f"\n**Files changed:** {', '.join(output.files_changed)}"
-                        )
-                    await thread_send("\n".join(summary_lines))
-                else:
-                    await self._notify_channel(
-                        format_task_completed(task, agent, output),
-                        project_id=action.project_id,
-                        embed=format_task_completed_embed(task, agent, output),
-                    )
                 brief = f"✅ Task completed: {task.title} (`{task.id}`)"
                 from datetime import datetime, timezone as _tz
                 log_date = datetime.now(_tz.utc).strftime("%Y-%m-%d")
