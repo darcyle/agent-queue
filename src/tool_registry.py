@@ -1,11 +1,31 @@
 """Tiered tool registry for on-demand tool loading.
 
 Splits the monolithic TOOLS list into core tools (always loaded) and
-named categories (loaded on demand via browse_tools/load_tools).
+named categories (loaded on demand via ``browse_tools``/``load_tools``).
+This keeps the LLM's initial context window small — only ~10 core tools
+are loaded at conversation start.  When the LLM needs specialised tools
+(git, hooks, memory, etc.) it calls ``browse_tools`` to discover categories,
+then ``load_tools`` to inject that category's definitions into the active
+tool set for subsequent turns.
 
-The registry only manages tool *definitions* (JSON Schema dicts).
-Execution still flows through CommandHandler.execute() regardless
-of whether a tool is "loaded" in the LLM's context.
+The registry only manages tool *definitions* (JSON Schema dicts that
+describe each tool's name, description, and input schema).  Execution
+still flows through ``CommandHandler.execute()`` regardless of whether
+a tool is "loaded" in the LLM's context — the loading mechanism is
+purely an attention/context optimisation.
+
+Key components:
+
+- ``CATEGORIES`` — named groups (git, project, agent, hooks, memory,
+  files, system) with human-readable descriptions.
+- ``_TOOL_CATEGORIES`` — mapping of tool name → category.  Tools not
+  listed here are "core" (always loaded).
+- ``_ALL_TOOL_DEFINITIONS`` — the master list of ~80 tool JSON Schema
+  dicts.  Each entry corresponds to a ``CommandHandler._cmd_*`` method.
+- ``ToolRegistry`` — the public API: ``get_core_tools()``,
+  ``get_category_tools(cat)``, ``get_all_tools()``.
+
+See ``specs/supervisor.md`` for the tool-use loop that drives loading.
 """
 
 from __future__ import annotations
@@ -2322,8 +2342,22 @@ _ALL_TOOL_DEFINITIONS = [
 class ToolRegistry:
     """Registry that categorizes tools into core and on-demand categories.
 
-    Initialized with a list of tool definition dicts (JSON Schema format).
-    Each tool is either "core" (always loaded) or belongs to a named category.
+    Initialised with a list of tool definition dicts (JSON Schema format).
+    Each tool is either "core" (always loaded) or belongs to a named
+    category that can be loaded on demand via ``load_tools``.
+
+    Usage::
+
+        registry = ToolRegistry()
+        core = registry.get_core_tools()          # always-on tools
+        git  = registry.get_category_tools("git")  # on-demand category
+
+    The registry is stateless — it doesn't track which categories are
+    currently "loaded" in a conversation.  That state lives in the
+    Supervisor's ``active_tools`` dict.
+
+    Attributes:
+        _all_tools: Mapping of tool name → tool definition dict.
     """
 
     def __init__(self, tools: list[dict] | None = None):
@@ -2340,8 +2374,13 @@ class ToolRegistry:
         self._ensure_navigation_tools()
 
     def _ensure_navigation_tools(self) -> None:
-        """Add browse_tools, load_tools, send_message, and rule stubs
-        if not already present."""
+        """Add browse_tools, load_tools, send_message, reply_to_user, and rule stubs if absent.
+
+        These tools are synthesised at init time rather than being defined in
+        ``_ALL_TOOL_DEFINITIONS`` because they need special handling in the
+        Supervisor's tool-use loop (e.g. ``load_tools`` expands the active set,
+        ``reply_to_user`` terminates the loop).
+        """
         if "browse_tools" not in self._all_tools:
             self._all_tools["browse_tools"] = {
                 "name": "browse_tools",
@@ -2519,14 +2558,24 @@ class ToolRegistry:
         ]
 
     def get_core_tools(self) -> list[dict]:
-        """Return tool definitions that are always loaded."""
+        """Return tool definitions that are always loaded.
+
+        Returns:
+            List of tool definition dicts for tools not assigned to any
+            category (i.e. not present in ``_TOOL_CATEGORIES``).
+        """
         return [
             t for name, t in self._all_tools.items()
             if name not in _TOOL_CATEGORIES
         ]
 
     def get_categories(self) -> list[dict]:
-        """Return category metadata list for browse_tools response."""
+        """Return category metadata list for ``browse_tools`` response.
+
+        Returns:
+            List of dicts with ``name``, ``description``, and ``tool_count``
+            keys — one per registered category.
+        """
         result = []
         for cat_name, meta in CATEGORIES.items():
             tools = self.get_category_tools(cat_name)
@@ -2538,8 +2587,15 @@ class ToolRegistry:
         return result
 
     def get_category_tools(self, category: str) -> list[dict] | None:
-        """Return all tool definitions for a category, or None if
-        unknown."""
+        """Return all tool definitions for a category.
+
+        Args:
+            category: Category name (e.g. ``"git"``, ``"hooks"``).
+
+        Returns:
+            List of tool definition dicts, or ``None`` if the category
+            name is not recognised.
+        """
         if category not in CATEGORIES:
             return None
         return [
@@ -2551,7 +2607,15 @@ class ToolRegistry:
     def get_category_tool_names(
         self, category: str
     ) -> list[str] | None:
-        """Return tool names for a category, or None if unknown."""
+        """Return tool names for a category.
+
+        Args:
+            category: Category name (e.g. ``"git"``, ``"hooks"``).
+
+        Returns:
+            List of tool name strings, or ``None`` if the category
+            name is not recognised.
+        """
         if category not in CATEGORIES:
             return None
         return [
@@ -2560,5 +2624,9 @@ class ToolRegistry:
         ]
 
     def get_all_tools(self) -> list[dict]:
-        """Return all tool definitions (core + all categories)."""
+        """Return all tool definitions (core + all categories).
+
+        Returns:
+            List of every tool definition dict known to the registry.
+        """
         return list(self._all_tools.values())
