@@ -3214,17 +3214,9 @@ class CommandHandler:
                 )
                 return {"error": "Supervisor is not available. Cannot create subtasks from plan."}
 
-        # Notify about subtasks being activated
-        if created_info:
-            task_lines = "\n".join(
-                f"  {i+1}. `{t['id']}` — {t['title']}"
-                for i, t in enumerate(created_info)
-            )
-            await self.orchestrator._notify_channel(
-                f"**Plan Approved:** {len(created_info)} subtask(s) activated from "
-                f"`{task.id}` plan:\n{task_lines}",
-                project_id=task.project_id,
-            )
+        # Note: no separate channel notification here — the PlanApprovalView
+        # already updates the original embed in-place to show approval status
+        # and subtask count, avoiding duplicate messages.
 
         # Delete the plan file from the workspace so it isn't picked up by
         # other tasks that may later run in the same workspace/branch.
