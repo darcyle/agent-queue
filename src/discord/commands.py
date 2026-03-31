@@ -3827,34 +3827,153 @@ def setup_commands(bot: commands.Bot) -> None:
 
         project_name = result.get("project_name", project_id)
         repo_statuses = result.get("repos", [])
-        sections: list[str] = []
+
+        # ----- Build compact summary for the channel -----
+        summary_lines: list[str] = []
+        for rs in repo_statuses:
+            ws_label = rs.get("workspace_name") or rs.get("workspace_id") or "?"
+            if "error" in rs:
+                summary_lines.append(f"⚠️ **{ws_label}** — {rs['error']}")
+                continue
+
+            branch = rs.get("branch", "?")
+            status_raw = rs.get("status", "(clean)")
+            is_clean = status_raw.strip() in ("(clean)", "") or (
+                "nothing to commit" in status_raw
+                and "working tree clean" in status_raw
+            )
+
+            # Build compact one-line status indicators
+            indicators: list[str] = []
+            if is_clean:
+                indicators.append("✅ clean")
+            else:
+                # Count changed/untracked files from porcelain-like output
+                changed = sum(
+                    1
+                    for line in status_raw.splitlines()
+                    if line.strip()
+                    and not line.startswith("On branch")
+                    and not line.startswith("Your branch")
+                    and not line.startswith("nothing to commit")
+                    and not line.startswith("Changes")
+                    and not line.startswith("Untracked")
+                    and not line.startswith("  (use")
+                    and not line.startswith("no changes")
+                )
+                if changed:
+                    indicators.append(f"📝 {changed} changed")
+                else:
+                    indicators.append("📝 dirty")
+
+            ahead = rs.get("ahead", 0)
+            behind = rs.get("behind", 0)
+            if ahead:
+                indicators.append(f"⬆ {ahead}")
+            if behind:
+                indicators.append(f"⬇ {behind}")
+
+            stash_count = rs.get("stash_count", 0)
+            if stash_count:
+                indicators.append(f"📦 {stash_count} stash")
+
+            agent_id = rs.get("locked_by_agent_id")
+            task_title = rs.get("current_task_title")
+            if agent_id:
+                task_hint = f" — *{task_title}*" if task_title else ""
+                indicators.append(f"🔒 {agent_id}{task_hint}")
+
+            status_str = " · ".join(indicators)
+            summary_lines.append(f"**{ws_label}** `{branch}` — {status_str}")
+
+        summary = (
+            f"## 📊 Git Status: {project_name}\n"
+            + "\n".join(summary_lines)
+            + "\n\n*See thread for full details ↓*"
+        )
+        await interaction.followup.send(summary)
+
+        # ----- Create thread with detailed per-workspace breakdown -----
+        msg = await interaction.original_response()
+        thread = await msg.create_thread(
+            name=f"Git Status: {project_name}"[:100],
+            auto_archive_duration=60,
+        )
 
         for rs in repo_statuses:
+            ws_label = rs.get("workspace_name") or rs.get("workspace_id") or "?"
             if "error" in rs:
-                ws_label = rs.get("workspace_name") or rs.get("workspace_id") or "?"
-                sections.append(
-                    f"### Workspace: `{ws_label}`\n⚠️ {rs['error']}"
-                )
+                await thread.send(f"### ⚠️ Workspace: `{ws_label}`\n{rs['error']}")
                 continue
+
             ws_name = rs.get("workspace_name")
             ws_id = rs.get("workspace_id") or "?"
-            header = f"### Workspace: `{ws_name}`" if ws_name else f"### Workspace: `{ws_id}`"
-            if ws_name:
-                header += f" (`{ws_id}`)"
-            lines = [header]
+            ws_header = (
+                f"`{ws_name}` (`{ws_id}`)" if ws_name else f"`{ws_id}`"
+            )
+            lines: list[str] = [f"### 📁 Workspace: {ws_header}"]
+
             if rs.get("path"):
                 lines.append(f"**Path:** `{rs['path']}`")
             if rs.get("branch"):
-                lines.append(f"**Branch:** `{rs['branch']}`")
-            status_output = rs.get("status", "(clean)")
-            lines.append(f"\n**Status:**\n```\n{status_output}\n```")
-            if rs.get("recent_commits"):
-                lines.append(f"**Recent commits:**\n```\n{rs['recent_commits']}\n```")
-            sections.append("\n".join(lines))
+                branch_line = f"**Branch:** `{rs['branch']}`"
+                ahead = rs.get("ahead", 0)
+                behind = rs.get("behind", 0)
+                if ahead or behind:
+                    parts = []
+                    if ahead:
+                        parts.append(f"{ahead} ahead")
+                    if behind:
+                        parts.append(f"{behind} behind")
+                    branch_line += f" ({', '.join(parts)})"
+                lines.append(branch_line)
 
-        header = f"## Git Status: {project_name} (`{project_id}`)\n"
-        full_message = header + "\n\n".join(sections)
-        await _send_long(interaction, full_message, followup=True)
+            # Lock / active-task info
+            agent_id = rs.get("locked_by_agent_id")
+            if agent_id:
+                task_title = rs.get("current_task_title")
+                lock_line = f"**Agent:** `{agent_id}`"
+                if task_title:
+                    lock_line += f" — *{task_title}*"
+                lines.append(lock_line)
+
+            stash_count = rs.get("stash_count", 0)
+            if stash_count:
+                lines.append(f"**Stashes:** {stash_count}")
+
+            # Working-tree status
+            status_output = rs.get("status", "(clean)")
+            lines.append(f"\n**Working tree:**\n```\n{status_output}\n```")
+
+            # Diff stat (files changed vs default branch)
+            diff_stat = rs.get("diff_stat", "")
+            if diff_stat:
+                lines.append(f"**Diff vs default branch:**\n```\n{diff_stat}\n```")
+
+            # Recent commits
+            if rs.get("recent_commits"):
+                lines.append(
+                    f"**Recent commits:**\n```\n{rs['recent_commits']}\n```"
+                )
+
+            detail_msg = "\n".join(lines)
+            # Split if too long for Discord
+            if len(detail_msg) <= 2000:
+                await thread.send(detail_msg)
+            else:
+                chunks, current = [], ""
+                for line in detail_msg.split("\n"):
+                    candidate = current + ("\n" if current else "") + line
+                    if len(candidate) > 2000:
+                        if current:
+                            chunks.append(current)
+                        current = line
+                    else:
+                        current = candidate
+                if current:
+                    chunks.append(current)
+                for chunk in chunks:
+                    await thread.send(chunk)
 
     # -------------------------------------------------------------------
     # GIT MANAGEMENT COMMANDS

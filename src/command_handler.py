@@ -4604,6 +4604,19 @@ feature work stuck on feature branches across multiple workspaces.
                 lock_info = ""
                 if ws.locked_by_agent_id:
                     lock_info = f" (locked by {ws.locked_by_agent_id})"
+
+                # Extra detail: ahead/behind, stash count, diff stat
+                ahead_behind = await self._git_ahead_behind(git, ws_path, branch)
+                stash_count = await self._git_stash_count(git, ws_path)
+                diff_stat = await self._git_diff_stat(git, ws_path, branch)
+
+                # Current task info
+                current_task_title = None
+                if ws.locked_by_task_id:
+                    task = await self.db.get_task(ws.locked_by_task_id)
+                    if task:
+                        current_task_title = task.title
+
                 ws_info: dict = {
                     "workspace_id": ws.id,
                     "workspace_name": ws.name or "",
@@ -4612,6 +4625,13 @@ feature work stuck on feature branches across multiple workspaces.
                     "status": status_output or "(clean)",
                     "recent_commits": recent_commits,
                     "lock": lock_info,
+                    "ahead": ahead_behind[0],
+                    "behind": ahead_behind[1],
+                    "stash_count": stash_count,
+                    "diff_stat": diff_stat,
+                    "locked_by_agent_id": ws.locked_by_agent_id,
+                    "locked_by_task_id": ws.locked_by_task_id,
+                    "current_task_title": current_task_title,
                 }
                 repo_statuses.append(ws_info)
         else:
@@ -4658,6 +4678,53 @@ feature work stuck on feature branches across multiple workspaces.
             "project_name": project.name,
             "repos": repo_statuses,
         }
+
+    # -- git-status helpers ---------------------------------------------------
+
+    @staticmethod
+    async def _git_ahead_behind(git, ws_path: str, branch: str) -> tuple[int, int]:
+        """Return (ahead, behind) counts relative to the tracking upstream."""
+        try:
+            output = await git._arun(
+                ["rev-list", "--left-right", "--count", f"{branch}...@{{u}}"],
+                cwd=ws_path,
+            )
+            parts = output.strip().split()
+            if len(parts) == 2:
+                return int(parts[0]), int(parts[1])
+        except Exception:
+            pass
+        return 0, 0
+
+    @staticmethod
+    async def _git_stash_count(git, ws_path: str) -> int:
+        """Return number of stash entries."""
+        try:
+            output = await git._arun(["stash", "list"], cwd=ws_path)
+            if output.strip():
+                return len(output.strip().splitlines())
+        except Exception:
+            pass
+        return 0
+
+    @staticmethod
+    async def _git_diff_stat(git, ws_path: str, branch: str) -> str:
+        """Return ``git diff --stat`` against the default branch merge-base."""
+        try:
+            default_branch = await git.aget_default_branch(ws_path)
+            if branch == default_branch:
+                return ""
+            merge_base = await git._arun(
+                ["merge-base", f"origin/{default_branch}", "HEAD"],
+                cwd=ws_path,
+            )
+            stat = await git._arun(
+                ["diff", "--stat", merge_base.strip()],
+                cwd=ws_path,
+            )
+            return stat.strip()
+        except Exception:
+            return ""
 
     async def _resolve_workspace(
         self, project_id: str, workspace: str | None,
