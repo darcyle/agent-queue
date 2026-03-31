@@ -443,14 +443,14 @@ class SupervisorConfig:
     """Top-level Supervisor configuration."""
     reflection: ReflectionConfig = field(default_factory=ReflectionConfig)
     observation: ObservationConfig = field(default_factory=ObservationConfig)
-    max_tool_rounds: int = 1000  # 100x the original default of 10
+    max_tool_rounds: int = 0  # 0 = unlimited (no step cap)
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         errors.extend(self.reflection.validate())
         errors.extend(self.observation.validate())
-        if self.max_tool_rounds < 1:
-            errors.append(ConfigError("supervisor", "max_tool_rounds", "must be >= 1"))
+        if self.max_tool_rounds < 0:
+            errors.append(ConfigError("supervisor", "max_tool_rounds", "must be >= 0 (0 = unlimited)"))
         return errors
 
 
@@ -1167,7 +1167,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 max_buffer_size=observation.get("max_buffer_size", 20),
                 stage1_keywords=observation.get("stage1_keywords", []),
             ),
-            max_tool_rounds=s.get("max_tool_rounds", 1000),
+            max_tool_rounds=s.get("max_tool_rounds", 0),
         )
 
     if "hook_engine" in raw:

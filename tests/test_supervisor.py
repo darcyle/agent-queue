@@ -19,6 +19,7 @@ def _make_supervisor():
     config.supervisor.reflection.per_cycle_token_cap = 10000
     config.supervisor.reflection.hourly_token_circuit_breaker = 100000
     config.supervisor.reflection.periodic_interval = 900
+    config.supervisor.max_tool_rounds = 0  # unlimited
     return Supervisor(orch, config)
 
 
@@ -525,7 +526,7 @@ def test_chat_max_rounds_returns_fallback():
     """When max rounds exhausted, returns a helpful fallback."""
     sup = _make_supervisor()
     sup._provider = MagicMock()
-    sup._max_tool_rounds = 2
+    sup.config.supervisor.max_tool_rounds = 2
 
     # Both rounds return tool calls (never reply_to_user)
     resp_tool = _make_resp(tool_uses=[
