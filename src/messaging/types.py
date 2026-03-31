@@ -36,3 +36,13 @@ CreateThreadCallback = Callable[
 # Args: (task_id)
 # Returns: URL string, or None if no thread/message is available.
 GetThreadUrlCallback = Callable[[str], Awaitable[str | None]]
+
+# Edits the thread-root message (the "Agent working: ..." message that
+# serves as the parent for the task thread).  Used to update the root
+# message text when a task completes or fails.
+# Args: (task_id, content | None, embed | None)
+# Returns: None
+EditThreadRootCallback = Callable[
+    [str, str | None, Any],
+    Awaitable[None],
+]

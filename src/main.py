@@ -135,6 +135,7 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         orch.set_notify_callback(adapter.send_message)
         orch.set_create_thread_callback(adapter.create_task_thread)
         orch.set_get_thread_url_callback(adapter.get_thread_last_message_url)
+        orch.set_edit_thread_root_callback(adapter.edit_thread_root_message)
         orch.set_command_handler(adapter.get_command_handler())
         orch.set_supervisor(adapter.get_supervisor())
 

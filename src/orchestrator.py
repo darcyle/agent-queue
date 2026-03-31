@@ -101,6 +101,7 @@ from src.messaging.types import (
     ThreadSendCallback as _ThreadSendCallbackType,
     CreateThreadCallback as _CreateThreadCallbackType,
     GetThreadUrlCallback as _GetThreadUrlCallbackType,
+    EditThreadRootCallback as _EditThreadRootCallbackType,
 )
 from src.git.manager import GitError, GitManager
 from src.models import (
@@ -124,6 +125,7 @@ NotifyCallback = _NotifyCallbackType
 ThreadSendCallback = _ThreadSendCallbackType
 CreateThreadCallback = _CreateThreadCallbackType
 GetThreadUrlCallback = _GetThreadUrlCallbackType
+EditThreadRootCallback = _EditThreadRootCallbackType
 
 
 class Orchestrator:
@@ -185,6 +187,7 @@ class Orchestrator:
         self._notify: NotifyCallback | None = None
         self._create_thread: CreateThreadCallback | None = None
         self._get_thread_url: GetThreadUrlCallback | None = None
+        self._edit_thread_root: EditThreadRootCallback | None = None
         # Discord message objects for task-added notifications, keyed by
         # task_id.  Stored so we can delete the message when the task starts
         # to keep the chat window clean.
@@ -414,6 +417,14 @@ class Orchestrator:
         agent's final output instead of showing truncated plan content."""
         self._get_thread_url = callback
 
+    def set_edit_thread_root_callback(self, callback: EditThreadRootCallback) -> None:
+        """Inject a callback that edits the thread-root message for a task.
+
+        Used to update the "Agent working: ..." message to reflect task
+        completion or failure (e.g. "✅ Work completed: ...").
+        """
+        self._edit_thread_root = callback
+
     async def skip_task(self, task_id: str) -> tuple[str | None, list[Task]]:
         """Skip a BLOCKED or FAILED task to unblock its dependency chain.
 
@@ -533,6 +544,15 @@ class Orchestrator:
                 await started_msg.delete()
             except Exception as e:
                 logger.debug("Could not delete task-started message for %s: %s",
+                             task_id, e)
+        # Update the thread root message to reflect the stop
+        if self._edit_thread_root:
+            try:
+                await self._edit_thread_root(
+                    task_id, f"🛑 **Work stopped:** {task.title}", None,
+                )
+            except Exception as e:
+                logger.debug("Could not edit thread root for %s: %s",
                              task_id, e)
         # Check if stopping this task blocks a dependency chain
         await self._notify_stuck_chain(task)
@@ -3399,6 +3419,13 @@ class Orchestrator:
         #   PAUSED_*         → schedule a resume_after timestamp
         #   WAITING_INPUT    → pause and notify for human response
         # ------------------------------------------------------------------ #
+
+        # Track the final embed/root text for editing the Task Started message
+        # and thread root on completion.  Set in the result branches below;
+        # consumed in the cleanup section.
+        _final_started_embed: Any = None       # replaces Task Started embed
+        _final_root_content: str | None = None  # replaces "Agent working: ..." text
+
         if output.result == AgentResult.COMPLETED:
             await self.db.transition_task(action.task_id, TaskStatus.VERIFYING,
                                           context="agent_completed")
@@ -3585,6 +3612,9 @@ class Orchestrator:
                     "task_id": task.id,
                     "project_id": task.project_id,
                 })
+                # Mark for edit-in-place of Task Started embed and thread root
+                _final_started_embed = format_task_completed_embed(task, agent, output)
+                _final_root_content = f"✅ **Work completed:** {task.title}"
             else:
                 # Pipeline stopped (merge failed) — task stays in VERIFYING
                 await _post(
@@ -3698,6 +3728,16 @@ class Orchestrator:
             # Brief notification → main channel (reply to thread or standalone)
             await _notify_brief(brief)
 
+            # Mark for edit-in-place of Task Started embed and thread root
+            if new_retry >= task.max_retries:
+                _final_started_embed = format_task_blocked_embed(
+                    task, last_error=output.error_message,
+                )
+                _final_root_content = f"🚫 **Work blocked:** {task.title}"
+            else:
+                _final_started_embed = format_task_failed_embed(task, agent, output)
+                _final_root_content = f"⚠️ **Work failed (retrying):** {task.title}"
+
             # Check if this blocked task breaks a dependency chain
             if new_retry >= task.max_retries:
                 await self._notify_stuck_chain(task)
@@ -3807,9 +3847,7 @@ class Orchestrator:
         self._adapters.pop(action.agent_id, None)
         self._task_exec_start.pop(action.task_id, None)
 
-        # Delete the task-added and task-started notifications from Discord to
-        # reduce chat clutter — the completion/failure message provides the
-        # relevant info.
+        # Delete the task-added notification — it's fully superseded.
         added_msg = self._task_added_messages.pop(action.task_id, None)
         if added_msg is not None:
             try:
@@ -3817,10 +3855,31 @@ class Orchestrator:
             except Exception as e:
                 logger.debug("Could not delete task-added message for %s: %s",
                              action.task_id, e)
+
+        # Edit the Task Started embed in-place to show the final status
+        # (completed/failed/blocked).  Falls back to deleting if no final
+        # embed was captured (e.g. PAUSED or WAITING_INPUT branches).
         started_msg = self._task_started_messages.pop(action.task_id, None)
         if started_msg is not None:
+            if _final_started_embed is not None:
+                try:
+                    await started_msg.edit(embed=_final_started_embed)
+                except Exception as e:
+                    logger.debug("Could not edit task-started message for %s: %s",
+                                 action.task_id, e)
+            else:
+                try:
+                    await started_msg.delete()
+                except Exception as e:
+                    logger.debug("Could not delete task-started message for %s: %s",
+                                 action.task_id, e)
+
+        # Update the thread-root message ("Agent working: ..." → final status).
+        if _final_root_content is not None and self._edit_thread_root:
             try:
-                await started_msg.delete()
+                await self._edit_thread_root(
+                    action.task_id, _final_root_content, None,
+                )
             except Exception as e:
-                logger.debug("Could not delete task-started message for %s: %s",
+                logger.debug("Could not edit thread root for %s: %s",
                              action.task_id, e)
