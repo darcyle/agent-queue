@@ -2,200 +2,180 @@
 auto_tasks: true
 ---
 
-# Messaging Adapter Layer — Discord + Telegram Support
+# Plan: Dynamic Per-Project Agent Pools
 
 ## Background & Design
 
-### Current Architecture
+### Current State
+- Agents are globally defined entities stored in an `agents` table, created manually via `/create-agent`
+- Any agent can work on any project's tasks — they're a shared pool
+- The scheduler picks an IDLE agent + READY task and creates an `AssignAction`
+- Workspaces are per-project and dynamically acquired by agents via optimistic locking
+- Agent lifecycle: CREATE → IDLE → BUSY → IDLE → ... → DELETE
 
-The system currently hard-wires Discord as the sole messaging transport. The core orchestration logic (Orchestrator, CommandHandler, Supervisor) is already **well-decoupled** from Discord through callback injection:
+### Target State
+- No persistent global agent registry — agents are ephemeral, created on-demand per project
+- Each project has its own agent pool, sized by its workspace count
+- A project with 3 workspaces gets up to 3 concurrent agents
+- Agent type is always `"claude"` (configurable later via project settings)
+- `/create-agent` and `/delete-agent` commands are removed
+- `/agents` (or `/list-agents`) becomes project-scoped, showing only agents for that project
+- Agent identity is derived from workspace assignment (e.g., `{project_id}-agent-{n}` or workspace-based)
 
-- `Orchestrator.set_notify_callback()` — transport-agnostic notification dispatch
-- `Orchestrator.set_create_thread_callback()` — transport-agnostic thread creation
-- `CommandHandler.execute()` — pure business logic, no transport coupling
-- `Supervisor` — LLM chat loop, takes message history lists, platform-agnostic
-- `EventBus` — pub/sub independent of transport
+### Key Design Decisions
 
-However, Discord-specific types leak in several places:
-1. **`orchestrator.py`** imports `src.discord.notifications` at module level (line 86) and uses `discord.Embed`/`discord.ui.View` in `_notify_channel` calls (~40 call sites passing `embed=` and `view=` kwargs)
-2. **`main.py`** directly imports and instantiates `AgentQueueBot`, hard-codes `bot.start(config.discord.bot_token)`
-3. **`config.py`** has `DiscordConfig` as a required top-level field on `AppConfig` with validation that requires `bot_token` and `guild_id`
-4. **Notification formatting** (`src/discord/notifications.py`, `embeds.py`, `views.py`) produces Discord-native objects
+1. **Agents = Workspace Slots**: Rather than managing agents as separate entities, an "agent" is simply an active execution context tied to a locked workspace. When a workspace is locked for a task, that *is* the agent.
 
-### Design Decisions
+2. **Virtual Agent Model**: We keep a lightweight representation of "agents" for display purposes (`/agents` command), but they aren't persistent DB entities requiring manual lifecycle management. An "agent" is a workspace — idle workspaces are idle agents, locked workspaces are busy agents.
 
-1. **One transport per deployment** — config chooses `messaging: discord` or `messaging: telegram`. No multi-transport bridging. This keeps the abstraction simple.
-2. **Abstract Messaging Port** — a new `MessagingPort` protocol/ABC defines the transport contract. Both `DiscordTransport` and `TelegramTransport` implement it.
-3. **Platform-agnostic notification layer** — replace `discord.Embed`/`discord.ui.View` kwargs with a platform-neutral `RichNotification` dataclass that each transport renders into its native format.
-4. **Factory pattern in `main.py`** — a `create_messaging_transport(config)` factory reads the config and returns the appropriate transport.
-5. **Telegram implementation** — uses `python-telegram-bot` (async, well-maintained). Telegram "topics" in a supergroup map to Discord threads. Inline keyboards map to Discord buttons/views.
+3. **Scheduler Changes**: Instead of finding IDLE agents from a global pool, the scheduler finds projects with READY tasks and available (unlocked) workspaces, then creates ephemeral agent contexts. The `AssignAction` uses a workspace-derived agent ID.
 
-### Key Interfaces
+4. **Backwards Compatibility**: The `token_ledger` and `task_results` tables currently reference `agent_id`. We'll use workspace-derived IDs (e.g., `ws-{workspace_id}`) as the agent_id for these records.
 
-```python
-# src/messaging/port.py
+5. **Agent Type**: Always `"claude"` for now. Later, a `default_agent_type` field on the project model can override this.
 
-@dataclass
-class RichNotification:
-    """Platform-neutral rich notification."""
-    title: str
-    description: str
-    color: str = "default"  # "success", "error", "warning", "info", "critical"
-    fields: list[tuple[str, str, bool]] = field(default_factory=list)  # (name, value, inline)
-    footer: str = ""
-    actions: list[NotificationAction] = field(default_factory=list)
+### What Stays the Same
+- Workspace model and locking mechanism (this is the foundation)
+- Adapter layer (still creates ClaudeAdapter instances per task)
+- Profile resolution (task → project → default)
+- Task lifecycle and state machine
+- Rate limit retry logic
+- The scheduler's proportional fair-share algorithm (adapted to not need agent list)
 
-@dataclass
-class NotificationAction:
-    """A button/action attached to a notification."""
-    label: str
-    action_id: str  # maps to CommandHandler.execute() call
-    style: str = "primary"  # "primary", "danger", "secondary"
-    args: dict = field(default_factory=dict)
-
-class MessagingPort(ABC):
-    """Abstract messaging transport contract."""
-
-    async def start(self) -> None: ...
-    async def stop(self) -> None: ...
-    async def wait_until_ready(self) -> None: ...
-
-    async def send_message(
-        self, text: str, project_id: str | None = None, *,
-        notification: RichNotification | None = None,
-    ) -> Any: ...
-
-    async def create_thread(
-        self, channel_id: str, thread_name: str,
-        initial_message: str | None = None,
-    ) -> tuple[ThreadSendCallback, ThreadSendCallback] | None: ...
-
-    def set_command_handler(self, handler: CommandHandler) -> None: ...
-    def set_supervisor(self, supervisor: Supervisor) -> None: ...
-```
-
-### Config Changes
-
-```yaml
-# New top-level field
-messaging: discord  # or "telegram"
-
-# Existing discord: section stays as-is
-discord:
-  bot_token: ${DISCORD_BOT_TOKEN}
-  guild_id: "..."
-  # ...
-
-# New telegram: section
-telegram:
-  bot_token: ${TELEGRAM_BOT_TOKEN}
-  chat_id: "..."  # supergroup ID for main channel
-  authorized_users: ["user1_id"]
-  per_project_topics: true  # use forum topics for per-project routing
-```
+### Key Files Reference
+- `src/models.py` — `Agent` dataclass (lines 257-274), `AgentState` enum (lines 112-124), `Workspace` dataclass (lines 277-293)
+- `src/database.py` — `agents` table schema (lines 120-133), agent CRUD methods (lines 1207-1304), `workspaces` table (lines 180-191), `acquire_workspace()` (lines 1369-1464)
+- `src/scheduler.py` — `SchedulerState` (lines 88-150+), `AssignAction` (lines 75-86), `Scheduler.schedule()`
+- `src/orchestrator.py` — `_schedule()` (line 1520), `_execute_task()` (line 3344), `_free_agent()`, `_prepare_workspace()` (line 1638)
+- `src/command_handler.py` — `_cmd_create_agent` (lines 4044-4062), `_cmd_delete_agent` (lines 4503-4518), `_cmd_list_agents` (lines 4021-4042), `_cmd_pause_agent`/`_cmd_resume_agent` (lines 4470-4501)
+- `src/adapters/__init__.py` — `AdapterFactory` (lines 20-59)
+- `src/agent_names.py` — Agent name generation
 
 ---
 
-## Phase 1: Create the MessagingPort abstraction and RichNotification types
+## Phase 1: Remove Global Agent CRUD Commands and Introduce Workspace-Agent Identity
 
-Create the abstract messaging interface that both Discord and Telegram will implement.
-
-**Files to create:**
-- `src/messaging/__init__.py` — exports
-- `src/messaging/port.py` — `MessagingPort` ABC, `RichNotification`, `NotificationAction`, callback type aliases
-- `src/messaging/types.py` — shared type aliases (`ThreadSendCallback`, `NotifyCallback`, `CreateThreadCallback`)
+Remove `/create-agent`, `/delete-agent`, `/pause-agent`, `/resume-agent` commands. Replace the `Agent` model with a lightweight `WorkspaceAgent` view model for display purposes.
 
 **Files to modify:**
-- `src/orchestrator.py` — change the `NotifyCallback` and `CreateThreadCallback` type aliases to import from `src/messaging/types.py` instead of defining inline. Update `_notify_channel` signature to accept `notification: RichNotification | None` alongside the existing `embed`/`view` kwargs (backward-compatible — both work during migration).
 
-**Key details:**
-- `RichNotification` must support all current notification patterns: success/error/warning embeds, fields, footers, action buttons
-- `NotificationAction` carries enough info for any transport to render a button and dispatch the callback to `CommandHandler.execute()`
-- Keep existing `embed`/`view` kwargs working during migration (deprecate later)
-- Add tests for RichNotification construction and field validation
+- **`src/models.py`**:
+  - Remove `Agent` dataclass and `AgentState` enum
+  - Keep `AgentResult` enum (used for task results, not agent lifecycle)
+  - Add `WorkspaceAgent` dataclass for display:
+    ```python
+    @dataclass
+    class WorkspaceAgent:
+        workspace_id: str
+        project_id: str
+        workspace_name: str | None
+        state: str  # "idle" or "busy"
+        current_task_id: str | None = None
+        current_task_title: str | None = None
+    ```
+
+- **`src/command_handler.py`**:
+  - Remove `_cmd_create_agent`, `_cmd_delete_agent`, `_cmd_pause_agent`, `_cmd_resume_agent` methods and their command registrations
+  - Rewrite `_cmd_list_agents` to be project-scoped (require `project_id`), build agent view from workspaces:
+    1. List all workspaces for the project via `db.list_workspaces(project_id=project_id)`
+    2. For locked workspaces, look up task via `locked_by_task_id` → show as "busy"
+    3. For unlocked workspaces → show as "idle"
+    4. Return list of `WorkspaceAgent`-style dicts
+  - Remove agent-related tool definitions from the supervisor tool registry (tools exposed to the chat LLM for creating/deleting agents)
+
+- **`src/agent_names.py`** — Keep for now (may be useful for workspace display names), but remove any imports in the removed command methods.
+
+- **`src/tool_registry.py`** — Remove tool definitions for `create_agent`, `delete_agent`, `pause_agent`, `resume_agent` if they're registered there.
 
 ---
 
-## Phase 2: Create a platform-neutral notification formatter
+## Phase 2: Update Scheduler to Use Workspace-Based Capacity
 
-Replace the Discord-specific `src/discord/notifications.py` format functions with platform-neutral equivalents that return `RichNotification` objects.
-
-**Files to create:**
-- `src/messaging/notifications.py` — all `format_*_embed` functions that currently return `discord.Embed` are duplicated here returning `RichNotification` instead. Plain-text `format_*` functions (no `_embed` suffix) move here unchanged.
+Remove the need for an `agents` list in the scheduler. Available capacity is determined by workspace availability.
 
 **Files to modify:**
-- `src/orchestrator.py` — change imports from `src.discord.notifications` to `src.messaging.notifications`. Update all `_notify_channel()` calls to pass `notification=` instead of `embed=`/`view=`. Remove the `discord` import entirely from orchestrator.
-- Keep `src/discord/notifications.py` as a thin adapter that converts `RichNotification` → `discord.Embed` + `discord.ui.View` for the Discord transport.
 
-**Key details:**
-- The `classify_error()` function is transport-agnostic — move it to `src/messaging/notifications.py`
-- Interactive views (`TaskFailedView`, `AgentQuestionView`, etc.) stay in `src/discord/views.py` but are constructed by the Discord transport from `NotificationAction` metadata
-- This is the biggest refactor phase — ~40 call sites in orchestrator.py change from `embed=` to `notification=`
-- Add tests comparing old embed output fields with new RichNotification fields to ensure parity
+- **`src/scheduler.py`**:
+  - Remove `agents` field from `SchedulerState`
+  - The scheduler already tracks `workspace_available` per project and `active_agents_per_project` — these are sufficient
+  - Currently the scheduler matches IDLE agents to tasks. Instead, it should determine how many more agents each project can run (= available workspaces, minus any per-project cap) and create `AssignAction` entries without a real agent_id
+  - `AssignAction.agent_id` can be set to a placeholder (e.g., `"ephemeral"`) since the real identity comes from workspace acquisition. Or generate a UUID-based ID.
+  - The key constraint becomes: a project can run N concurrent tasks where N = min(available_workspaces, max_concurrent_agents)
+  - Remove any logic that iterates over idle agents to find matches
+
+- **`src/orchestrator.py` `_schedule()` method**:
+  - Stop fetching `agents = await self.db.list_agents()`
+  - Build `SchedulerState` without agents
+  - The number of "idle agents" is effectively the total available workspaces across all projects (or can be computed per-project)
 
 ---
 
-## Phase 3: Wrap Discord bot as a MessagingPort implementation
+## Phase 3: Update Orchestrator Task Execution Pipeline
 
-Wrap the existing `AgentQueueBot` in a `DiscordTransport` class that implements `MessagingPort`.
-
-**Files to create:**
-- `src/messaging/discord_transport.py` — `DiscordTransport(MessagingPort)` that wraps `AgentQueueBot`, converts `RichNotification` → `discord.Embed`/`discord.ui.View`, delegates to existing bot methods.
+Refactor the execution pipeline to work without the `agents` table. The "agent" is an ephemeral context created when a workspace is acquired.
 
 **Files to modify:**
-- `src/discord/bot.py` — extract the callback-wiring logic (`set_notify_callback`, `set_create_thread_callback`, etc.) into methods that `DiscordTransport` can call. The bot itself becomes a "Discord engine" that `DiscordTransport` owns.
-- `src/main.py` — replace direct `AgentQueueBot` instantiation with a factory: `transport = create_transport(config)`. Wire `transport` to orchestrator instead of bot directly. The factory reads `config.messaging` (defaulting to `"discord"` for backward compatibility).
-- `src/config.py` — add `messaging: str = "discord"` field to `AppConfig`. Keep `DiscordConfig` validation only running when `messaging == "discord"`.
 
-**Key details:**
-- `DiscordTransport.send_message()` converts `RichNotification` → embed+view, then calls `bot._send_message()`
-- `DiscordTransport.create_thread()` delegates to `bot._create_task_thread()`
-- This phase should be **zero behavioral change** — existing Discord users see no difference
-- Add integration tests that verify DiscordTransport correctly delegates to bot methods
+- **`src/orchestrator.py`**:
+  - `_execute_task_safe()` / `_execute_task()`: Instead of using a pre-existing `agent_id` from the agents table, generate an ephemeral agent identifier from the workspace (e.g., `f"ws-{workspace.id}"` or `f"{project_id}-{workspace.name}"`)
+  - Remove calls to `db.assign_task_to_agent()` — replace with direct task status update + workspace acquisition
+  - `self._adapters` dict: Key by `task_id` instead of `agent_id` (simplifies stop-task lookups)
+  - `_free_agent()`: Replace with workspace release + task status update. No agent state to update.
+  - Remove agent heartbeat/liveness checks — workspace lock staleness can be checked instead if needed
+  - Token recording in `token_ledger`: Use the workspace-derived agent_id string (this is just for record-keeping, no FK constraint needed)
+  - Ensure `/stop-task` admin command looks up adapter by `task_id`
+
+- **`src/database.py`**:
+  - `assign_task_to_agent()`: Simplify to just update task status (READY → ASSIGNED/IN_PROGRESS) and set `assigned_agent_id` to the workspace-derived ID. Don't update any agents table.
+  - Or rename to `assign_task(task_id, agent_label)` to clarify it no longer touches an agents row.
+  - Remove `create_agent()`, `get_agent()`, `list_agents()`, `update_agent()`, `delete_agent()` methods
+  - Drop the `agents` table from the schema (add migration)
+  - Update `workspaces` table: `locked_by_agent_id` becomes a plain text column (no FK to agents table). Keep the column name for compatibility but it stores the workspace-derived agent label.
+  - `token_ledger.agent_id` and `task_results.agent_id`: Remove FK constraint, keep as plain text
 
 ---
 
-## Phase 4: Add TelegramConfig and TelegramTransport skeleton
+## Phase 4: Update `/agents` Display and Discord Formatting
 
-Add Telegram configuration and a skeleton transport that can connect and send plain-text messages.
-
-**Files to create:**
-- `src/messaging/telegram_transport.py` — `TelegramTransport(MessagingPort)` using `python-telegram-bot` library. Initially supports: `start()`, `stop()`, `send_message()` (plain text + RichNotification → Telegram HTML formatting), basic `on_message` routing to Supervisor.
-- `src/telegram/__init__.py` — Telegram-specific helpers
-- `src/telegram/formatting.py` — `RichNotification` → Telegram HTML message converter (Telegram supports `<b>`, `<i>`, `<code>`, `<a>` tags)
+Make the agents view project-scoped and workspace-based.
 
 **Files to modify:**
-- `src/config.py` — add `TelegramConfig` dataclass with `bot_token`, `chat_id`, `authorized_users`, `per_project_topics`. Add `telegram: TelegramConfig` to `AppConfig`. Validate only when `messaging == "telegram"`.
-- `src/main.py` — extend transport factory to handle `"telegram"`.
-- `pyproject.toml` / `requirements.txt` — add `python-telegram-bot[ext]` as optional dependency.
 
-**Key details:**
-- Telegram supergroups with "Topics" enabled map naturally to Discord's channel+thread model: the supergroup is the "server", topics are "channels/threads"
-- `per_project_topics: true` creates a forum topic per project (like per-project Discord channels)
-- Inline keyboards (`InlineKeyboardMarkup`) map to Discord button views
-- Start with plain text + HTML formatting; inline keyboards come in Phase 5
-- Add unit tests for Telegram formatting (RichNotification → HTML)
-- Add integration test with mocked `python-telegram-bot` for send/receive
+- **`src/command_handler.py`** — The rewritten `_cmd_list_agents` from Phase 1. Ensure it:
+  - Requires project context (from active project in chat, or explicit project_id parameter)
+  - Shows each workspace as an "agent slot" with status
+  - For busy agents, shows task ID, title, and brief description
+  - Example output format:
+    ```
+    Agents for "my-app" (3 slots):
+      my-app-1 (ws-main)     BUSY  — "Add rate limiting" (keen-harbor)
+      my-app-2 (ws-clone-1)  BUSY  — "Fix login bug" (swift-peak)
+      my-app-3 (ws-clone-2)  IDLE  — Available
+    ```
+
+- **`src/discord/formatters.py`** — Update agent list formatting if it has agent-specific formatting functions. Adapt to `WorkspaceAgent` data shape.
+
+- **Supervisor tool registry** — Update the `list_agents` tool to document it's project-scoped and describe the new output format.
 
 ---
 
-## Phase 5: Telegram interactive features — inline keyboards, topic threading, message routing
+## Phase 5: Clean Up References, Tests, and Documentation
 
-Complete the Telegram transport with full feature parity to Discord.
+Remove all remaining references to the old `Agent` model and global agent pool.
 
 **Files to modify:**
-- `src/messaging/telegram_transport.py` — add:
-  - **Inline keyboard rendering**: Convert `NotificationAction` → `InlineKeyboardButton` with callback data encoding the `action_id` + `args`. Handle `CallbackQueryHandler` to dispatch to `CommandHandler.execute()`.
-  - **Topic/thread management**: `create_thread()` creates a forum topic in the supergroup. Returns send functions scoped to that topic's `message_thread_id`.
-  - **Per-project routing**: Map project IDs to topic IDs (stored in DB, same as Discord channel IDs). Route `send_message(project_id=...)` to the correct topic.
-  - **Message handling**: Route incoming messages to Supervisor with project context injection (same pattern as Discord's `on_message`). Support authorized-user filtering.
-  - **Attachment handling**: Download photos/documents from Telegram, save to `data_dir/attachments/`.
-- `src/telegram/formatting.py` — add inline keyboard builder, topic name formatter.
-- `src/database.py` — ensure project channel ID storage generalizes: either rename `discord_channel_id` to `messaging_channel_id` or add a `telegram_topic_id` field alongside it.
-
-**Key details:**
-- Telegram callback data is limited to 64 bytes — use compact encoding (e.g., `action_id:task_id` or a lookup table)
-- Telegram rate limits: 30 messages/second to different chats, 20 messages/minute to same group. Implement a simple rate limiter.
-- Forum topics require the supergroup to have "Topics" enabled — validate this at startup
-- Message history buffering for Supervisor context works the same way as Discord's `_channel_buffers`
-- Add end-to-end tests with mocked Telegram bot: message → supervisor → tool use → response
+- **`src/orchestrator.py`** — Remove any remaining `Agent` imports, agent state enum references
+- **`src/command_handler.py`** — Final cleanup of any agent references
+- **`tests/`** — Update all tests:
+  - Remove test fixtures that create `Agent` objects
+  - Update scheduler tests to not provide agents in `SchedulerState`
+  - Update orchestrator tests to work without agent creation
+  - Update command handler tests for removed commands and updated `/agents`
+  - Update database tests: remove agent CRUD tests, add workspace-agent view tests
+- **`specs/`** — Update any specs referencing the global agent model (likely `specs/orchestrator.md`, `specs/command-handler.md`, `specs/database.md`)
+- **`profile.md`** — Update architecture description
+- **`README.md`** — Remove the "create agent claude-1 and assign it to my-app" example. Update with new flow where workspaces define agent capacity.
+- **`CLAUDE.md`** — Update if it references agent commands
+- **`setup.sh`** — Remove any agent creation steps from the setup wizard
+- **`src/setup_wizard.py`** — Remove agent creation from the setup wizard flow if present
+- **`src/agent_names.py`** — Can be removed if workspace names or indices are used instead. If kept, update imports.
