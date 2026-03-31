@@ -78,17 +78,29 @@ nav:
           - Configuration: specs/config.md
           - Main Entry Point: specs/main.md
           - Database: specs/database.md
+          - Agent Profiles: specs/agent-profiles.md
+          - LLM Logging: specs/llm-logging.md
       - Orchestration:
           - Orchestrator: specs/orchestrator.md
+          - Supervisor: specs/supervisor.md
           - Scheduler & Budget: specs/scheduler-and-budget.md
           - Plan Parser: specs/plan-parser.md
+          - Prompt Builder: specs/prompt-builder.md
+          - Reflection: specs/reflection.md
+          - Rule System: specs/rule-system.md
+          - Tiered Tools: specs/tiered-tools.md
+          - Chat Analyzer: specs/chat-analyzer.md
+          - Chat Observer: specs/chat-observer.md
           - Hooks: specs/hooks.md
           - Event Bus: specs/event-bus.md
       - Interfaces:
-          - Chat Agent: specs/chat-agent.md
+          - Supervisor (Chat Agent): specs/chat-agent.md
           - Command Handler: specs/command-handler.md
           - Discord: specs/discord/discord.md
           - Chat Providers: specs/chat-providers/providers.md
+      - Guides:
+          - Setup Wizard: specs/setup-wizard.md
+          - Adapter Development: specs/adapters/development-guide.md
       - Infrastructure:
           - Adapters — Claude: specs/adapters/claude.md
           - Git Manager: specs/git/git.md
