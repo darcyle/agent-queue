@@ -13,6 +13,15 @@ call execute(), and format the returned dict for their respective UIs.
 The benefit is feature parity by construction.  A new command added here is
 immediately available to both Discord and the chat agent without duplicating
 any logic.
+
+Related modules:
+
+- ``src/tool_registry.py`` — JSON Schema definitions for every tool.
+  Each tool's ``name`` maps to a ``_cmd_{name}`` method here.
+- ``src/supervisor.py`` — The LLM tool-use loop that calls ``execute()``.
+- ``src/discord/commands.py`` — Discord slash commands that call ``execute()``.
+
+See ``specs/command-handler.md`` for the command reference specification.
 """
 from __future__ import annotations
 
@@ -49,7 +58,21 @@ async def _run_subprocess(
     cwd: str | None = None,
     timeout: float = 30,
 ) -> tuple[int, str, str]:
-    """Run a subprocess asynchronously, returning (returncode, stdout, stderr)."""
+    """Run a subprocess asynchronously.
+
+    This is a coroutine.  Kills the process if *timeout* is exceeded.
+
+    Args:
+        *args: Command and arguments (e.g. ``"git", "status"``).
+        cwd: Working directory for the subprocess.
+        timeout: Maximum seconds to wait before killing the process.
+
+    Returns:
+        Tuple of ``(returncode, stdout, stderr)``.
+
+    Raises:
+        asyncio.TimeoutError: If the process exceeds *timeout*.
+    """
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.PIPE,
@@ -71,7 +94,22 @@ async def _run_subprocess_shell(
     cwd: str | None = None,
     timeout: float = 30,
 ) -> tuple[int, str, str]:
-    """Run a shell command asynchronously."""
+    """Run a shell command asynchronously via ``/bin/sh -c``.
+
+    This is a coroutine.  Same semantics as ``_run_subprocess`` but
+    accepts a single shell command string.
+
+    Args:
+        command: Shell command string.
+        cwd: Working directory.
+        timeout: Maximum seconds to wait.
+
+    Returns:
+        Tuple of ``(returncode, stdout, stderr)``.
+
+    Raises:
+        asyncio.TimeoutError: If the process exceeds *timeout*.
+    """
     proc = await asyncio.create_subprocess_shell(
         command,
         stdout=asyncio.subprocess.PIPE,
@@ -88,6 +126,7 @@ async def _run_subprocess_shell(
 
 
 def _count_by(items, key_fn) -> dict[str, int]:
+    """Count items by a key function, returning ``{key: count}``."""
     counts: dict[str, int] = {}
     for item in items:
         k = key_fn(item)

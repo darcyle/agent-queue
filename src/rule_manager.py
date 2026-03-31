@@ -1,12 +1,29 @@
 """Rule system for persistent autonomous behaviors.
 
 Rules are structured markdown files with YAML frontmatter stored in the
-memory filesystem. Active rules generate hooks for automated execution.
-Passive rules influence reasoning via semantic search.
+memory filesystem.  There are two rule types:
 
-Storage layout:
+- **Active rules** generate hooks for automated execution.  When an active
+  rule is saved, the ``RuleManager`` creates (or updates) a corresponding
+  hook in the hook engine so the rule's intent is carried out on a
+  schedule or in response to events.
+- **Passive rules** influence reasoning via semantic search.  They are
+  injected into the Supervisor's system prompt when relevant to the
+  current conversation.
+
+Storage layout::
+
     ~/.agent-queue/memory/{project_id}/rules/{rule_id}.md
     ~/.agent-queue/memory/global/rules/{rule_id}.md
+
+File format: YAML frontmatter (``id``, ``type``, ``project_id``, ``hooks``,
+``created``, ``updated``) followed by Markdown body content.
+
+The rule system intentionally keeps the rule file as the single source of
+truth.  Hooks are derived artifacts — ``reconcile_hooks()`` can always
+reconstruct the hook set from the rule files.
+
+See ``specs/rules.md`` for the full behavioral specification.
 """
 
 from __future__ import annotations
@@ -28,8 +45,22 @@ _GLOBAL_SCOPE = "global"
 class RuleManager:
     """Manages rule file I/O, hook generation, and reconciliation.
 
-    Rules are the source of truth. Hooks are derived artifacts that
-    implement active rules via the existing hook engine.
+    Rules are the source of truth.  Hooks are derived artifacts that
+    implement active rules via the existing hook engine.  The manager
+    provides CRUD operations for rule files and coordinates with the
+    hook engine and database when rules change.
+
+    Usage::
+
+        mgr = RuleManager("~/.agent-queue", db=db, hook_engine=hooks)
+        result = mgr.save_rule(None, "my-project", "active", "# Check tests\\n...")
+        await mgr.generate_hooks_for_rule(result["id"], "my-project")
+
+    Attributes:
+        _storage_root: Base directory for rule file storage.
+        _db: Database instance for hook metadata queries.
+        _hook_engine: Hook engine for creating/deleting derived hooks.
+        _orchestrator: Orchestrator reference for LLM-based rule expansion.
     """
 
     def __init__(
@@ -39,6 +70,16 @@ class RuleManager:
         hook_engine: Any | None = None,
         orchestrator: Any | None = None,
     ):
+        """Initialise the rule manager.
+
+        Args:
+            storage_root: Base directory (e.g. ``~/.agent-queue``).
+                Rule files are stored under ``{storage_root}/memory/``.
+            db: Optional database for hook metadata queries.
+            hook_engine: Optional hook engine for creating derived hooks.
+            orchestrator: Optional orchestrator for LLM-based rule prompt
+                expansion.
+        """
         self._storage_root = os.path.expanduser(storage_root)
         self._db = db
         self._hook_engine = hook_engine
@@ -49,10 +90,21 @@ class RuleManager:
     # ------------------------------------------------------------------
 
     def _rules_dir(self, project_id: str | None) -> str:
+        """Return the directory containing rules for a given scope.
+
+        Args:
+            project_id: Project ID, or ``None`` for global scope.
+        """
         scope = project_id or _GLOBAL_SCOPE
         return os.path.join(self._storage_root, "memory", scope, "rules")
 
     def _rule_path(self, rule_id: str, project_id: str | None) -> str:
+        """Return the full filesystem path for a rule file.
+
+        Args:
+            rule_id: Unique rule identifier (used as filename stem).
+            project_id: Project scope, or ``None`` for global.
+        """
         return os.path.join(self._rules_dir(project_id), f"{rule_id}.md")
 
     def _find_rule_path(self, rule_id: str) -> tuple[str, str | None] | None:
@@ -90,6 +142,15 @@ class RuleManager:
 
     @staticmethod
     def _build_file_content(meta: dict, body: str) -> str:
+        """Serialise metadata and body into a frontmatter Markdown file.
+
+        Args:
+            meta: YAML frontmatter dict.
+            body: Markdown body content.
+
+        Returns:
+            Complete file content string with ``---`` delimiters.
+        """
         frontmatter = yaml.dump(
             meta, default_flow_style=False, sort_keys=False
         ).strip()
@@ -138,8 +199,19 @@ class RuleManager:
     ) -> dict:
         """Write a rule file with YAML frontmatter.
 
-        If id matches an existing rule, it is updated. Otherwise a new
-        rule is created. Auto-generates id from title if omitted.
+        If *id* matches an existing rule, it is updated (preserving
+        ``created`` timestamp and hook associations).  Otherwise a new
+        rule is created.  Auto-generates id from the first ``# Title``
+        heading if omitted.
+
+        Args:
+            id: Rule identifier, or ``None`` to auto-generate.
+            project_id: Project scope, or ``None`` for global.
+            rule_type: ``"active"`` or ``"passive"``.
+            content: Markdown body content for the rule.
+
+        Returns:
+            Dict with ``success``, ``id``, and ``hooks_generated`` keys.
         """
         now = datetime.now(timezone.utc).isoformat()
 
@@ -186,7 +258,16 @@ class RuleManager:
         }
 
     def load_rule(self, rule_id: str) -> dict | None:
-        """Load a rule by ID, searching all scopes."""
+        """Load a rule by ID, searching all scopes.
+
+        Args:
+            rule_id: The rule identifier to look up.
+
+        Returns:
+            Dict with ``id``, ``type``, ``project_id``, ``hooks``,
+            ``content``, ``created``, ``updated`` keys — or ``None``
+            if the rule was not found.
+        """
         found = self._find_rule_path(rule_id)
         if not found:
             return None
@@ -207,7 +288,14 @@ class RuleManager:
         }
 
     def delete_rule(self, rule_id: str) -> dict:
-        """Delete a rule file. Hook cleanup handled by async wrapper."""
+        """Delete a rule file.  Hook cleanup is handled by the async wrapper.
+
+        Args:
+            rule_id: The rule identifier to delete.
+
+        Returns:
+            Dict with ``success`` and ``hooks_removed`` keys.
+        """
         found = self._find_rule_path(rule_id)
         if not found:
             return {"success": False, "error": f"Rule '{rule_id}' not found"}
@@ -223,7 +311,16 @@ class RuleManager:
         }
 
     def browse_rules(self, project_id: str | None = None) -> list[dict]:
-        """List rules for a project plus all global rules."""
+        """List rules for a project plus all global rules.
+
+        Args:
+            project_id: Project to list rules for.  Global rules are
+                always included regardless of this value.
+
+        Returns:
+            List of rule summary dicts with ``id``, ``type``,
+            ``project_id``, ``title``, ``summary``, and ``hooks`` keys.
+        """
         results = []
         dirs_to_scan = []
 

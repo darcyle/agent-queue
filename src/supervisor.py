@@ -16,6 +16,8 @@ Design boundaries:
     - The system prompt shapes the LLM's persona and operating rules.
       It is NOT a code-worker prompt; it instructs the LLM to act as a
       dispatcher that plans and delegates to agents via the tool interface.
+
+See ``specs/supervisor.md`` for the full behavioral specification.
 """
 from __future__ import annotations
 
@@ -129,6 +131,14 @@ class Supervisor:
 
     def __init__(self, orchestrator: Orchestrator, config: AppConfig,
                  llm_logger: LLMLogger | None = None):
+        """Initialise the supervisor.
+
+        Args:
+            orchestrator: The running orchestrator instance — used for
+                accessing the database and creating the ``CommandHandler``.
+            config: Application configuration (chat provider, reflection, etc.).
+            llm_logger: Optional logger for capturing all LLM interactions.
+        """
         self.orchestrator = orchestrator
         self.config = config
         self._provider: ChatProvider | None = None
@@ -189,6 +199,15 @@ class Supervisor:
         return self._cancel_event is not None and not self._cancel_event.is_set()
 
     def _build_system_prompt(self) -> str:
+        """Build the system prompt for the current conversation.
+
+        Uses ``PromptBuilder`` to assemble identity + active project context.
+        Called before every LLM call so the prompt always reflects the
+        current project scope.
+
+        Returns:
+            Assembled system prompt string.
+        """
         from src.prompt_builder import PromptBuilder
 
         builder = PromptBuilder()
@@ -976,7 +995,15 @@ Read the plan below and create one task per implementation phase using the creat
             return {"action": "ignore"}
 
     def _parse_observe_response(self, text: str) -> dict:
-        """Parse the LLM's observation response into a structured dict."""
+        """Parse the LLM's observation response into a structured dict.
+
+        Args:
+            text: Raw LLM response text (expected to be a JSON object).
+
+        Returns:
+            Parsed dict with ``action`` key, or ``{"action": "ignore"}``
+            on parse failure.
+        """
         import json as _json
         if text.startswith("```"):
             lines = text.split("\n")
