@@ -374,13 +374,12 @@ class Supervisor:
         tool_actions: list[str] = []
         # Accumulated tool results for reflection
         accumulated_tool_results: list[dict] = []
-        max_rounds = self.config.supervisor.max_tool_rounds  # 0 = unlimited
         # Track how many times we've nudged the LLM to call reply_to_user
         nudge_count = 0
         max_nudges = 2
 
         round_num = 0
-        while max_rounds == 0 or round_num < max_rounds:
+        while True:  # No step limit — agents run until they finish
             # Check for cancellation before each round
             if self._cancel_event.is_set():
                 if on_progress:
@@ -537,9 +536,6 @@ class Supervisor:
                 return response if response else "Done."
 
             round_num += 1
-
-        # Max rounds exhausted — return whatever text we have or a fallback
-        return "I was unable to complete processing your request within the allowed number of steps. Please try again or simplify your request."
 
     async def summarize(self, transcript: str) -> str | None:
         """Summarize a conversation transcript. Returns None on failure."""
