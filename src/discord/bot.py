@@ -935,14 +935,14 @@ class AgentQueueBot(commands.Bot):
                 async def notify_main_channel(
                     text: str, *, embed: discord.Embed | None = None
                 ) -> None:
-                    """Reply in thread only — no main channel noise for reopened tasks."""
-                    try:
-                        if embed is not None:
-                            await thread.send(embed=embed)
-                        else:
-                            await self._send_long_message(thread, text)
-                    except Exception as e:
-                        print(f"Thread notify error: {e}")
+                    """No-op for reopened tasks — avoid duplicating messages in the thread.
+
+                    The thread already receives result info from thread_send
+                    (failure details, PR info, etc.) and the completion embed
+                    via the orchestrator's _post helper.  Sending the brief
+                    notification here as well would duplicate the information.
+                    """
+                    pass
 
                 return send_to_thread, notify_main_channel
             except Exception as e:

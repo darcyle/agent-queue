@@ -3906,6 +3906,13 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 log_path = f"logs/llm/{log_date}/tasks/{task.id}.jsonl"
                 brief_embed = format_task_completed_embed(task, agent, output)
                 brief_embed.set_footer(text=f"Log: {log_path}")
+                # Post brief completion text to the thread so it always has a
+                # clear completion indicator (the ResultMessage is no longer
+                # streamed to avoid duplication with this summary).
+                await _post(brief)
+                # Notify main channel (for new threads, this replies to the
+                # thread root; for reopened threads this is a no-op since the
+                # thread already received the brief via _post above).
                 await _notify_brief(brief, embed=brief_embed)
                 await self.bus.emit("task.completed", {
                     "task_id": task.id,
