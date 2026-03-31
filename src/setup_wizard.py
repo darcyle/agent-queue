@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Interactive setup wizard for agent-queue."""
+"""Interactive setup wizard for agent-queue.
+
+Walks the user through first-time configuration: Discord bot token, API keys,
+default project creation, and agent provisioning.  Run automatically by
+``setup.sh`` or manually via ``python -m src.setup_wizard``.
+"""
 
 from __future__ import annotations
 

@@ -1,7 +1,10 @@
 """Unified prompt assembly pipeline.
 
-Replaces prompt_registry.py and scattered string concatenation across
-orchestrator, adapters, supervisor, and hooks.
+Assembles system prompts from composable sections for the Supervisor and hook
+LLM calls.  Replaces ``prompt_registry.py`` and scattered string concatenation
+across orchestrator, adapters, supervisor, and hooks.  Each prompt is built by
+stacking named sections (identity, rules, memory context, tool instructions)
+with YAML-driven templates that can be overridden per-project.
 """
 
 from __future__ import annotations
