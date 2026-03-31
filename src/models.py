@@ -102,6 +102,7 @@ class TaskType(Enum):
     CHORE = "chore"
     RESEARCH = "research"
     PLAN = "plan"
+    SYNC = "sync"
 
 
 # Convenience set for validation without constructing enum members.
