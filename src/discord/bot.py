@@ -1020,6 +1020,25 @@ class AgentQueueBot(commands.Bot):
 
         return send_to_thread, notify_main_channel
 
+    async def get_thread_last_message_url(self, task_id: str) -> str | None:
+        """Return a Discord jump URL to the last message in a task's thread.
+
+        Used by the plan approval embed to link directly to the agent's final
+        output (which contains the full plan summary) instead of showing a
+        truncated preview.
+        """
+        thread = self._task_thread_objects.get(task_id)
+        if not thread:
+            return None
+        try:
+            # Fetch the most recent message in the thread
+            messages = [msg async for msg in thread.history(limit=1)]
+            if messages:
+                return messages[0].jump_url
+        except Exception as e:
+            print(f"Could not get last message URL for task {task_id}: {e}")
+        return None
+
     async def _handle_task_thread_message(
         self, message: discord.Message, task_id: str
     ) -> None:

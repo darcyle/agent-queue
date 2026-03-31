@@ -100,6 +100,7 @@ from src.messaging.types import (
     NotifyCallback as _NotifyCallbackType,
     ThreadSendCallback as _ThreadSendCallbackType,
     CreateThreadCallback as _CreateThreadCallbackType,
+    GetThreadUrlCallback as _GetThreadUrlCallbackType,
 )
 from src.git.manager import GitError, GitManager
 from src.models import (
@@ -122,6 +123,7 @@ logger = logging.getLogger(__name__)
 NotifyCallback = _NotifyCallbackType
 ThreadSendCallback = _ThreadSendCallbackType
 CreateThreadCallback = _CreateThreadCallbackType
+GetThreadUrlCallback = _GetThreadUrlCallbackType
 
 
 class Orchestrator:
@@ -182,6 +184,7 @@ class Orchestrator:
         self._task_exec_start: dict[str, float] = {}
         self._notify: NotifyCallback | None = None
         self._create_thread: CreateThreadCallback | None = None
+        self._get_thread_url: _GetThreadUrlCallbackType | None = None
         # Discord message objects for task-added notifications, keyed by
         # task_id.  Stored so we can delete the message when the task starts
         # to keep the chat window clean.
