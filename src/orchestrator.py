@@ -3585,6 +3585,9 @@ class Orchestrator:
                     "task_id": task.id,
                     "project_id": task.project_id,
                 })
+                # Mark for edit-in-place of Task Started embed and thread root
+                _final_started_embed = format_task_completed_embed(task, agent, output)
+                _final_root_content = f"✅ **Work completed:** {task.title}"
             else:
                 # Pipeline stopped (merge failed) — task stays in VERIFYING
                 await _post(
@@ -3698,6 +3701,16 @@ class Orchestrator:
             # Brief notification → main channel (reply to thread or standalone)
             await _notify_brief(brief)
 
+            # Mark for edit-in-place of Task Started embed and thread root
+            if new_retry >= task.max_retries:
+                _final_started_embed = format_task_blocked_embed(
+                    task, last_error=output.error_message,
+                )
+                _final_root_content = f"🚫 **Work blocked:** {task.title}"
+            else:
+                _final_started_embed = format_task_failed_embed(task, agent, output)
+                _final_root_content = f"⚠️ **Work failed (retrying):** {task.title}"
+
             # Check if this blocked task breaks a dependency chain
             if new_retry >= task.max_retries:
                 await self._notify_stuck_chain(task)
@@ -3807,9 +3820,7 @@ class Orchestrator:
         self._adapters.pop(action.agent_id, None)
         self._task_exec_start.pop(action.task_id, None)
 
-        # Delete the task-added and task-started notifications from Discord to
-        # reduce chat clutter — the completion/failure message provides the
-        # relevant info.
+        # Delete the task-added notification — it's fully superseded.
         added_msg = self._task_added_messages.pop(action.task_id, None)
         if added_msg is not None:
             try:
@@ -3817,10 +3828,31 @@ class Orchestrator:
             except Exception as e:
                 logger.debug("Could not delete task-added message for %s: %s",
                              action.task_id, e)
+
+        # Edit the Task Started embed in-place to show the final status
+        # (completed/failed/blocked).  Falls back to deleting if no final
+        # embed was captured (e.g. PAUSED or WAITING_INPUT branches).
         started_msg = self._task_started_messages.pop(action.task_id, None)
         if started_msg is not None:
+            if _final_started_embed is not None:
+                try:
+                    await started_msg.edit(embed=_final_started_embed)
+                except Exception as e:
+                    logger.debug("Could not edit task-started message for %s: %s",
+                                 action.task_id, e)
+            else:
+                try:
+                    await started_msg.delete()
+                except Exception as e:
+                    logger.debug("Could not delete task-started message for %s: %s",
+                                 action.task_id, e)
+
+        # Update the thread-root message ("Agent working: ..." → final status).
+        if _final_root_content is not None and self._edit_thread_root:
             try:
-                await started_msg.delete()
+                await self._edit_thread_root(
+                    action.task_id, _final_root_content, None,
+                )
             except Exception as e:
-                logger.debug("Could not delete task-started message for %s: %s",
+                logger.debug("Could not edit thread root for %s: %s",
                              action.task_id, e)

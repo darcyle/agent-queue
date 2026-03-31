@@ -123,6 +123,7 @@ class AgentQueueBot(commands.Bot):
         # appropriately (reopen completed tasks, acknowledge in-progress ones).
         self._task_threads: dict[int, str] = {}  # thread_id -> task_id
         self._task_thread_objects: dict[str, discord.Thread] = {}  # task_id -> Thread
+        self._task_root_messages: dict[str, discord.Message] = {}  # task_id -> root msg
         # Wire up the note-written callback
         self.agent.handler.on_note_written = self._handle_note_written
         # Guard against concurrent rule reconciliation (on_ready can fire
@@ -459,6 +460,7 @@ class AgentQueueBot(commands.Bot):
                         self.orchestrator.set_notify_callback(self._send_message)
                         self.orchestrator.set_create_thread_callback(self._create_task_thread)
                         self.orchestrator.set_get_thread_url_callback(self.get_thread_last_message_url)
+                        self.orchestrator.set_edit_thread_root_callback(self.edit_thread_root_message)
                         # Pass command handler ref so interactive views
                         # (Retry/Skip/Approve buttons) can execute commands.
                         self.orchestrator.set_command_handler(self.agent.handler)
@@ -987,6 +989,7 @@ class AgentQueueBot(commands.Bot):
         if task_id:
             self._task_threads[thread.id] = task_id
             self._task_thread_objects[task_id] = thread
+            self._task_root_messages[task_id] = msg
 
         async def send_to_thread(text: str) -> None:
             try:
@@ -1039,6 +1042,31 @@ class AgentQueueBot(commands.Bot):
         except Exception as e:
             print(f"Could not get last message URL for task {task_id}: {e}")
         return None
+
+    async def edit_thread_root_message(
+        self,
+        task_id: str,
+        content: str | None = None,
+        embed: discord.Embed | None = None,
+    ) -> None:
+        """Edit the thread-root message for a task.
+
+        Used to update the "Agent working: ..." message to reflect task
+        completion or failure status.
+        """
+        root_msg = self._task_root_messages.get(task_id)
+        if not root_msg:
+            return
+        try:
+            kwargs: dict[str, Any] = {}
+            if content is not None:
+                kwargs["content"] = content
+            if embed is not None:
+                kwargs["embed"] = embed
+            if kwargs:
+                await root_msg.edit(**kwargs)
+        except Exception as e:
+            print(f"Could not edit thread root for task {task_id}: {e}")
 
     async def _handle_task_thread_message(
         self, message: discord.Message, task_id: str
