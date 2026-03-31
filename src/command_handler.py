@@ -3968,18 +3968,26 @@ class CommandHandler:
 
     async def _cmd_list_agents(self, args: dict) -> dict:
         agents = await self.db.list_agents()
-        return {
-            "agents": [
-                {
-                    "id": a.id,
-                    "name": a.name,
-                    "type": a.agent_type,
-                    "state": a.state.value,
-                    "current_task": a.current_task_id,
-                }
-                for a in agents
-            ]
-        }
+        agent_list = []
+        for a in agents:
+            info: dict = {
+                "id": a.id,
+                "name": a.name,
+                "type": a.agent_type,
+                "state": a.state.value,
+                "current_task": a.current_task_id,
+            }
+            if a.current_task_id:
+                task = await self.db.get_task(a.current_task_id)
+                if task:
+                    info["working_on"] = {
+                        "task_id": task.id,
+                        "title": task.title,
+                        "project_id": task.project_id,
+                        "description": (task.description or "")[:120],
+                    }
+            agent_list.append(info)
+        return {"agents": agent_list}
 
     async def _cmd_create_agent(self, args: dict) -> dict:
         from .agent_names import generate_unique_agent_name

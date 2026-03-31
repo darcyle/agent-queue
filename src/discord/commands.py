@@ -702,7 +702,8 @@ class MenuView(discord.ui.View):
                 if working_on:
                     lines.append(
                         f"• **{a['name']}** ({a['state']}) → "
-                        f"`{working_on['task_id']}`"
+                        f"**{working_on['project_id']}** / "
+                        f"`{working_on['task_id']}` — {working_on['title']}"
                     )
                 else:
                     lines.append(f"• **{a['name']}** ({a['state']})")
@@ -843,8 +844,19 @@ class MenuView(discord.ui.View):
             return
         lines = ["**Agents:**"]
         for a in agents:
-            task_info = f" → `{a['current_task']}`" if a.get("current_task") else ""
-            lines.append(f"• **{a['name']}** (`{a['id']}`) — {a['state']}{task_info}")
+            working_on = a.get("working_on")
+            if working_on:
+                desc = working_on.get("description", "")
+                desc_preview = f" — {desc[:80]}…" if len(desc) > 80 else (f" — {desc}" if desc else "")
+                task_info = (
+                    f" → **{working_on['project_id']}** / "
+                    f"`{working_on['task_id']}`{desc_preview}"
+                )
+            elif a.get("current_task"):
+                task_info = f" → `{a['current_task']}`"
+            else:
+                task_info = ""
+            lines.append(f"• **{a['name']}** ({a['state']}){task_info}")
         await interaction.followup.send("\n".join(lines), ephemeral=True)
 
     # --- Row 2: Actions ---
@@ -1964,7 +1976,8 @@ def setup_commands(bot: commands.Bot) -> None:
                     if working_on:
                         lines.append(
                             f"• **{a['name']}** ({a['state']}) → "
-                            f"working on `{working_on['task_id']}` — {working_on['title']}"
+                            f"**{working_on['project_id']}** / "
+                            f"`{working_on['task_id']}` — {working_on['title']}"
                         )
                     else:
                         lines.append(f"• **{a['name']}** ({a['state']})")
