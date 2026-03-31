@@ -84,7 +84,7 @@ from src.config import AppConfig, ConfigWatcher
 from src.llm_logger import LLMLogger
 from src.database import Database
 from src.discord.notifications import (
-    format_task_started, format_task_completed, format_task_failed,
+    format_task_started, format_task_failed,
     format_task_blocked, format_pr_created, format_agent_question,
     format_chain_stuck, format_stuck_defined_task,
     format_budget_warning,
@@ -3901,24 +3901,6 @@ For EACH workspace listed above, perform these steps IN ORDER:
                                         project_id=action.project_id,
                                         task_id=action.task_id,
                                         agent_id=action.agent_id)
-                if thread_send:
-                    summary_lines = [
-                        f"**Task Completed:** `{task.id}` — {task.title}",
-                        f"Agent: {agent.name} | Tokens: {output.tokens_used:,}",
-                    ]
-                    if output.summary:
-                        summary_lines.append(f"\n**Summary:**\n{output.summary}")
-                    if output.files_changed:
-                        summary_lines.append(
-                            f"\n**Files changed:** {', '.join(output.files_changed)}"
-                        )
-                    await thread_send("\n".join(summary_lines))
-                else:
-                    await self._notify_channel(
-                        format_task_completed(task, agent, output),
-                        project_id=action.project_id,
-                        embed=format_task_completed_embed(task, agent, output),
-                    )
                 brief = f"✅ Task completed: {task.title} (`{task.id}`)"
                 from datetime import datetime, timezone as _tz
                 log_date = datetime.now(_tz.utc).strftime("%Y-%m-%d")
