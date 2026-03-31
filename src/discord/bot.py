@@ -974,10 +974,6 @@ class AgentQueueBot(commands.Bot):
             )
             if thread is None:
                 return None
-            await self._safe_api_call(
-                thread.send(initial_message),
-                critical=True, context="create_task_thread initial",
-            )
         except Exception as e:
             print(f"Thread creation failed: {e}")
             return None
