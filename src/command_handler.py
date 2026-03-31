@@ -3748,11 +3748,20 @@ class CommandHandler:
         try:
             from src.discord.notifications import format_plan_approval_embed, PlanApprovalView
 
+            # Get thread URL for linking to the agent's full plan summary
+            thread_url = ""
+            if self.orchestrator._get_thread_url:
+                try:
+                    thread_url = await self.orchestrator._get_thread_url(task_id) or ""
+                except Exception:
+                    pass
+
             plan_view = PlanApprovalView(task_id, handler=self)
             plan_embed = format_plan_approval_embed(
                 task=task if not args.get("task_id") else await self.db.get_task(task_id),
                 raw_content=raw,
                 parsed_steps=parsed_steps,
+                thread_url=thread_url,
             )
             await self.orchestrator._notify_channel(
                 "",

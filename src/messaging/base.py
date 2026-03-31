@@ -106,6 +106,14 @@ class MessagingAdapter(ABC):
             or None if thread creation failed.
         """
 
+    async def get_thread_last_message_url(self, task_id: str) -> str | None:
+        """Return a jump URL to the last message in a task's thread.
+
+        Override in platform-specific adapters.  Default returns None
+        (no thread URL available).
+        """
+        return None
+
     # -------------------------------------------------------------------
     # Component access
     # -------------------------------------------------------------------

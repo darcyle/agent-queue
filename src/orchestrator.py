@@ -100,6 +100,7 @@ from src.messaging.types import (
     NotifyCallback as _NotifyCallbackType,
     ThreadSendCallback as _ThreadSendCallbackType,
     CreateThreadCallback as _CreateThreadCallbackType,
+    GetThreadUrlCallback as _GetThreadUrlCallbackType,
 )
 from src.git.manager import GitError, GitManager
 from src.models import (
@@ -122,6 +123,7 @@ logger = logging.getLogger(__name__)
 NotifyCallback = _NotifyCallbackType
 ThreadSendCallback = _ThreadSendCallbackType
 CreateThreadCallback = _CreateThreadCallbackType
+GetThreadUrlCallback = _GetThreadUrlCallbackType
 
 
 class Orchestrator:
@@ -182,6 +184,7 @@ class Orchestrator:
         self._task_exec_start: dict[str, float] = {}
         self._notify: NotifyCallback | None = None
         self._create_thread: CreateThreadCallback | None = None
+        self._get_thread_url: GetThreadUrlCallback | None = None
         # Discord message objects for task-added notifications, keyed by
         # task_id.  Stored so we can delete the message when the task starts
         # to keep the chat window clean.
@@ -404,6 +407,12 @@ class Orchestrator:
         is posted directly to the notifications channel (noisier but functional).
         """
         self._create_thread = callback
+
+    def set_get_thread_url_callback(self, callback: GetThreadUrlCallback) -> None:
+        """Inject a callback that returns a Discord jump URL to the last message
+        in a task's thread.  Used by the plan approval flow to link to the
+        agent's final output instead of showing truncated plan content."""
+        self._get_thread_url = callback
 
     async def skip_task(self, task_id: str) -> tuple[str | None, list[Task]]:
         """Skip a BLOCKED or FAILED task to unblock its dependency chain.
@@ -3478,11 +3487,22 @@ class Orchestrator:
                 # approval embed shows the raw content via plan_url.
                 parsed_steps: list[dict] = []
 
+                # Get a link to the last message in the thread — the agent's
+                # final output contains the complete plan summary, so we link
+                # to it instead of showing a truncated preview in the embed.
+                thread_url = ""
+                if self._get_thread_url:
+                    try:
+                        thread_url = await self._get_thread_url(task.id) or ""
+                    except Exception as e:
+                        logger.debug("Could not get thread URL for %s: %s", task.id, e)
+
                 plan_embed = format_plan_approval_embed(
                     task,
                     raw_content=raw_ctx["content"] if raw_ctx else "",
                     plan_url=plan_url,
                     parsed_steps=parsed_steps,
+                    thread_url=thread_url,
                 )
                 await self._notify_channel(
                     f"📋 **Plan ready for review:** `{task.id}` — {task.title}",
