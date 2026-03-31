@@ -3777,49 +3777,31 @@ def setup_commands(bot: commands.Bot) -> None:
 
     @bot.tree.command(
         name="sync-workspaces",
-        description="Sync all project workspaces to the latest main branch",
+        description="Queue a sync task to merge all feature branches and synchronize workspaces",
     )
     async def sync_workspaces_command(interaction: discord.Interaction):
         project_id = await _resolve_project_from_context(interaction, None)
         if not project_id:
             await _send_error(interaction, _NO_PROJECT_MSG)
             return
-        await interaction.response.defer()
-        result = await handler.execute("sync_workspaces", {"project_id": project_id})
+        result = await handler.execute(
+            "queue_sync_workspaces", {"project_id": project_id})
         if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
+            await _send_error(interaction, result["error"])
             return
 
-        total = result.get("total_workspaces", 0)
-        synced = result.get("synced", 0)
-        skipped = result.get("skipped", 0)
-        errors = result.get("errors", 0)
-
-        lines = [
-            f"## Workspace Sync — `{project_id}`",
-            f"**{synced}** synced · **{skipped}** skipped · **{errors}** errors "
-            f"(of {total} total)",
-            "",
-        ]
-        for ws in result.get("workspaces", []):
-            status = ws.get("status", "unknown")
-            name = ws.get("workspace_name") or ws.get("workspace_id", "?")
-            if status == "synced":
-                emoji = "✅"
-            elif status == "skipped":
-                emoji = "⏭️"
-            elif status == "conflict":
-                emoji = "⚠️"
-            else:
-                emoji = "❌"
-
-            detail = ws.get("action") or ws.get("reason") or ""
-            branch = ws.get("current_branch", "")
-            branch_str = f" (`{branch}`)" if branch else ""
-            lines.append(f"{emoji} **{name}**{branch_str}: {detail}")
-
-        msg = "\n".join(lines)
-        await _send_long_interaction(msg, interaction.followup.send)
+        embed = success_embed(
+            "Sync Workspaces Queued",
+            fields=[
+                ("Task ID", f"`{result['queued']}`", True),
+                ("Project", f"`{result['project_id']}`", True),
+                ("Priority", str(result.get("priority", 1)), True),
+                ("Workspaces", str(result.get("workspace_count", 0)), True),
+                ("Default Branch", f"`{result.get('default_branch', 'main')}`", True),
+            ],
+        )
+        embed.description = result.get("message", "")
+        await interaction.response.send_message(embed=embed)
 
     # ===================================================================
     # GIT COMMANDS

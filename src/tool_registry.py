@@ -103,6 +103,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "release_workspace": "project",
     "remove_workspace": "project",
     "sync_workspaces": "project",
+    "queue_sync_workspaces": "project",
     "set_active_project": "project",
     # agent
     "list_agents": "agent",
@@ -654,6 +655,27 @@ _ALL_TOOL_DEFINITIONS = [
                 "skip_locked": {
                     "type": "boolean",
                     "description": "Skip workspaces locked by an agent (default: true). Set to false to sync all workspaces.",
+                },
+            },
+        },
+    },
+    {
+        "name": "queue_sync_workspaces",
+        "description": (
+            "Queue a high-priority Sync Workspaces task that orchestrates a full "
+            "workspace synchronization workflow. When executed, the task will: "
+            "(1) pause the project, (2) wait for all active tasks to complete, "
+            "(3) launch a Claude Code agent to merge all feature branches into the "
+            "default branch across all workspaces, (4) resume the project. "
+            "Use this when workspaces have drifted from the default branch and "
+            "feature work is stuck on feature branches that need consolidation."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID to sync (optional if active project is set)",
                 },
             },
         },

@@ -4324,6 +4324,98 @@ class CommandHandler:
             "conflicts": results,
         }
 
+    async def _cmd_queue_sync_workspaces(self, args: dict) -> dict:
+        """Queue a high-priority Sync Workspaces task that orchestrates a full sync workflow.
+
+        When the orchestrator picks up this task, it will:
+        1. Pause the project (prevent new tasks from being queued).
+        2. Wait for ALL currently running tasks to complete.
+        3. Launch a Claude Code agent task to merge all feature branches
+           into the default branch across all project workspaces.
+        4. Resume the project after synchronization is complete.
+
+        This is used for periodic workspace consolidation when feature branches
+        have drifted from the default branch.
+        """
+        from src.task_names import generate_task_id
+
+        project_id = args.get("project_id") or self._active_project_id
+        if not project_id:
+            return {"error": "project_id is required (no active project set)"}
+
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"error": f"Project '{project_id}' not found"}
+
+        workspaces = await self.db.list_workspaces(project_id=project_id)
+        if not workspaces:
+            return {"error": f"No workspaces found for project '{project_id}'"}
+
+        default_branch = project.repo_default_branch or "main"
+        workspace_root = "/home/jkern/agent-queue-workspaces"
+
+        # Build a self-contained description with all context for the sync workflow.
+        workspace_paths = "\n".join(
+            f"  - {ws.workspace_path} (id: {ws.id}, name: {ws.name or '—'})"
+            for ws in workspaces
+        )
+
+        description = f"""## Sync Workspaces — {project_id}
+
+**Task Type:** Orchestrator-managed sync workflow (handled automatically by the orchestrator)
+
+### Workflow Steps (executed by the orchestrator, NOT the agent):
+1. **Pause Project** — Prevent new tasks from being queued for `{project_id}`
+2. **Wait for Active Tasks** — Monitor all running tasks and wait for completion
+3. **Merge Feature Branches** — Launch a Claude Code agent to merge all feature work
+4. **Cleanup & Resume** — Unlock workspaces and resume the project
+
+### Project Details:
+- **Project ID:** {project_id}
+- **Default Branch:** {default_branch}
+- **Workspace Root:** {workspace_root}
+
+### Workspaces:
+{workspace_paths}
+
+### Merge Strategy:
+- Merge and push one workspace at a time
+- Pull updates before working on subsequent workspaces
+- Preserve ALL feature work unless it's duplicated or made irrelevant by subsequent changes
+- Resolve conflicts intelligently, preferring to preserve feature functionality
+- Ensure each workspace ends up on `{default_branch}` with no remaining feature branches from agent-queue
+
+### Why This Exists:
+This synchronizes workspaces that have drifted from the default branch, consolidating
+feature work stuck on feature branches across multiple workspaces.
+"""
+
+        task_id = await generate_task_id(self.db)
+        task = Task(
+            id=task_id,
+            project_id=project_id,
+            title=f"Sync Workspaces — {project_id}",
+            description=description,
+            priority=1,  # Highest priority
+            status=TaskStatus.READY,
+            task_type=TaskType.SYNC,
+        )
+        await self.db.create_task(task)
+
+        return {
+            "queued": task_id,
+            "project_id": project_id,
+            "title": task.title,
+            "priority": 1,
+            "workspace_count": len(workspaces),
+            "default_branch": default_branch,
+            "message": (
+                f"Sync Workspaces task queued with highest priority (id: {task_id}). "
+                f"When it starts, it will pause the project, wait for active tasks to "
+                f"complete, merge all feature branches into '{default_branch}', then resume."
+            ),
+        }
+
     async def _cmd_sync_workspaces(self, args: dict) -> dict:
         """Synchronize all project workspaces to the latest main branch.
 
