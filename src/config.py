@@ -410,6 +410,7 @@ class ChatProviderConfig:
     model: str = ""              # Empty = provider default
     base_url: str = ""           # For Ollama
     keep_alive: str = "1h"       # Ollama: how long to keep model loaded after last request
+    num_ctx: int = 0             # Ollama: context window size (0 = model default)
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -1101,6 +1102,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             model=cp.get("model", ""),
             base_url=cp.get("base_url", ""),
             keep_alive=cp.get("keep_alive", "1h"),
+            num_ctx=cp.get("num_ctx", 0),
         )
 
     if "supervisor" in raw:
