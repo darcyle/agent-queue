@@ -5377,23 +5377,61 @@ feature work stuck on feature branches across multiple workspaces.
     # -----------------------------------------------------------------------
 
     async def _cmd_create_hook(self, args: dict) -> dict:
-        project_id = args["project_id"]
-        project = await self.db.get_project(project_id)
-        if not project:
-            return {"error": f"Project '{project_id}' not found"}
-        hook_id = args["name"].lower().replace(" ", "-")
-        hook = Hook(
-            id=hook_id,
+        """DEPRECATED: Redirects to save_rule.  Direct hook creation is no longer
+        supported — all automation must be created through rules."""
+        rm = getattr(self.orchestrator, "rule_manager", None)
+        if not rm:
+            return {"error": "Rule manager not initialized — cannot create automation"}
+
+        project_id = args.get("project_id")
+        name = args.get("name", "Untitled Hook")
+        trigger = args.get("trigger", {})
+        prompt_template = args.get("prompt_template", "")
+        cooldown_seconds = args.get("cooldown_seconds", 3600)
+
+        # Build rule markdown from hook parameters
+        lines = [f"# {name}", ""]
+
+        # Convert trigger to natural language for ## Trigger section
+        trigger_type = trigger.get("type", "event") if isinstance(trigger, dict) else "event"
+        if trigger_type == "periodic":
+            secs = trigger.get("interval_seconds", 300) if isinstance(trigger, dict) else 300
+            if secs >= 86400 and secs % 86400 == 0:
+                interval_desc = f"every {secs // 86400} day(s)"
+            elif secs >= 3600 and secs % 3600 == 0:
+                interval_desc = f"every {secs // 3600} hour(s)"
+            elif secs >= 60 and secs % 60 == 0:
+                interval_desc = f"every {secs // 60} minute(s)"
+            else:
+                interval_desc = f"every {secs} seconds"
+            lines.append(f"## Trigger\n\nCheck {interval_desc}")
+        elif trigger_type == "event":
+            event_type = trigger.get("event_type", "unknown") if isinstance(trigger, dict) else "unknown"
+            lines.append(f"## Trigger\n\nWhen {event_type}")
+        else:
+            lines.append(f"## Trigger\n\n{trigger_type}")
+
+        if cooldown_seconds and cooldown_seconds != 3600:
+            lines.append(f"\nCooldown: {cooldown_seconds}s")
+
+        lines.append(f"\n## Logic\n\n{prompt_template}")
+        content = "\n".join(lines)
+
+        result = await rm.async_save_rule(
+            id=None,
             project_id=project_id,
-            name=args["name"],
-            trigger=json.dumps(args["trigger"]),
-            context_steps=json.dumps(args.get("context_steps", [])),
-            prompt_template=args["prompt_template"],
-            cooldown_seconds=args.get("cooldown_seconds", 3600),
-            llm_config=json.dumps(args["llm_config"]) if args.get("llm_config") else None,
+            rule_type="active",
+            content=content,
         )
-        await self.db.create_hook(hook)
-        return {"created": hook_id, "name": hook.name, "project_id": project_id}
+        if "error" in result:
+            return result
+
+        return {
+            "created": result.get("id", "unknown"),
+            "name": name,
+            "project_id": project_id,
+            "note": "Created as a rule — hooks will be generated automatically via reconciliation.",
+        }
 
     async def _cmd_list_hooks(self, args: dict) -> dict:
         project_id = args.get("project_id")
@@ -5414,10 +5452,28 @@ feature work stuck on feature branches across multiple workspaces.
         }
 
     async def _cmd_edit_hook(self, args: dict) -> dict:
+        """Edit a hook. For rule-backed hooks (id starts with 'rule-'), redirects
+        to editing the source rule instead. Legacy direct hooks can still be edited
+        but with a deprecation warning."""
         hook_id = args["hook_id"]
         hook = await self.db.get_hook(hook_id)
         if not hook:
             return {"error": f"Hook '{hook_id}' not found"}
+
+        # Rule-backed hooks should be edited via their source rule
+        if hook_id.startswith("rule-"):
+            # Extract rule ID: hook IDs are like "rule-{rule_id}-{suffix}"
+            parts = hook_id.split("-", 2)  # ['rule', '{rule_id}', ...]
+            rule_id = parts[1] if len(parts) > 1 else None
+            return {
+                "error": (
+                    f"Hook '{hook_id}' is generated from rule '{rule_id}'. "
+                    f"Edit the source rule instead using save_rule or /rule {rule_id}. "
+                    "Changes to rule-backed hooks are overwritten on reconciliation."
+                ),
+            }
+
+        # Legacy direct hook — allow edit but warn
         updates = {}
         if "name" in args:
             updates["name"] = args["name"]
@@ -5438,13 +5494,38 @@ feature work stuck on feature branches across multiple workspaces.
         if not updates:
             return {"error": "No fields to update"}
         await self.db.update_hook(hook_id, **updates)
-        return {"updated": hook_id, "fields": list(updates.keys())}
+        return {
+            "updated": hook_id,
+            "fields": list(updates.keys()),
+            "warning": (
+                "This is a legacy direct hook. Consider converting it to a rule "
+                "using save_rule for better management. Direct hooks may be "
+                "auto-migrated to rules in the future."
+            ),
+        }
 
     async def _cmd_delete_hook(self, args: dict) -> dict:
+        """Delete a hook. Rule-backed hooks (id starts with 'rule-') must be
+        deleted via their source rule. Only orphan/legacy hooks can be deleted
+        directly."""
         hook_id = args["hook_id"]
         hook = await self.db.get_hook(hook_id)
         if not hook:
             return {"error": f"Hook '{hook_id}' not found"}
+
+        # Rule-backed hooks must be deleted via the rule
+        if hook_id.startswith("rule-"):
+            parts = hook_id.split("-", 2)
+            rule_id = parts[1] if len(parts) > 1 else None
+            return {
+                "error": (
+                    f"Hook '{hook_id}' is generated from rule '{rule_id}'. "
+                    f"Delete the source rule instead using delete_rule. "
+                    "Rule-backed hooks are managed automatically."
+                ),
+            }
+
+        # Allow deletion of orphan/legacy/scheduled hooks
         await self.db.delete_hook(hook_id)
         return {"deleted": hook_id, "name": hook.name}
 
@@ -5840,7 +5921,7 @@ feature work stuck on feature branches across multiple workspaces.
         return await rm.async_delete_rule(rule_id)
 
     async def _cmd_browse_rules(self, args: dict) -> dict:
-        """List rules for a project (plus globals)."""
+        """List rules for a project (plus globals). Alias: list_rules."""
         rm = getattr(self.orchestrator, "rule_manager", None)
         if not rm:
             return {"error": "Rule manager not initialized"}
@@ -5848,6 +5929,10 @@ feature work stuck on feature branches across multiple workspaces.
         project_id = args.get("project_id")
         rules = rm.browse_rules(project_id)
         return {"rules": rules}
+
+    async def _cmd_list_rules(self, args: dict) -> dict:
+        """Alias for browse_rules — primary interface name."""
+        return await self._cmd_browse_rules(args)
 
     async def _cmd_load_rule(self, args: dict) -> dict:
         """Load full details of a specific rule."""

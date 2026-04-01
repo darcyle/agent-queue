@@ -2347,11 +2347,12 @@ class ToolRegistry:
         """
         return [
             {
-                "name": "browse_rules",
+                "name": "list_rules",
                 "description": (
                     "List all automation rules for the current project and globals. "
-                    "Rules are the primary way to create automation — each active rule "
-                    "generates hooks that execute automatically."
+                    "Rules are the ONLY way to create automation — each active rule "
+                    "generates hooks that execute automatically. "
+                    "Alias: browse_rules"
                 ),
                 "input_schema": {
                     "type": "object",
@@ -2386,10 +2387,11 @@ class ToolRegistry:
             {
                 "name": "save_rule",
                 "description": (
-                    "Create or update an automation rule. This is the primary way to "
-                    "create automation. Active rules with triggers automatically generate "
-                    "hooks that execute on schedule or in response to events. Passive rules "
-                    "influence reasoning without triggering actions. "
+                    "Create or update an automation rule. This is the ONLY way to "
+                    "create automation — never create hooks directly. Active rules with "
+                    "triggers automatically generate hooks that execute on schedule or "
+                    "in response to events. Passive rules influence reasoning without "
+                    "triggering actions. "
                     "Include a # Title, ## Trigger (e.g. 'Check every 5 minutes' or "
                     "'When a task is completed'), and ## Logic section in the content."
                 ),
