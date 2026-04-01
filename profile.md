@@ -74,6 +74,10 @@ AWAITING_APPROVAL  (post-work, pre-merge — requires manual approve)
 | `src/health.py` | System health checks and diagnostics |
 | `src/file_watcher.py` | Mtime-based change detection, emits file/folder events |
 | `src/task_names.py` | Human-readable task IDs (adjective-noun, ~900 combos) |
+| `src/agent_names.py` | Creative agent name generation for personality-rich identifiers |
+| `src/known_tools.py` | Registry of known Claude Code tools and MCP servers for validation |
+| `src/logging_config.py` | Structured JSON logging with correlation IDs |
+| `src/setup_wizard.py` | Interactive first-time setup — Discord token, API keys, agent provisioning |
 
 ### Subsystems
 

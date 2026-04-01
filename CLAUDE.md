@@ -6,7 +6,7 @@ Agent Queue — task queue and orchestrator for AI coding agents on throttled pl
 
 - **Entry point:** `src/main.py` → orchestrator + Discord bot
 - **Core files:** `orchestrator.py`, `command_handler.py`, `supervisor.py`, `database.py`, `models.py`
-- **Subsystems:** `src/adapters/`, `src/discord/`, `src/git/`, `src/tokens/`, `src/memory.py`, `src/prompt_builder.py`, `src/tool_registry.py`, `src/rule_manager.py`
+- **Subsystems:** `src/adapters/`, `src/discord/`, `src/git/`, `src/tokens/`, `src/chat_providers/`, `src/plugins/`, `src/memory.py`, `src/prompt_builder.py`, `src/tool_registry.py`, `src/rule_manager.py`, `src/reflection.py`, `src/schedule.py`
 - **Specs:** `specs/` (source of truth — specs first, then code)
 - **Config:** `~/.agent-queue/config.yaml`
 
