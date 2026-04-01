@@ -5964,7 +5964,9 @@ feature work stuck on feature branches across multiple workspaces.
         return {
             "success": True,
             "rules_scanned": stats.get("rules_scanned", 0),
+            "active_rules": stats.get("active_rules", 0),
             "hooks_regenerated": stats.get("hooks_regenerated", 0),
+            "hooks_unchanged": stats.get("hooks_unchanged", 0),
             "errors": stats.get("errors", 0),
         }
 

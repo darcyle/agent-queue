@@ -525,7 +525,7 @@ class RuleManager:
                     "Rule %s unchanged (hash=%s), skipping hook regeneration",
                     rule_id, new_hash,
                 )
-                return [h.id for h in existing_hooks]
+                return []
 
         # --- Regeneration needed ---
 
@@ -883,7 +883,9 @@ class RuleManager:
 
         stats = {
             "rules_scanned": 0,
+            "active_rules": 0,
             "hooks_regenerated": 0,
+            "hooks_unchanged": 0,
             "errors": 0,
             "orphan_hooks_migrated": migration_stats["migrated"],
         }
@@ -912,6 +914,8 @@ class RuleManager:
                     if meta.get("type") != "active":
                         continue
 
+                    stats["active_rules"] += 1
+
                     if not self._db:
                         continue
 
@@ -923,6 +927,16 @@ class RuleManager:
                         )
                         if new_hooks:
                             stats["hooks_regenerated"] += len(new_hooks)
+                        else:
+                            # Count existing unchanged hooks for this rule
+                            prefix = f"rule-{meta.get('id', filename[:-3])}-"
+                            try:
+                                existing = await self._db.list_hooks_by_id_prefix(
+                                    prefix
+                                )
+                                stats["hooks_unchanged"] += len(existing)
+                            except Exception:
+                                pass
                     except Exception as e:
                         logger.warning(
                             "Hook regen failed for %s: %s",

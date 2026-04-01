@@ -270,7 +270,56 @@ def test_reconcile_regenerates_hooks(rule_manager_with_db, mock_db):
     result = asyncio.run(rm.reconcile())
     assert result["rules_scanned"] > 0
     assert result["hooks_regenerated"] > 0
+    assert result["active_rules"] > 0
     mock_db.create_hook.assert_called()
+
+
+def test_reconcile_unchanged_rules_report_zero_regenerated(
+    storage_root, mock_db
+):
+    """reconcile reports 0 hooks_regenerated when rules haven't changed.
+
+    When existing hooks already have matching source_hash values,
+    _generate_hooks_for_rule returns [] (skipped), so reconcile should
+    not count them as regenerated.
+    """
+    from src.models import Hook
+    from src.rule_manager import RuleManager, _compute_source_hash
+
+    content = (
+        "# My Rule\n\n## Trigger\nEvery 60 minutes."
+        "\n\n## Logic\nDo something."
+    )
+
+    rm = RuleManager(storage_root=storage_root, db=mock_db)
+    rm.save_rule(
+        id="my-rule",
+        project_id="proj",
+        rule_type="active",
+        content=content,
+    )
+
+    # Compute the hash the same way the code does
+    trigger_config = rm._parse_trigger(content)
+    current_hash = _compute_source_hash(trigger_config, content)
+
+    # Simulate existing hook with matching source_hash (i.e. unchanged)
+    existing_hook = Hook(
+        id="rule-my-rule-abc123",
+        project_id="proj",
+        name="Rule: My Rule",
+        trigger='{"type": "periodic", "interval_seconds": 3600}',
+        source_hash=current_hash,
+    )
+    mock_db.list_hooks_by_id_prefix = AsyncMock(return_value=[existing_hook])
+
+    result = asyncio.run(rm.reconcile())
+    assert result["rules_scanned"] >= 1
+    assert result["active_rules"] >= 1
+    assert result["hooks_regenerated"] == 0
+    assert result["hooks_unchanged"] >= 1
+    # create_hook should NOT have been called since nothing changed
+    mock_db.create_hook.assert_not_called()
 
 
 def test_reconcile_preserves_last_triggered_at(storage_root, mock_db):

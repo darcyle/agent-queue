@@ -5339,12 +5339,18 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result["error"])
             return
         scanned = result.get("rules_scanned", 0)
+        active = result.get("active_rules", 0)
         regenerated = result.get("hooks_regenerated", 0)
+        unchanged = result.get("hooks_unchanged", 0)
         errors = result.get("errors", 0)
-        desc = (
-            f"Scanned **{scanned}** rule(s), "
-            f"regenerated **{regenerated}** hook(s)."
-        )
+        parts = [f"Scanned **{scanned}** rule(s) (**{active}** active)"]
+        if regenerated:
+            parts.append(f"regenerated **{regenerated}** hook(s)")
+        if unchanged:
+            parts.append(f"**{unchanged}** hook(s) unchanged")
+        if not regenerated and not unchanged:
+            parts.append("no hooks to update")
+        desc = ", ".join(parts) + "."
         if errors:
             desc += f"\n⚠️ {errors} error(s) during reconciliation."
         await interaction.followup.send(
