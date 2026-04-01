@@ -11,8 +11,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import sys
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
+
+# Ensure project root is on sys.path so ``packages.mcp_server`` is importable
+# when the daemon runs via the ``agent-queue`` entry point.
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 if TYPE_CHECKING:
     from src.config import AppConfig
