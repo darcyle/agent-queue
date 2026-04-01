@@ -886,6 +886,11 @@ class CommandHandler:
         # have the same thread chain context that the supervisor had when
         # creating the task.
         self._current_conversation_context: str | None = None
+        # When True, _cmd_create_task creates tasks as DEFINED instead of
+        # READY.  Set by supervisor.break_plan_into_tasks() so plan subtasks
+        # are born DEFINED, eliminating the race condition that required
+        # project-wide plan processing locks.
+        self._plan_subtask_creation_mode: bool = False
 
     @property
     def db(self):
@@ -2228,13 +2233,16 @@ class CommandHandler:
                     return {"error": f"Attachment file not found: {path}"}
             attachments = valid_paths
 
+        initial_status = (
+            TaskStatus.DEFINED if self._plan_subtask_creation_mode else TaskStatus.READY
+        )
         task = Task(
             id=task_id,
             project_id=project_id,
             title=args["title"],
             description=args.get("description", args["title"]),
             priority=args.get("priority", 100),
-            status=TaskStatus.READY,
+            status=initial_status,
             requires_approval=requires_approval,
             task_type=task_type,
             profile_id=profile_id,
@@ -3226,37 +3234,32 @@ class CommandHandler:
             supervisor = getattr(self.orchestrator, "_supervisor", None)
 
             if supervisor and supervisor.is_ready:
-                # Hold plan-processing lock while supervisor creates subtasks
                 _lock_project = task.project_id or ""
-                self.orchestrator._plan_processing_locks.add(_lock_project)
-                try:
-                    created_info = await supervisor.break_plan_into_tasks(
-                        raw_plan=raw_plan,
-                        parent_task_id=task.id,
-                        project_id=_lock_project,
-                        workspace_id=workspace_id,
-                        chain_dependencies=config.chain_dependencies,
-                        requires_approval=(
-                            task.requires_approval if config.inherit_approval else False
-                        ),
-                        base_priority=task.priority,
-                    )
+                created_info = await supervisor.break_plan_into_tasks(
+                    raw_plan=raw_plan,
+                    parent_task_id=task.id,
+                    project_id=_lock_project,
+                    workspace_id=workspace_id,
+                    chain_dependencies=config.chain_dependencies,
+                    requires_approval=(
+                        task.requires_approval if config.inherit_approval else False
+                    ),
+                    base_priority=task.priority,
+                )
 
-                    if created_info and config.chain_dependencies:
-                        final_subtask_id = created_info[-1]["id"]
-                        dependents = await self.db.get_dependents(task.id)
-                        for dep_task_id in dependents:
-                            try:
-                                await self.db.add_dependency(
-                                    dep_task_id, depends_on=final_subtask_id
-                                )
-                            except Exception as e:
-                                logger.warning(
-                                    "Failed to add downstream dep %s→%s: %s",
-                                    dep_task_id, final_subtask_id, e,
-                                )
-                finally:
-                    self.orchestrator._plan_processing_locks.discard(_lock_project)
+                if created_info and config.chain_dependencies:
+                    final_subtask_id = created_info[-1]["id"]
+                    dependents = await self.db.get_dependents(task.id)
+                    for dep_task_id in dependents:
+                        try:
+                            await self.db.add_dependency(
+                                dep_task_id, depends_on=final_subtask_id
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to add downstream dep %s→%s: %s",
+                                dep_task_id, final_subtask_id, e,
+                            )
             else:
                 logger.error(
                     "approve_plan: supervisor unavailable — cannot create "
@@ -3739,57 +3742,50 @@ class CommandHandler:
 
         if supervisor and supervisor.is_ready:
             workspace_id = ws.id if ws else None
-            # Acquire plan-processing lock to prevent race with orchestrator
-            self.orchestrator._plan_processing_locks.add(project_id)
-            try:
-                created_info = await supervisor.break_plan_into_tasks(
-                    raw_plan=raw,
-                    parent_task_id=task_id,
-                    project_id=project_id,
-                    workspace_id=workspace_id,
-                    chain_dependencies=config.chain_dependencies,
-                    requires_approval=(
-                        task.requires_approval if config.inherit_approval else False
-                    ),
-                    base_priority=task.priority,
+            created_info = await supervisor.break_plan_into_tasks(
+                raw_plan=raw,
+                parent_task_id=task_id,
+                project_id=project_id,
+                workspace_id=workspace_id,
+                chain_dependencies=config.chain_dependencies,
+                requires_approval=(
+                    task.requires_approval if config.inherit_approval else False
+                ),
+                base_priority=task.priority,
+            )
+
+            if created_info:
+                # Add a dependency from the first subtask to the parent task.
+                # Since the parent is in AWAITING_PLAN_APPROVAL (not COMPLETED),
+                # this blocks the entire chain from executing until approval.
+                first_subtask_id = created_info[0]["id"]
+                try:
+                    await self.db.add_dependency(
+                        first_subtask_id, depends_on=task_id
+                    )
+                    logger.info(
+                        "process_plan: added blocking dep %s → %s (parent)",
+                        first_subtask_id, task_id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "process_plan: failed to add blocking dep %s → %s: %s",
+                        first_subtask_id, task_id, e,
+                    )
+
+                # Store draft subtask IDs so approve/delete/reject can find them
+                import json as _json
+                await self.db.add_task_context(
+                    task_id,
+                    type="plan_draft_subtasks",
+                    label="Draft Subtask IDs",
+                    content=_json.dumps(created_info),
                 )
 
-                if created_info:
-                    # Add a dependency from the first subtask to the parent task.
-                    # Since the parent is in AWAITING_PLAN_APPROVAL (not COMPLETED),
-                    # this blocks the entire chain from executing until approval.
-                    first_subtask_id = created_info[0]["id"]
-                    try:
-                        await self.db.add_dependency(
-                            first_subtask_id, depends_on=task_id
-                        )
-                        logger.info(
-                            "process_plan: added blocking dep %s → %s (parent)",
-                            first_subtask_id, task_id,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "process_plan: failed to add blocking dep %s → %s: %s",
-                            first_subtask_id, task_id, e,
-                        )
-
-                    # Store draft subtask IDs so approve/delete/reject can find them
-                    import json as _json
-                    await self.db.add_task_context(
-                        task_id,
-                        type="plan_draft_subtasks",
-                        label="Draft Subtask IDs",
-                        content=_json.dumps(created_info),
-                    )
-
-                    logger.info(
-                        "process_plan: supervisor created %d draft subtasks for %s",
-                        len(created_info), task_id,
-                    )
-            finally:
-                # Release plan-processing lock — blocking deps are now in place,
-                # so _check_defined_tasks can safely evaluate these subtasks.
-                self.orchestrator._plan_processing_locks.discard(project_id)
+                logger.info(
+                    "process_plan: supervisor created %d draft subtasks for %s",
+                    len(created_info), task_id,
+                )
 
         # Build the steps list for the approval embed from supervisor-created
         # subtasks.  If supervisor didn't create any, the embed will show the

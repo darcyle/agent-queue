@@ -784,12 +784,21 @@ Read the plan below and create one task per implementation phase using the creat
             saved_conv_ctx = self.handler._current_conversation_context
             self.handler._current_conversation_context = None
 
-            response = await self.chat(
-                text=prompt,
-                user_name="system:plan-splitter",
-                on_progress=on_progress,
-                _reflection_trigger="plan.split",
-            )
+            # Create plan subtasks directly as DEFINED so the orchestrator
+            # won't schedule them before the blocking dependency on the
+            # parent is established.  This eliminates the need for
+            # project-wide plan processing locks.
+            self.handler._plan_subtask_creation_mode = True
+
+            try:
+                response = await self.chat(
+                    text=prompt,
+                    user_name="system:plan-splitter",
+                    on_progress=on_progress,
+                    _reflection_trigger="plan.split",
+                )
+            finally:
+                self.handler._plan_subtask_creation_mode = False
 
             # Restore (chat() finally-block clears it, so just ensure clean)
             self.handler._current_conversation_context = saved_conv_ctx
@@ -807,6 +816,7 @@ Read the plan below and create one task per implementation phase using the creat
                 "break_plan_into_tasks: supervisor chat failed for parent %s: %s",
                 parent_task_id, e, exc_info=True,
             )
+            self.handler._plan_subtask_creation_mode = False
             return []
 
         # Find newly created tasks by diffing against the snapshot
@@ -834,11 +844,9 @@ Read the plan below and create one task per implementation phase using the creat
         except Exception:
             pass  # Non-fatal
 
-        # Post-process: set parent_task_id and is_plan_subtask on new tasks,
-        # then demote from READY to DEFINED.  create_task creates tasks as
-        # READY, but plan subtasks must stay in DEFINED until the blocking
-        # dependency on the parent (added by _cmd_process_plan after this
-        # method returns) allows promotion.
+        # Post-process: set parent_task_id and is_plan_subtask on new tasks.
+        # Tasks are already created as DEFINED (via _plan_subtask_creation_mode)
+        # so no demotion is needed.
         created_info = []
         for task in new_tasks:
             try:
@@ -847,13 +855,6 @@ Read the plan below and create one task per implementation phase using the creat
                     parent_task_id=parent_task_id,
                     is_plan_subtask=1,
                 )
-                # Demote to DEFINED so the plan processing lock and the
-                # parent dependency gate both protect this task.
-                if task.status == TaskStatus.READY:
-                    await self.handler.db.transition_task(
-                        task.id, TaskStatus.DEFINED,
-                        context="plan_subtask_demote",
-                    )
                 # Propagate parent conversation context to subtask
                 if parent_conv_ctx:
                     await self.handler.db.add_task_context(

@@ -255,11 +255,6 @@ class Orchestrator:
         # Retry/Skip buttons on failed task notifications).
         self._command_handler: Any = None
         # Project IDs currently undergoing plan processing (supervisor is
-        # creating subtasks).  ``_check_defined_tasks`` skips DEFINED tasks
-        # in these projects to prevent race conditions where subtasks are
-        # promoted to READY before the blocking dependency on the parent
-        # plan task has been established.
-        self._plan_processing_locks: set[str] = set()
         # Tracks per-project budget warning thresholds already sent so we
         # don't spam the same warning.  Keyed by project_id, value is the
         # highest threshold percentage (e.g. 80, 95) already notified.
@@ -1217,12 +1212,6 @@ class Orchestrator:
         """
         defined = await self.db.list_tasks(status=TaskStatus.DEFINED)
         for task in defined:
-            # Skip tasks in projects where plan processing is in-flight.
-            # The supervisor is creating subtasks and the blocking dependency
-            # on the parent hasn't been established yet.
-            if task.project_id in self._plan_processing_locks:
-                continue
-
             # Defense-in-depth: skip plan subtasks whose parent plan hasn't
             # been approved yet, even if the dependency was somehow missed.
             if task.is_plan_subtask and task.parent_task_id:
@@ -1547,19 +1536,6 @@ class Orchestrator:
         projects = await self.db.list_projects()
         tasks = await self.db.list_tasks()
         agents = await self.db.list_agents()
-
-        # Exclude READY tasks in projects with active plan processing.
-        # create_task creates tasks as READY, so the lock check in
-        # _check_defined_tasks (which only applies to DEFINED → READY
-        # promotion) doesn't protect them.  We must also filter here
-        # to prevent the scheduler from assigning plan subtasks before
-        # the blocking dependency on the parent has been established.
-        if self._plan_processing_locks:
-            tasks = [
-                t for t in tasks
-                if t.status != TaskStatus.READY
-                or t.project_id not in self._plan_processing_locks
-            ]
 
         # Token usage within the rolling window — this is the "actual usage"
         # that the deficit-based scheduler compares against each project's
