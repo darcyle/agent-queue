@@ -383,9 +383,12 @@ class Supervisor:
         from src.tool_registry import ToolRegistry
         registry = ToolRegistry()
 
+        # Use compressed schemas for local LLMs with small context windows
+        compressed = self.config.chat_provider.provider == "ollama"
+
         # Mutable tool set — starts with core, expands via load_tools
         active_tools: dict[str, dict] = {
-            t["name"]: t for t in registry.get_core_tools()
+            t["name"]: t for t in registry.get_core_tools(compressed=compressed)
         }
 
         # Pre-load categories relevant to the user's prompt so the LLM
@@ -393,7 +396,7 @@ class Supervisor:
         preloaded_categories: list[str] = []
         relevant_cats = registry.search_relevant_categories(text)
         for cat_name in relevant_cats:
-            cat_tools = registry.get_category_tools(cat_name)
+            cat_tools = registry.get_category_tools(cat_name, compressed=compressed)
             if cat_tools:
                 for t in cat_tools:
                     active_tools[t["name"]] = t
@@ -509,7 +512,9 @@ class Supervisor:
                 # If load_tools was called, expand active tool set
                 if tool_use.name == "load_tools" and "loaded" in result:
                     category = result["loaded"]
-                    cat_tools = registry.get_category_tools(category)
+                    cat_tools = registry.get_category_tools(
+                        category, compressed=compressed,
+                    )
                     if cat_tools:
                         for t in cat_tools:
                             active_tools[t["name"]] = t

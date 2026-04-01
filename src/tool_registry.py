@@ -2458,17 +2458,73 @@ class ToolRegistry:
             },
         ]
 
-    def get_core_tools(self) -> list[dict]:
+    # ------------------------------------------------------------------
+    # Schema compression for small-context LLMs
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def compress_tool_schema(tool: dict) -> dict:
+        """Return a minimal version of a tool definition for small-context LLMs.
+
+        Strips verbose descriptions down to short phrases and removes
+        parameter descriptions where the name is self-explanatory.
+        Keeps: name, compressed description, input_schema with types/required/enums.
+        """
+        compressed = {"name": tool["name"]}
+
+        # Compress description to first sentence, max ~80 chars
+        desc = tool.get("description", "")
+        # Take first sentence
+        for sep in [". ", ".\n", ".  "]:
+            if sep in desc:
+                desc = desc[:desc.index(sep) + 1]
+                break
+        # Truncate if still long
+        if len(desc) > 80:
+            desc = desc[:77] + "..."
+        compressed["description"] = desc
+
+        # Compress input_schema: keep types, required, enums; drop descriptions
+        schema = tool.get("input_schema", {})
+        if not schema.get("properties"):
+            compressed["input_schema"] = {"type": "object", "properties": {}}
+            return compressed
+
+        compressed_props = {}
+        for prop_name, prop_def in schema.get("properties", {}).items():
+            if not isinstance(prop_def, dict):
+                compressed_props[prop_name] = prop_def
+                continue
+            # Keep only structural info: type, enum, default, items
+            compact = {}
+            for key in ("type", "enum", "default", "items"):
+                if key in prop_def:
+                    compact[key] = prop_def[key]
+            compressed_props[prop_name] = compact
+
+        compressed_schema = {"type": "object", "properties": compressed_props}
+        if "required" in schema:
+            compressed_schema["required"] = schema["required"]
+        compressed["input_schema"] = compressed_schema
+        return compressed
+
+    def get_core_tools(self, compressed: bool = False) -> list[dict]:
         """Return tool definitions that are always loaded.
+
+        Args:
+            compressed: If True, return minimal schemas for small-context LLMs.
 
         Returns:
             List of tool definition dicts for tools not assigned to any
             category (i.e. not present in ``_TOOL_CATEGORIES``).
         """
-        return [
+        tools = [
             t for name, t in self._all_tools.items()
             if name not in _TOOL_CATEGORIES
         ]
+        if compressed:
+            return [self.compress_tool_schema(t) for t in tools]
+        return tools
 
     def get_categories(self) -> list[dict]:
         """Return category metadata list for ``browse_tools`` response.
@@ -2487,11 +2543,14 @@ class ToolRegistry:
             })
         return result
 
-    def get_category_tools(self, category: str) -> list[dict] | None:
+    def get_category_tools(
+        self, category: str, compressed: bool = False,
+    ) -> list[dict] | None:
         """Return all tool definitions for a category.
 
         Args:
             category: Category name (e.g. ``"git"``, ``"hooks"``).
+            compressed: If True, return minimal schemas for small-context LLMs.
 
         Returns:
             List of tool definition dicts, or ``None`` if the category
@@ -2499,11 +2558,14 @@ class ToolRegistry:
         """
         if category not in CATEGORIES:
             return None
-        return [
+        tools = [
             self._all_tools[name]
             for name, cat in _TOOL_CATEGORIES.items()
             if cat == category and name in self._all_tools
         ]
+        if compressed:
+            return [self.compress_tool_schema(t) for t in tools]
+        return tools
 
     def get_category_tool_names(
         self, category: str
