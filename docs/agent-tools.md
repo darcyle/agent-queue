@@ -1,761 +1,295 @@
-# Agent Tools Reference
+# Agent Queue — Internal Tool Reference for AI Agents
 
-Complete reference for all tools available to the Agent Queue supervisor and agents. Tools are organized into **core tools** (always available) and **categorized tools** (loaded on demand via `browse_tools` / `load_tools`).
+> **Audience:** AI agents (supervisor LLM, task agents) that call these tools programmatically via the tool-use loop. This is NOT documentation for Discord slash commands or human-facing interfaces.
 
-## How Tool Loading Works
-
-To keep the LLM's context window small, only ~11 core tools are loaded at conversation start. When the supervisor needs specialized tools it:
-
-1. Calls **`browse_tools`** to see available categories
-2. Calls **`load_tools`** with a category name to inject those tools into the active set
-
-All tools route through `CommandHandler.execute()` regardless of loading state — loading is purely a context-window optimization.
+All tools are called through `CommandHandler.execute(tool_name, params)`. Parameters are passed as a JSON object. Tools return `{"success": bool, ...}` dicts.
 
 ---
 
-## Core Tools (Always Loaded)
+## Tool Loading System
 
-These tools are always available without loading a category.
+To optimize context window usage, tools are split into **core** (always loaded) and **categorized** (loaded on demand).
 
-### `browse_tools`
-List available tool categories with descriptions and tool counts. Use this to discover what specialized tools exist.
+**To discover and load tools:**
+1. Call `browse_tools` (no params) → returns category names with descriptions and tool counts
+2. Call `load_tools(category="git")` → injects that category's tools into your active set
 
-**Parameters:** None
+Loading is a context optimization only — all tools are always executable on the backend regardless of loading state.
 
----
-
-### `load_tools`
-Load all tools from a specific category into the active tool set.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `category` | string | ✅ | Category name (e.g. `git`, `project`, `hooks`) |
+**Categories:** `git`, `project`, `agent`, `hooks`, `memory`, `files`, `system`
 
 ---
 
-### `create_task`
-Create a new task. Inherits the active project if `project_id` is omitted.
+## Core Tools (Always Available)
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `project_id` | string | | Project ID (inferred from active project) |
-| `title` | string | ✅ | Short task title |
-| `description` | string | | Detailed description for the agent |
-| `priority` | integer | | Lower = higher priority (default 100) |
-| `requires_approval` | boolean | | If true, creates PR instead of auto-merging |
-| `task_type` | string | | One of: feature, bugfix, refactor, test, docs, chore, research, plan |
-| `profile_id` | string | | Agent profile ID for specific tools/capabilities |
-| `preferred_workspace_id` | string | | Force task to run in a specific workspace |
-| `attachments` | array[string] | | Absolute file paths to images/files for the agent |
-| `auto_approve_plan` | boolean | | Auto-approve any plan this task generates |
+### Navigation & Response
 
----
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `browse_tools` | List available tool categories | *none* |
+| `load_tools` | Load a tool category into active set | `category` (string, required) |
+| `reply_to_user` | **Must call** to deliver final response | `message` (string, required) |
+| `send_message` | Post message to a Discord channel | `channel_id` (string, required), `content` (string, required) |
 
-### `list_tasks`
-List tasks with filtering and display options. By default only active tasks are shown.
+### Task Management
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `project_id` | string | | Filter by project (required for tree/compact modes) |
-| `status` | string | | Filter by exact status (DEFINED, READY, IN_PROGRESS, etc.) |
-| `show_all` | boolean | | Include all statuses |
-| `include_completed` | boolean | | Alias for show_all |
-| `completed_only` | boolean | | Only show completed/failed/blocked tasks |
-| `display_mode` | string | | `flat` (default), `tree` (hierarchical), or `compact` (progress bars) |
-| `show_dependencies` | boolean | | Annotate tasks with dependency info |
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `create_task` | Create a new task | `title` (required), `description`, `priority` (int, lower=higher), `requires_approval` (bool), `task_type` (feature/bugfix/refactor/test/docs/chore/research/plan), `profile_id`, `preferred_workspace_id`, `attachments` (array of file paths), `auto_approve_plan` (bool) |
+| `list_tasks` | List tasks with filtering | `project_id`, `status` (DEFINED/READY/IN_PROGRESS/etc.), `show_all` (bool), `include_completed` (bool), `completed_only` (bool), `display_mode` (flat/tree/compact), `show_dependencies` (bool) |
+| `get_task` | Get full task details | `task_id` (required) |
+| `edit_task` | Modify task properties | `task_id` (required), then any of: `project_id`, `title`, `description`, `priority`, `task_type`, `status` (admin override), `max_retries`, `profile_id`, `auto_approve_plan` |
 
----
+### Memory
 
-### `edit_task`
-Modify any task property including title, description, priority, status, profile, and more.
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `memory_search` | Semantic search of project memory | `project_id` (required), `query` (required), `top_k` (int, default 10) |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `task_id` | string | ✅ | Task ID |
-| `project_id` | string | | Move task to different project |
-| `title` | string | | New title |
-| `description` | string | | New description |
-| `priority` | integer | | New priority |
-| `task_type` | string/null | | New type or null to clear |
-| `status` | string | | Admin override — bypasses state machine |
-| `max_retries` | integer | | Max retry attempts |
-| `profile_id` | string/null | | Agent profile or null to clear |
-| `auto_approve_plan` | boolean | | Auto-approve plans |
+### Automation Rules
 
----
-
-### `get_task`
-Get full details of a specific task including its description.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `task_id` | string | ✅ | Task ID |
-
----
-
-### `memory_search`
-Search project memory for semantically similar past task results, notes, and knowledge-base entries.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `project_id` | string | ✅ | Project ID |
-| `query` | string | ✅ | Semantic search query |
-| `top_k` | integer | | Number of results (default 10) |
-
----
-
-### `reply_to_user`
-Deliver the final response to the user. **Must** be called when done processing a request.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `message` | string | ✅ | Complete response to the user |
-
----
-
-### `send_message`
-Post a message to a Discord channel.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `channel_id` | string | ✅ | Discord channel ID |
-| `content` | string | ✅ | Message content |
-
----
-
-### `list_rules`
-List all automation rules for the current project and globals.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `project_id` | string | | Project ID (defaults to active project) |
-
----
-
-### `save_rule`
-Create or update an automation rule. This is the **only** way to create automation — never create hooks directly. Include `# Title`, `## Trigger`, and `## Logic` sections in the content.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | | Rule ID (auto-generated if omitted) |
-| `project_id` | string | | Project ID (null = global rule) |
-| `type` | string | ✅ | `active` (triggered automation) or `passive` (reasoning guidance) |
-| `content` | string | ✅ | Markdown with # Title, ## Trigger, ## Logic |
-
----
-
-### `load_rule`
-Load a specific rule's full content and metadata, including generated hook IDs.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | Rule ID |
-
----
-
-### `delete_rule`
-Remove an automation rule and all its generated hooks.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | Rule ID |
-
----
-
-### `refresh_hooks`
-Force reconciliation of all rules and hooks. Re-reads rule files, regenerates hooks, cleans orphans. Normally not needed — auto-reconciles on file change.
-
-**Parameters:** None
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `list_rules` | List all automation rules | `project_id` (optional) |
+| `save_rule` | Create/update an automation rule | `id` (optional, auto-generated), `project_id` (null=global), `type` (required: "active" or "passive"), `content` (required: markdown with `# Title`, `## Trigger`, `## Logic`) |
+| `load_rule` | Get rule details | `id` (required) |
+| `delete_rule` | Remove rule and its hooks | `id` (required) |
+| `refresh_hooks` | Force reconcile all rules/hooks | *none* |
 
 ---
 
 ## Git Category (11 tools)
 
-*Branch, commit, push, PR, and merge operations for project repositories.*
-
 All git tools accept optional `project_id` (defaults to active project) and `workspace` (defaults to first workspace).
 
-### `get_git_status`
-Get git status showing current branch, working tree status, and recent commits across all workspaces.
-
-### `git_commit`
-Stage all changes and create a commit.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `message` | string | ✅ | Commit message |
-
-### `git_pull`
-Pull (fetch + merge) from remote origin.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `branch` | string | | Branch to pull (defaults to current) |
-
-### `git_push`
-Push a branch to remote origin.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `branch` | string | | Branch to push (defaults to current) |
-
-### `git_create_branch`
-Create and switch to a new branch.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `branch_name` | string | ✅ | Name for the new branch |
-
-### `git_merge`
-Merge a branch into the default branch. Auto-aborts on conflicts.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `branch_name` | string | ✅ | Branch to merge |
-| `default_branch` | string | | Target branch (defaults to repo default) |
-
-### `git_create_pr`
-Create a GitHub pull request using `gh` CLI.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `title` | string | ✅ | PR title |
-| `body` | string | | PR description |
-| `branch` | string | | Head branch (defaults to current) |
-| `base` | string | | Base branch (defaults to repo default) |
-
-### `git_changed_files`
-List files changed compared to a base branch. Lighter than a full diff.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `base_branch` | string | | Branch to compare against (defaults to repo default) |
-
-### `git_log`
-Show recent git commits.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `count` | integer | | Number of commits (default 10) |
-
-### `git_diff`
-Show git diff. Without `base_branch` shows working tree changes; with it shows diff against that branch.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `base_branch` | string | | Branch to diff against (omit for working tree) |
-
-### `checkout_branch`
-Switch to an existing branch.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `branch_name` | string | ✅ | Branch to check out |
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `get_git_status` | Current branch, working tree status, recent commits | *optional:* `project_id` |
+| `git_commit` | Stage all changes and commit | `message` (required) |
+| `git_pull` | Fetch + merge from origin | `branch` (optional, defaults to current) |
+| `git_push` | Push branch to origin | `branch` (optional, defaults to current) |
+| `git_create_branch` | Create and switch to new branch | `branch_name` (required) |
+| `git_merge` | Merge into default branch (auto-aborts on conflict) | `branch_name` (required), `default_branch` (optional) |
+| `git_create_pr` | Create GitHub PR via `gh` CLI | `title` (required), `body`, `branch` (defaults to current), `base` (defaults to repo default) |
+| `git_changed_files` | List files changed vs base branch | `base_branch` (optional) |
+| `git_log` | Show recent commits | `count` (int, default 10) |
+| `git_diff` | Show diff (working tree if no base_branch) | `base_branch` (optional) |
+| `checkout_branch` | Switch to existing branch | `branch_name` (required) |
 
 ---
 
 ## Project Category (16 tools)
 
-*Project CRUD, workspace management, channel configuration.*
-
-### `list_projects`
-List all projects in the system.
-
-**Parameters:** None
-
-### `create_project`
-Create a new project with optional auto-created Discord channel.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `name` | string | ✅ | Project name |
-| `credit_weight` | number | | Scheduling weight (default 1.0) |
-| `max_concurrent_agents` | integer | | Max simultaneous agents (default 2) |
-| `repo_url` | string | | Git repository URL |
-| `default_branch` | string | | Default branch (default: main) |
-| `auto_create_channels` | boolean | | Auto-create Discord channels |
-
-### `pause_project` / `resume_project`
-Pause or resume task scheduling for a project.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `project_id` | string | ✅ | Project ID |
-
-### `edit_project`
-Edit project properties: name, weight, concurrent agents, budget, channel, profile, branch.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `project_id` | string | ✅ | Project ID |
-| `name` | string | | New name |
-| `credit_weight` | number | | New scheduling weight |
-| `max_concurrent_agents` | integer | | New max concurrent agents |
-| `budget_limit` | integer/null | | Token budget (null to clear) |
-| `discord_channel_id` | string/null | | Discord channel (null to unlink) |
-| `default_profile_id` | string/null | | Default agent profile (null to clear) |
-| `repo_default_branch` | string | | Default git branch |
-
-### `set_default_branch`
-Set the default git branch for a project. Creates the branch on remote if it doesn't exist.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `project_id` | string | ✅ | Project ID |
-| `branch` | string | ✅ | Branch name |
-
-### `get_project_channels`
-Get the Discord channel ID configured for a project.
-
-### `get_project_for_channel`
-Reverse lookup: find which project is linked to a Discord channel.
-
-### `delete_project`
-Delete a project and all associated data. Cannot delete if any task is IN_PROGRESS.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `project_id` | string | ✅ | Project ID |
-| `archive_channels` | boolean | | Archive Discord channels instead of leaving as-is |
-
-### `set_active_project`
-Set or clear the active project. When set, commands default to this project.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `project_id` | string | | Project ID (empty/null to clear) |
-
-### `add_workspace`
-Add a workspace directory. Use `clone` to auto-clone from repo URL, or `link` to use an existing directory.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `project_id` | string | ✅ | Project ID |
-| `source` | string | ✅ | `clone` or `link` |
-| `path` | string | | Directory path (required for link) |
-| `name` | string | | Workspace name |
-
-### `list_workspaces`
-List workspaces with lock status showing which agent/task holds each.
-
-### `find_merge_conflict_workspaces`
-Scan workspaces for branches with merge conflicts against the default branch. Use before creating conflict-resolution tasks.
-
-### `release_workspace`
-Force-release a stuck workspace lock.
-
-### `remove_workspace`
-Delete a workspace record from the database (does not delete files on disk).
-
-### `queue_sync_workspaces`
-Queue a high-priority sync task that pauses the project, waits for active tasks, merges all feature branches, then resumes.
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `list_projects` | List all projects | *none* |
+| `create_project` | Create new project | `name` (required), `credit_weight` (float, default 1.0), `max_concurrent_agents` (int, default 2), `repo_url`, `default_branch` (default "main"), `auto_create_channels` (bool) |
+| `pause_project` | Pause task scheduling | `project_id` (required) |
+| `resume_project` | Resume task scheduling | `project_id` (required) |
+| `edit_project` | Edit project properties | `project_id` (required), then any of: `name`, `credit_weight`, `max_concurrent_agents`, `budget_limit` (int or null), `discord_channel_id` (string or null), `default_profile_id` (string or null), `repo_default_branch` |
+| `set_default_branch` | Set default git branch (creates on remote if missing) | `project_id` (required), `branch` (required) |
+| `get_project_channels` | Get Discord channel ID for project | `project_id` (required) |
+| `get_project_for_channel` | Find project linked to a channel | `channel_id` (required) |
+| `delete_project` | Delete project and all data (fails if task IN_PROGRESS) | `project_id` (required), `archive_channels` (bool) |
+| `set_active_project` | Set/clear default project for commands | `project_id` (string, empty/null to clear) |
+| `add_workspace` | Add workspace (clone from repo or link existing dir) | `project_id` (required), `source` (required: "clone" or "link"), `path` (required for link), `name` |
+| `list_workspaces` | List workspaces with lock status | `project_id` (optional) |
+| `find_merge_conflict_workspaces` | Scan for branches with merge conflicts | `project_id` (optional if active set) |
+| `release_workspace` | Force-release a stuck workspace lock | `workspace_id` (required) |
+| `remove_workspace` | Remove workspace record from DB (not files) | `workspace_id` (required), `project_id` (optional) |
+| `queue_sync_workspaces` | Queue sync: pause → wait → merge all branches → resume | `project_id` (optional if active set) |
 
 ---
 
 ## Agent Category (12 tools)
 
-*Agent management, agent profiles, profile import/export.*
-
-### `list_agents`
-List agent slots for a project. Locked workspaces are busy, unlocked are idle.
-
-### `get_agent_error`
-Get the last error recorded for a task including classification and suggested fix.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `task_id` | string | ✅ | Task ID |
-
-### `list_profiles`
-List all agent profiles (capability bundles with tools, MCP servers, system prompts).
-
-### `create_profile`
-Create a new agent profile.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | Profile slug ID (e.g. `reviewer`) |
-| `name` | string | ✅ | Display name |
-| `description` | string | | What the profile is for |
-| `model` | string | | Model override |
-| `permission_mode` | string | | Permission mode override |
-| `allowed_tools` | array[string] | | Tool whitelist (e.g. `['Read', 'Glob', 'Bash']`) |
-| `mcp_servers` | object | | MCP server configs (name → {command, args}) |
-| `system_prompt_suffix` | string | | Text appended to agent's system prompt |
-
-### `get_profile`
-Get details of a specific agent profile.
-
-### `edit_profile`
-Edit an existing profile's properties (same fields as create_profile).
-
-### `delete_profile`
-Delete a profile. References in tasks/projects are cleared.
-
-### `list_available_tools`
-Discover available Claude Code tools and well-known MCP servers for use in profiles.
-
-### `check_profile`
-Validate a profile's install dependencies (commands, npm, pip packages).
-
-### `install_profile`
-Install missing npm/pip dependencies for a profile.
-
-### `export_profile`
-Export a profile as YAML. Optionally create a public GitHub gist.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `profile_id` | string | ✅ | Profile ID |
-| `create_gist` | boolean | | Create a public gist |
-
-### `import_profile`
-Import a profile from YAML text or GitHub gist URL.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `source` | string | ✅ | YAML text or gist URL |
-| `id` | string | | Override profile ID |
-| `name` | string | | Override profile name |
-| `overwrite` | boolean | | Overwrite existing profile |
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `list_agents` | List agent slots (locked=busy, unlocked=idle) | `project_id` (optional if active set) |
+| `get_agent_error` | Last error with classification and suggested fix | `task_id` (required) |
+| `list_profiles` | List all agent profiles | *none* |
+| `create_profile` | Create new agent profile | `id` (required, slug), `name` (required), `description`, `model`, `permission_mode`, `allowed_tools` (array, e.g. ["Read", "Glob", "Bash"]), `mcp_servers` (object: name → {command, args}), `system_prompt_suffix` |
+| `get_profile` | Get profile details | `profile_id` (required) |
+| `edit_profile` | Edit profile properties | `profile_id` (required), then same fields as create_profile |
+| `delete_profile` | Delete profile (refs in tasks/projects cleared) | `profile_id` (required) |
+| `list_available_tools` | Discover Claude Code tools and MCP servers | *none* |
+| `check_profile` | Validate profile install dependencies | `profile_id` (required) |
+| `install_profile` | Install missing npm/pip deps for profile | `profile_id` (required) |
+| `export_profile` | Export profile as YAML (optionally as gist) | `profile_id` (required), `create_gist` (bool) |
+| `import_profile` | Import profile from YAML or gist URL | `source` (required: YAML text or gist URL), `id` (override), `name` (override), `overwrite` (bool) |
 
 ---
 
 ## Hooks Category (8 tools)
 
-*Hook management — list, execute, schedule hooks. Hooks are generated from rules; use `save_rule` to create automation.*
+Hooks are generated from rules. Use `save_rule` (core tool) to create automation — don't create hooks directly.
 
-### `list_hooks`
-List hooks (generated from rules), optionally filtered by project.
-
-### `list_hook_runs`
-Show recent execution history for a hook.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `hook_id` | string | ✅ | Hook ID |
-| `limit` | integer | | Number of runs (default 10) |
-
-### `fire_hook`
-Manually trigger a hook immediately, ignoring cooldown.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `hook_id` | string | ✅ | Hook ID |
-
-### `hook_schedules`
-Show upcoming hook executions with next-run times and schedule constraints.
-
-### `fire_all_scheduled_hooks`
-Manually trigger all enabled periodic hooks. Useful for testing.
-
-### `schedule_hook`
-Schedule a one-shot hook to fire at a specific time or after a delay. Runs once, then auto-deletes.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `project_id` | string | ✅ | Project ID |
-| `prompt_template` | string | ✅ | Prompt to execute when fired |
-| `name` | string | | Descriptive name |
-| `fire_at` | number/string | | Epoch timestamp or ISO-8601 datetime |
-| `delay` | string | | Delay string (e.g. `30m`, `2h`, `1d`) |
-
-### `list_scheduled`
-List all pending one-shot scheduled hooks with countdown times.
-
-### `cancel_scheduled`
-Cancel a scheduled hook before it fires.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `hook_id` | string | ✅ | Hook ID |
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `list_hooks` | List hooks, optionally filtered by project | `project_id` (optional) |
+| `list_hook_runs` | Execution history for a hook | `hook_id` (required), `limit` (int, default 10) |
+| `fire_hook` | Manually trigger hook (ignores cooldown) | `hook_id` (required) |
+| `hook_schedules` | Upcoming executions with next-run times | `project_id` (optional) |
+| `fire_all_scheduled_hooks` | Trigger all enabled periodic hooks | `project_id` (optional) |
+| `schedule_hook` | Schedule one-shot hook (auto-deletes after firing) | `project_id` (required), `prompt_template` (required), `name`, `fire_at` (epoch or ISO-8601), `delay` (e.g. "30m", "2h", "1d"), `context_steps` (array), `llm_config` (object: provider, model, base_url) |
+| `list_scheduled` | List pending one-shot hooks with countdowns | `project_id` (optional) |
+| `cancel_scheduled` | Cancel scheduled hook before it fires | `hook_id` (required) |
 
 ---
 
 ## Memory Category (13 tools)
 
-*Memory operations — notes, project profiles, compaction, reindexing.*
+All memory tools require `project_id`.
 
-### `memory_search`
-*(Also a core tool)* Search project memory semantically.
-
-### `memory_stats`
-Get memory index statistics: enabled status, collection name, embedding provider, auto-recall settings.
-
-### `memory_reindex`
-Force full reindex of project memory from markdown files.
-
-### `view_profile`
-View the project profile — synthesized understanding of architecture, conventions, decisions. Evolves as tasks complete.
-
-### `edit_profile` (memory context)
-Replace the project profile with new content for manual correction.
-
-### `regenerate_profile`
-Force LLM regeneration of the project profile from full task history.
-
-### `compact_memory`
-Trigger memory compaction: groups by age, summarizes medium-age into weekly digests, deletes old after digesting.
-
-### `list_notes`
-List all notes for a project (name, title, size).
-
-### `write_note`
-Create or overwrite a project note (markdown).
-
-### `delete_note`
-Delete a project note by title.
-
-### `read_note`
-Read a note's full contents.
-
-### `append_note`
-Append content to an existing note (or create new). No need to read first.
-
-### `promote_note`
-Incorporate a note into the project profile using LLM integration.
-
-### `compare_specs_notes`
-List spec files and note files side-by-side for gap analysis.
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `memory_search` | Semantic search (also a core tool) | `project_id` (required), `query` (required), `top_k` (int, default 10) |
+| `memory_stats` | Index stats: enabled, collection name, embedding provider | `project_id` (required) |
+| `memory_reindex` | Force full reindex from markdown files | `project_id` (required) |
+| `view_profile` | View project profile (synthesized architecture/conventions) | `project_id` (required) |
+| `edit_profile` | Replace project profile content | `project_id` (required), `content` (markdown, required) |
+| `regenerate_profile` | LLM regeneration of profile from task history | `project_id` (required) |
+| `compact_memory` | Summarize old memories into digests, delete originals | `project_id` (required) |
+| `list_notes` | List all notes (name, title, size) | `project_id` (required) |
+| `write_note` | Create or overwrite a note | `project_id` (required), `title` (required), `content` (required) |
+| `delete_note` | Delete a note | `project_id` (required), `title` (required, use "name" from list_notes) |
+| `read_note` | Read note contents | `project_id` (required), `title` (required) |
+| `append_note` | Append to existing note or create new | `project_id` (required), `title` (required), `content` (required) |
+| `promote_note` | Incorporate note into project profile via LLM | `project_id` (required), `title` (required) |
+| `compare_specs_notes` | Gap analysis: spec files vs note files | `project_id` (required), `specs_path` (optional) |
 
 ---
 
 ## Files Category (7 tools)
 
-*Filesystem tools — read, write, edit files, glob, grep.*
+Filesystem operations within project workspaces.
 
-### `read_file`
-Read file contents from a workspace. Supports offset/limit for large files.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `path` | string | ✅ | File path (absolute or relative to workspaces root) |
-| `max_lines` | integer | | Max lines to return (default 2000) |
-| `offset` | integer | | Start line (1-based, default 1) |
-| `limit` | integer | | Number of lines (overrides max_lines) |
-
-### `write_file`
-Write content to a file. Creates parent directories if needed.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `path` | string | ✅ | File path |
-| `content` | string | ✅ | Content to write |
-
-### `edit_file`
-Targeted string replacement. `old_string` must be unique unless `replace_all=true`.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `path` | string | ✅ | File path |
-| `old_string` | string | ✅ | Text to find |
-| `new_string` | string | ✅ | Replacement text |
-| `replace_all` | boolean | | Replace all occurrences (default false) |
-
-### `glob_files`
-Find files matching a glob pattern (e.g. `**/*.py`). Sorted by modification time.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `pattern` | string | ✅ | Glob pattern |
-| `path` | string | ✅ | Directory to search |
-
-### `grep`
-Search file contents using regex (ripgrep-style).
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `pattern` | string | ✅ | Regex pattern |
-| `path` | string | ✅ | File or directory |
-| `context` | integer | | Lines of context around matches |
-| `case_insensitive` | boolean | | Case-insensitive search |
-| `glob` | string | | File filter (e.g. `*.py`) |
-| `output_mode` | string | | `content`, `files_with_matches`, or `count` |
-| `max_results` | integer | | Max result lines (default 100) |
-
-### `search_files`
-Search files or content. `grep` mode for content, `find` mode for filenames.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `pattern` | string | ✅ | Search pattern |
-| `path` | string | ✅ | Directory to search |
-| `mode` | string | | `grep` (default) or `find` |
-
-### `list_directory`
-List files and directories at a path within a workspace.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `project_id` | string | ✅ | Project ID |
-| `path` | string | | Relative path (default: root) |
-| `workspace` | string | | Workspace name or ID |
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `read_file` | Read file contents (supports pagination) | `path` (required: absolute or relative to workspaces root), `max_lines` (default 2000), `offset` (1-based, default 1), `limit` (overrides max_lines) |
+| `write_file` | Write/create file (creates parent dirs) | `path` (required), `content` (required) |
+| `edit_file` | Targeted string replacement | `path` (required), `old_string` (required, must be unique unless replace_all), `new_string` (required), `replace_all` (bool, default false) |
+| `glob_files` | Find files matching glob pattern | `pattern` (required, e.g. `**/*.py`), `path` (required: directory) |
+| `grep` | Regex content search (ripgrep-style) | `pattern` (required), `path` (required), `context` (int: lines around match), `case_insensitive` (bool), `glob` (file filter), `output_mode` (content/files_with_matches/count), `max_results` (default 100) |
+| `search_files` | Search content (grep) or filenames (find) | `pattern` (required), `path` (required), `mode` ("grep" default or "find") |
+| `list_directory` | List files/dirs at workspace path | `project_id` (required), `path` (relative, default root), `workspace` (name or ID) |
 
 ---
 
 ## System Category (28+ tools)
 
-*Token usage, config, diagnostics, advanced task operations, prompt management, daemon control.*
-
 ### Task Operations
 
-#### `list_active_tasks_all_projects`
-Cross-project overview of all active tasks grouped by project.
-
-#### `get_task_tree`
-Get subtask hierarchy for a parent task as a tree with box-drawing characters.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `task_id` | string | ✅ | Root task ID |
-| `compact` | boolean | | Show only root with progress bar |
-| `max_depth` | integer | | Max nesting depth (default 4) |
-
-#### `stop_task`
-Stop an in-progress task. Cancels agent, marks BLOCKED.
-
-#### `restart_task`
-Reset completed/failed/blocked task back to READY.
-
-#### `reopen_with_feedback`
-Reopen a task with feedback explaining what needs fixing. Feedback is appended to description.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `task_id` | string | ✅ | Task ID |
-| `feedback` | string | ✅ | What went wrong / what to fix |
-
-#### `delete_task`
-Delete a task (cannot delete if IN_PROGRESS).
-
-#### `skip_task`
-Skip a BLOCKED/FAILED task to unblock downstream dependents.
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `list_active_tasks_all_projects` | Cross-project active task overview | `include_completed` (bool) |
+| `get_task_tree` | Subtask hierarchy rendered as tree | `task_id` (required), `compact` (bool: root only with progress bar), `max_depth` (int, default 4) |
+| `stop_task` | Stop in-progress task → BLOCKED | `task_id` (required) |
+| `restart_task` | Reset completed/failed/blocked → READY | `task_id` (required) |
+| `reopen_with_feedback` | Reopen task with feedback appended to description | `task_id` (required), `feedback` (required) |
+| `delete_task` | Delete task (fails if IN_PROGRESS) | `task_id` (required) |
+| `skip_task` | Skip BLOCKED/FAILED to unblock dependents | `task_id` (required) |
 
 ### Archive Operations
 
-#### `archive_tasks`
-Archive completed tasks to clear from active lists. Optionally include failed/blocked.
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `archive_tasks` | Archive completed tasks | `project_id` (optional), `include_failed` (bool) |
+| `archive_task` | Archive single task (must be terminal) | `task_id` (required) |
+| `list_archived` | List archived tasks | `project_id` (optional), `limit` (int, default 50) |
+| `restore_task` | Restore archived task → DEFINED | `task_id` (required) |
 
-#### `archive_task`
-Archive a single task (must be in terminal status).
+### Plan & Approval Operations
 
-#### `list_archived`
-List previously archived tasks.
-
-#### `restore_task`
-Restore an archived task back to active (restored as DEFINED).
-
-### Approval & Plan Operations
-
-#### `approve_task`
-Manually approve/complete a task AWAITING_APPROVAL.
-
-#### `approve_plan`
-Approve a plan — creates subtasks from the stored plan.
-
-#### `reject_plan`
-Reject a plan with feedback — reopens for revision.
-
-#### `delete_plan`
-Delete a plan without creating subtasks — completes the task.
-
-#### `process_plan`
-Manually scan workspaces for plan.md files.
-
-#### `process_task_completion`
-Internal: Process task completion to discover plan files.
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `approve_task` | Approve task AWAITING_APPROVAL | `task_id` (required) |
+| `approve_plan` | Approve plan → creates subtasks | `task_id` (required) |
+| `reject_plan` | Reject plan with feedback → reopens for revision | `task_id` (required), `feedback` (required) |
+| `delete_plan` | Delete plan without creating subtasks → completes task | `task_id` (required) |
+| `process_plan` | Scan workspaces for plan.md files | `project_id` (optional), `task_id` (optional) |
+| `process_task_completion` | Internal: discover plan files after task completes | `task_id` (required), `workspace_path` (required) |
 
 ### Dependency Operations
 
-#### `get_task_dependencies`
-Get full dependency graph: what a task depends on (upstream) and blocks (downstream).
-
-#### `add_dependency`
-Add a dependency between tasks with cycle detection.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `task_id` | string | ✅ | Downstream task (waits) |
-| `depends_on` | string | ✅ | Upstream task (must complete first) |
-
-#### `remove_dependency`
-Remove a dependency between tasks.
-
-#### `get_chain_health`
-Check dependency chain health — find stuck downstream tasks.
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `get_task_dependencies` | Full dependency graph (upstream + downstream) | `task_id` (required) |
+| `add_dependency` | Add dependency with cycle detection | `task_id` (required: downstream/waits), `depends_on` (required: upstream/completes first) |
+| `remove_dependency` | Remove dependency link | `task_id` (required), `depends_on` (required) |
+| `get_chain_health` | Find stuck dependency chains | `task_id` (optional), `project_id` (optional) |
 
 ### Diagnostics & Control
 
-#### `get_status`
-High-level system overview: projects, agents, task counts.
-
-#### `get_recent_events`
-Recent system events (completions, failures, etc.).
-
-#### `get_task_result`
-Task output: summary, files changed, error, tokens used.
-
-#### `get_task_diff`
-Git diff for a task's branch against base.
-
-#### `get_token_usage`
-Token usage breakdown by project or task.
-
-#### `get_agent_error`
-Last error for a task with classification and suggested fix.
-
-#### `run_command`
-Execute a shell command in a workspace directory.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `command` | string | ✅ | Shell command |
-| `working_dir` | string | ✅ | Working directory (path or project ID) |
-| `timeout` | integer | | Timeout in seconds (default 30, max 120) |
-
-#### `restart_daemon`
-Restart the agent-queue daemon (brief disconnect/reconnect).
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `reason` | string | ✅ | Why the restart is needed |
-
-#### `orchestrator_control`
-Pause, resume, or check status of the task scheduler.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `action` | string | ✅ | `pause`, `resume`, or `status` |
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `get_status` | System overview: projects, agents, task counts | *none* |
+| `get_recent_events` | Recent events (completions, failures, etc.) | `limit` (int, default 10) |
+| `get_task_result` | Task output: summary, files changed, error, tokens | `task_id` (required) |
+| `get_task_diff` | Git diff for task's branch vs base | `task_id` (required) |
+| `get_token_usage` | Token usage by project or task | `project_id` (optional), `task_id` (optional) |
+| `run_command` | Execute shell command in workspace | `command` (required), `working_dir` (required: path or project ID), `timeout` (int, default 30, max 120) |
+| `restart_daemon` | Restart agent-queue daemon | `reason` (required) |
+| `orchestrator_control` | Pause/resume/check task scheduler | `action` (required: "pause", "resume", or "status") |
 
 ### Prompt Management
 
-#### `list_prompts`
-List all prompt templates for a project, filtered by category or tag.
-
-#### `read_prompt`
-Read a prompt template's full content and metadata.
-
-#### `render_prompt`
-Render a prompt template with `{{variable}}` substitution.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `project_id` | string | ✅ | Project ID |
-| `name` | string | ✅ | Template name |
-| `variables` | object | | Key-value pairs for substitution |
+| Tool | What It Does | Parameters |
+|------|-------------|------------|
+| `list_prompts` | List prompt templates | `project_id` (required), `category` (system/task/hooks/custom), `tag` |
+| `read_prompt` | Read prompt template content | `project_id` (required), `name` (required) |
+| `render_prompt` | Render template with variable substitution | `project_id` (required), `name` (required), `variables` (object: key → value) |
 
 ---
 
 ## Tool Count Summary
 
-| Category | Tools | Description |
-|----------|-------|-------------|
-| **Core** | ~15 | Always loaded — tasks, memory search, rules, messaging |
-| **git** | 11 | Branch, commit, push, PR, merge |
-| **project** | 16 | Project CRUD, workspaces, channels |
-| **agent** | 12 | Profiles, dependencies, import/export |
-| **hooks** | 8 | Hook execution, scheduling, history |
-| **memory** | 13 | Notes, profiles, compaction, reindexing |
-| **files** | 7 | Read, write, edit, glob, grep |
-| **system** | 28+ | Diagnostics, archives, dependencies, prompts, daemon |
-| **Total** | ~110+ | |
+| Category | Count | Scope |
+|----------|-------|-------|
+| Core | ~15 | Tasks, memory search, rules, messaging, tool loading |
+| git | 11 | Branch, commit, push, PR, merge |
+| project | 16 | Project CRUD, workspaces, channels |
+| agent | 12 | Profiles, capabilities, import/export |
+| hooks | 8 | Hook execution, scheduling, history |
+| memory | 13 | Notes, profiles, compaction, reindexing |
+| files | 7 | Read, write, edit, glob, grep |
+| system | 28+ | Diagnostics, archives, dependencies, prompts, daemon |
+| **Total** | **~110+** | |
+
+---
+
+## Common Workflows
+
+### Creating and running a task
+```
+create_task(title="Fix login bug", description="...", task_type="bugfix")
+```
+The orchestrator automatically assigns it to an available agent/workspace.
+
+### Checking on work
+```
+list_tasks(display_mode="compact")          # progress overview
+get_task_result(task_id="swift-dune")       # see what agent produced
+get_task_diff(task_id="swift-dune")         # see code changes
+```
+
+### Working with memory
+```
+memory_search(project_id="my-proj", query="how does auth work")
+write_note(project_id="my-proj", title="auth-design", content="...")
+```
+
+### Managing automation
+```
+save_rule(type="active", content="# Auto-retry\n## Trigger\nTask fails with rate limit\n## Logic\nWait 5min then restart")
+list_rules()
+```
+
+### Git workflow
+```
+load_tools(category="git")
+get_git_status()
+git_create_branch(branch_name="fix/login-bug")
+git_commit(message="Fix login validation")
+git_create_pr(title="Fix login validation bug")
+```
