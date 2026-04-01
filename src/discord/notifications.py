@@ -10,10 +10,9 @@ task metadata.  The orchestrator passes both versions through the notification
 callback so the bot can choose the appropriate format.
 
 **Interactive views** (``TaskFailedView``, ``TaskApprovalView``,
-``AgentQuestionView``, ``ChatAnalyzerSuggestionView``) attach action buttons
-to notification embeds so users can retry, skip, approve tasks, reply to
-agent questions, or accept/dismiss analyzer suggestions directly from Discord
-without memorizing slash commands.
+``AgentQuestionView``) attach action buttons
+to notification embeds so users can retry, skip, approve tasks, or reply to
+agent questions directly from Discord without memorizing slash commands.
 
 ``classify_error`` pattern-matches raw error messages against known failure modes
 and returns an actionable fix suggestion -- this turns opaque stack traces into
@@ -1611,11 +1610,3 @@ _SUGGESTION_TYPE_COLORS = {
 _DISMISSED_COLOR = 0x95A5A6
 
 
-# ChatAnalyzer suggestion UI migrated to src/discord/views.py (Phase 5/6).
-# Re-export for backward compatibility.
-from src.discord.views import (  # noqa: E402
-    SuggestionView as ChatAnalyzerSuggestionView,
-    format_suggestion_embed as format_analyzer_suggestion_embed,
-)
-
-AnalyzerSuggestionView = ChatAnalyzerSuggestionView

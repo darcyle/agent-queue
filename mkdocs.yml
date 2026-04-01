@@ -89,7 +89,6 @@ nav:
           - Reflection: specs/reflection.md
           - Rule System: specs/rule-system.md
           - Tiered Tools: specs/tiered-tools.md
-          - Chat Analyzer: specs/chat-analyzer.md
           - Chat Observer: specs/chat-observer.md
           - Hooks: specs/hooks.md
           - Event Bus: specs/event-bus.md

@@ -614,8 +614,6 @@ def test_orchestrator_initializes_rule_manager(tmp_path):
     config.global_token_budget_daily = 1000000
     config.hook_engine = MagicMock()
     config.hook_engine.enabled = False
-    config.chat_analyzer = MagicMock()
-    config.chat_analyzer.enabled = False
     config.memory = MagicMock()
     config.memory.enabled = False
     config._config_path = None
