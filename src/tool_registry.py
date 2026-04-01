@@ -30,6 +30,7 @@ See ``specs/supervisor.md`` for the tool-use loop that drives loading.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -2568,3 +2569,100 @@ class ToolRegistry:
             List of every tool definition dict known to the registry.
         """
         return list(self._all_tools.values())
+
+    # ------------------------------------------------------------------
+    # Prompt-based tool search
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        """Tokenize text into lowercase words, splitting on underscores too.
+
+        Filters out very short tokens (len < 3) and common stop words to
+        reduce noise in keyword matching.
+        """
+        _STOP_WORDS = frozenset({
+            "the", "and", "for", "this", "that", "with", "from", "are",
+            "was", "were", "been", "have", "has", "had", "not", "but",
+            "can", "will", "all", "its", "use", "set", "get", "new",
+            "one", "two", "any", "our", "you", "your",
+        })
+        # Split on non-alphanumeric, underscores, and hyphens
+        words = re.split(r"[^a-zA-Z0-9]+", text.lower())
+        return {w for w in words if len(w) >= 3 and w not in _STOP_WORDS}
+
+    def _tool_search_text(self, tool: dict) -> str:
+        """Build searchable text from a tool definition.
+
+        Combines the tool name (with underscores split into words) and
+        the tool description into a single string for keyword matching.
+        """
+        name = tool.get("name", "")
+        desc = tool.get("description", "")
+        # Also include property names/descriptions from input_schema
+        schema_parts: list[str] = []
+        schema = tool.get("input_schema", {})
+        for prop_name, prop_def in schema.get("properties", {}).items():
+            schema_parts.append(prop_name)
+            if isinstance(prop_def, dict) and "description" in prop_def:
+                schema_parts.append(prop_def["description"])
+        return f"{name} {desc} {' '.join(schema_parts)}"
+
+    def search_relevant_categories(
+        self,
+        query: str,
+        max_categories: int = 3,
+        min_score: float = 0.15,
+    ) -> list[str]:
+        """Search tool definitions and return categories relevant to a query.
+
+        Scores each non-core tool against the query using keyword overlap
+        between the query tokens and the tool's name + description + schema.
+        Categories are ranked by a composite of their best-matching tool's
+        score (primary) and the sum of all tool scores (tiebreaker).
+
+        Args:
+            query: The user's prompt or search query.
+            max_categories: Maximum number of categories to return.
+            min_score: Minimum score threshold (0-1) for a category to be
+                included. Categories whose best tool score falls below this
+                are excluded.
+
+        Returns:
+            List of category names, ordered by relevance (best first).
+            May be empty if no categories score above ``min_score``.
+        """
+        query_tokens = self._tokenize(query)
+        if not query_tokens:
+            return []
+
+        # Score each categorized tool, track best and sum per category
+        category_best: dict[str, float] = {}
+        category_sum: dict[str, float] = {}
+        for tool_name, category in _TOOL_CATEGORIES.items():
+            tool = self._all_tools.get(tool_name)
+            if not tool:
+                continue
+            tool_tokens = self._tokenize(self._tool_search_text(tool))
+            if not tool_tokens:
+                continue
+
+            # Score: fraction of query tokens found in tool text
+            matches = query_tokens & tool_tokens
+            score = len(matches) / len(query_tokens)
+
+            if score > 0:
+                category_sum[category] = category_sum.get(category, 0.0) + score
+                if score > category_best.get(category, 0.0):
+                    category_best[category] = score
+
+        # Rank by (best_score, sum_score) so ties are broken by breadth
+        ranked = sorted(
+            category_best.items(),
+            key=lambda x: (x[1], category_sum.get(x[0], 0.0)),
+            reverse=True,
+        )
+        return [
+            cat for cat, score in ranked[:max_categories]
+            if score >= min_score
+        ]
