@@ -111,7 +111,7 @@ class AgentOutput:
 
 | Value | Meaning | Orchestrator action |
 |-------|---------|---------------------|
-| `COMPLETED` | Agent finished successfully | Transition task to VERIFYING or COMPLETED |
+| `COMPLETED` | Agent finished successfully | Transition task to COMPLETED (or AWAITING_APPROVAL / AWAITING_PLAN_APPROVAL / BLOCKED depending on outcome) |
 | `FAILED` | Agent crashed or could not complete | Retry or transition to FAILED |
 | `PAUSED_TOKENS` | Token budget / quota exhausted | Pause task, auto-resume later |
 | `PAUSED_RATE_LIMIT` | Rate-limited by the API | Pause task, auto-resume later |

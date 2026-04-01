@@ -481,12 +481,13 @@ If `output.tokens_used > 0`: `db.record_token_usage(project_id, agent_id, task_i
 **Step 15 — Handle result.**
 
 *`COMPLETED`:*
-- Transition task to `VERIFYING` (`context="agent_completed"`).
 - Run the three-phase `_run_completion_pipeline(ctx)` which executes:
   1. `_phase_commit` — commit agent changes to git
   2. `_phase_plan_discover` — delegate to Supervisor for plan file discovery; if plan
      found, transition to `AWAITING_PLAN_APPROVAL` and return early
-  3. `_phase_merge` — merge/push or create PR based on configuration
+  3. `_phase_merge` — merge/push or create PR based on configuration; on merge
+     success transitions to `COMPLETED`, on PR creation transitions to
+     `AWAITING_APPROVAL`, on merge failure transitions to `BLOCKED`
 - The pipeline handles PR creation, approval transitions, and completion notifications.
 - Post full completion summary to thread (or `_notify_channel`); post brief to main.
 

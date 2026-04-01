@@ -27,7 +27,7 @@ asyncio event loop
 ### Task State Machine
 
 ```
-DEFINED → READY → ASSIGNED → IN_PROGRESS → VERIFYING → COMPLETED
+DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED
                                   │
                         ┌─────────┼──────────┐
                         ▼         ▼          ▼
