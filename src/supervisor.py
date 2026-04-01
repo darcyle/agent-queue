@@ -145,7 +145,11 @@ class Supervisor:
         self._llm_logger = llm_logger
         self.handler = CommandHandler(orchestrator, config)
         self.reflection = ReflectionEngine(config.supervisor.reflection)
-        self._cancel_event: asyncio.Event | None = None
+        # Stack of cancel events — one per concurrent chat() call.
+        # Using a stack instead of a single event prevents concurrent/recursive
+        # chat() calls (e.g. hook LLM + user chat, or reflection retry) from
+        # clobbering each other's cancel state.
+        self._cancel_events: list[asyncio.Event] = []
 
     def initialize(self) -> bool:
         """Create LLM provider. Returns True if provider is ready."""
@@ -183,20 +187,20 @@ class Supervisor:
         return self.initialize()
 
     def cancel(self) -> None:
-        """Cancel the current chat() call.
+        """Cancel all active chat() calls.
 
-        Sets the internal cancel event so the response loop exits
-        immediately at the next checkpoint.  Safe to call from any
-        coroutine — the event is checked between LLM calls and tool
+        Sets all internal cancel events so every in-flight response loop
+        exits immediately at the next checkpoint.  Safe to call from any
+        coroutine — events are checked between LLM calls and tool
         executions.
         """
-        if self._cancel_event is not None:
-            self._cancel_event.set()
+        for ev in self._cancel_events:
+            ev.set()
 
     @property
     def is_chatting(self) -> bool:
-        """True while a ``chat()`` call is in progress."""
-        return self._cancel_event is not None and not self._cancel_event.is_set()
+        """True while at least one ``chat()`` call is in progress."""
+        return any(not ev.is_set() for ev in self._cancel_events)
 
     def _build_system_prompt(self) -> str:
         """Build the system prompt for the current conversation.
@@ -321,15 +325,19 @@ class Supervisor:
         if not self._provider:
             raise RuntimeError("LLM provider not initialized — call initialize() first")
 
-        # Set up cancellation for this chat session
-        self._cancel_event = asyncio.Event()
+        # Each chat() call gets its own cancel event on the stack so that
+        # concurrent calls (hook LLM + user chat) or recursive calls
+        # (reflection retry) don't clobber each other's cancellation state.
+        cancel_event = asyncio.Event()
+        self._cancel_events.append(cancel_event)
 
         try:
             return await self._chat_inner(
                 text, user_name, history, on_progress, _reflection_trigger,
+                cancel_event=cancel_event,
             )
         finally:
-            self._cancel_event = None
+            self._cancel_events.remove(cancel_event)
             # Clear conversation context so it doesn't leak to future calls
             self.handler._current_conversation_context = None
 
@@ -363,6 +371,7 @@ class Supervisor:
         history: list[dict] | None = None,
         on_progress: "Callable[[str, str | None], Awaitable[None]] | None" = None,
         _reflection_trigger: str = "user.request",
+        cancel_event: asyncio.Event | None = None,
     ) -> str:
         """Inner implementation of chat() — separated so chat() can manage
         the cancel event lifecycle in a try/finally."""
@@ -400,7 +409,7 @@ class Supervisor:
         round_num = 0
         while True:  # No step limit — agents run until they finish
             # Check for cancellation before each round
-            if self._cancel_event.is_set():
+            if cancel_event and cancel_event.is_set():
                 if on_progress:
                     await on_progress("cancelled", None)
                 return "Cancelled."
@@ -498,7 +507,7 @@ class Supervisor:
             messages.append({"role": "user", "content": tool_results})
 
             # Check for cancellation after tool execution
-            if self._cancel_event.is_set():
+            if cancel_event and cancel_event.is_set():
                 if on_progress:
                     await on_progress("cancelled", None)
                 return "Cancelled."
