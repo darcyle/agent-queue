@@ -1528,9 +1528,16 @@ class _HookViewSourceRuleButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         hook_id = self._hook["id"]
-        # Extract rule ID from hook ID: "rule-{rule_id}-{suffix}"
-        parts = hook_id.split("-", 2)
-        rule_id = parts[1] if len(parts) > 1 else None
+        # Extract rule ID from hook ID: "rule-{rule_id}-{6hex}"
+        # Rule IDs themselves start with "rule-", so we strip the leading "rule-"
+        # prefix and the trailing "-{6hex}" suffix.
+        rule_id = None
+        if hook_id.startswith("rule-") and len(hook_id) > 12:
+            # Strip "rule-" prefix, then remove the last "-{6hex}" suffix
+            without_prefix = hook_id[5:]  # remove "rule-"
+            last_dash = without_prefix.rfind("-")
+            if last_dash > 0:
+                rule_id = without_prefix[:last_dash]
         if not rule_id:
             await interaction.response.send_message(
                 f"⚠️ Could not determine source rule for hook `{hook_id}`.",

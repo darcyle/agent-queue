@@ -5462,9 +5462,11 @@ feature work stuck on feature branches across multiple workspaces.
 
         # Rule-backed hooks should be edited via their source rule
         if hook_id.startswith("rule-"):
-            # Extract rule ID: hook IDs are like "rule-{rule_id}-{suffix}"
-            parts = hook_id.split("-", 2)  # ['rule', '{rule_id}', ...]
-            rule_id = parts[1] if len(parts) > 1 else None
+            # Extract rule ID: hook IDs are "rule-{rule_id}-{6hex}"
+            # Rule IDs themselves start with "rule-", so strip prefix and suffix
+            without_prefix = hook_id[5:]  # remove "rule-"
+            last_dash = without_prefix.rfind("-")
+            rule_id = without_prefix[:last_dash] if last_dash > 0 else None
             return {
                 "error": (
                     f"Hook '{hook_id}' is generated from rule '{rule_id}'. "
@@ -5515,8 +5517,10 @@ feature work stuck on feature branches across multiple workspaces.
 
         # Rule-backed hooks must be deleted via the rule
         if hook_id.startswith("rule-"):
-            parts = hook_id.split("-", 2)
-            rule_id = parts[1] if len(parts) > 1 else None
+            # Extract rule ID: hook IDs are "rule-{rule_id}-{6hex}"
+            without_prefix = hook_id[5:]  # remove "rule-"
+            last_dash = without_prefix.rfind("-")
+            rule_id = without_prefix[:last_dash] if last_dash > 0 else None
             return {
                 "error": (
                     f"Hook '{hook_id}' is generated from rule '{rule_id}'. "
