@@ -5858,6 +5858,24 @@ feature work stuck on feature branches across multiple workspaces.
 
         return loaded
 
+    async def _cmd_refresh_hooks(self, args: dict) -> dict:
+        """Reconcile hooks from current rule files.
+
+        Re-reads all rule files and regenerates hooks for active rules,
+        ensuring the hook engine matches the rules on disk.
+        """
+        rm = getattr(self.orchestrator, "rule_manager", None)
+        if not rm:
+            return {"error": "Rule manager not initialized"}
+
+        stats = await rm.reconcile()
+        return {
+            "success": True,
+            "rules_scanned": stats.get("rules_scanned", 0),
+            "hooks_regenerated": stats.get("hooks_regenerated", 0),
+            "errors": stats.get("errors", 0),
+        }
+
     # -----------------------------------------------------------------------
     # Notes commands -- markdown documents stored in project workspaces.
     # Notes are a lightweight knowledge base: users and hooks can write
