@@ -653,17 +653,184 @@ class RuleManager:
 
         return None
 
+    # ------------------------------------------------------------------
+    # Orphan hook migration
+    # ------------------------------------------------------------------
+
+    async def migrate_orphan_hooks(self) -> dict:
+        """Migrate direct/orphan hooks into rule-backed hooks.
+
+        Queries all hooks from the database and converts any hook whose ID
+        does **not** start with ``rule-`` into a proper rule markdown file.
+        After the rule file is saved, the original orphan hook is deleted.
+        Subsequent reconciliation will regenerate rule-backed hooks from the
+        new rule files.
+
+        This method is idempotent: if a rule file already exists for a given
+        hook name, the hook is simply deleted (the rule is the source of
+        truth).
+
+        Returns:
+            Dict with ``migrated``, ``skipped``, and ``errors`` counts.
+        """
+        import json
+
+        stats = {"migrated": 0, "skipped": 0, "errors": 0}
+
+        if not self._db:
+            return stats
+
+        try:
+            all_hooks = await self._db.list_hooks()
+        except Exception as e:
+            logger.error("Failed to list hooks for orphan migration: %s", e)
+            return stats
+
+        for hook in all_hooks:
+            if hook.id.startswith("rule-"):
+                stats["skipped"] += 1
+                continue
+
+            try:
+                # Build rule content from hook config
+                title = hook.name or hook.id
+                body_parts = [f"# {title}"]
+
+                # Reverse-parse trigger JSON into natural language
+                trigger_section = self._reverse_parse_trigger(hook.trigger)
+                if hook.cooldown_seconds:
+                    trigger_section += f"\nCooldown: {hook.cooldown_seconds} seconds."
+                body_parts.append(f"\n## Trigger\n\n{trigger_section}")
+
+                # Use prompt_template as the Logic section
+                logic = hook.prompt_template or "No logic defined."
+                body_parts.append(f"\n## Logic\n\n{logic}")
+
+                content = "\n".join(body_parts)
+
+                # Derive a rule ID from the hook name/id
+                rule_id = self._id_from_title(title)
+
+                # Check if a rule already exists for this hook (idempotent)
+                if self.load_rule(rule_id):
+                    logger.info(
+                        "Rule %s already exists for orphan hook %s, deleting hook only",
+                        rule_id, hook.id,
+                    )
+                else:
+                    # Save the rule file
+                    result = self.save_rule(
+                        id=rule_id,
+                        project_id=hook.project_id,
+                        rule_type="active",
+                        content=content,
+                    )
+                    if not result.get("success"):
+                        logger.warning(
+                            "Failed to save rule for orphan hook %s: %s",
+                            hook.id, result,
+                        )
+                        stats["errors"] += 1
+                        continue
+
+                    logger.info(
+                        "Migrated orphan hook %s → rule %s",
+                        hook.id, rule_id,
+                    )
+
+                # Delete the original orphan hook
+                await self._db.delete_hook(hook.id)
+                stats["migrated"] += 1
+
+            except Exception as e:
+                logger.warning(
+                    "Failed to migrate orphan hook %s: %s", hook.id, e,
+                )
+                stats["errors"] += 1
+
+        if stats["migrated"]:
+            logger.info(
+                "Orphan hook migration complete: %d migrated, %d skipped, %d errors",
+                stats["migrated"], stats["skipped"], stats["errors"],
+            )
+
+        return stats
+
+    @staticmethod
+    def _reverse_parse_trigger(trigger_json: str) -> str:
+        """Convert a hook trigger JSON string back into natural language.
+
+        Args:
+            trigger_json: JSON string like ``{"type": "periodic", "interval_seconds": 3600}``.
+
+        Returns:
+            Human-readable trigger description for a rule's ``## Trigger`` section.
+        """
+        import json
+
+        try:
+            trigger = json.loads(trigger_json) if trigger_json else {}
+        except (json.JSONDecodeError, TypeError):
+            return "Unknown trigger configuration."
+
+        if not trigger:
+            return "No trigger defined."
+
+        trigger_type = trigger.get("type", "unknown")
+
+        if trigger_type == "periodic":
+            seconds = trigger.get("interval_seconds", 0)
+            if seconds >= 86400 and seconds % 86400 == 0:
+                value = seconds // 86400
+                unit = "day" if value == 1 else "days"
+            elif seconds >= 3600 and seconds % 3600 == 0:
+                value = seconds // 3600
+                unit = "hour" if value == 1 else "hours"
+            elif seconds >= 60 and seconds % 60 == 0:
+                value = seconds // 60
+                unit = "minute" if value == 1 else "minutes"
+            else:
+                value = seconds
+                unit = "second" if value == 1 else "seconds"
+            return f"Every {value} {unit}."
+
+        if trigger_type == "event":
+            event_type = trigger.get("event_type", "unknown")
+            # Convert dotted event types to natural language
+            readable = event_type.replace(".", " ").replace("_", " ")
+            return f"When {readable}."
+
+        if trigger_type == "cron":
+            expression = trigger.get("cron", trigger.get("expression", ""))
+            return f"Cron schedule: `{expression}`."
+
+        # Fallback for unknown trigger types
+        return f"Trigger type: {trigger_type}."
+
     async def reconcile(self) -> dict:
         """Startup reconciliation: regenerate hooks for all active rules.
 
         Scans all rule files and unconditionally regenerates hooks from each
         active rule.  This ensures hooks stay in sync with rule content even
         if the rule files or database were edited outside the running system.
+
+        Also migrates any orphan hooks (created directly, not via rules) into
+        rule files before reconciliation, so that all automation has a rule
+        file as its source of truth.
         """
+        # Migrate orphan hooks first (idempotent — safe to run every startup)
+        migration_stats = await self.migrate_orphan_hooks()
+        if migration_stats["migrated"]:
+            logger.info(
+                "Pre-reconciliation migration: %d orphan hooks converted to rules",
+                migration_stats["migrated"],
+            )
+
         stats = {
             "rules_scanned": 0,
             "hooks_regenerated": 0,
             "errors": 0,
+            "orphan_hooks_migrated": migration_stats["migrated"],
         }
 
         memory_root = os.path.join(self._storage_root, "memory")
