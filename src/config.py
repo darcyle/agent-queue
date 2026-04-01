@@ -338,64 +338,6 @@ class LoggingConfig:
 
 
 @dataclass
-class ChatAnalyzerConfig:
-    """Configuration for the background chat analyzer agent.
-
-    When enabled, the analyzer watches conversation flow in project channels
-    and proactively suggests answers, tasks, or context when it spots something
-    useful. Runs on the local LLM (Ollama) to avoid burning Claude tokens.
-    """
-
-    enabled: bool = False
-    interval_seconds: int = 300          # How often to analyze (5 min)
-    min_messages_to_analyze: int = 3     # Don't analyze until N new messages
-    confidence_threshold: float = 0.7    # Minimum confidence to suggest
-    max_suggestions_per_hour: int = 5    # Rate limit suggestions
-    provider: str = "ollama"             # Which chat provider to use
-    model: str = "llama3.2"             # Model for analysis
-    base_url: str = "http://localhost:11434/v1"  # Ollama endpoint
-    cooldown_after_dismiss: int = 1800   # Don't suggest again for 30min after dismiss
-
-    # --- Chat history context ---
-    chat_history_window: int = 20        # How many recent messages to include in analysis
-    include_timestamps: bool = True      # Include timestamps in message context
-
-    # --- Memory integration ---
-    memory_integration: bool = True      # Use memory system for richer context
-    memory_search_top_k: int = 3         # Number of memory results per analysis
-    include_profile: bool = True         # Include project profile in analysis context
-
-    # --- Auto-execution ---
-    auto_execute_enabled: bool = False   # Allow auto-executing actions without user approval
-    auto_execute_types: list[str] | None = None  # Suggestion types eligible for auto-execution (e.g. ["task", "answer"])
-    auto_execute_confidence: float = 0.9 # Minimum confidence for auto-execution (higher than normal threshold)
-    auto_execute_max_per_hour: int = 2   # Rate limit for auto-executed actions
-
-    def validate(self) -> list[ConfigError]:
-        errors: list[ConfigError] = []
-        if self.interval_seconds < 30:
-            errors.append(ConfigError("chat_analyzer", "interval_seconds", "must be >= 30"))
-        if self.min_messages_to_analyze < 1:
-            errors.append(ConfigError("chat_analyzer", "min_messages_to_analyze", "must be >= 1"))
-        if not (0.0 <= self.confidence_threshold <= 1.0):
-            errors.append(ConfigError("chat_analyzer", "confidence_threshold", "must be between 0.0 and 1.0"))
-        if self.max_suggestions_per_hour < 1:
-            errors.append(ConfigError("chat_analyzer", "max_suggestions_per_hour", "must be >= 1"))
-        if self.chat_history_window < 1:
-            errors.append(ConfigError("chat_analyzer", "chat_history_window", "must be >= 1"))
-        if not (0.0 <= self.auto_execute_confidence <= 1.0):
-            errors.append(ConfigError("chat_analyzer", "auto_execute_confidence", "must be between 0.0 and 1.0"))
-        if self.auto_execute_confidence < self.confidence_threshold:
-            errors.append(ConfigError("chat_analyzer", "auto_execute_confidence", "must be >= confidence_threshold"))
-        valid_auto_types = {"answer", "task", "context", "warning"}
-        if self.auto_execute_types:
-            for t in self.auto_execute_types:
-                if t not in valid_auto_types:
-                    errors.append(ConfigError("chat_analyzer", "auto_execute_types", f"invalid type '{t}'"))
-        return errors
-
-
-@dataclass
 class ReflectionConfig:
     """Configuration for the Supervisor's action-reflect cycle."""
     level: str = "full"
@@ -611,7 +553,6 @@ class AppConfig:
     chat_provider: ChatProviderConfig = field(default_factory=ChatProviderConfig)
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
     hook_engine: HookEngineConfig = field(default_factory=HookEngineConfig)
-    chat_analyzer: ChatAnalyzerConfig = field(default_factory=ChatAnalyzerConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
@@ -685,8 +626,6 @@ class AppConfig:
         errors.extend(self.llm_logging.validate())
         errors.extend(self.memory.validate())
         errors.extend(self.mcp_server.validate())
-        errors.extend(self.chat_analyzer.validate())
-
         # Agent profiles
         for profile in self.agent_profiles:
             errors.extend(profile.validate())
@@ -719,12 +658,6 @@ class AppConfig:
     def check_deprecations(self) -> list[str]:
         """Check for deprecated config sections and return warning messages."""
         warnings = []
-        if self.chat_analyzer.enabled:
-            warnings.append(
-                "DEPRECATED: 'chat_analyzer' config section is deprecated. "
-                "Use 'supervisor.observation' instead. The chat_analyzer "
-                "section will be ignored when supervisor.observation is active."
-            )
         return warnings
 
     def reload_non_critical(self) -> "AppConfig":
@@ -759,7 +692,6 @@ class AppConfig:
         updated.archive = fresh.archive
         updated.monitoring = fresh.monitoring
         updated.hook_engine = fresh.hook_engine
-        updated.chat_analyzer = fresh.chat_analyzer
         updated.llm_logging = fresh.llm_logging
 
         return updated
@@ -772,7 +704,7 @@ class AppConfig:
 HOT_RELOADABLE_SECTIONS = {
     "scheduling", "monitoring", "hook_engine", "archive",
     "llm_logging", "pause_retry", "agents_config", "auto_task",
-    "logging", "agent_profiles", "rate_limits", "chat_analyzer",
+    "logging", "agent_profiles", "rate_limits",
 }
 """Config sections that can be safely updated at runtime without restart."""
 
@@ -788,7 +720,7 @@ _SECTION_FIELDS = {
     "data_dir", "workspace_dir", "database_path", "profile", "env",
     "messaging_platform", "discord", "telegram", "agents_config",
     "scheduling", "pause_retry",
-    "chat_provider", "hook_engine", "chat_analyzer", "health_check", "logging",
+    "chat_provider", "hook_engine", "health_check", "logging",
     "monitoring", "archive", "auto_task", "memory", "llm_logging",
     "agent_profiles", "global_token_budget_daily", "rate_limits",
 }
@@ -1199,20 +1131,6 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             file_watcher_enabled=h.get("file_watcher_enabled", True),
             file_watcher_poll_interval=h.get("file_watcher_poll_interval", 10.0),
             file_watcher_debounce_seconds=h.get("file_watcher_debounce_seconds", 5.0),
-        )
-
-    if "chat_analyzer" in raw:
-        ca = raw["chat_analyzer"]
-        config.chat_analyzer = ChatAnalyzerConfig(
-            enabled=ca.get("enabled", False),
-            interval_seconds=ca.get("interval_seconds", 300),
-            min_messages_to_analyze=ca.get("min_messages_to_analyze", 3),
-            confidence_threshold=float(ca.get("confidence_threshold", 0.7)),
-            max_suggestions_per_hour=ca.get("max_suggestions_per_hour", 5),
-            provider=ca.get("provider", "ollama"),
-            model=ca.get("model", "llama3.2"),
-            base_url=ca.get("base_url", "http://localhost:11434/v1"),
-            cooldown_after_dismiss=ca.get("cooldown_after_dismiss", 1800),
         )
 
     if "logging" in raw:

@@ -7503,41 +7503,6 @@ feature work stuck on feature branches across multiple workspaces.
 
         return result
 
-    # -----------------------------------------------------------------------
-    # Chat analyzer commands (DEPRECATED — replaced by ChatObserver, Phase 5)
-    # -----------------------------------------------------------------------
-
-    async def _cmd_analyzer_status(self, args: dict) -> dict:
-        """Show chat analyzer status (deprecated)."""
-        return {
-            "enabled": False,
-            "message": "ChatAnalyzer has been replaced by the Supervisor's passive observation mode. "
-                       "Use supervisor.observation config to control chat observation.",
-            "deprecated": True,
-        }
-
-    async def _cmd_analyzer_toggle(self, args: dict) -> dict:
-        """Toggle chat analyzer (deprecated)."""
-        return {
-            "enabled": False,
-            "message": "ChatAnalyzer has been replaced by the Supervisor's passive observation mode. "
-                       "Configure supervisor.observation.enabled in config.yaml instead.",
-            "deprecated": True,
-        }
-
-    async def _cmd_analyzer_history(self, args: dict) -> dict:
-        """Show analyzer suggestion history (deprecated)."""
-        project_id = args.get("project_id")
-        limit = int(args.get("limit", 20))
-        suggestions = await self.db.get_analyzer_suggestion_history(
-            project_id=project_id, limit=limit,
-        )
-        return {
-            "suggestions": suggestions,
-            "count": len(suggestions),
-            "project_id": project_id,
-        }
-
     # -------------------------------------------------------------------
     # Tool navigation commands (Phase 3 -- tiered tool system)
     # -------------------------------------------------------------------
