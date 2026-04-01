@@ -816,8 +816,8 @@ _ALL_TOOL_DEFINITIONS = [
             "Archive completed tasks to clear them from active task lists. "
             "Tasks are moved to the archived_tasks DB table (viewable with "
             "list_archived, restorable with restore_task) and a markdown "
-            "reference note is written to the project workspace. Optionally "
-            "also archive FAILED and BLOCKED tasks."
+            "reference note is written to ~/.agent-queue/archived_tasks/. "
+            "Optionally also archive FAILED and BLOCKED tasks."
         ),
         "input_schema": {
             "type": "object",
