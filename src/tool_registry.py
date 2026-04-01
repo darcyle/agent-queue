@@ -551,6 +551,14 @@ _ALL_TOOL_DEFINITIONS = [
                         "read these files using the Read tool."
                     ),
                 },
+                "auto_approve_plan": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, any plan this task generates will be "
+                        "automatically approved without waiting for human review."
+                    ),
+                    "default": False,
+                },
             },
             "required": ["title"],
         },
@@ -717,9 +725,9 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "edit_task",
         "description": (
             "Edit a task's properties: project_id, title, description, priority, task_type, "
-            "status, max_retries, verification_type, or profile_id. Use this to move a task "
-            "to a different project, rename tasks, change priority, override status (admin), "
-            "assign a profile, or adjust retry/verification settings."
+            "status, max_retries, verification_type, profile_id, or auto_approve_plan. Use this "
+            "to move a task to a different project, rename tasks, change priority, override status "
+            "(admin), assign a profile, or adjust retry/verification settings."
         ),
         "input_schema": {
             "type": "object",
@@ -748,6 +756,10 @@ _ALL_TOOL_DEFINITIONS = [
                 "profile_id": {
                     "type": ["string", "null"],
                     "description": "Agent profile ID (optional, set to null to clear)",
+                },
+                "auto_approve_plan": {
+                    "type": "boolean",
+                    "description": "If true, any plan this task generates will be automatically approved without human review (optional)",
                 },
             },
             "required": ["task_id"],

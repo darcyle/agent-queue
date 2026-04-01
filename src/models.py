@@ -252,6 +252,7 @@ class Task:
     profile_id: str | None = None        # which AgentProfile to configure the agent with
     preferred_workspace_id: str | None = None  # hint: use this workspace (e.g. for merge-conflict tasks)
     attachments: list[str] = field(default_factory=list)  # absolute paths to attached files (images, etc.)
+    auto_approve_plan: bool = False    # if True, auto-approve any plan this task generates
 
 
 @dataclass

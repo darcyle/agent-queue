@@ -2236,6 +2236,7 @@ class CommandHandler:
         initial_status = (
             TaskStatus.DEFINED if self._plan_subtask_creation_mode else TaskStatus.READY
         )
+        auto_approve_plan = args.get("auto_approve_plan", False)
         task = Task(
             id=task_id,
             project_id=project_id,
@@ -2248,6 +2249,7 @@ class CommandHandler:
             profile_id=profile_id,
             preferred_workspace_id=preferred_workspace_id,
             attachments=attachments,
+            auto_approve_plan=auto_approve_plan,
         )
         await self.db.create_task(task)
 
@@ -2277,6 +2279,8 @@ class CommandHandler:
             result["preferred_workspace_id"] = preferred_workspace_id
         if attachments:
             result["attachments"] = attachments
+        if auto_approve_plan:
+            result["auto_approve_plan"] = True
 
         # Cross-project warning: if project_id was implicitly inherited from
         # the active channel context (not explicitly passed by the caller),
@@ -2319,6 +2323,7 @@ class CommandHandler:
             "task_type": task.task_type.value if task.task_type else None,
             "parent_task_id": task.parent_task_id,
             "profile_id": task.profile_id,
+            "auto_approve_plan": task.auto_approve_plan,
         }
         if task.pr_url:
             info["pr_url"] = task.pr_url
@@ -2562,6 +2567,8 @@ class CommandHandler:
                 if not profile:
                     return {"error": f"Profile '{pid}' not found"}
             updates["profile_id"] = pid  # None clears the profile
+        if "auto_approve_plan" in args:
+            updates["auto_approve_plan"] = bool(args["auto_approve_plan"])
 
         if updates:
             await self.db.update_task(args["task_id"], **updates)
@@ -2574,7 +2581,7 @@ class CommandHandler:
             return {
                 "error": (
                     "No fields to update. Provide project_id, title, description, priority, "
-                    "task_type, status, max_retries, verification_type, or profile_id."
+                    "task_type, status, max_retries, verification_type, profile_id, or auto_approve_plan."
                 )
             }
 

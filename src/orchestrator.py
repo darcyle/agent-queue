@@ -3868,38 +3868,79 @@ For EACH workspace listed above, perform these steps IN ORDER:
                         task.id,
                     )
 
-                # Populate parsed_steps from auto-created subtasks (if any).
-                # If none were created, the embed shows raw content via plan_url.
-                parsed_steps: list[dict] = [
-                    {"title": t["title"], "description": ""}
-                    for t in created_info
-                ]
+                # ── Auto-approve if task has auto_approve_plan set ──
+                if task.auto_approve_plan and created_info:
+                    logger.info(
+                        "Task %s: auto_approve_plan=True — auto-approving plan "
+                        "with %d subtask(s)",
+                        task.id, len(created_info),
+                    )
+                    handler = self._get_handler()
+                    approve_result = await handler._cmd_approve_plan(
+                        {"task_id": task.id}
+                    )
+                    if "error" in approve_result:
+                        logger.warning(
+                            "Task %s: auto-approve failed: %s — falling back "
+                            "to manual approval",
+                            task.id, approve_result["error"],
+                        )
+                        # Fall through to manual approval below
+                    else:
+                        if thread_send:
+                            await thread_send(
+                                f"✅ **Plan auto-approved** — "
+                                f"{len(created_info)} subtask(s) activated"
+                            )
+                        await self._notify_channel(
+                            f"✅ **Plan auto-approved:** `{task.id}` — "
+                            f"{task.title} ({len(created_info)} subtask(s))",
+                            project_id=action.project_id,
+                        )
+                        brief = (
+                            f"✅ Plan auto-approved: {task.title} "
+                            f"(`{task.id}`) — {len(created_info)} subtask(s)"
+                        )
+                        await _notify_brief(brief)
+                        # Skip manual approval flow — jump to the next branch
+                        # (the elif/else below handles pr_url and normal completion)
+                        # We need to skip past the manual approval notification,
+                        # so we use a flag.
+                        ctx.plan_needs_approval = False
 
-                # Get a link to the last message in the thread — the agent's
-                # final output contains the complete plan summary, so we link
-                # to it instead of showing a truncated preview in the embed.
-                thread_url = ""
-                if self._get_thread_url:
-                    try:
-                        thread_url = await self._get_thread_url(task.id) or ""
-                    except Exception as e:
-                        logger.debug("Could not get thread URL for %s: %s", task.id, e)
+                if ctx.plan_needs_approval:
+                    # Populate parsed_steps from auto-created subtasks (if any).
+                    # If none were created, the embed shows raw content via plan_url.
+                    parsed_steps: list[dict] = [
+                        {"title": t["title"], "description": ""}
+                        for t in created_info
+                    ]
 
-                plan_embed = format_plan_approval_embed(
-                    task,
-                    raw_content=raw_ctx["content"] if raw_ctx else "",
-                    plan_url=plan_url,
-                    parsed_steps=parsed_steps,
-                    thread_url=thread_url,
-                )
-                await self._notify_channel(
-                    f"📋 **Plan ready for review:** `{task.id}` — {task.title}",
-                    project_id=action.project_id,
-                    embed=plan_embed,
-                    view=plan_view,
-                )
-                brief = f"📋 Plan awaiting approval: {task.title} (`{task.id}`)"
-                await _notify_brief(brief)
+                    # Get a link to the last message in the thread — the agent's
+                    # final output contains the complete plan summary, so we link
+                    # to it instead of showing a truncated preview in the embed.
+                    thread_url = ""
+                    if self._get_thread_url:
+                        try:
+                            thread_url = await self._get_thread_url(task.id) or ""
+                        except Exception as e:
+                            logger.debug("Could not get thread URL for %s: %s", task.id, e)
+
+                    plan_embed = format_plan_approval_embed(
+                        task,
+                        raw_content=raw_ctx["content"] if raw_ctx else "",
+                        plan_url=plan_url,
+                        parsed_steps=parsed_steps,
+                        thread_url=thread_url,
+                    )
+                    await self._notify_channel(
+                        f"📋 **Plan ready for review:** `{task.id}` — {task.title}",
+                        project_id=action.project_id,
+                        embed=plan_embed,
+                        view=plan_view,
+                    )
+                    brief = f"📋 Plan awaiting approval: {task.title} (`{task.id}`)"
+                    await _notify_brief(brief)
             elif pr_url:
                 # PR-based approval workflow
                 await self.db.transition_task(
