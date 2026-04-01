@@ -447,6 +447,7 @@ class Hook:
     cooldown_seconds: int = 3600
     max_tokens_per_run: int | None = None
     last_triggered_at: float | None = None  # epoch seconds; persisted across restarts
+    source_hash: str | None = None  # content hash of source rule for idempotent reconciliation
     created_at: float = 0.0
     updated_at: float = 0.0
 

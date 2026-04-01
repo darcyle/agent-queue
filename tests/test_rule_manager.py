@@ -815,3 +815,212 @@ def test_on_rule_folder_changed_passive_rule_skipped(storage_root, mock_db):
         mock_db.create_hook.assert_not_called()
 
     asyncio.run(_run())
+
+
+# ------------------------------------------------------------------
+# Orphan hook migration tests
+# ------------------------------------------------------------------
+
+
+def test_migrate_orphan_hooks_converts_direct_hooks(storage_root):
+    """migrate_orphan_hooks creates rule files from non-rule-prefixed hooks."""
+    import json
+
+    from src.models import Hook
+    from src.rule_manager import RuleManager
+
+    orphan_hook = Hook(
+        id="my-custom-hook",
+        project_id="test-project",
+        name="Nightly Cleanup",
+        trigger=json.dumps({"type": "periodic", "interval_seconds": 86400}),
+        prompt_template="Clean up old temp files and report.",
+        cooldown_seconds=3600,
+    )
+    rule_hook = Hook(
+        id="rule-existing-abc123",
+        project_id="test-project",
+        name="Rule: Existing Rule",
+        trigger=json.dumps({"type": "periodic", "interval_seconds": 300}),
+        prompt_template="Already managed by a rule.",
+        cooldown_seconds=150,
+    )
+
+    mock_db = AsyncMock()
+    mock_db.list_hooks = AsyncMock(return_value=[orphan_hook, rule_hook])
+    mock_db.delete_hook = AsyncMock()
+    # Also need these for reconcile's hook generation
+    mock_db.list_hooks_by_id_prefix = AsyncMock(return_value=[])
+    mock_db.delete_hooks_by_id_prefix = AsyncMock(return_value=0)
+    mock_db.create_hook = AsyncMock()
+
+    rm = RuleManager(storage_root=storage_root, db=mock_db)
+    stats = asyncio.run(rm.migrate_orphan_hooks())
+
+    assert stats["migrated"] == 1
+    assert stats["skipped"] == 1
+    assert stats["errors"] == 0
+
+    # Verify the orphan hook was deleted
+    mock_db.delete_hook.assert_called_once_with("my-custom-hook")
+
+    # Verify a rule file was created
+    rules = rm.browse_rules("test-project")
+    assert len(rules) == 1
+    assert rules[0]["type"] == "active"
+    assert "Nightly Cleanup" in rules[0]["name"]
+
+    # Load rule and verify content
+    loaded = rm.load_rule(rules[0]["id"])
+    assert loaded is not None
+    assert "Nightly Cleanup" in loaded["content"]
+    assert "Every 1 day" in loaded["content"]
+    assert "Clean up old temp files" in loaded["content"]
+    assert "Cooldown: 3600 seconds" in loaded["content"]
+
+
+def test_migrate_orphan_hooks_idempotent(storage_root):
+    """Running migrate_orphan_hooks twice doesn't create duplicate rules."""
+    import json
+
+    from src.models import Hook
+    from src.rule_manager import RuleManager
+
+    orphan = Hook(
+        id="direct-hook-1",
+        project_id="proj",
+        name="My Hook",
+        trigger=json.dumps({"type": "event", "event_type": "task.completed"}),
+        prompt_template="Check results.",
+        cooldown_seconds=600,
+    )
+
+    mock_db = AsyncMock()
+    mock_db.list_hooks = AsyncMock(return_value=[orphan])
+    mock_db.delete_hook = AsyncMock()
+    mock_db.list_hooks_by_id_prefix = AsyncMock(return_value=[])
+    mock_db.delete_hooks_by_id_prefix = AsyncMock(return_value=0)
+    mock_db.create_hook = AsyncMock()
+
+    rm = RuleManager(storage_root=storage_root, db=mock_db)
+
+    # First migration
+    stats1 = asyncio.run(rm.migrate_orphan_hooks())
+    assert stats1["migrated"] == 1
+
+    # Second migration — same hook still in DB (simulate it not being deleted yet)
+    mock_db.delete_hook.reset_mock()
+    stats2 = asyncio.run(rm.migrate_orphan_hooks())
+    # Should still delete the hook but not create a duplicate rule
+    assert stats2["migrated"] == 1
+    mock_db.delete_hook.assert_called_once_with("direct-hook-1")
+
+    # Only one rule file should exist
+    rules = rm.browse_rules("proj")
+    assert len(rules) == 1
+
+
+def test_migrate_orphan_hooks_no_db(storage_root):
+    """migrate_orphan_hooks returns empty stats when no DB is available."""
+    from src.rule_manager import RuleManager
+
+    rm = RuleManager(storage_root=storage_root, db=None)
+    stats = asyncio.run(rm.migrate_orphan_hooks())
+    assert stats == {"migrated": 0, "skipped": 0, "errors": 0}
+
+
+def test_migrate_orphan_hooks_event_trigger(storage_root):
+    """Event-based trigger hooks are correctly reverse-parsed."""
+    import json
+
+    from src.models import Hook
+    from src.rule_manager import RuleManager
+
+    hook = Hook(
+        id="event-hook",
+        project_id="proj",
+        name="On Task Fail",
+        trigger=json.dumps({"type": "event", "event_type": "task.failed"}),
+        prompt_template="Analyze the failure.",
+        cooldown_seconds=300,
+    )
+
+    mock_db = AsyncMock()
+    mock_db.list_hooks = AsyncMock(return_value=[hook])
+    mock_db.delete_hook = AsyncMock()
+    mock_db.list_hooks_by_id_prefix = AsyncMock(return_value=[])
+    mock_db.delete_hooks_by_id_prefix = AsyncMock(return_value=0)
+    mock_db.create_hook = AsyncMock()
+
+    rm = RuleManager(storage_root=storage_root, db=mock_db)
+    asyncio.run(rm.migrate_orphan_hooks())
+
+    rules = rm.browse_rules("proj")
+    loaded = rm.load_rule(rules[0]["id"])
+    assert "When task failed" in loaded["content"]
+
+
+def test_reverse_parse_trigger_periodic():
+    """_reverse_parse_trigger handles periodic triggers."""
+    from src.rule_manager import RuleManager
+
+    assert RuleManager._reverse_parse_trigger('{"type": "periodic", "interval_seconds": 3600}') == "Every 1 hour."
+    assert RuleManager._reverse_parse_trigger('{"type": "periodic", "interval_seconds": 300}') == "Every 5 minutes."
+    assert RuleManager._reverse_parse_trigger('{"type": "periodic", "interval_seconds": 86400}') == "Every 1 day."
+    assert RuleManager._reverse_parse_trigger('{"type": "periodic", "interval_seconds": 45}') == "Every 45 seconds."
+
+
+def test_reverse_parse_trigger_event():
+    """_reverse_parse_trigger handles event triggers."""
+    from src.rule_manager import RuleManager
+
+    result = RuleManager._reverse_parse_trigger('{"type": "event", "event_type": "task.completed"}')
+    assert result == "When task completed."
+
+
+def test_reverse_parse_trigger_cron():
+    """_reverse_parse_trigger handles cron triggers."""
+    from src.rule_manager import RuleManager
+
+    result = RuleManager._reverse_parse_trigger('{"type": "cron", "cron": "0 */6 * * *"}')
+    assert result == "Cron schedule: `0 */6 * * *`."
+
+
+def test_reverse_parse_trigger_empty():
+    """_reverse_parse_trigger handles empty/invalid input."""
+    from src.rule_manager import RuleManager
+
+    assert "No trigger" in RuleManager._reverse_parse_trigger("{}")
+    assert "Unknown" in RuleManager._reverse_parse_trigger("not json")
+    assert "No trigger" in RuleManager._reverse_parse_trigger("")
+
+
+def test_reconcile_includes_migration_stats(storage_root):
+    """reconcile() runs orphan migration and includes stats."""
+    import json
+
+    from src.models import Hook
+    from src.rule_manager import RuleManager
+
+    orphan = Hook(
+        id="orphan-1",
+        project_id="proj",
+        name="Orphan Hook",
+        trigger=json.dumps({"type": "periodic", "interval_seconds": 600}),
+        prompt_template="Do something.",
+        cooldown_seconds=300,
+    )
+
+    mock_db = AsyncMock()
+    mock_db.list_hooks = AsyncMock(return_value=[orphan])
+    mock_db.delete_hook = AsyncMock()
+    mock_db.list_hooks_by_id_prefix = AsyncMock(return_value=[])
+    mock_db.delete_hooks_by_id_prefix = AsyncMock(return_value=0)
+    mock_db.create_hook = AsyncMock()
+
+    rm = RuleManager(storage_root=storage_root, db=mock_db)
+    stats = asyncio.run(rm.reconcile())
+
+    assert stats["orphan_hooks_migrated"] == 1
+    # The migrated rule should also have been reconciled (hook regenerated)
+    assert stats["rules_scanned"] >= 1
