@@ -3801,11 +3801,79 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 if health_server and self.config.health_check.enabled:
                     plan_url = health_server.get_plan_url(task.id)
 
-                # Steps will be empty here — the supervisor creates draft
-                # subtasks in the parse-first workflow (_cmd_process_plan).
-                # This auto-detection path only stores the raw plan; the
-                # approval embed shows the raw content via plan_url.
-                parsed_steps: list[dict] = []
+                # Auto pre-create draft subtasks so approval uses the fast
+                # path (plan_draft_subtasks context exists).  This mirrors
+                # the logic in _cmd_process_plan.  Failure is non-fatal —
+                # approval can still fall back to the legacy path.
+                created_info: list[dict] = []
+                try:
+                    supervisor = self._supervisor
+                    if supervisor and supervisor.is_ready and raw_ctx:
+                        config = self.config.auto_task
+                        workspace_id = ws.id if ws else None
+                        self._plan_processing_locks.add(action.project_id)
+                        try:
+                            created_info = await supervisor.break_plan_into_tasks(
+                                raw_plan=raw_ctx["content"],
+                                parent_task_id=task.id,
+                                project_id=action.project_id,
+                                workspace_id=workspace_id,
+                                chain_dependencies=config.chain_dependencies,
+                                requires_approval=(
+                                    task.requires_approval
+                                    if config.inherit_approval
+                                    else False
+                                ),
+                                base_priority=task.priority,
+                            )
+
+                            if created_info:
+                                # Block first subtask on parent so chain stays
+                                # blocked until plan is approved.
+                                first_subtask_id = created_info[0]["id"]
+                                try:
+                                    await self.db.add_dependency(
+                                        first_subtask_id, depends_on=task.id
+                                    )
+                                    logger.info(
+                                        "Task %s: added blocking dep %s → %s (parent)",
+                                        task.id, first_subtask_id, task.id,
+                                    )
+                                except Exception as e:
+                                    logger.warning(
+                                        "Task %s: failed to add blocking dep "
+                                        "%s → %s: %s",
+                                        task.id, first_subtask_id, task.id, e,
+                                    )
+
+                                # Store draft subtask IDs for approve/delete/reject
+                                import json as _json
+                                await self.db.add_task_context(
+                                    task.id,
+                                    type="plan_draft_subtasks",
+                                    label="Draft Subtask IDs",
+                                    content=_json.dumps(created_info),
+                                )
+
+                                logger.info(
+                                    "Task %s: auto-created %d draft subtasks",
+                                    task.id, len(created_info),
+                                )
+                        finally:
+                            self._plan_processing_locks.discard(action.project_id)
+                except Exception:
+                    logger.exception(
+                        "Task %s: failed to auto-create draft subtasks "
+                        "(approval will use legacy path)",
+                        task.id,
+                    )
+
+                # Populate parsed_steps from auto-created subtasks (if any).
+                # If none were created, the embed shows raw content via plan_url.
+                parsed_steps: list[dict] = [
+                    {"title": t["title"], "description": ""}
+                    for t in created_info
+                ]
 
                 # Get a link to the last message in the thread — the agent's
                 # final output contains the complete plan summary, so we link
