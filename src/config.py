@@ -486,6 +486,29 @@ class ChatProviderConfig:
 
 
 @dataclass
+class McpServerConfig:
+    """Configuration for the MCP server exposed by the agent-queue system.
+
+    ``excluded_commands`` lists command names that should NOT be registered as
+    MCP tools.  These are merged with ``DEFAULT_EXCLUDED_COMMANDS`` (hardcoded
+    safe defaults) and the ``AGENT_QUEUE_MCP_EXCLUDED`` environment variable
+    (comma-separated) to produce the final exclusion set.
+    """
+
+    excluded_commands: list[str] = field(default_factory=list)
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        for cmd in self.excluded_commands:
+            if not isinstance(cmd, str) or not cmd.strip():
+                errors.append(ConfigError(
+                    "mcp_server", "excluded_commands",
+                    f"excluded command names must be non-empty strings, got: {cmd!r}"
+                ))
+        return errors
+
+
+@dataclass
 class LLMLoggingConfig:
     """Configuration for logging LLM inputs/outputs to JSONL files."""
 
@@ -595,6 +618,7 @@ class AppConfig:
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
     auto_task: AutoTaskConfig = field(default_factory=AutoTaskConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    mcp_server: McpServerConfig = field(default_factory=McpServerConfig)
     llm_logging: LLMLoggingConfig = field(default_factory=LLMLoggingConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
@@ -660,6 +684,7 @@ class AppConfig:
         errors.extend(self.archive.validate())
         errors.extend(self.llm_logging.validate())
         errors.extend(self.memory.validate())
+        errors.extend(self.mcp_server.validate())
         errors.extend(self.chat_analyzer.validate())
 
         # Agent profiles
@@ -1255,6 +1280,12 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             compact_interval_hours=mem.get("compact_interval_hours", 24),
             index_notes=mem.get("index_notes", True),
             index_sessions=mem.get("index_sessions", False),
+        )
+
+    if "mcp_server" in raw:
+        ms = raw["mcp_server"]
+        config.mcp_server = McpServerConfig(
+            excluded_commands=ms.get("excluded_commands", []),
         )
 
     if "llm_logging" in raw:

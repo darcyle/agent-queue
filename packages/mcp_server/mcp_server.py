@@ -81,24 +81,37 @@ DEFAULT_EXCLUDED_COMMANDS = {
 
 def get_effective_exclusions(
     config_path: str | None = None,
+    config: Any | None = None,
 ) -> set[str]:
     """Compute the effective exclusion set by merging three sources.
 
     Merge order (all additive — union):
       1. ``DEFAULT_EXCLUDED_COMMANDS`` (hardcoded safe defaults)
-      2. ``mcp_server.excluded_commands`` from the config YAML (if present)
+      2. ``mcp_server.excluded_commands`` from config (``AppConfig`` object or
+         raw YAML file)
       3. ``AGENT_QUEUE_MCP_EXCLUDED`` environment variable (comma-separated)
 
     Args:
         config_path: Path to config YAML. ``None`` skips config-file lookup.
+            Ignored when *config* is provided.
+        config: An ``AppConfig`` instance. When provided, exclusions are read
+            from ``config.mcp_server.excluded_commands`` and *config_path* is
+            not used.
 
     Returns:
         The merged set of command names to exclude.
     """
     excluded = set(DEFAULT_EXCLUDED_COMMANDS)
 
-    # --- Config YAML ---
-    if config_path:
+    # --- AppConfig object (preferred) ---
+    if config is not None:
+        mcp_cfg = getattr(config, "mcp_server", None)
+        if mcp_cfg is not None:
+            config_excluded = getattr(mcp_cfg, "excluded_commands", [])
+            if isinstance(config_excluded, list):
+                excluded.update(config_excluded)
+    elif config_path:
+        # --- Fallback: raw YAML parsing ---
         try:
             import yaml
             with open(config_path) as fh:
@@ -116,6 +129,11 @@ def get_effective_exclusions(
         excluded.update(name.strip() for name in env_val.split(",") if name.strip())
 
     return excluded
+
+
+# The effective exclusion set used at module load time.  Updated during
+# lifespan initialization when the full AppConfig is available.
+_effective_exclusions: set[str] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +315,22 @@ def register_command_tools(
 # At import time we don't have the config path yet (it's set later via CLI),
 # so we merge defaults + env var only.  Config-file exclusions take effect
 # when the lifespan re-registers if needed.
-_registered_tools = register_command_tools(mcp, get_effective_exclusions())
+_effective_exclusions = get_effective_exclusions()
+_registered_tools = register_command_tools(mcp, _effective_exclusions)
+
+# Log exposed vs excluded at startup
+_all_tool_names = {td["name"] for td in _ALL_TOOL_DEFINITIONS}
+_excluded_from_registry = _effective_exclusions & _all_tool_names
+_extra_exclusions = _effective_exclusions - _all_tool_names
+logger.info(
+    "MCP tools: %d exposed, %d excluded%s",
+    len(_registered_tools),
+    len(_excluded_from_registry),
+    f" ({len(_extra_exclusions)} exclusion names not in registry)" if _extra_exclusions else "",
+)
+if _excluded_from_registry:
+    logger.info("Excluded commands: %s", ", ".join(sorted(_excluded_from_registry)))
+logger.info("Exposed commands: %s", ", ".join(sorted(_registered_tools)))
 
 
 # ===========================================================================
