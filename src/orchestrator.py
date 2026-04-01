@@ -764,6 +764,13 @@ class Orchestrator:
         except Exception as e:
             logger.warning("Default rule installation failed: %s", e)
 
+        # Start rule file watcher — monitors rule directories for changes
+        # and triggers per-rule reconciliation automatically.
+        try:
+            await self.rule_manager.start_file_watcher(self.bus)
+        except Exception as e:
+            logger.warning("Rule file watcher startup failed: %s", e)
+
         # Start config file watcher for hot-reloading
         if self.config._config_path:
             self._config_watcher = ConfigWatcher(
@@ -909,6 +916,11 @@ class Orchestrator:
         await self.wait_for_running_tasks(timeout=10)
         if self._config_watcher:
             await self._config_watcher.stop()
+        if self.rule_manager:
+            try:
+                await self.rule_manager.stop_file_watcher()
+            except Exception as e:
+                logger.warning("Rule file watcher shutdown error: %s", e)
         if self.hooks:
             await self.hooks.shutdown()
         if self.memory_manager:

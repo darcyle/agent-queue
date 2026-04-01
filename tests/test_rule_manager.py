@@ -669,3 +669,149 @@ def test_install_defaults_idempotent(storage_root):
     # Count rules -- should not have duplicates
     ids = [r["id"] for r in rules]
     assert len(ids) == len(set(ids))
+
+
+# ------------------------------------------------------------------
+# Rule file watcher (Phase 1)
+# ------------------------------------------------------------------
+
+
+def test_get_all_rule_dirs(storage_root):
+    """_get_all_rule_dirs returns existing rule directories."""
+    from src.rule_manager import RuleManager
+    rm = RuleManager(storage_root=storage_root)
+
+    # Create some rule dirs
+    os.makedirs(os.path.join(storage_root, "memory", "proj-a", "rules"))
+    os.makedirs(os.path.join(storage_root, "memory", "global", "rules"))
+
+    dirs = rm._get_all_rule_dirs()
+    paths = {d[0] for d in dirs}
+    pids = {d[1] for d in dirs}
+
+    assert len(dirs) == 2
+    assert any("proj-a" in p for p in paths)
+    assert any("global" in p for p in paths)
+    assert "proj-a" in pids
+    assert None in pids  # global scope
+
+
+def test_start_and_stop_file_watcher(storage_root):
+    """start_file_watcher creates a watcher and stop cleans up."""
+    from src.event_bus import EventBus
+    from src.rule_manager import RuleManager
+
+    rm = RuleManager(storage_root=storage_root)
+    os.makedirs(os.path.join(storage_root, "memory", "proj", "rules"))
+    bus = EventBus()
+
+    async def _run():
+        await rm.start_file_watcher(bus)
+        assert rm._rule_file_watcher is not None
+        assert rm._watcher_task is not None
+        assert not rm._watcher_task.done()
+
+        await rm.stop_file_watcher()
+        assert rm._rule_file_watcher is None
+
+    asyncio.run(_run())
+
+
+def test_on_rule_folder_changed_ignores_non_rule_watches(storage_root):
+    """_on_rule_folder_changed ignores events from non-rule watches."""
+    from src.rule_manager import RuleManager
+
+    rm = RuleManager(storage_root=storage_root, db=AsyncMock())
+
+    async def _run():
+        # Event from hook engine file watcher — should be ignored
+        await rm._on_rule_folder_changed({
+            "watch_id": "hook-123",
+            "changes": [{"path": "test.md", "operation": "modified"}],
+            "path": "/some/dir",
+        })
+        # No errors, no DB calls
+        rm._db.delete_hooks_by_id_prefix.assert_not_called()
+
+    asyncio.run(_run())
+
+
+def test_on_rule_folder_changed_modified(storage_root, mock_db):
+    """_on_rule_folder_changed reconciles modified active rules."""
+    from src.rule_manager import RuleManager
+
+    mock_db.delete_hooks_by_id_prefix = AsyncMock(return_value=0)
+
+    rm = RuleManager(storage_root=storage_root, db=mock_db)
+
+    # Create an active rule file on disk
+    rules_dir = os.path.join(storage_root, "memory", "proj", "rules")
+    os.makedirs(rules_dir, exist_ok=True)
+    rm.save_rule(
+        id="rule-watch-test",
+        project_id="proj",
+        rule_type="active",
+        content="# Watch Test\n\n## Trigger\nEvery 10 minutes.\n\n## Logic\nDo it.",
+    )
+
+    async def _run():
+        await rm._on_rule_folder_changed({
+            "watch_id": "rule-watcher-proj",
+            "changes": [{"path": "rule-watch-test.md", "operation": "modified"}],
+            "path": rules_dir,
+        })
+        # Should have created hooks
+        mock_db.create_hook.assert_called()
+        created_hook = mock_db.create_hook.call_args[0][0]
+        assert created_hook.project_id == "proj"
+
+    asyncio.run(_run())
+
+
+def test_on_rule_folder_changed_deleted(storage_root, mock_db):
+    """_on_rule_folder_changed cleans up hooks for deleted rules."""
+    from src.rule_manager import RuleManager
+
+    mock_db.delete_hooks_by_id_prefix = AsyncMock(return_value=2)
+
+    rm = RuleManager(storage_root=storage_root, db=mock_db)
+
+    async def _run():
+        await rm._on_rule_folder_changed({
+            "watch_id": "rule-watcher-proj",
+            "changes": [{"path": "rule-deleted.md", "operation": "deleted"}],
+            "path": "/some/dir",
+        })
+        mock_db.delete_hooks_by_id_prefix.assert_called_once_with(
+            "rule-rule-deleted-"
+        )
+
+    asyncio.run(_run())
+
+
+def test_on_rule_folder_changed_passive_rule_skipped(storage_root, mock_db):
+    """_on_rule_folder_changed skips passive rules (no hook generation)."""
+    from src.rule_manager import RuleManager
+
+    rm = RuleManager(storage_root=storage_root, db=mock_db)
+
+    # Create a passive rule file on disk
+    rules_dir = os.path.join(storage_root, "memory", "proj", "rules")
+    os.makedirs(rules_dir, exist_ok=True)
+    rm.save_rule(
+        id="rule-passive",
+        project_id="proj",
+        rule_type="passive",
+        content="# Passive Rule\n\n## Intent\nJust guidance.",
+    )
+
+    async def _run():
+        await rm._on_rule_folder_changed({
+            "watch_id": "rule-watcher-proj",
+            "changes": [{"path": "rule-passive.md", "operation": "modified"}],
+            "path": rules_dir,
+        })
+        # No hooks should be created for passive rules
+        mock_db.create_hook.assert_not_called()
+
+    asyncio.run(_run())

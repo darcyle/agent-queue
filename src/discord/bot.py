@@ -127,8 +127,11 @@ class AgentQueueBot(commands.Bot):
         # Wire up the note-written callback
         self.agent.handler.on_note_written = self._handle_note_written
         # Guard against concurrent rule reconciliation (on_ready can fire
-        # multiple times on Discord reconnections).
+        # multiple times on Discord reconnections).  With the rule file
+        # watcher active, we only need a full reconciliation on the very
+        # first startup — the file watcher handles ongoing changes.
         self._reconciliation_task: asyncio.Task | None = None
+        self._initial_reconciliation_done: bool = False
         # Chat observer for passive channel observation (Phase 5)
         self._chat_observer: ChatObserver | None = None
         if config.supervisor.observation.enabled:
@@ -486,10 +489,14 @@ class AgentQueueBot(commands.Bot):
         # Reattach persistent NotesView buttons on existing messages
         await self._reattach_notes_views()
 
-        # Reconcile rules → hooks in the background now that supervisor is available.
-        # Guard against concurrent runs — on_ready fires on every reconnect.
-        if self._reconciliation_task is None or self._reconciliation_task.done():
-            self._reconciliation_task = asyncio.create_task(self._reconcile_rules())
+        # Reconcile rules → hooks once at first startup now that the supervisor
+        # is available for LLM prompt expansion.  Subsequent on_ready calls
+        # (Discord reconnects) are skipped — the rule file watcher handles
+        # ongoing changes automatically.
+        if not self._initial_reconciliation_done:
+            if self._reconciliation_task is None or self._reconciliation_task.done():
+                self._reconciliation_task = asyncio.create_task(self._reconcile_rules())
+                self._initial_reconciliation_done = True
 
         # Start periodic buffer cleanup (evicts idle channel buffers)
         asyncio.create_task(self._periodic_buffer_cleanup())

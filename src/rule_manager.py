@@ -28,6 +28,7 @@ See ``specs/rules.md`` for the full behavioral specification.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -36,6 +37,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 import yaml
+
+from src.event_bus import EventBus
+from src.file_watcher import FileWatcher, WatchRule
 
 logger = logging.getLogger(__name__)
 
@@ -763,3 +767,206 @@ class RuleManager:
             installed.append(rule_id)
 
         return installed
+
+    # ------------------------------------------------------------------
+    # Rule file watcher — auto-reconcile on disk changes
+    # ------------------------------------------------------------------
+
+    def _get_all_rule_dirs(self) -> list[tuple[str, str | None]]:
+        """Return all existing rule directories as (abs_path, project_id|None).
+
+        Scans ``{storage_root}/memory/`` for scope directories containing
+        a ``rules/`` subfolder.
+        """
+        memory_root = os.path.join(self._storage_root, "memory")
+        if not os.path.isdir(memory_root):
+            return []
+        result = []
+        for scope_dir in os.listdir(memory_root):
+            rules_dir = os.path.join(memory_root, scope_dir, "rules")
+            if os.path.isdir(rules_dir):
+                pid = None if scope_dir == _GLOBAL_SCOPE else scope_dir
+                result.append((rules_dir, pid))
+        return result
+
+    async def start_file_watcher(self, bus: EventBus) -> None:
+        """Start watching all rule directories for changes.
+
+        Creates a :class:`FileWatcher` that monitors every
+        ``{storage_root}/memory/*/rules/`` directory for ``.md`` file
+        changes.  When changes are detected (debounced at 5 s), the
+        affected rules are individually reconciled — new/modified files
+        trigger hook regeneration; deleted files trigger hook cleanup.
+
+        The watcher emits ``folder.changed`` events on the shared
+        EventBus.  This method subscribes a handler that filters for
+        rule-watcher events (by ``watch_id`` prefix).
+
+        Args:
+            bus: The application EventBus instance.
+        """
+        self._rule_watcher_bus = bus
+        self._rule_file_watcher = FileWatcher(
+            bus=bus,
+            debounce_seconds=5.0,
+            poll_interval=5.0,
+        )
+
+        # Register a folder watch for each rule directory
+        for rules_dir, pid in self._get_all_rule_dirs():
+            watch_id = f"rule-watcher-{pid or _GLOBAL_SCOPE}"
+            self._rule_file_watcher.add_watch(WatchRule(
+                watch_id=watch_id,
+                project_id=pid or _GLOBAL_SCOPE,
+                paths=[rules_dir],
+                recursive=False,
+                extensions=[".md"],
+                watch_type="folder",
+            ))
+            logger.info(
+                "Rule file watcher: monitoring %s (scope=%s)",
+                rules_dir, pid or _GLOBAL_SCOPE,
+            )
+
+        # Subscribe to folder.changed events for rule directory changes
+        bus.subscribe("folder.changed", self._on_rule_folder_changed)
+
+        # Start the background polling loop
+        self._watcher_task = asyncio.create_task(self._rule_watcher_loop())
+        logger.info("Rule file watcher started")
+
+    async def stop_file_watcher(self) -> None:
+        """Stop the rule file watcher and clean up resources."""
+        task = getattr(self, "_watcher_task", None)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._rule_file_watcher = None
+        logger.info("Rule file watcher stopped")
+
+    async def _rule_watcher_loop(self) -> None:
+        """Background loop that polls the rule file watcher."""
+        watcher = self._rule_file_watcher
+        if not watcher:
+            return
+        while True:
+            try:
+                await asyncio.sleep(5.0)
+                await watcher.check()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning("Rule file watcher poll error: %s", e)
+
+    async def _on_rule_folder_changed(self, data: dict) -> None:
+        """Handle folder.changed events for rule directories.
+
+        Filters events by ``watch_id`` prefix (``rule-watcher-``) to
+        ignore file-watcher events from the hook engine.  For each
+        changed ``.md`` file, triggers per-rule reconciliation:
+
+        - **created / modified**: parse the rule file and regenerate its
+          hooks (via ``_generate_hooks_for_rule``).
+        - **deleted**: clean up hooks whose ID starts with the rule's
+          prefix (``rule-{rule_id}-``).
+        """
+        watch_id = data.get("watch_id", "")
+        if not watch_id.startswith("rule-watcher-"):
+            return  # Not a rule directory watch — ignore
+
+        changes = data.get("changes", [])
+        if not changes:
+            return
+
+        watch_dir = data.get("path", "")
+        # Determine project_id from the watch_id
+        scope = watch_id.replace("rule-watcher-", "", 1)
+        project_id = None if scope == _GLOBAL_SCOPE else scope
+
+        for change in changes:
+            rel_path = change.get("path", "")
+            operation = change.get("operation", "")
+
+            if not rel_path.endswith(".md"):
+                continue
+
+            rule_id = rel_path[:-3]  # strip .md extension
+
+            if operation in ("created", "modified"):
+                await self._reconcile_single_rule(
+                    rule_id, project_id, watch_dir
+                )
+            elif operation == "deleted":
+                await self._cleanup_deleted_rule(rule_id)
+
+    async def _reconcile_single_rule(
+        self,
+        rule_id: str,
+        project_id: str | None,
+        rules_dir: str,
+    ) -> None:
+        """Reconcile a single rule after a file change on disk.
+
+        Reads the rule file, and if it is an active rule, regenerates
+        its hooks.  Passive rules are ignored (they have no hooks).
+        """
+        filepath = os.path.join(rules_dir, f"{rule_id}.md")
+        if not os.path.isfile(filepath):
+            return
+
+        try:
+            with open(filepath) as f:
+                raw = f.read()
+            meta, body = self._split_frontmatter(raw)
+
+            if meta.get("type") != "active":
+                logger.debug(
+                    "Rule %s is not active, skipping hook reconciliation",
+                    rule_id,
+                )
+                return
+
+            if not self._db:
+                return
+
+            rid = meta.get("id", rule_id)
+            new_hooks = await self._generate_hooks_for_rule(
+                rid, project_id, body
+            )
+            if new_hooks:
+                logger.info(
+                    "Rule file watcher: reconciled rule %s → %d hooks",
+                    rid, len(new_hooks),
+                )
+        except Exception as e:
+            logger.warning(
+                "Rule file watcher: failed to reconcile rule %s: %s",
+                rule_id, e,
+            )
+
+    async def _cleanup_deleted_rule(self, rule_id: str) -> None:
+        """Clean up hooks for a rule whose file was deleted from disk.
+
+        Deletes all hooks whose ID starts with ``rule-{rule_id}-``.
+        """
+        if not self._db:
+            return
+
+        prefix = f"rule-{rule_id}-"
+        try:
+            deleted = await self._db.delete_hooks_by_id_prefix(prefix)
+            if deleted:
+                logger.info(
+                    "Rule file watcher: deleted %d orphan hooks for "
+                    "removed rule %s",
+                    deleted, rule_id,
+                )
+        except Exception as e:
+            logger.warning(
+                "Rule file watcher: hook cleanup failed for deleted "
+                "rule %s: %s",
+                rule_id, e,
+            )
