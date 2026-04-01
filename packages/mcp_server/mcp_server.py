@@ -79,6 +79,45 @@ DEFAULT_EXCLUDED_COMMANDS = {
 }
 
 
+def get_effective_exclusions(
+    config_path: str | None = None,
+) -> set[str]:
+    """Compute the effective exclusion set by merging three sources.
+
+    Merge order (all additive — union):
+      1. ``DEFAULT_EXCLUDED_COMMANDS`` (hardcoded safe defaults)
+      2. ``mcp_server.excluded_commands`` from the config YAML (if present)
+      3. ``AGENT_QUEUE_MCP_EXCLUDED`` environment variable (comma-separated)
+
+    Args:
+        config_path: Path to config YAML. ``None`` skips config-file lookup.
+
+    Returns:
+        The merged set of command names to exclude.
+    """
+    excluded = set(DEFAULT_EXCLUDED_COMMANDS)
+
+    # --- Config YAML ---
+    if config_path:
+        try:
+            import yaml
+            with open(config_path) as fh:
+                raw = yaml.safe_load(fh) or {}
+            mcp_section = raw.get("mcp_server", {})
+            config_excluded = mcp_section.get("excluded_commands", [])
+            if isinstance(config_excluded, list):
+                excluded.update(config_excluded)
+        except Exception:
+            logger.debug("Could not read mcp_server.excluded_commands from %s", config_path)
+
+    # --- Environment variable ---
+    env_val = os.environ.get("AGENT_QUEUE_MCP_EXCLUDED", "")
+    if env_val:
+        excluded.update(name.strip() for name in env_val.split(",") if name.strip())
+
+    return excluded
+
+
 # ---------------------------------------------------------------------------
 # Permissive argument model for dynamic tool registration
 # ---------------------------------------------------------------------------
@@ -254,8 +293,11 @@ def register_command_tools(
     return registered
 
 
-# Register all tools at module load time
-_registered_tools = register_command_tools(mcp, DEFAULT_EXCLUDED_COMMANDS)
+# Register all tools at module load time.
+# At import time we don't have the config path yet (it's set later via CLI),
+# so we merge defaults + env var only.  Config-file exclusions take effect
+# when the lifespan re-registers if needed.
+_registered_tools = register_command_tools(mcp, get_effective_exclusions())
 
 
 # ===========================================================================

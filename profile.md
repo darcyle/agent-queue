@@ -77,7 +77,7 @@ AWAITING_APPROVAL  (post-work, pre-merge — requires manual approve)
 | `src/prompts/` | System prompts and templates (chat agent, memory revision, etc.) |
 | `src/messaging/` | Cross-platform messaging abstraction |
 | `src/telegram/` | Telegram bot integration |
-| `packages/mcp_server/` | MCP server with streaming capabilities |
+| `packages/mcp_server/` | MCP server — auto-exposes all CommandHandler commands as MCP tools |
 | `specs/` | Behavioral specifications (source of truth) |
 | `docs/` | Generated documentation (mkdocs) |
 
@@ -131,7 +131,7 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 - **Docker:** Not currently containerized — runs as a background daemon via `run.sh`
 - **Discord bot:** Primary interface, requires bot token + guild ID + channel config
 - **GitHub integration:** Git operations for branching, PRs, worktrees per task
-- **MCP server:** `packages/mcp_server/` provides tool access via Model Context Protocol
+- **MCP server:** `packages/mcp_server/` auto-exposes all CommandHandler commands (~100 tools) via Model Context Protocol, with configurable exclusions (see `specs/mcp-server.md`)
 - **Multi-provider:** Anthropic direct, AWS Bedrock, Google Vertex AI for LLM calls
 
 ## Known Architectural Notes

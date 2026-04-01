@@ -8,6 +8,8 @@ Tests cover:
 - Tool calls delegate to CommandHandler.execute()
 - Error handling for missing entities
 - Serialization helpers
+- Exclusion configuration merging (defaults, config YAML, env var)
+- Drift detection — registered tools vs. tool_registry definitions
 """
 
 from __future__ import annotations
@@ -546,6 +548,10 @@ class TestMCPPrompts:
         assert "test-project" in text
 
 
+# ---------------------------------------------------------------------------
+# register_command_tools — direct function tests
+# ---------------------------------------------------------------------------
+
 class TestRegisterCommandTools:
     """Test the register_command_tools function directly."""
 
@@ -575,3 +581,201 @@ class TestRegisterCommandTools:
 
         all_names = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
         assert set(registered) == all_names
+
+
+# ---------------------------------------------------------------------------
+# Exclusion configuration merging tests
+# ---------------------------------------------------------------------------
+
+class TestExclusionConfiguration:
+    """Test that exclusion configuration merges defaults, config YAML, and env var."""
+
+    def test_defaults_only(self):
+        """With no config and no env var, only defaults are excluded."""
+        from packages.mcp_server.mcp_server import (
+            DEFAULT_EXCLUDED_COMMANDS,
+            get_effective_exclusions,
+        )
+        result = get_effective_exclusions(config_path=None)
+        assert result == DEFAULT_EXCLUDED_COMMANDS
+
+    def test_config_yaml_merges_with_defaults(self, tmp_path):
+        """Config YAML exclusions are merged (unioned) with defaults."""
+        import yaml
+        from packages.mcp_server.mcp_server import (
+            DEFAULT_EXCLUDED_COMMANDS,
+            get_effective_exclusions,
+        )
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "mcp_server": {
+                "excluded_commands": ["list_tasks", "create_task"],
+            }
+        }))
+
+        result = get_effective_exclusions(config_path=str(config_file))
+        assert DEFAULT_EXCLUDED_COMMANDS.issubset(result)
+        assert "list_tasks" in result
+        assert "create_task" in result
+
+    def test_env_var_merges_with_defaults(self, monkeypatch):
+        """AGENT_QUEUE_MCP_EXCLUDED env var adds to defaults."""
+        from packages.mcp_server.mcp_server import (
+            DEFAULT_EXCLUDED_COMMANDS,
+            get_effective_exclusions,
+        )
+
+        monkeypatch.setenv("AGENT_QUEUE_MCP_EXCLUDED", "list_tasks,create_task")
+        result = get_effective_exclusions(config_path=None)
+        assert DEFAULT_EXCLUDED_COMMANDS.issubset(result)
+        assert "list_tasks" in result
+        assert "create_task" in result
+
+    def test_env_var_handles_whitespace(self, monkeypatch):
+        """Env var parsing handles spaces around commas."""
+        from packages.mcp_server.mcp_server import get_effective_exclusions
+
+        monkeypatch.setenv("AGENT_QUEUE_MCP_EXCLUDED", " foo , bar , baz ")
+        result = get_effective_exclusions(config_path=None)
+        assert "foo" in result
+        assert "bar" in result
+        assert "baz" in result
+
+    def test_all_three_sources_merge(self, tmp_path, monkeypatch):
+        """Defaults + config + env var all merge together."""
+        import yaml
+        from packages.mcp_server.mcp_server import (
+            DEFAULT_EXCLUDED_COMMANDS,
+            get_effective_exclusions,
+        )
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "mcp_server": {
+                "excluded_commands": ["from_config"],
+            }
+        }))
+        monkeypatch.setenv("AGENT_QUEUE_MCP_EXCLUDED", "from_env")
+
+        result = get_effective_exclusions(config_path=str(config_file))
+        assert DEFAULT_EXCLUDED_COMMANDS.issubset(result)
+        assert "from_config" in result
+        assert "from_env" in result
+
+    def test_missing_config_file_uses_defaults(self):
+        """If the config file doesn't exist, fall back to defaults only."""
+        from packages.mcp_server.mcp_server import (
+            DEFAULT_EXCLUDED_COMMANDS,
+            get_effective_exclusions,
+        )
+
+        result = get_effective_exclusions(config_path="/nonexistent/config.yaml")
+        assert result == DEFAULT_EXCLUDED_COMMANDS
+
+    def test_config_without_mcp_section_uses_defaults(self, tmp_path):
+        """Config YAML without mcp_server section falls back to defaults."""
+        import yaml
+        from packages.mcp_server.mcp_server import (
+            DEFAULT_EXCLUDED_COMMANDS,
+            get_effective_exclusions,
+        )
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"discord": {"token": "xxx"}}))
+
+        result = get_effective_exclusions(config_path=str(config_file))
+        assert result == DEFAULT_EXCLUDED_COMMANDS
+
+    def test_empty_env_var_no_effect(self, monkeypatch):
+        """Empty AGENT_QUEUE_MCP_EXCLUDED doesn't add empty strings."""
+        from packages.mcp_server.mcp_server import (
+            DEFAULT_EXCLUDED_COMMANDS,
+            get_effective_exclusions,
+        )
+
+        monkeypatch.setenv("AGENT_QUEUE_MCP_EXCLUDED", "")
+        result = get_effective_exclusions(config_path=None)
+        assert result == DEFAULT_EXCLUDED_COMMANDS
+
+
+# ---------------------------------------------------------------------------
+# Drift detection — registered MCP tools vs. _ALL_TOOL_DEFINITIONS
+# ---------------------------------------------------------------------------
+
+class TestDriftDetection:
+    """Detect drift between the tool registry and the MCP server.
+
+    These tests ensure that every tool defined in ``_ALL_TOOL_DEFINITIONS``
+    is either exposed as an MCP tool or explicitly listed in the exclusion
+    set.  If a new command is added to the registry but not accounted for
+    here, the test will fail — forcing an explicit decision about whether
+    to expose it.
+    """
+
+    async def test_no_missing_tools(self, mcp_server):
+        """Every tool in _ALL_TOOL_DEFINITIONS must be either registered or excluded."""
+        from packages.mcp_server.mcp_server import DEFAULT_EXCLUDED_COMMANDS
+
+        tools = await mcp_server.list_tools()
+        registered_names = {t.name for t in tools}
+        all_defined_names = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
+
+        # Every defined tool should be in one of the two sets
+        for name in all_defined_names:
+            in_registered = name in registered_names
+            in_excluded = name in DEFAULT_EXCLUDED_COMMANDS
+            assert in_registered or in_excluded, (
+                f"Tool '{name}' is in _ALL_TOOL_DEFINITIONS but neither "
+                f"registered as an MCP tool nor in DEFAULT_EXCLUDED_COMMANDS. "
+                f"Either expose it or add it to the exclusion set."
+            )
+
+    async def test_no_extra_tools(self, mcp_server):
+        """No MCP tools should exist that aren't in _ALL_TOOL_DEFINITIONS."""
+        tools = await mcp_server.list_tools()
+        registered_names = {t.name for t in tools}
+        all_defined_names = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
+
+        extra = registered_names - all_defined_names
+        assert not extra, (
+            f"MCP server has tools not in _ALL_TOOL_DEFINITIONS: {extra}. "
+            f"Add them to the tool registry or remove the manual registration."
+        )
+
+    async def test_registered_count_matches_expected(self, mcp_server):
+        """Registered tool count = total definitions - excluded count."""
+        from packages.mcp_server.mcp_server import DEFAULT_EXCLUDED_COMMANDS
+
+        tools = await mcp_server.list_tools()
+        all_defined_names = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
+        # Only count exclusions that actually appear in the definitions
+        actual_excluded = DEFAULT_EXCLUDED_COMMANDS & all_defined_names
+
+        expected_count = len(all_defined_names) - len(actual_excluded)
+        assert len(tools) == expected_count, (
+            f"Expected {expected_count} tools "
+            f"({len(all_defined_names)} total - {len(actual_excluded)} excluded), "
+            f"but got {len(tools)}"
+        )
+
+    def test_excluded_commands_are_valid(self):
+        """Every command in DEFAULT_EXCLUDED_COMMANDS should exist in the registry.
+
+        If a command is removed from the registry, it should also be removed
+        from the exclusion set to keep things tidy.
+        """
+        from packages.mcp_server.mcp_server import DEFAULT_EXCLUDED_COMMANDS
+
+        all_defined_names = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
+        stale = DEFAULT_EXCLUDED_COMMANDS - all_defined_names
+        # Allow exclusions for commands that may not be in _ALL_TOOL_DEFINITIONS
+        # (e.g. they might only exist in CommandHandler without a tool def).
+        # This is a soft check — warn but don't fail.
+        if stale:
+            import warnings
+            warnings.warn(
+                f"DEFAULT_EXCLUDED_COMMANDS contains names not in "
+                f"_ALL_TOOL_DEFINITIONS: {stale}. Consider cleaning up.",
+                stacklevel=1,
+            )
