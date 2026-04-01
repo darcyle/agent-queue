@@ -1738,12 +1738,49 @@ class _RuleViewButton(discord.ui.Button):
                 f"⚠️ {result['error']}", ephemeral=True,
             )
             return
+        view = _RuleContentView(result, self._rule, self._handler)
+        await interaction.response.send_message(
+            view.build_content(), ephemeral=True, view=view,
+        )
+
+
+class _RuleContentView(discord.ui.View):
+    """Rule content preview with delete action."""
+
+    def __init__(self, result: dict, rule: dict, handler) -> None:
+        super().__init__(timeout=300)
+        self._result = result
+        self._rule = rule
+        self._handler = handler
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        self.clear_items()
+        delete_btn = discord.ui.Button(
+            label="Delete Rule",
+            style=discord.ButtonStyle.danger,
+            emoji="🗑️",
+            row=0,
+        )
+        delete_btn.callback = self._delete_callback
+        self.add_item(delete_btn)
+
+        close_btn = discord.ui.Button(
+            label="Close",
+            style=discord.ButtonStyle.secondary,
+            row=0,
+        )
+        close_btn.callback = self._close_callback
+        self.add_item(close_btn)
+
+    def build_content(self) -> str:
+        rule_id = self._rule.get("id")
+        result = self._result
         rule_type = result.get("type", "passive")
         type_label = "⚡ Active" if rule_type == "active" else "📖 Passive"
         scope = result.get("project_id") or "global"
         hooks = result.get("hooks", [])
         content = result.get("content", "")
-        # Truncate content for Discord
         if len(content) > 1500:
             content = content[:1500] + "\n\n_...truncated_"
 
@@ -1757,8 +1794,62 @@ class _RuleViewButton(discord.ui.Button):
             "",
             content,
         ]
-        await interaction.response.send_message(
-            "\n".join(lines), ephemeral=True,
+        return "\n".join(lines)
+
+    async def _delete_callback(self, interaction: discord.Interaction) -> None:
+        """Show confirmation before deleting the rule and its hooks."""
+        confirm_view = discord.ui.View(timeout=60)
+        yes_btn = discord.ui.Button(
+            label="Yes, delete it",
+            style=discord.ButtonStyle.danger,
+        )
+        no_btn = discord.ui.Button(
+            label="Cancel",
+            style=discord.ButtonStyle.secondary,
+        )
+
+        async def _confirm(confirm_interaction: discord.Interaction) -> None:
+            rule_id = self._rule.get("id")
+            result = await self._handler.execute("delete_rule", {"id": rule_id})
+            if "error" in result:
+                await confirm_interaction.response.edit_message(
+                    content=f"❌ {result['error']}", view=None,
+                )
+                return
+            hooks_removed = result.get("hooks_removed", [])
+            rule_name = self._rule.get("name", rule_id)
+            msg = f"🗑️ Rule **{rule_name}** deleted"
+            if hooks_removed:
+                msg += f" ({len(hooks_removed)} hook(s) removed)"
+            msg += "."
+            await confirm_interaction.response.edit_message(
+                content=msg, view=None,
+            )
+
+        async def _cancel(cancel_interaction: discord.Interaction) -> None:
+            self._rebuild()
+            await cancel_interaction.response.edit_message(
+                content=self.build_content(), view=self,
+            )
+
+        yes_btn.callback = _confirm
+        no_btn.callback = _cancel
+        confirm_view.add_item(yes_btn)
+        confirm_view.add_item(no_btn)
+
+        rule_name = self._rule.get("name", self._rule.get("id"))
+        hooks = self._result.get("hooks", [])
+        warning = f"⚠️ Are you sure you want to delete rule **{rule_name}**?"
+        if hooks:
+            warning += f"\n\nThis will also remove **{len(hooks)}** generated hook(s)."
+        warning += "\n\nThis cannot be undone."
+        await interaction.response.edit_message(
+            content=warning, view=confirm_view,
+        )
+
+    async def _close_callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(
+            content="Rule view closed.", view=None,
         )
 
 
