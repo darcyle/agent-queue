@@ -2093,12 +2093,12 @@ def setup_commands(bot: commands.Bot) -> None:
     _STATUS_ORDER = [
         "IN_PROGRESS", "ASSIGNED", "READY", "DEFINED",
         "PAUSED", "WAITING_INPUT", "AWAITING_APPROVAL",
-        "AWAITING_PLAN_APPROVAL", "VERIFYING",
+        "AWAITING_PLAN_APPROVAL",
         "FAILED", "BLOCKED", "COMPLETED",
     ]
     _STATUS_DISPLAY: dict[str, str] = {
         "DEFINED": "Defined", "READY": "Ready", "ASSIGNED": "Assigned",
-        "IN_PROGRESS": "In Progress", "VERIFYING": "Verifying",
+        "IN_PROGRESS": "In Progress",
         "COMPLETED": "Completed", "PAUSED": "Paused",
         "WAITING_INPUT": "Waiting Input", "FAILED": "Failed",
         "BLOCKED": "Blocked", "AWAITING_APPROVAL": "Awaiting Approval",
@@ -2376,7 +2376,6 @@ def setup_commands(bot: commands.Bot) -> None:
                 # Ordered by visual priority: active work → needs attention → queued.
                 _STAT_LABELS: list[tuple[str, str]] = [
                     ("IN_PROGRESS", "In Progress"),
-                    ("VERIFYING", "Verifying"),
                     ("ASSIGNED", "Assigned"),
                     ("AWAITING_APPROVAL", "Awaiting Approval"),
                     ("AWAITING_PLAN_APPROVAL", "Awaiting Plan Approval"),

@@ -1153,7 +1153,7 @@ class AgentQueueBot(commands.Bot):
                 await message.reply(f"⚠️ Error saving feedback: {e}")
 
         else:
-            # READY, ASSIGNED, DEFINED, PAUSED, VERIFYING, WAITING_INPUT, etc.
+            # READY, ASSIGNED, DEFINED, PAUSED, WAITING_INPUT, etc.
             # Append to description so the agent sees it when the task runs.
             try:
                 separator = "\n\n---\n**Thread Feedback:**\n"

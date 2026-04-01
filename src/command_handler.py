@@ -417,7 +417,6 @@ def _format_status_summary(status_counts: dict[str, int], total: int) -> str:
     # then queued/pending states.
     _NON_COMPLETED_LABELS: list[tuple[str, str]] = [
         ("IN_PROGRESS", "in progress"),
-        ("VERIFYING", "verifying"),
         ("ASSIGNED", "assigned"),
         ("AWAITING_APPROVAL", "awaiting approval"),
         ("AWAITING_PLAN_APPROVAL", "awaiting plan approval"),

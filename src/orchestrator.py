@@ -2612,7 +2612,7 @@ class Orchestrator:
         Called when a merge-resolution subtask completes successfully.
         """
         task = await self.db.get_task(original_task_id)
-        if not task or task.status != TaskStatus.VERIFYING:
+        if not task or task.status != TaskStatus.BLOCKED:
             logger.info(
                 "Skipping merge retry for %s (status=%s)",
                 original_task_id, task.status if task else "None",
@@ -3732,9 +3732,6 @@ For EACH workspace listed above, perform these steps IN ORDER:
         _final_root_content: str | None = None  # replaces "Agent working: ..." text
 
         if output.result == AgentResult.COMPLETED:
-            await self.db.transition_task(action.task_id, TaskStatus.VERIFYING,
-                                          context="agent_completed")
-
             # Build pipeline context
             ws = await self.db.get_workspace_for_task(task.id)
             project = await self.db.get_project(task.project_id)
@@ -4018,7 +4015,11 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 # Mark for thread root update
                 _final_root_content = f"✅ **Work completed:** {task.title}"
             else:
-                # Pipeline stopped (merge failed) — task stays in VERIFYING
+                # Pipeline stopped (merge failed) — block the task
+                await self.db.transition_task(
+                    action.task_id, TaskStatus.BLOCKED,
+                    context="merge_failed",
+                )
                 await _post(
                     f"**Merge failed** for `{task.id}` — awaiting resolution."
                 )
