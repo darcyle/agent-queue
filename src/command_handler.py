@@ -2692,16 +2692,17 @@ class CommandHandler:
         return {"deleted": args["task_id"], "title": task.title}
 
     # -- Archive commands -----------------------------------------------------
-    # Archive moves completed tasks out of the active view into a separate
-    # ``archived_tasks`` table.  Tasks can be listed, inspected, restored, or
-    # permanently deleted from the archive.
+    # Archive moves completed tasks out of the active view into the
+    # ``archived_tasks`` DB table and writes markdown notes to
+    # ``~/.agent-queue/archived_tasks/<project_id>/``.  Tasks can be listed,
+    # inspected, restored, or permanently deleted from the archive.
 
     async def _cmd_archive_tasks(self, args: dict) -> dict:
         """Archive completed (and optionally failed/blocked) tasks.
 
         Moves matching tasks into the ``archived_tasks`` database table and
-        writes a markdown reference note for each task into the project's
-        ``archived_tasks/`` workspace directory (when a workspace is available).
+        writes a markdown reference note for each task into
+        ``~/.agent-queue/archived_tasks/<project_id>/``.
 
         Parameters
         ----------
@@ -3907,19 +3908,19 @@ class CommandHandler:
         result: dict | None,
         dependencies: set[str],
     ) -> str | None:
-        """Write a markdown reference note for a task to its project workspace.
+        """Write a markdown reference note for a task to the data directory.
 
-        Returns the file path if written, or ``None`` if the project has no
-        workspace or the project could not be resolved.
+        Notes are stored under ``~/.agent-queue/archived_tasks/<project_id>/``.
+        Returns the file path if written, or ``None`` if the project could not
+        be resolved.
         """
         project = await self.db.get_project(task.project_id)
         if not project:
             return None
 
-        workspace = await self.db.get_project_workspace_path(task.project_id)
-        if not workspace:
-            return None
-        archive_dir = os.path.join(workspace, "archived_tasks")
+        archive_dir = os.path.join(
+            self.config.data_dir, "archived_tasks", task.project_id
+        )
         os.makedirs(archive_dir, exist_ok=True)
 
         note = _build_archive_note(task, result, dependencies)
