@@ -724,6 +724,14 @@ class Supervisor:
                 "task depends on the previous one (task N+1 depends on task N). "
                 "This ensures they execute in order.\n"
             )
+        else:
+            dep_instructions = (
+                "- Use add_dependency to set dependencies between tasks based on "
+                "the plan's logical ordering. If a phase builds on work from a "
+                "previous phase, add a dependency so it executes after its "
+                "prerequisite. Not every task needs a dependency, but tasks that "
+                "depend on prior work MUST declare it.\n"
+            )
 
         ws_instructions = ""
         if workspace_id:
