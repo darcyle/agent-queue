@@ -335,6 +335,7 @@ class Database:
             "ALTER TABLE hooks ADD COLUMN last_triggered_at REAL",
             "ALTER TABLE tasks ADD COLUMN auto_approve_plan INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE archived_tasks ADD COLUMN auto_approve_plan INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE hooks ADD COLUMN source_hash TEXT",
         ]:
             try:
                 await self._db.execute(migration)
@@ -1710,12 +1711,12 @@ class Database:
         await self._db.execute(
             "INSERT INTO hooks (id, project_id, name, enabled, trigger, "
             "context_steps, prompt_template, llm_config, cooldown_seconds, "
-            "max_tokens_per_run, last_triggered_at, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "max_tokens_per_run, last_triggered_at, source_hash, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (hook.id, hook.project_id, hook.name, int(hook.enabled),
              hook.trigger, hook.context_steps, hook.prompt_template,
              hook.llm_config, hook.cooldown_seconds, hook.max_tokens_per_run,
-             hook.last_triggered_at, now, now),
+             hook.last_triggered_at, hook.source_hash, now, now),
         )
         await self._db.commit()
 
@@ -1803,6 +1804,11 @@ class Database:
         return len(ids)
 
     def _row_to_hook(self, row) -> Hook:
+        # source_hash may not exist in older databases before migration runs
+        try:
+            source_hash = row["source_hash"]
+        except (IndexError, KeyError):
+            source_hash = None
         return Hook(
             id=row["id"],
             project_id=row["project_id"],
@@ -1815,6 +1821,7 @@ class Database:
             cooldown_seconds=row["cooldown_seconds"],
             max_tokens_per_run=row["max_tokens_per_run"],
             last_triggered_at=row["last_triggered_at"],
+            source_hash=source_hash,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
