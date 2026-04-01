@@ -471,7 +471,6 @@ If `output.tokens_used > 0`: `db.record_token_usage(project_id, agent_id, task_i
 **Step 15 — Handle result.**
 
 *`COMPLETED`:*
-- Transition task to `VERIFYING` (`context="agent_completed"`).
 - Call `_complete_workspace(task, agent)` (best-effort; git errors posted to thread/channel).
 - If a `pr_url` was returned:
   - Transition to `AWAITING_APPROVAL` (`context="pr_created"`, `pr_url=pr_url`).

@@ -236,6 +236,20 @@ class TestResourceSchemes:
 # MCP server integration tests (using FastMCP's call_tool / read_resource)
 # ---------------------------------------------------------------------------
 
+def _make_mock_context(db, event_bus, command_handler=None):
+    """Build a mock MCP context whose lifespan_context holds the given objects."""
+    from unittest.mock import MagicMock
+
+    ctx = MagicMock()
+    ctx.request_context.lifespan_context = {
+        "db": db,
+        "event_bus": event_bus,
+        "orchestrator": MagicMock(),
+        "command_handler": command_handler,
+    }
+    return ctx
+
+
 @pytest.fixture
 async def mcp_server(populated_db, tmp_path, monkeypatch):
     """Create and configure a FastMCP server instance with test database."""
@@ -243,16 +257,8 @@ async def mcp_server(populated_db, tmp_path, monkeypatch):
     import packages.mcp_server.mcp_server as mcp_mod
 
     test_bus = EventBus()
-
-    # Patch the helpers that retrieve db/event_bus from MCP context
-    async def _mock_get_db():
-        return populated_db
-
-    async def _mock_get_event_bus():
-        return test_bus
-
-    monkeypatch.setattr(mcp_mod, "_get_db", _mock_get_db)
-    monkeypatch.setattr(mcp_mod, "_get_event_bus", _mock_get_event_bus)
+    ctx = _make_mock_context(populated_db, test_bus)
+    monkeypatch.setattr(mcp_mod.mcp, "get_context", lambda: ctx)
 
     yield mcp_mod.mcp
 
@@ -264,22 +270,9 @@ async def mcp_server_with_handler(populated_db, tmp_path, monkeypatch):
     import packages.mcp_server.mcp_server as mcp_mod
 
     test_bus = EventBus()
-
-    async def _mock_get_db():
-        return populated_db
-
-    async def _mock_get_event_bus():
-        return test_bus
-
-    # Create a mock command handler
     mock_handler = AsyncMock()
-
-    async def _mock_get_command_handler():
-        return mock_handler
-
-    monkeypatch.setattr(mcp_mod, "_get_db", _mock_get_db)
-    monkeypatch.setattr(mcp_mod, "_get_event_bus", _mock_get_event_bus)
-    monkeypatch.setattr(mcp_mod, "_get_command_handler", _mock_get_command_handler)
+    ctx = _make_mock_context(populated_db, test_bus, mock_handler)
+    monkeypatch.setattr(mcp_mod.mcp, "get_context", lambda: ctx)
 
     yield mcp_mod.mcp, mock_handler
 

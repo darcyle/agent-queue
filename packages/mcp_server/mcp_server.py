@@ -167,15 +167,17 @@ _ANY_ARGS_METADATA = FuncMetadata(arg_model=_AnyArgs, fn_is_coroutine=True)
 async def server_lifespan(server: FastMCP):
     """Initialize Orchestrator + CommandHandler on startup, shut down on exit.
 
-    The Orchestrator is fully initialized (DB, event bus, git manager, etc.)
-    but its scheduling loop (``run()``) is never started — the MCP server
-    only needs the command execution layer.
+    Only the database is fully initialized — the MCP server needs the command
+    execution layer, not the scheduling loop, hook engine, rule manager, or
+    file watchers.  This keeps startup fast (~1s instead of ~5s) so MCP
+    clients don't time out during the connection handshake.
     """
     config_path = getattr(server, "_config_path", DEFAULT_CONFIG_PATH)
     config = load_config(config_path)
 
     orchestrator = Orchestrator(config)
-    await orchestrator.initialize()
+    # Minimal init: only the database, skip hooks/rules/watchers/recovery.
+    await orchestrator.db.initialize()
 
     command_handler = CommandHandler(orchestrator, config)
     orchestrator.set_command_handler(command_handler)
@@ -209,28 +211,6 @@ mcp = FastMCP(
     ),
     lifespan=server_lifespan,
 )
-
-
-# ---------------------------------------------------------------------------
-# Helper to get objects from lifespan context
-# ---------------------------------------------------------------------------
-
-async def _get_db() -> Database:
-    """Retrieve the Database instance from the current MCP context."""
-    ctx = mcp.get_context()
-    return ctx.request_context.lifespan_context["db"]
-
-
-async def _get_event_bus() -> EventBus:
-    """Retrieve the EventBus instance from the current MCP context."""
-    ctx = mcp.get_context()
-    return ctx.request_context.lifespan_context["event_bus"]
-
-
-async def _get_command_handler() -> CommandHandler:
-    """Retrieve the CommandHandler instance from the current MCP context."""
-    ctx = mcp.get_context()
-    return ctx.request_context.lifespan_context["command_handler"]
 
 
 # ---------------------------------------------------------------------------
@@ -270,19 +250,20 @@ def register_command_tools(
         description = tool_def.get("description", f"Execute the {name} command.")
         input_schema = tool_def.get("input_schema", {"type": "object", "properties": {}})
 
-        # Create a closure that captures the command name.
+        # Create a closure that captures the command name and server ref.
         # The handler receives **kwargs from the permissive _AnyArgs model
         # and delegates to CommandHandler.execute().
-        def _make_handler(cmd_name: str):
+        def _make_handler(cmd_name: str, server_ref: FastMCP):
             async def handler(**kwargs):
-                ch = await _get_command_handler()
+                ctx = server_ref.get_context()
+                ch = ctx.request_context.lifespan_context["command_handler"]
                 result = await ch.execute(cmd_name, kwargs)
                 return json.dumps(result, default=str)
             handler.__name__ = cmd_name
             handler.__qualname__ = cmd_name
             return handler
 
-        handler_fn = _make_handler(name)
+        handler_fn = _make_handler(name, mcp_server)
 
         # Construct a Tool directly so we can use our custom input_schema
         # (from tool_registry) instead of FastMCP's auto-generated schema
@@ -334,178 +315,179 @@ logger.info("Exposed commands: %s", ", ".join(sorted(_registered_tools)))
 
 
 # ===========================================================================
-# RESOURCES  (read-only views — kept as-is)
+# Reusable registration functions — used by both standalone and embedded modes
 # ===========================================================================
 
-# --- Tasks -----------------------------------------------------------------
+def register_resources(mcp_server: FastMCP) -> None:
+    """Register all read-only MCP resources on the given FastMCP instance.
 
-@mcp.resource("agentqueue://tasks")
-async def list_all_tasks() -> str:
-    """List all active and recent tasks across all projects."""
-    db = await _get_db()
-    tasks = await db.list_tasks()
-    return json.dumps([task_to_dict(t) for t in tasks], indent=2)
-
-
-@mcp.resource("agentqueue://tasks/active")
-async def list_active_tasks() -> str:
-    """List all currently active tasks (IN_PROGRESS, ASSIGNED, READY)."""
-    db = await _get_db()
-    active_statuses = [TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED, TaskStatus.READY]
-    all_tasks = await db.list_tasks()
-    active = [t for t in all_tasks if t.status in active_statuses]
-    return json.dumps([task_to_dict(t) for t in active], indent=2)
-
-
-@mcp.resource("agentqueue://tasks/{task_id}")
-async def get_task(task_id: str) -> str:
-    """Get detailed information about a specific task."""
-    db = await _get_db()
-    task = await db.get_task(task_id)
-    if not task:
-        return json.dumps({"error": f"Task not found: {task_id}"})
-    result = task_to_dict(task)
-    # Include dependencies
-    deps = await db.get_dependencies(task_id)
-    result["dependencies"] = list(deps)
-    # Include context entries
-    contexts = await db.get_task_contexts(task_id)
-    result["context"] = contexts
-    return json.dumps(result, indent=2)
-
-
-@mcp.resource("agentqueue://tasks/by-project/{project_id}")
-async def list_tasks_by_project(project_id: str) -> str:
-    """List all tasks for a specific project."""
-    db = await _get_db()
-    tasks = await db.list_tasks(project_id=project_id)
-    return json.dumps([task_to_dict(t) for t in tasks], indent=2)
-
-
-@mcp.resource("agentqueue://tasks/by-status/{status}")
-async def list_tasks_by_status(status: str) -> str:
-    """List all tasks with a given status (e.g. IN_PROGRESS, READY, COMPLETED)."""
-    db = await _get_db()
-    try:
-        task_status = TaskStatus(status)
-    except ValueError:
-        return json.dumps({"error": f"Invalid status: {status}. Valid: {[s.value for s in TaskStatus]}"})
-    tasks = await db.list_tasks(status=task_status)
-    return json.dumps([task_to_dict(t) for t in tasks], indent=2)
-
-
-# --- Projects --------------------------------------------------------------
-
-@mcp.resource("agentqueue://projects")
-async def list_all_projects() -> str:
-    """List all configured projects."""
-    db = await _get_db()
-    projects = await db.list_projects()
-    return json.dumps([project_to_dict(p) for p in projects], indent=2)
-
-
-@mcp.resource("agentqueue://projects/{project_id}")
-async def get_project(project_id: str) -> str:
-    """Get details for a specific project."""
-    db = await _get_db()
-    project = await db.get_project(project_id)
-    if not project:
-        return json.dumps({"error": f"Project not found: {project_id}"})
-    return json.dumps(project_to_dict(project), indent=2)
-
-
-# --- Agents ----------------------------------------------------------------
-
-@mcp.resource("agentqueue://agents")
-async def list_all_agents() -> str:
-    """List all registered agents and their current state."""
-    db = await _get_db()
-    agents = await db.list_agents()
-    return json.dumps([agent_to_dict(a) for a in agents], indent=2)
-
-
-@mcp.resource("agentqueue://agents/active")
-async def list_active_agents() -> str:
-    """List agents currently working on tasks."""
-    db = await _get_db()
-    agents = await db.list_agents(state=AgentState.BUSY)
-    return json.dumps([agent_to_dict(a) for a in agents], indent=2)
-
-
-# --- Profiles --------------------------------------------------------------
-
-@mcp.resource("agentqueue://profiles")
-async def list_all_profiles() -> str:
-    """List all agent profiles."""
-    db = await _get_db()
-    profiles = await db.list_profiles()
-    return json.dumps([profile_to_dict(p) for p in profiles], indent=2)
-
-
-@mcp.resource("agentqueue://profiles/{profile_id}")
-async def get_profile(profile_id: str) -> str:
-    """Get details for a specific agent profile."""
-    db = await _get_db()
-    profile = await db.get_profile(profile_id)
-    if not profile:
-        return json.dumps({"error": f"Profile not found: {profile_id}"})
-    return json.dumps(profile_to_dict(profile), indent=2)
-
-
-# --- Events ----------------------------------------------------------------
-
-@mcp.resource("agentqueue://events/recent")
-async def list_recent_events() -> str:
-    """List recent system events (last 50)."""
-    db = await _get_db()
-    events = await db.get_recent_events(limit=50)
-    return json.dumps(events, indent=2, default=str)
-
-
-# --- Workspaces ------------------------------------------------------------
-
-@mcp.resource("agentqueue://workspaces")
-async def list_all_workspaces() -> str:
-    """List all workspaces across all projects."""
-    db = await _get_db()
-    projects = await db.list_projects()
-    all_workspaces = []
-    for p in projects:
-        ws_list = await db.list_workspaces(p.id)
-        all_workspaces.extend([workspace_to_dict(w) for w in ws_list])
-    return json.dumps(all_workspaces, indent=2)
-
-
-@mcp.resource("agentqueue://workspaces/by-project/{project_id}")
-async def list_workspaces_by_project(project_id: str) -> str:
-    """List workspaces for a specific project."""
-    db = await _get_db()
-    workspaces = await db.list_workspaces(project_id)
-    return json.dumps([workspace_to_dict(w) for w in workspaces], indent=2)
-
-
-# ===========================================================================
-# PROMPTS — Reusable prompt templates
-# ===========================================================================
-
-@mcp.prompt()
-async def create_task_prompt(
-    project_id: str,
-    task_type: str = "feature",
-    context: str = "",
-) -> str:
-    """Generate a prompt for creating a well-structured task.
-
-    Args:
-        project_id: Target project for the task
-        task_type: Type of task to create
-        context: Additional context about the desired work
+    Each resource resolves the Database from the server's lifespan context,
+    so the same functions work for both standalone and embedded modes.
     """
-    db = await _get_db()
-    project = await db.get_project(project_id)
-    project_name = project.name if project else project_id
 
-    return f"""Create a task for the "{project_name}" project.
+    async def _db(server: FastMCP) -> Database:
+        ctx = server.get_context()
+        return ctx.request_context.lifespan_context["db"]
+
+    # --- Tasks -------------------------------------------------------------
+
+    @mcp_server.resource("agentqueue://tasks")
+    async def list_all_tasks() -> str:
+        """List all active and recent tasks across all projects."""
+        db = await _db(mcp_server)
+        tasks = await db.list_tasks()
+        return json.dumps([task_to_dict(t) for t in tasks], indent=2)
+
+    @mcp_server.resource("agentqueue://tasks/active")
+    async def list_active_tasks() -> str:
+        """List all currently active tasks (IN_PROGRESS, ASSIGNED, READY)."""
+        db = await _db(mcp_server)
+        active_statuses = [TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED, TaskStatus.READY]
+        all_tasks = await db.list_tasks()
+        active = [t for t in all_tasks if t.status in active_statuses]
+        return json.dumps([task_to_dict(t) for t in active], indent=2)
+
+    @mcp_server.resource("agentqueue://tasks/{task_id}")
+    async def get_task(task_id: str) -> str:
+        """Get detailed information about a specific task."""
+        db = await _db(mcp_server)
+        task = await db.get_task(task_id)
+        if not task:
+            return json.dumps({"error": f"Task not found: {task_id}"})
+        result = task_to_dict(task)
+        deps = await db.get_dependencies(task_id)
+        result["dependencies"] = list(deps)
+        contexts = await db.get_task_contexts(task_id)
+        result["context"] = contexts
+        return json.dumps(result, indent=2)
+
+    @mcp_server.resource("agentqueue://tasks/by-project/{project_id}")
+    async def list_tasks_by_project(project_id: str) -> str:
+        """List all tasks for a specific project."""
+        db = await _db(mcp_server)
+        tasks = await db.list_tasks(project_id=project_id)
+        return json.dumps([task_to_dict(t) for t in tasks], indent=2)
+
+    @mcp_server.resource("agentqueue://tasks/by-status/{status}")
+    async def list_tasks_by_status(status: str) -> str:
+        """List all tasks with a given status (e.g. IN_PROGRESS, READY, COMPLETED)."""
+        db = await _db(mcp_server)
+        try:
+            task_status = TaskStatus(status)
+        except ValueError:
+            return json.dumps(
+                {"error": f"Invalid status: {status}. Valid: {[s.value for s in TaskStatus]}"}
+            )
+        tasks = await db.list_tasks(status=task_status)
+        return json.dumps([task_to_dict(t) for t in tasks], indent=2)
+
+    # --- Projects ----------------------------------------------------------
+
+    @mcp_server.resource("agentqueue://projects")
+    async def list_all_projects() -> str:
+        """List all configured projects."""
+        db = await _db(mcp_server)
+        projects = await db.list_projects()
+        return json.dumps([project_to_dict(p) for p in projects], indent=2)
+
+    @mcp_server.resource("agentqueue://projects/{project_id}")
+    async def get_project(project_id: str) -> str:
+        """Get details for a specific project."""
+        db = await _db(mcp_server)
+        project = await db.get_project(project_id)
+        if not project:
+            return json.dumps({"error": f"Project not found: {project_id}"})
+        return json.dumps(project_to_dict(project), indent=2)
+
+    # --- Agents ------------------------------------------------------------
+
+    @mcp_server.resource("agentqueue://agents")
+    async def list_all_agents() -> str:
+        """List all registered agents and their current state."""
+        db = await _db(mcp_server)
+        agents = await db.list_agents()
+        return json.dumps([agent_to_dict(a) for a in agents], indent=2)
+
+    @mcp_server.resource("agentqueue://agents/active")
+    async def list_active_agents() -> str:
+        """List agents currently working on tasks."""
+        db = await _db(mcp_server)
+        agents = await db.list_agents(state=AgentState.BUSY)
+        return json.dumps([agent_to_dict(a) for a in agents], indent=2)
+
+    # --- Profiles ----------------------------------------------------------
+
+    @mcp_server.resource("agentqueue://profiles")
+    async def list_all_profiles() -> str:
+        """List all agent profiles."""
+        db = await _db(mcp_server)
+        profiles = await db.list_profiles()
+        return json.dumps([profile_to_dict(p) for p in profiles], indent=2)
+
+    @mcp_server.resource("agentqueue://profiles/{profile_id}")
+    async def get_profile(profile_id: str) -> str:
+        """Get details for a specific agent profile."""
+        db = await _db(mcp_server)
+        profile = await db.get_profile(profile_id)
+        if not profile:
+            return json.dumps({"error": f"Profile not found: {profile_id}"})
+        return json.dumps(profile_to_dict(profile), indent=2)
+
+    # --- Events ------------------------------------------------------------
+
+    @mcp_server.resource("agentqueue://events/recent")
+    async def list_recent_events() -> str:
+        """List recent system events (last 50)."""
+        db = await _db(mcp_server)
+        events = await db.get_recent_events(limit=50)
+        return json.dumps(events, indent=2, default=str)
+
+    # --- Workspaces --------------------------------------------------------
+
+    @mcp_server.resource("agentqueue://workspaces")
+    async def list_all_workspaces() -> str:
+        """List all workspaces across all projects."""
+        db = await _db(mcp_server)
+        projects = await db.list_projects()
+        all_workspaces = []
+        for p in projects:
+            ws_list = await db.list_workspaces(p.id)
+            all_workspaces.extend([workspace_to_dict(w) for w in ws_list])
+        return json.dumps(all_workspaces, indent=2)
+
+    @mcp_server.resource("agentqueue://workspaces/by-project/{project_id}")
+    async def list_workspaces_by_project(project_id: str) -> str:
+        """List workspaces for a specific project."""
+        db = await _db(mcp_server)
+        workspaces = await db.list_workspaces(project_id)
+        return json.dumps([workspace_to_dict(w) for w in workspaces], indent=2)
+
+
+def register_prompts(mcp_server: FastMCP) -> None:
+    """Register all MCP prompt templates on the given FastMCP instance."""
+
+    async def _db(server: FastMCP) -> Database:
+        ctx = server.get_context()
+        return ctx.request_context.lifespan_context["db"]
+
+    @mcp_server.prompt()
+    async def create_task_prompt(
+        project_id: str,
+        task_type: str = "feature",
+        context: str = "",
+    ) -> str:
+        """Generate a prompt for creating a well-structured task.
+
+        Args:
+            project_id: Target project for the task
+            task_type: Type of task to create
+            context: Additional context about the desired work
+        """
+        db = await _db(mcp_server)
+        project = await db.get_project(project_id)
+        project_name = project.name if project else project_id
+
+        return f"""Create a task for the "{project_name}" project.
 
 Task type: {task_type}
 {f"Context: {context}" if context else ""}
@@ -522,26 +504,25 @@ Please provide:
 
 Format your response as JSON with keys: title, description, priority, requires_approval"""
 
+    @mcp_server.prompt()
+    async def review_task_prompt(task_id: str) -> str:
+        """Generate a prompt for reviewing a completed task.
 
-@mcp.prompt()
-async def review_task_prompt(task_id: str) -> str:
-    """Generate a prompt for reviewing a completed task.
+        Args:
+            task_id: ID of the task to review
+        """
+        db = await _db(mcp_server)
+        task = await db.get_task(task_id)
+        if not task:
+            return f"Task {task_id} not found."
 
-    Args:
-        task_id: ID of the task to review
-    """
-    db = await _get_db()
-    task = await db.get_task(task_id)
-    if not task:
-        return f"Task {task_id} not found."
+        contexts = await db.get_task_contexts(task_id)
+        context_text = "\n".join(
+            f"- [{c.get('type', 'unknown')}] {c.get('content', '')[:200]}"
+            for c in contexts
+        ) if contexts else "No additional context."
 
-    contexts = await db.get_task_contexts(task_id)
-    context_text = "\n".join(
-        f"- [{c.get('type', 'unknown')}] {c.get('content', '')[:200]}"
-        for c in contexts
-    ) if contexts else "No additional context."
-
-    return f"""Review the following completed task:
+        return f"""Review the following completed task:
 
 **Task:** {task.title} ({task.id})
 **Project:** {task.project_id}
@@ -560,28 +541,27 @@ Please evaluate:
 3. Should this be approved or rejected? Why?
 4. Any follow-up tasks needed?"""
 
+    @mcp_server.prompt()
+    async def project_overview_prompt(project_id: str) -> str:
+        """Generate a prompt for getting a comprehensive project overview.
 
-@mcp.prompt()
-async def project_overview_prompt(project_id: str) -> str:
-    """Generate a prompt for getting a comprehensive project overview.
+        Args:
+            project_id: ID of the project to overview
+        """
+        db = await _db(mcp_server)
+        project = await db.get_project(project_id)
+        if not project:
+            return f"Project {project_id} not found."
 
-    Args:
-        project_id: ID of the project to overview
-    """
-    db = await _get_db()
-    project = await db.get_project(project_id)
-    if not project:
-        return f"Project {project_id} not found."
+        tasks = await db.list_tasks(project_id=project_id)
+        status_counts: dict[str, int] = {}
+        for t in tasks:
+            key = t.status.value
+            status_counts[key] = status_counts.get(key, 0) + 1
 
-    tasks = await db.list_tasks(project_id=project_id)
-    status_counts: dict[str, int] = {}
-    for t in tasks:
-        key = t.status.value
-        status_counts[key] = status_counts.get(key, 0) + 1
+        workspaces = await db.list_workspaces(project_id)
 
-    workspaces = await db.list_workspaces(project_id)
-
-    return f"""Provide an overview of the "{project.name}" project:
+        return f"""Provide an overview of the "{project.name}" project:
 
 **Project ID:** {project.id}
 **Status:** {project.status.value}
@@ -600,6 +580,11 @@ Based on this information, please provide:
 1. Current project health assessment
 2. Any bottlenecks or concerns
 3. Recommended next actions"""
+
+
+# Register resources and prompts on the standalone module-level instance.
+register_resources(mcp)
+register_prompts(mcp)
 
 
 # ===========================================================================

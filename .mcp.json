@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "agent-queue": {
+      "url": "http://localhost:8082/mcp"
+    }
+  }
+}
