@@ -3202,6 +3202,22 @@ class CommandHandler:
                 len(created_info), task.id,
             )
 
+            # Defense-in-depth: draft_ctx should always have subtasks, but
+            # guard against empty list (e.g. data corruption, partial save).
+            if not created_info:
+                logger.warning(
+                    "approve_plan: draft subtasks context exists but is empty "
+                    "for task %s — refusing to approve",
+                    task.id,
+                )
+                return {
+                    "error": (
+                        "Draft subtasks context is empty — no subtasks to activate. "
+                        "Please retry or use /process-plan to manually trigger "
+                        "subtask creation."
+                    )
+                }
+
             # Handle downstream dependencies: any task that depends on the
             # parent task should also depend on the final subtask so
             # downstream work waits for the full chain to finish.
@@ -3247,7 +3263,23 @@ class CommandHandler:
                     base_priority=task.priority,
                 )
 
-                if created_info and config.chain_dependencies:
+                # Treat empty result as an error — the LLM call may have
+                # failed silently (rate limit, timeout, etc.).
+                if not created_info:
+                    logger.warning(
+                        "approve_plan: supervisor returned 0 subtasks for "
+                        "task %s — refusing to approve",
+                        task.id,
+                    )
+                    return {
+                        "error": (
+                            "Supervisor failed to create subtasks from the plan. "
+                            "The plan has not been approved. Please retry or use "
+                            "/process-plan to manually trigger subtask creation."
+                        )
+                    }
+
+                if config.chain_dependencies:
                     final_subtask_id = created_info[-1]["id"]
                     dependents = await self.db.get_dependents(task.id)
                     for dep_task_id in dependents:
