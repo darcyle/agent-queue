@@ -125,7 +125,7 @@ async def server_lifespan(server: FastMCP):
 
     # Keep db/event_bus accessible for resources (read-only views)
     db = orchestrator.db
-    event_bus = orchestrator.event_bus
+    event_bus = orchestrator.bus
 
     try:
         yield {
