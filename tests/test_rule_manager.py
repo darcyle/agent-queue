@@ -563,6 +563,31 @@ def test_cmd_delete_rule(storage_root, mock_db):
     assert result.get("success") is True
 
 
+def test_cmd_refresh_hooks(storage_root, mock_db):
+    """CommandHandler.execute('refresh_hooks') reconciles hooks from rules."""
+    handler, rm = _make_command_handler(storage_root, mock_db)
+    # Save a passive rule (no hooks to generate, but should be scanned)
+    rm.save_rule("rule-scan", "proj", "passive", "# Passive Rule")
+
+    result = asyncio.run(
+        handler.execute("refresh_hooks", {})
+    )
+    assert result.get("success") is True
+    assert result.get("rules_scanned", 0) >= 1
+    assert "errors" in result
+
+
+def test_cmd_refresh_hooks_no_rule_manager(storage_root, mock_db):
+    """refresh_hooks returns error when rule manager is not initialized."""
+    handler, rm = _make_command_handler(storage_root, mock_db)
+    handler.orchestrator.rule_manager = None
+
+    result = asyncio.run(
+        handler.execute("refresh_hooks", {})
+    )
+    assert "error" in result
+
+
 # ------------------------------------------------------------------
 # Orchestrator integration (Task 7)
 # ------------------------------------------------------------------

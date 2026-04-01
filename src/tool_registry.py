@@ -2482,6 +2482,17 @@ class ToolRegistry:
                     "required": ["id"],
                 },
             },
+            {
+                "name": "refresh_hooks",
+                "description": (
+                    "Reconcile hooks from current rule files. "
+                    "Re-reads all rules and regenerates hooks for active rules."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
         ]
 
     def get_core_tools(self) -> list[dict]:

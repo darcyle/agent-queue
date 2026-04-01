@@ -1035,6 +1035,32 @@ class MenuView(discord.ui.View):
                 ephemeral=True,
             )
 
+    @discord.ui.button(
+        label="Rules",
+        style=discord.ButtonStyle.secondary,
+        emoji="📏",
+        row=2,
+    )
+    async def rules_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        """Show all rules with an interactive browsing view."""
+        await interaction.response.defer(ephemeral=True)
+        project_id = (
+            self._bot.get_project_for_channel(interaction.channel_id)
+            or getattr(self._handler, "_active_project_id", None)
+        )
+        result = await self._handler.execute(
+            "browse_rules", {"project_id": project_id} if project_id else {}
+        )
+        rules = result.get("rules", [])
+        if not rules:
+            await interaction.followup.send("No rules configured.", ephemeral=True)
+            return
+        view = RulesListView(rules, self._handler)
+        msg = view.build_content()
+        await _send_long_interaction(msg, interaction.followup.send, view=view, ephemeral=True)
+
 
 # ---------------------------------------------------------------------------
 # Hooks list view with inline Edit buttons
@@ -1603,6 +1629,144 @@ class HooksListView(discord.ui.View):
                 await msg.edit(content=self.build_content(), view=self)
         except Exception:
             pass
+
+    async def _prev_page(self, interaction: discord.Interaction) -> None:
+        self.page = max(0, self.page - 1)
+        self._rebuild_components()
+        await interaction.response.edit_message(
+            content=self.build_content(), view=self,
+        )
+
+    async def _next_page(self, interaction: discord.Interaction) -> None:
+        self.page = min(self.total_pages - 1, self.page + 1)
+        self._rebuild_components()
+        await interaction.response.edit_message(
+            content=self.build_content(), view=self,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Rules list view with View buttons
+# ---------------------------------------------------------------------------
+
+_RULES_PER_PAGE = 10
+
+
+class _RuleViewButton(discord.ui.Button):
+    """Button to view a rule's full content."""
+
+    def __init__(self, rule: dict, handler, *, row: int = 0) -> None:
+        rule_type = rule.get("type", "passive")
+        emoji = "⚡" if rule_type == "active" else "📖"
+        label = (rule.get("name") or rule.get("id", "?"))[:40]
+        super().__init__(
+            style=discord.ButtonStyle.secondary,
+            label=label,
+            emoji=emoji,
+            row=row,
+        )
+        self._rule = rule
+        self._handler = handler
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        rule_id = self._rule.get("id")
+        result = await self._handler.execute("load_rule", {"id": rule_id})
+        if "error" in result:
+            await interaction.response.send_message(
+                f"⚠️ {result['error']}", ephemeral=True,
+            )
+            return
+        rule_type = result.get("type", "passive")
+        type_label = "⚡ Active" if rule_type == "active" else "📖 Passive"
+        scope = result.get("project_id") or "global"
+        hooks = result.get("hooks", [])
+        content = result.get("content", "")
+        # Truncate content for Discord
+        if len(content) > 1500:
+            content = content[:1500] + "\n\n_...truncated_"
+
+        lines = [
+            f"## 📏 Rule: {self._rule.get('name', rule_id)}",
+            f"**ID:** `{rule_id}`",
+            f"**Type:** {type_label}",
+            f"**Scope:** `{scope}`",
+            f"**Hooks:** {len(hooks)}",
+            f"**Updated:** {result.get('updated', 'unknown')}",
+            "",
+            content,
+        ]
+        await interaction.response.send_message(
+            "\n".join(lines), ephemeral=True,
+        )
+
+
+class RulesListView(discord.ui.View):
+    """Interactive rules list with per-rule View buttons and pagination."""
+
+    def __init__(self, rules: list[dict], handler, *, page: int = 0) -> None:
+        super().__init__(timeout=300)
+        self._rules = rules
+        self._handler = handler
+        self.page = page
+        self.total_pages = max(
+            1, (len(rules) + _RULES_PER_PAGE - 1) // _RULES_PER_PAGE
+        )
+        self._rebuild_components()
+
+    def _rebuild_components(self) -> None:
+        self.clear_items()
+        start = self.page * _RULES_PER_PAGE
+        page_rules = self._rules[start : start + _RULES_PER_PAGE]
+
+        # Add view buttons — 3 per row, up to 4 rows
+        for i, r in enumerate(page_rules):
+            row = i // 3
+            if row > 3:
+                break  # Reserve row 4 for nav buttons
+            self.add_item(_RuleViewButton(r, self._handler, row=row))
+
+        # Navigation row (row 4)
+        if self.total_pages > 1:
+            prev_btn = discord.ui.Button(
+                style=discord.ButtonStyle.secondary,
+                label="◀ Prev",
+                custom_id="rules:page:prev",
+                disabled=(self.page == 0),
+                row=4,
+            )
+            prev_btn.callback = self._prev_page
+            self.add_item(prev_btn)
+
+            next_btn = discord.ui.Button(
+                style=discord.ButtonStyle.secondary,
+                label="Next ▶",
+                custom_id="rules:page:next",
+                disabled=(self.page >= self.total_pages - 1),
+                row=4,
+            )
+            next_btn.callback = self._next_page
+            self.add_item(next_btn)
+
+    def build_content(self) -> str:
+        """Build the text content for the rules list message."""
+        if not self._rules:
+            return "**No rules configured.**"
+        lines = [f"**📏 Rules ({len(self._rules)}):**"]
+        start = self.page * _RULES_PER_PAGE
+        page_rules = self._rules[start : start + _RULES_PER_PAGE]
+        for r in page_rules:
+            rule_type = r.get("type", "passive")
+            type_icon = "⚡" if rule_type == "active" else "📖"
+            scope = r.get("project_id") or "global"
+            hook_count = r.get("hook_count", 0)
+            name = r.get("name") or r.get("id", "?")
+            lines.append(
+                f"{type_icon} **{name}** (`{r['id']}`) — "
+                f"{rule_type} • scope: `{scope}` • hooks: {hook_count}"
+            )
+        if self.total_pages > 1:
+            lines.append(f"\n_Page {self.page + 1}/{self.total_pages}_")
+        return "\n".join(lines)
 
     async def _prev_page(self, interaction: discord.Interaction) -> None:
         self.page = max(0, self.page - 1)
@@ -5595,6 +5759,102 @@ def setup_commands(bot: commands.Bot) -> None:
                     f"**{changed}** of **{total}** hook(s) in `{project}` {action}."
                 ),
             )
+
+    # ===================================================================
+    # RULES COMMANDS
+    # ===================================================================
+
+    @bot.tree.command(name="rules", description="Browse rules for a project")
+    @app_commands.describe(project_id="Project ID (optional if active project is set)")
+    async def rules_command(
+        interaction: discord.Interaction, project_id: str | None = None
+    ):
+        project_id = await _resolve_project_from_context(interaction, project_id)
+        args = {}
+        if project_id:
+            args["project_id"] = project_id
+        result = await handler.execute("browse_rules", args)
+        rules = result.get("rules", [])
+        if not rules:
+            await _send_info(
+                interaction, "No Rules",
+                description="No rules configured for this scope.",
+            )
+            return
+        view = RulesListView(rules, handler)
+        msg = view.build_content()
+        await _send_long_interaction(
+            msg, interaction.response.send_message, view=view,
+        )
+
+    @bot.tree.command(name="rule", description="View full details of a rule")
+    @app_commands.describe(rule_id="Rule ID")
+    async def rule_command(interaction: discord.Interaction, rule_id: str):
+        result = await handler.execute("load_rule", {"id": rule_id})
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        rule_type = result.get("type", "passive")
+        type_label = "⚡ Active" if rule_type == "active" else "📖 Passive"
+        scope = result.get("project_id") or "global"
+        hooks = result.get("hooks", [])
+        content = result.get("content", "")
+        if len(content) > 1500:
+            content = content[:1500] + "\n\n_...truncated_"
+
+        lines = [
+            f"## 📏 Rule: {rule_id}",
+            f"**Type:** {type_label}",
+            f"**Scope:** `{scope}`",
+            f"**Hooks:** {len(hooks)}",
+            f"**Created:** {result.get('created', 'unknown')}",
+            f"**Updated:** {result.get('updated', 'unknown')}",
+            "",
+            content,
+        ]
+        await _send_long_interaction(
+            "\n".join(lines), interaction.response.send_message,
+        )
+
+    @bot.tree.command(name="delete-rule", description="Delete a rule and its hooks")
+    @app_commands.describe(rule_id="Rule ID to delete")
+    async def delete_rule_command(interaction: discord.Interaction, rule_id: str):
+        result = await handler.execute("delete_rule", {"id": rule_id})
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        hooks_removed = result.get("hooks_removed", [])
+        await _send_success(
+            interaction,
+            "Rule Deleted",
+            description=(
+                f"Rule `{rule_id}` deleted"
+                + (f" ({len(hooks_removed)} hook(s) removed)." if hooks_removed else ".")
+            ),
+        )
+
+    @bot.tree.command(
+        name="refresh-hooks",
+        description="Reconcile hooks from current rule files",
+    )
+    async def refresh_hooks_command(interaction: discord.Interaction):
+        await interaction.response.defer()
+        result = await handler.execute("refresh_hooks", {})
+        if "error" in result:
+            await _send_error(interaction, result["error"])
+            return
+        scanned = result.get("rules_scanned", 0)
+        regenerated = result.get("hooks_regenerated", 0)
+        errors = result.get("errors", 0)
+        desc = (
+            f"Scanned **{scanned}** rule(s), "
+            f"regenerated **{regenerated}** hook(s)."
+        )
+        if errors:
+            desc += f"\n⚠️ {errors} error(s) during reconciliation."
+        await interaction.followup.send(
+            f"✅ **Hooks Refreshed**\n{desc}"
+        )
 
     # ===================================================================
     # NOTES COMMANDS
