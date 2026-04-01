@@ -138,11 +138,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "install_profile": "agent",
     "export_profile": "agent",
     "import_profile": "agent",
-    # hooks
-    "create_hook": "hooks",
+    # hooks (read-only / execution — all creation goes through rules)
     "list_hooks": "hooks",
-    "edit_hook": "hooks",
-    "delete_hook": "hooks",
     "list_hook_runs": "hooks",
     "fire_hook": "hooks",
     "hook_schedules": "hooks",
@@ -1298,89 +1295,16 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "create_hook",
-        "description": (
-            "Create a hook that automatically triggers actions. Hooks gather context "
-            "(shell commands, file reads, HTTP checks, DB queries) and send a prompt "
-            "to an LLM that has access to all system tools (create_task, list_tasks, etc.). "
-            "Trigger types: 'periodic' (interval_seconds), 'event' (event_type). "
-            "Context step types: 'shell' (command, timeout, skip_llm_if_exit_zero), "
-            "'read_file' (path, max_lines), 'http' (url, skip_llm_if_status_ok), "
-            "'db_query' (query name, params), 'git_diff' (workspace, base_branch). "
-            "Use {{step_0}}, {{step_1}}, {{event}} in prompt_template."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
-                "name": {"type": "string", "description": "Hook name (used as ID slug)"},
-                "trigger": {
-                    "type": "object",
-                    "description": "Trigger config: {type: 'periodic', interval_seconds: N} or {type: 'event', event_type: '...'}",
-                },
-                "context_steps": {
-                    "type": "array",
-                    "description": "Array of context step configs",
-                    "items": {"type": "object"},
-                },
-                "prompt_template": {
-                    "type": "string",
-                    "description": "Prompt template with {{step_N}} and {{event}} placeholders",
-                },
-                "cooldown_seconds": {
-                    "type": "integer",
-                    "description": "Min seconds between runs (default 3600)",
-                    "default": 3600,
-                },
-                "llm_config": {
-                    "type": "object",
-                    "description": "Optional LLM config override: {provider, model, base_url}",
-                },
-            },
-            "required": ["project_id", "name", "trigger", "prompt_template"],
-        },
-    },
-    {
         "name": "list_hooks",
-        "description": "List hooks, optionally filtered by project.",
+        "description": (
+            "List hooks (generated from rules), optionally filtered by project. "
+            "Hooks are internal execution artifacts — to create automation, use save_rule instead."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {"type": "string", "description": "Filter by project ID (optional)"},
             },
-        },
-    },
-    {
-        "name": "edit_hook",
-        "description": (
-            "Edit a hook's configuration: name, enabled, trigger, context_steps, "
-            "prompt_template, cooldown_seconds, llm_config, or max_tokens_per_run."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "hook_id": {"type": "string", "description": "Hook ID"},
-                "name": {"type": "string", "description": "New hook name (optional)"},
-                "enabled": {"type": "boolean", "description": "Enable/disable the hook"},
-                "trigger": {"type": "object", "description": "New trigger config"},
-                "context_steps": {"type": "array", "description": "New context steps", "items": {"type": "object"}},
-                "prompt_template": {"type": "string", "description": "New prompt template"},
-                "cooldown_seconds": {"type": "integer", "description": "New cooldown"},
-                "llm_config": {"type": "object", "description": "New LLM config override"},
-                "max_tokens_per_run": {"type": ["integer", "null"], "description": "Max tokens per run (null to clear)"},
-            },
-            "required": ["hook_id"],
-        },
-    },
-    {
-        "name": "delete_hook",
-        "description": "Delete a hook and its run history.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "hook_id": {"type": "string", "description": "Hook ID to delete"},
-            },
-            "required": ["hook_id"],
         },
     },
     {
@@ -1470,7 +1394,7 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "context_steps": {
                     "type": "array",
-                    "description": "Optional context-gathering steps (same as create_hook)",
+                    "description": "Optional context-gathering steps",
                     "items": {"type": "object"},
                 },
                 "llm_config": {
@@ -2409,19 +2333,25 @@ class ToolRegistry:
                     "required": ["message"],
                 },
             }
-        # Rule stubs (Phase 2 placeholders)
-        for rule_tool in self._get_rule_tool_stubs():
+        # Rule tools — primary automation interface
+        for rule_tool in self._get_rule_tools():
             if rule_tool["name"] not in self._all_tools:
                 self._all_tools[rule_tool["name"]] = rule_tool
 
     @staticmethod
-    def _get_rule_tool_stubs() -> list[dict]:
-        """Return stub tool definitions for Phase 2 rule tools."""
+    def _get_rule_tools() -> list[dict]:
+        """Return tool definitions for the rule-based automation interface.
+
+        Rules are the primary (and only) way to create automation. Hooks are
+        internal execution artifacts generated from rules automatically.
+        """
         return [
             {
                 "name": "browse_rules",
                 "description": (
-                    "List active rules for current project and globals."
+                    "List all automation rules for the current project and globals. "
+                    "Rules are the primary way to create automation — each active rule "
+                    "generates hooks that execute automatically."
                 ),
                 "input_schema": {
                     "type": "object",
@@ -2438,7 +2368,10 @@ class ToolRegistry:
             },
             {
                 "name": "load_rule",
-                "description": "Load a specific rule's full detail.",
+                "description": (
+                    "Load a specific rule's full content and metadata, "
+                    "including its generated hook IDs."
+                ),
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -2452,7 +2385,14 @@ class ToolRegistry:
             },
             {
                 "name": "save_rule",
-                "description": "Create or update a rule.",
+                "description": (
+                    "Create or update an automation rule. This is the primary way to "
+                    "create automation. Active rules with triggers automatically generate "
+                    "hooks that execute on schedule or in response to events. Passive rules "
+                    "influence reasoning without triggering actions. "
+                    "Include a # Title, ## Trigger (e.g. 'Check every 5 minutes' or "
+                    "'When a task is completed'), and ## Logic section in the content."
+                ),
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -2465,17 +2405,20 @@ class ToolRegistry:
                         "project_id": {
                             "type": "string",
                             "description": (
-                                "Project ID (null = global)"
+                                "Project ID (null = global rule visible to all projects)"
                             ),
                         },
                         "type": {
                             "type": "string",
                             "enum": ["active", "passive"],
-                            "description": "Rule type",
+                            "description": (
+                                "Rule type: 'active' for triggered automation, "
+                                "'passive' for reasoning guidance"
+                            ),
                         },
                         "content": {
                             "type": "string",
-                            "description": "Rule content (markdown)",
+                            "description": "Rule content (markdown with # Title, ## Trigger, ## Logic sections)",
                         },
                     },
                     "required": ["type", "content"],
@@ -2483,7 +2426,10 @@ class ToolRegistry:
             },
             {
                 "name": "delete_rule",
-                "description": "Remove a rule.",
+                "description": (
+                    "Remove an automation rule and all its generated hooks. "
+                    "This is the only way to remove automation — do not delete hooks directly."
+                ),
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -2498,8 +2444,10 @@ class ToolRegistry:
             {
                 "name": "refresh_hooks",
                 "description": (
-                    "Reconcile hooks from current rule files. "
-                    "Re-reads all rules and regenerates hooks for active rules."
+                    "Force reconciliation of all rules and their hooks. "
+                    "Re-reads all rule files, regenerates hooks for active rules, "
+                    "and cleans up orphaned hooks. Normally not needed — the file "
+                    "watcher auto-reconciles when rule files change on disk."
                 ),
                 "input_schema": {
                     "type": "object",
