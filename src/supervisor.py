@@ -388,6 +388,17 @@ class Supervisor:
             t["name"]: t for t in registry.get_core_tools()
         }
 
+        # Pre-load categories relevant to the user's prompt so the LLM
+        # doesn't need to spend a turn calling browse_tools/load_tools.
+        preloaded_categories: list[str] = []
+        relevant_cats = registry.search_relevant_categories(text)
+        for cat_name in relevant_cats:
+            cat_tools = registry.get_category_tools(cat_name)
+            if cat_tools:
+                for t in cat_tools:
+                    active_tools[t["name"]] = t
+                preloaded_categories.append(cat_name)
+
         messages = list(history) if history else []
 
         # Append current message
