@@ -2,160 +2,82 @@
 auto_tasks: true
 ---
 
-# Plan: Expose All CommandHandler Commands via MCP Server
+# Fix: Planning Tasks Blocking Agents + Wrong Subtask Count
 
-## Background & Motivation
+## Background & Root Cause Analysis
 
-The agent-queue system has a unified `CommandHandler` with 80+ commands (`_cmd_*` methods) that serve as the single execution layer for both Discord slash commands and the supervisor's LLM tool-use loop. There is also an existing MCP server at `packages/mcp_server/mcp_server.py` that manually defines ~20 tools (task CRUD, project pause/resume, dependencies, workspaces, agents, monitoring) with hand-written FastMCP `@mcp.tool()` decorated functions.
+### Bug 1: Planning tasks block agents from starting other tasks
 
-**The problem:** The existing MCP server only exposes a small subset of commands, each manually reimplementing logic by directly hitting the Database layer. When new commands are added to CommandHandler, they don't automatically appear in the MCP server. This means Claude agents connected via MCP can't access the full set of capabilities (hooks, memory, git, files, profiles, system diagnostics, etc.).
+**Root cause:** The `_plan_processing_locks` mechanism in the orchestrator blocks ALL READY tasks in a project during plan subtask creation.
 
-**The goal:** Refactor the MCP server to automatically expose **all** CommandHandler commands as MCP tools, using the tool definitions already maintained in `_ALL_TOOL_DEFINITIONS` from `src/tool_registry.py`. This gives Claude agents (working via MCP) the same feature parity that the supervisor already has. A configuration mechanism allows excluding specific commands.
+When `_cmd_process_plan` or the legacy path in `_cmd_approve_plan` runs, it acquires `_plan_processing_locks[project_id]`. While this lock is held (during `supervisor.break_plan_into_tasks()` LLM call, which can take 30-60+ seconds):
 
-## Architecture Decisions
+- `_schedule()` (orchestrator.py:1557-1562): Filters out ALL READY tasks in the project
+- `_check_defined_tasks()` (orchestrator.py:1223): Skips ALL DEFINED tasks in the project
 
-### Approach: CommandHandler-Delegating MCP Server
+This means during plan processing, the **entire project is frozen** — no new tasks can be scheduled, even if they're completely unrelated to the plan.
 
-Instead of the current approach (each MCP tool reimplements logic by directly calling `Database`), the new MCP server will:
+The lock exists because `create_task` always creates tasks as `TaskStatus.READY` (command_handler.py:2237). Without the lock, the scheduler could assign a newly-created plan subtask before `break_plan_into_tasks` finishes demoting it to DEFINED and wiring up the blocking dependency on the parent.
 
-1. **Instantiate a `CommandHandler`** during lifespan (requires `Orchestrator` and `AppConfig`)
-2. **Auto-generate MCP tools** from `_ALL_TOOL_DEFINITIONS` in tool_registry — each tool simply calls `command_handler.execute(name, args)`
-3. **Keep existing resources** (they're read-only views that are useful as-is)
-4. **Support an exclusion list** via config or environment variable to hide specific commands
+### Bug 2: "Plan approved for grand-nexus. 0 subtask(s) created."
 
-### Why CommandHandler, not direct DB?
+**Root cause:** The auto-detection path (plan detected during task completion pipeline) does NOT pre-create draft subtasks. It only stores the raw plan content in `plan_raw` task context.
 
-- CommandHandler already handles validation, authorization, error formatting
-- Feature parity by construction — same code path as Discord and supervisor
-- No duplication of business logic
-- New commands automatically appear as MCP tools
+When the user clicks "Approve":
+1. `_cmd_approve_plan` looks for `plan_draft_subtasks` context → None (not created by auto-detection)
+2. Falls to legacy path → calls `supervisor.break_plan_into_tasks()`
+3. If the LLM call fails (rate limit, timeout, etc.), it returns `[]` silently
+4. `_cmd_approve_plan` returns `subtask_count: 0` with **no error** — the plan is "approved" and the parent task is completed with 0 subtasks
 
-### Initialization Challenge
+The `_cmd_process_plan` command (manual Discord command) DOES pre-create subtasks, but it's never called automatically during the auto-detection flow.
 
-CommandHandler requires an `Orchestrator` instance. The MCP server currently only initializes a `Database` and `EventBus`. We have two options:
+### Key code locations
 
-- **Option A (Recommended):** Create a lightweight `Orchestrator` in the MCP server lifespan. The orchestrator's `initialize()` sets up DB, event bus, scheduler, git manager — everything CommandHandler needs. The MCP server just won't call `orchestrator.run()` (no scheduling loop). This gives full command support.
-- **Option B:** Create a `CommandHandler` with a mock/minimal orchestrator that only has DB + config. Some commands that touch orchestrator state (stop_task, restart_daemon) would fail gracefully.
-
-We'll go with **Option A** — initialize a real Orchestrator but don't run its scheduling loop. This gives maximum command coverage.
-
-### Exclusion Configuration
-
-Add an `mcp_server` section to the config YAML:
-
-```yaml
-mcp_server:
-  excluded_commands:
-    - shutdown
-    - restart_daemon
-    - update_and_restart
-    - run_command  # dangerous for external MCP clients
-```
-
-Default exclusions: `shutdown`, `restart_daemon`, `update_and_restart`, `run_command` (destructive/dangerous commands). Everything else exposed by default.
-
-### Tool Registration Strategy
-
-Use FastMCP's programmatic tool registration. For each tool definition in `_ALL_TOOL_DEFINITIONS` that isn't excluded, dynamically register a tool function that calls `command_handler.execute(tool_name, args)` and returns the JSON result.
-
-### Key Files Reference
-
-- `packages/mcp_server/mcp_server.py` — Existing MCP server with ~20 hand-written tools and resources
-- `packages/mcp_server/mcp_interfaces.py` — Serialization helpers for resources
-- `src/tool_registry.py` — `_ALL_TOOL_DEFINITIONS` list (~80 tool JSON Schema dicts), `_TOOL_CATEGORIES` mapping, `CATEGORIES` metadata
-- `src/command_handler.py` — `execute(name, args) -> dict` dispatches to `_cmd_{name}()` methods (~80+ commands)
-- `src/orchestrator.py` — Central orchestrator with `initialize()` / `close()` lifecycle
-- `src/config.py` — `AppConfig` loading from YAML
+- **Lock usage:** `orchestrator.py:262` (init), `orchestrator.py:1223` (check_defined), `orchestrator.py:1557` (schedule)
+- **Auto-detection:** `orchestrator.py:2562` (`_phase_plan_discover`), `orchestrator.py:3779` (result handling)
+- **Subtask pre-creation:** `command_handler.py:3740-3792` (`_cmd_process_plan` supervisor call)
+- **Approval flow:** `command_handler.py:3143-3310` (`_cmd_approve_plan`)
+- **Task creation:** `command_handler.py:2237` (always creates as READY)
+- **Subtask demotion:** `supervisor.py:844-848` (READY→DEFINED post-processing)
 
 ---
 
-## Phase 1: Refactor MCP Server Lifespan to Initialize CommandHandler
+## Phase 1: Create plan subtasks directly as DEFINED to eliminate the need for project-wide locks
 
-**Goal:** Replace the current DB-only lifespan with one that creates a full `Orchestrator` + `CommandHandler`, making all commands available for delegation.
-
-**Files to modify:**
-- `packages/mcp_server/mcp_server.py` — rewrite `server_lifespan()` to init Orchestrator + CommandHandler
+Add a `_plan_subtask_creation_mode` flag on the `CommandHandler`. When set to `True`, `_cmd_create_task` creates tasks with `TaskStatus.DEFINED` instead of `TaskStatus.READY`. This eliminates the race condition that `_plan_processing_locks` was designed to prevent.
 
 **Changes:**
-1. In `server_lifespan()`:
-   - Load `AppConfig` from the standard config path (or `--config` CLI arg)
-   - Create `Orchestrator(config)` and call `await orchestrator.initialize()` (sets up DB, event bus, git manager)
-   - Create `CommandHandler(orchestrator, config)` and wire it to the orchestrator via `orchestrator.set_command_handler()`
-   - Store `command_handler` in lifespan context alongside existing `db` and `event_bus`
-   - On shutdown, call `await orchestrator.close()`
-2. Add `_get_command_handler()` helper (like existing `_get_db()`)
-3. Update CLI args to accept `--config` path
-4. Keep existing `_get_db()` and `_get_event_bus()` working (resources still use them)
+- `src/command_handler.py`: Add `self._plan_subtask_creation_mode: bool = False` attribute in `__init__`
+- `src/command_handler.py` (`_cmd_create_task`): Check `self._plan_subtask_creation_mode` — if True, create task as `TaskStatus.DEFINED` instead of `TaskStatus.READY`
+- `src/supervisor.py` (`break_plan_into_tasks`): Set `self.handler._plan_subtask_creation_mode = True` before the LLM call, reset in a `finally` block. Remove the READY→DEFINED demotion loop (lines 844-848) since tasks are already DEFINED
+- `src/command_handler.py` (`_cmd_process_plan`): Remove `_plan_processing_locks.add()` / `.discard()` calls (lines 3743, 3792)
+- `src/command_handler.py` (`_cmd_approve_plan`): Remove `_plan_processing_locks.add()` / `.discard()` calls (lines 3231, 3259)
+- `src/orchestrator.py`: Remove `_plan_processing_locks` attribute (line 262) and the two filter blocks that use it (lines 1222-1224, lines 1557-1562)
 
----
+## Phase 2: Auto pre-create draft subtasks during plan detection
 
-## Phase 2: Auto-Register All Commands as MCP Tools
-
-**Goal:** Dynamically register MCP tools from `_ALL_TOOL_DEFINITIONS`, delegating execution to `CommandHandler.execute()`.
-
-**Files to modify:**
-- `packages/mcp_server/mcp_server.py` — add dynamic tool registration logic, remove hand-written tools
+After the auto-detection path detects a plan and transitions to AWAITING_PLAN_APPROVAL, automatically call the supervisor to break the plan into draft subtasks (same logic as `_cmd_process_plan`). This ensures:
+- Approval always uses the fast path (draft_ctx exists)
+- No LLM call needed at approval time
+- The approval embed shows the parsed subtask breakdown
 
 **Changes:**
-1. Import `_ALL_TOOL_DEFINITIONS` from `src.tool_registry`
-2. Define `DEFAULT_EXCLUDED_COMMANDS` constant:
-   ```python
-   DEFAULT_EXCLUDED_COMMANDS = {
-       "shutdown", "restart_daemon", "update_and_restart",
-       "run_command",  # dangerous for external MCP clients
-       "browse_tools", "load_tools",  # meta-tools for LLM context management, not MCP
-   }
-   ```
-3. Create a `register_command_tools(mcp_server, excluded)` function that iterates `_ALL_TOOL_DEFINITIONS` and for each non-excluded tool:
-   - Creates a closure that calls `command_handler.execute(name, args)` and returns `json.dumps(result)`
-   - Registers it with FastMCP using the tool's `name`, `description`, and `input_schema` from the definition
-   - Uses FastMCP's programmatic `mcp.add_tool()` or equivalent API for dynamic registration
-4. Call `register_command_tools()` after MCP server creation (at module level, or during lifespan)
-5. **Remove all existing hand-written `@mcp.tool()` functions** (~15 functions, ~300 lines) — they'll be replaced by auto-registered equivalents
-6. Keep all `@mcp.resource()` functions (read-only views) and `@mcp.prompt()` templates
+- `src/orchestrator.py` (`_execute_task`, after line 3790): After transitioning to AWAITING_PLAN_APPROVAL and logging the event, add a new code block that:
+  1. Gets the supervisor via `self._supervisor`
+  2. Gets the raw plan content from `plan_raw` context (already stored by `_cmd_process_task_completion`)
+  3. Gets workspace info for the task
+  4. Calls `supervisor.break_plan_into_tasks()` with the raw plan, task.id as parent, project_id, workspace_id, and config settings
+  5. If subtasks were created: adds blocking dependency from first subtask to parent, stores `plan_draft_subtasks` context (JSON list of {id, title})
+  6. Populates `parsed_steps` from `created_info` (instead of hardcoded empty list at line 3832)
+  7. All wrapped in try/except — failure is non-fatal (approval can still use legacy path)
 
----
+## Phase 3: Handle 0 subtasks as an error in the approval flow
 
-## Phase 3: Add Exclusion Configuration Support
-
-**Goal:** Allow configuring which commands are hidden from MCP via config YAML and environment variables.
-
-**Files to modify:**
-- `packages/mcp_server/mcp_server.py` — read exclusion config during startup
-- `src/config.py` — add `mcp_server` config section (if config model exists and it makes sense)
+In `_cmd_approve_plan`, when the legacy path is used and `break_plan_into_tasks` returns an empty list, treat this as an error condition instead of silently completing the plan.
 
 **Changes:**
-1. Read exclusions from config YAML at `mcp_server.excluded_commands` (list of command names)
-2. Support `AGENT_QUEUE_MCP_EXCLUDED` environment variable (comma-separated) as override/addition
-3. Merge `DEFAULT_EXCLUDED_COMMANDS` + config + env into final exclusion set
-4. Log which commands are exposed vs excluded at startup (info level)
-5. Make the exclusion set accessible for testing/introspection
-
----
-
-## Phase 4: Update Tests and Documentation
-
-**Goal:** Ensure the refactored MCP server works correctly and is well-documented.
-
-**Files to modify:**
-- `packages/mcp_server/test/test_mcp_server.py` — update tests for new architecture
-- `specs/mcp-server.md` — create spec documenting the MCP server architecture
-- `profile.md` — update quick reference
-
-**Changes:**
-1. Update tests to verify:
-   - All non-excluded commands from `_ALL_TOOL_DEFINITIONS` are registered as MCP tools
-   - Excluded commands are NOT registered
-   - Tool execution delegates to CommandHandler.execute() and returns JSON results
-   - Resources still work correctly
-   - Exclusion configuration (defaults, config, env) merges correctly
-2. Add a drift-detection test: compare registered MCP tools against `_ALL_TOOL_DEFINITIONS` to catch tools that get added to the registry but not exposed
-3. Create `specs/mcp-server.md` documenting:
-   - Architecture (CommandHandler delegation vs. direct DB access)
-   - All exposed tools (auto-generated from tool_registry)
-   - Exclusion configuration (YAML, env var, defaults)
-   - Resource URIs available
-   - How to connect Claude agents via MCP
-   - Entry point usage (`agent-queue-mcp --config PATH`)
-4. Update `profile.md` to mention MCP server exposes all CommandHandler commands
-5. Verify `pyproject.toml` entry point `agent-queue-mcp` still works with updated CLI args
+- `src/command_handler.py` (`_cmd_approve_plan`, legacy path after line 3243): After `break_plan_into_tasks()` returns, check if `created_info` is empty. If so:
+  - Log a warning
+  - Return `{"error": "Supervisor failed to create subtasks from the plan. The plan has not been approved. Please retry or use /process-plan to manually trigger subtask creation."}` instead of proceeding
+  - Do NOT transition the parent to COMPLETED
+- Also add the same check for the draft_ctx path: if `created_info` is loaded from context but is empty (shouldn't happen normally, but defense-in-depth), return an appropriate warning
