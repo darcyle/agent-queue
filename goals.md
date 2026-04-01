@@ -1,61 +1,43 @@
-# Agent Queue - Project Goals
+# Agent Queue — Goals
 
-## Primary Goal
+## Vision
 
-Enable developers on throttled AI plans to queue coding work, walk away, and come back to completed pull requests — managed entirely from Discord on their phone.
+Turn idle compute into finished work. Agent Queue is an autonomous orchestration platform that keeps AI agents continuously productive across your projects — managing rate limits, scheduling work fairly, and learning from every completed task. Control it from your phone, come back to pull requests.
 
-## User-Facing Goals
+## Goals
 
-### G1: Maximize Agent Utilization
-- Agents should always be working when tokens are available — no idle time between tasks
-- Rate limit pauses and resumes must be automatic and invisible to the user
-- Task queues should drain continuously overnight and while the user is offline
+### G1: Never Waste a Token Window
+AI agents on throttled plans sit idle between rate limit resets. Every idle minute is wasted capacity. The system must ensure that when tokens are available, agents are working — automatically, around the clock, without human babysitting.
 
-### G2: Multi-Project Orchestration
-- Users can run multiple projects simultaneously with fair, weighted scheduling
-- Each project gets proportional agent time based on its configured priority
-- No project should be starved of agent time indefinitely
+### G2: Orchestrate Across Projects and Teams
+Users run multiple projects with competing priorities. The system must schedule agent work fairly and proportionally across all active projects, respecting budgets and concurrency limits, so no project starves while others drain resources.
 
-### G3: Discord-First Control Plane
-- Every operation must be available from Discord — no SSH or terminal required
-- Natural language chat and slash commands both work with full feature parity
-- Task progress streams live in Discord threads; users reply to unblock agents
-- Notifications surface completions, failures, and stuck chains proactively
+### G3: Remote Control from Anywhere
+Users should manage their entire agent fleet from a phone — queue tasks, check progress, approve merges, unblock agents. The control interface must be pluggable across messaging platforms (chat apps, SMS, web, API) so users aren't locked into any single provider.
 
-### G4: Zero Orchestration Overhead
-- Scheduling, dependency resolution, and state transitions consume zero LLM tokens
-- Every token spent should be on actual agent work, hooks, or memory — never bookkeeping
-- The system must run efficiently on a Raspberry Pi or low-end hardware
+### G4: Support Any Agent, Any Provider
+The system should orchestrate any AI coding agent — not just one. Different agents have different strengths; the platform must abstract over agent types, LLM providers, and tool ecosystems so users can mix and match as the landscape evolves.
 
-### G5: Reliable Task Lifecycle
-- No work is silently dropped — every task is tracked in persistent storage across restarts
-- Failed tasks retry automatically up to a configurable limit before escalating
-- Dependency chains execute in correct order; cycles are detected and rejected
-- Stuck chains are detected and surfaced with root cause and blast radius
+### G5: Reliable Autonomous Execution
+Queued work must never be silently dropped. Tasks must survive restarts, retry on failure, respect dependency ordering, and escalate when stuck. Users must be able to trust that work queued at night will be completed by morning.
 
-### G6: Safe Git Workflows
-- Each task works on an isolated branch in its own workspace
-- Nothing merges to main without explicit user approval
-- Git operations (branch, commit, push, PR) are atomic and retry-resilient
-- Merge conflicts are detected and reported, never silently corrupted
+### G6: Safe, Auditable Code Integration
+AI-generated code must flow through safe git workflows — isolated branches, automated PR creation, human-gated merges. Every change must be traceable, reviewable, and reversible. The system should never silently merge or corrupt code.
 
-### G7: Autonomous Workflows via Hooks
-- Users can define event-driven and scheduled automations that run without intervention
-- Hooks have full tool access — they can create tasks, check status, send notifications
-- Safeguards (cooldowns, concurrency caps, token limits) prevent runaway costs
+### G7: A System That Learns and Improves Itself
+The platform should accumulate knowledge from every task it completes — learning project conventions, architecture decisions, and common pitfalls. Over time, agents should get better at working in each project because the system remembers what worked and what didn't.
 
-### G8: Evolving Project Memory
-- The system learns from completed tasks and refines project knowledge over time
-- Agents receive relevant context (architecture, conventions, past decisions) automatically
-- Memory grows intelligently — old memories compact into digests, not unbounded logs
+### G8: Self-Analyzing, Self-Correcting Behavior
+Beyond learning, the system should actively reflect on its own actions — verifying that completed work meets expectations, detecting drift from project standards, and correcting course without human intervention. The goal is a feedback loop where the system continuously improves its own effectiveness.
 
-### G9: Extensible Architecture
-- New agent types (beyond Claude Code) can be added via the adapter interface
-- New LLM providers can be plugged in without changing orchestration logic
-- The MCP server exposes all commands as tools for external integration
-- A plugin system allows third-party extensions
+### G9: Event-Driven Automation and Workflows
+Users should be able to define rules and triggers that automate recurring work — running tests on completion, analyzing logs on failure, enforcing conventions on every PR. The system should support composable, user-defined automation with appropriate safety guardrails.
 
-### G10: Simple Setup, Low Maintenance
-- First-time setup should be a single guided wizard — working system in under 10 minutes
-- Configuration lives in one YAML file with sensible defaults
-- The system self-heals: dead agents are detected, workspaces are recovered, timers resume after restarts
+### G10: Extensible Platform, Not a Monolith
+The architecture must support plugins, adapters, and integrations so that the community and individual users can extend capabilities without forking. New agent types, new chat interfaces, new automation triggers, and new tool ecosystems should all be addable without modifying the core.
+
+### G11: Minimal Overhead, Maximum Throughput
+Every token matters on constrained plans. The orchestration layer itself must consume zero AI tokens — all scheduling, state management, and coordination should be deterministic. Intelligence is reserved for the work itself, not for managing the work.
+
+### G12: Simple to Start, Powerful to Scale
+A new user should go from zero to a working agent in minutes. But the same system should scale to dozens of projects, multiple agents, complex dependency chains, and sophisticated automation — without requiring re-architecture.
