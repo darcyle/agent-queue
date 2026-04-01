@@ -1020,6 +1020,20 @@ class AgentQueueBot(commands.Bot):
 
         return send_to_thread, notify_main_channel
 
+    def get_task_thread_urls(self) -> dict[str, str]:
+        """Return a mapping of task_id → thread jump_url for all tracked tasks.
+
+        Uses the thread's jump_url property which links to the thread itself
+        (not a specific message).  This is fast — no API calls required.
+        """
+        urls: dict[str, str] = {}
+        for task_id, thread in self._task_thread_objects.items():
+            try:
+                urls[task_id] = thread.jump_url
+            except Exception:
+                pass
+        return urls
+
     async def get_thread_last_message_url(self, task_id: str) -> str | None:
         """Return a Discord jump URL to the last message in a task's thread.
 
