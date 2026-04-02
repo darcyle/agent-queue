@@ -167,10 +167,17 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "delete_hook": "hooks",
     "toggle_project_hooks": "hooks",
     "browse_rules": "hooks",
+    "list_rules": "hooks",
+    "load_rule": "hooks",
+    "save_rule": "hooks",
+    "delete_rule": "hooks",
+    "refresh_hooks": "hooks",
     # memory
+    "memory_search": "memory",
     "memory_stats": "memory",
     "memory_reindex": "memory",
     "view_profile": "memory",
+    "edit_project_profile": "memory",
     "regenerate_profile": "memory",
     "compact_memory": "memory",
     "list_notes": "memory",
@@ -235,7 +242,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # they are "core" meta-tools that must always be loaded in the supervisor
     # LLM's context.  They are in _ALL_TOOL_DEFINITIONS for MCP completeness
     # but excluded from MCP by default (DEFAULT_EXCLUDED_COMMANDS).
-    # analyzer_status, analyzer_toggle, analyzer_history: deprecated (Phase 6)
+    # NOTE: create_task, list_tasks, get_task, edit_task are intentionally
+    # NOT categorized — they are core task operations always available to the
+    # supervisor LLM.
 }
 
 
@@ -2177,10 +2186,10 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "edit_profile",
+        "name": "edit_project_profile",
         "description": (
-            "Replace the project profile with new content. Use this to manually "
-            "correct or enhance the project's synthesized understanding."
+            "Replace the project memory profile with new content. Use this to "
+            "manually correct or enhance the project's synthesized understanding."
         ),
         "input_schema": {
             "type": "object",

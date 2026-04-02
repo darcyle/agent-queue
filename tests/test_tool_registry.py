@@ -44,7 +44,6 @@ def test_registry_has_core_tools(registry):
     assert "get_task" in core_names
     assert "browse_tools" in core_names
     assert "load_tools" in core_names
-    assert "memory_search" in core_names
     assert "send_message" in core_names
 
 

@@ -458,3 +458,39 @@ class TestDriftDetection:
             f"CommandHandler has commands without explicit tool definitions: {missing}. "
             f"Add entries to _ALL_TOOL_DEFINITIONS in tool_registry.py."
         )
+
+    def test_no_duplicate_tool_definitions(self):
+        """_ALL_TOOL_DEFINITIONS must not contain duplicate names.
+
+        Duplicate names cause the second definition to be silently ignored
+        during MCP registration (the first wins).  If two different commands
+        share a name (e.g. agent edit_profile vs. memory edit_profile),
+        one must be renamed.
+        """
+        from collections import Counter
+        names = [d["name"] for d in _ALL_TOOL_DEFINITIONS]
+        dupes = {n: c for n, c in Counter(names).items() if c > 1}
+        assert not dupes, (
+            f"Duplicate names in _ALL_TOOL_DEFINITIONS: {dupes}. "
+            f"Each command name must be unique — rename to avoid collisions."
+        )
+
+    def test_no_duplicate_cmd_methods(self):
+        """CommandHandler must not have duplicate _cmd_* method names.
+
+        In Python, the second definition of a method silently shadows the
+        first.  This test catches the bug early — e.g. two _cmd_edit_profile
+        methods where the agent-profile version shadows the memory-profile
+        version.
+        """
+        import inspect
+        import re
+        from src.command_handler import CommandHandler
+        source = inspect.getsource(CommandHandler)
+        method_names = re.findall(r'async def (_cmd_\w+)\(self', source)
+        from collections import Counter
+        dupes = {n: c for n, c in Counter(method_names).items() if c > 1}
+        assert not dupes, (
+            f"Duplicate _cmd_* methods in CommandHandler: {dupes}. "
+            f"The second definition silently shadows the first in Python."
+        )
