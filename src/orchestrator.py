@@ -3535,16 +3535,20 @@ For EACH workspace listed above, perform these steps IN ORDER:
             task, workspace, project, profile
         )
 
+        # Merge MCP servers: start with the daemon's own MCP server (if
+        # inject_into_tasks is enabled), then layer profile-specific servers
+        # on top.  Profile servers win on name collisions.
+        task_mcp: dict[str, dict] = dict(self.config.mcp_server.task_mcp_entry())
+        if profile and profile.mcp_servers:
+            task_mcp.update(profile.mcp_servers)
+
         ctx = TaskContext(
             task_id=task.id,
             description=full_description,
             checkout_path=workspace,
             branch_name=task.branch_name or "",
             image_paths=task.attachments if task.attachments else [],
-            mcp_servers=(
-                dict(profile.mcp_servers)
-                if profile and profile.mcp_servers else {}
-            ),
+            mcp_servers=task_mcp,
         )
 
         # Memory recall: inject relevant historical context from memsearch.
