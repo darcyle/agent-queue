@@ -2201,6 +2201,120 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     # analyzer tool definitions removed (Phase 6)
+
+    # ------------------------------------------------------------------
+    # Rule management tools — primary automation interface exposed via MCP
+    # ------------------------------------------------------------------
+    {
+        "name": "list_rules",
+        "description": (
+            "List all automation rules for the current project and globals. "
+            "Rules are the ONLY way to create automation — each active rule "
+            "generates hooks that execute automatically. "
+            "Alias: browse_rules"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project ID (optional, defaults to "
+                        "active project)"
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "load_rule",
+        "description": (
+            "Load a specific rule's full content and metadata, "
+            "including its generated hook IDs."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Rule ID",
+                },
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "save_rule",
+        "description": (
+            "Create or update an automation rule. This is the ONLY way to "
+            "create automation — never create hooks directly. Active rules with "
+            "triggers automatically generate hooks that execute on schedule or "
+            "in response to events. Passive rules influence reasoning without "
+            "triggering actions. "
+            "Include a # Title, ## Trigger (e.g. 'Check every 5 minutes' or "
+            "'When a task is completed'), and ## Logic section in the content."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": (
+                        "Rule ID (auto-generated if omitted)"
+                    ),
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project ID (null = global rule visible to all projects)"
+                    ),
+                },
+                "type": {
+                    "type": "string",
+                    "enum": ["active", "passive"],
+                    "description": (
+                        "Rule type: 'active' for triggered automation, "
+                        "'passive' for reasoning guidance"
+                    ),
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Rule content (markdown with # Title, ## Trigger, ## Logic sections)",
+                },
+            },
+            "required": ["type", "content"],
+        },
+    },
+    {
+        "name": "delete_rule",
+        "description": (
+            "Remove an automation rule and all its generated hooks. "
+            "This is the only way to remove automation — do not delete hooks directly."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Rule ID",
+                },
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "refresh_hooks",
+        "description": (
+            "Force reconciliation of all rules and their hooks. "
+            "Re-reads all rule files, regenerates hooks for active rules, "
+            "and cleans up orphaned hooks. Normally not needed — the file "
+            "watcher auto-reconciles when rule files change on disk."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
 ]
 
 class ToolRegistry:

@@ -255,7 +255,8 @@ def test_total_tool_count_preserved():
     # These are the new navigation tools added by the registry
     expected_new_tools = {
         "browse_tools", "load_tools", "send_message",
-        "browse_rules", "load_rule", "save_rule", "delete_rule",
+        "reply_to_user",
+        "list_rules", "load_rule", "save_rule", "delete_rule", "refresh_hooks",
     }
 
     # Every original categorized tool should still exist
