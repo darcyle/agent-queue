@@ -1073,3 +1073,174 @@ def test_reconcile_includes_migration_stats(storage_root):
     assert stats["orphan_hooks_migrated"] == 1
     # The migrated rule should also have been reconciled (hook regenerated)
     assert stats["rules_scanned"] >= 1
+
+
+# ------------------------------------------------------------------
+# Extended trigger parsing tests
+# ------------------------------------------------------------------
+
+
+def test_parse_trigger_periodic_days():
+    """_parse_trigger handles 'every N day(s)' patterns."""
+    from src.rule_manager import RuleManager
+
+    content = "# Test\n\n## Trigger\nEvery 1 day.\n\n## Logic\nDo stuff."
+    result = RuleManager._parse_trigger(content)
+    assert result == {"type": "periodic", "interval_seconds": 86400}
+
+    content2 = "# Test\n\n## Trigger\nEvery 3 days.\n\n## Logic\nDo stuff."
+    result2 = RuleManager._parse_trigger(content2)
+    assert result2 == {"type": "periodic", "interval_seconds": 3 * 86400}
+
+
+def test_parse_trigger_every_hour_no_number():
+    """_parse_trigger handles 'every hour' without a number (implies 1)."""
+    from src.rule_manager import RuleManager
+
+    content = "# Test\n\n## Trigger\nCheck every hour.\n\n## Logic\nDo stuff."
+    result = RuleManager._parse_trigger(content)
+    assert result == {"type": "periodic", "interval_seconds": 3600}
+
+
+def test_parse_trigger_weekly_daily():
+    """_parse_trigger handles 'weekly' and 'daily' shorthand."""
+    from src.rule_manager import RuleManager
+
+    content = "# Test\n\n## Trigger\nWeekly (every Monday at 9:00 AM UTC)\n"
+    result = RuleManager._parse_trigger(content)
+    assert result == {"type": "periodic", "interval_seconds": 604800}
+
+    content2 = "# Test\n\n## Trigger\nDaily check.\n"
+    result2 = RuleManager._parse_trigger(content2)
+    assert result2 == {"type": "periodic", "interval_seconds": 86400}
+
+
+def test_parse_trigger_section_variants():
+    """_parse_trigger finds '## Triggers' (plural) and '## Trigger Schedule'."""
+    from src.rule_manager import RuleManager
+
+    content = "# Test\n\n## Triggers\nEvery 10 minutes.\n\n## Logic\nDo stuff."
+    result = RuleManager._parse_trigger(content)
+    assert result == {"type": "periodic", "interval_seconds": 600}
+
+    content2 = (
+        "# Test\n\n## Trigger Schedule\n"
+        "**Frequency:** Every 30 minutes\n\n## Logic\nDo stuff."
+    )
+    result2 = RuleManager._parse_trigger(content2)
+    assert result2 == {"type": "periodic", "interval_seconds": 1800}
+
+
+def test_parse_trigger_inline_bold_marker():
+    """_parse_trigger finds **Trigger:** inline markers as fallback."""
+    from src.rule_manager import RuleManager
+
+    content = "# Test\n\n**Trigger:** When a task is completed.\n\n## Logic\nDo."
+    result = RuleManager._parse_trigger(content)
+    assert result == {"type": "event", "event_type": "task.completed"}
+
+
+def test_parse_trigger_error_agent_crash():
+    """_parse_trigger handles error/crash event triggers."""
+    from src.rule_manager import RuleManager
+
+    content = (
+        "# Test\n\n## Trigger\n"
+        "When an agent crash error occurs (`error.agent_crash` event).\n"
+    )
+    result = RuleManager._parse_trigger(content)
+    assert result == {"type": "event", "event_type": "error.agent_crash"}
+
+
+def test_parse_trigger_explicit_event_type():
+    """_parse_trigger picks up backticked event types like `task.started`."""
+    from src.rule_manager import RuleManager
+
+    content = "# Test\n\n## Trigger\nOn `task.started` event.\n"
+    result = RuleManager._parse_trigger(content)
+    assert result == {"type": "event", "event_type": "task.started"}
+
+
+# ------------------------------------------------------------------
+# Duplicate rule cleanup tests
+# ------------------------------------------------------------------
+
+
+def test_cleanup_duplicate_rules(storage_root):
+    """_cleanup_duplicate_rules removes rule-rule-* files when canonical exists."""
+    from src.rule_manager import RuleManager
+
+    # Create canonical rule
+    rules_dir = os.path.join(storage_root, "memory", "test-project", "rules")
+    os.makedirs(rules_dir, exist_ok=True)
+
+    canonical_content = (
+        "---\nid: rule-restart-daemon\ntype: active\n"
+        "project_id: test-project\nhooks: []\n---\n\n"
+        "# Restart Daemon\n\n## Trigger\nWhen task completed.\n"
+    )
+    with open(os.path.join(rules_dir, "rule-restart-daemon.md"), "w") as f:
+        f.write(canonical_content)
+
+    # Create duplicate rule-rule-* file
+    duplicate_content = (
+        "---\nid: rule-rule-restart-daemon\ntype: active\n"
+        "project_id: test-project\nhooks:\n- rule-rule-rule-restart-daemon-abc123\n---\n\n"
+        "# Rule: Restart Daemon\n\n## Trigger\nWhen task completed.\n"
+    )
+    with open(os.path.join(rules_dir, "rule-rule-restart-daemon.md"), "w") as f:
+        f.write(duplicate_content)
+
+    mock_db = AsyncMock()
+    mock_db.delete_hook = AsyncMock()
+    mock_db.delete_hooks_by_id_prefix = AsyncMock(return_value=0)
+
+    rm = RuleManager(storage_root=storage_root, db=mock_db)
+    removed = asyncio.run(rm._cleanup_duplicate_rules())
+
+    assert removed == 1
+    assert not os.path.exists(
+        os.path.join(rules_dir, "rule-rule-restart-daemon.md")
+    )
+    assert os.path.exists(os.path.join(rules_dir, "rule-restart-daemon.md"))
+    # Should have cleaned up the hook from the duplicate
+    mock_db.delete_hook.assert_called_with("rule-rule-rule-restart-daemon-abc123")
+
+
+def test_migrate_orphan_hooks_strips_rule_prefix(storage_root):
+    """migrate_orphan_hooks strips 'Rule: ' from hook names to avoid duplicates."""
+    from src.models import Hook
+    from src.rule_manager import RuleManager
+
+    orphan = Hook(
+        id="legacy-restart-hook",
+        project_id="my-project",
+        name="Rule: Restart Daemon",
+        trigger='{"type": "event", "event_type": "task.completed"}',
+        context_steps="[]",
+        prompt_template="Restart the daemon.",
+        cooldown_seconds=60,
+    )
+
+    mock_db = AsyncMock()
+    mock_db.list_hooks = AsyncMock(return_value=[orphan])
+    mock_db.delete_hook = AsyncMock()
+
+    rm = RuleManager(storage_root=storage_root, db=mock_db)
+    stats = asyncio.run(rm.migrate_orphan_hooks())
+
+    assert stats["migrated"] == 1
+
+    # The rule file should be rule-restart-daemon.md, NOT rule-rule-restart-daemon.md
+    expected_path = os.path.join(
+        storage_root, "memory", "my-project", "rules", "rule-restart-daemon.md"
+    )
+    unexpected_path = os.path.join(
+        storage_root, "memory", "my-project", "rules", "rule-rule-restart-daemon.md"
+    )
+    assert os.path.isfile(expected_path), (
+        f"Expected rule file at {expected_path}"
+    )
+    assert not os.path.isfile(unexpected_path), (
+        f"Should NOT create duplicate at {unexpected_path}"
+    )

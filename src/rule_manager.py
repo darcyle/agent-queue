@@ -648,32 +648,46 @@ class RuleManager:
         """Parse trigger configuration from rule content.
 
         Looks for patterns like "every N minutes/hours" in the Trigger section.
+        Supports multiple section name variants (## Trigger, ## Triggers,
+        ## Trigger Schedule) and inline **Trigger:** markers.
         """
-        # Find the Trigger section
+        # Find the Trigger section — accept "## Trigger", "## Triggers",
+        # "## Trigger Schedule", etc.
         trigger_section = ""
         in_trigger = False
         for line in content.split("\n"):
-            if line.strip().startswith("## Trigger"):
+            stripped = line.strip()
+            if re.match(r"^##\s+Trigger", stripped, re.IGNORECASE):
                 in_trigger = True
                 continue
             if in_trigger:
-                if line.strip().startswith("## "):
+                if stripped.startswith("## "):
                     break
                 trigger_section += line + "\n"
+
+        # Fallback: look for inline **Trigger:** or **Trigger** markers
+        if not trigger_section.strip():
+            for line in content.split("\n"):
+                m = re.match(r"\*\*Trigger:?\*\*:?\s*(.*)", line.strip())
+                if m:
+                    trigger_section = m.group(1) + "\n"
+                    break
 
         if not trigger_section.strip():
             return None
 
         text = trigger_section.lower().strip()
 
-        # Parse "every N minutes/hours"
+        # Parse "every N minutes/hours/days" (with explicit number)
         match = re.search(
-            r"every\s+(\d+)\s*(minute|min|hour|hr|second|sec)s?", text
+            r"every\s+(\d+)\s*(minute|min|hour|hr|second|sec|day)s?", text
         )
         if match:
             value = int(match.group(1))
             unit = match.group(2)
-            if unit.startswith("hour") or unit.startswith("hr"):
+            if unit.startswith("day"):
+                seconds = value * 86400
+            elif unit.startswith("hour") or unit.startswith("hr"):
                 seconds = value * 3600
             elif unit.startswith("min"):
                 seconds = value * 60
@@ -681,16 +695,76 @@ class RuleManager:
                 seconds = value
             return {"type": "periodic", "interval_seconds": seconds}
 
-        # Parse event-based triggers
+        # Parse "every hour/minute/day" (no number — implies 1)
+        match = re.search(
+            r"every\s+(hour|hr|minute|min|second|sec|day)s?", text
+        )
+        if match:
+            unit = match.group(1)
+            if unit.startswith("day"):
+                seconds = 86400
+            elif unit.startswith("hour") or unit.startswith("hr"):
+                seconds = 3600
+            elif unit.startswith("min"):
+                seconds = 60
+            else:
+                seconds = 1
+            return {"type": "periodic", "interval_seconds": seconds}
+
+        # Parse "weekly" / "daily" / "hourly" shorthand
+        if re.search(r"\bweekly\b", text):
+            return {"type": "periodic", "interval_seconds": 604800}
+        if re.search(r"\bdaily\b", text):
+            return {"type": "periodic", "interval_seconds": 86400}
+        if re.search(r"\bhourly\b", text):
+            return {"type": "periodic", "interval_seconds": 3600}
+
+        # Check N hours/minutes/seconds (without "every")
+        match = re.search(
+            r"(?:check\s+)?(\d+)\s*(minute|min|hour|hr|second|sec|day)s?", text
+        )
+        if match:
+            value = int(match.group(1))
+            unit = match.group(2)
+            if unit.startswith("day"):
+                seconds = value * 86400
+            elif unit.startswith("hour") or unit.startswith("hr"):
+                seconds = value * 3600
+            elif unit.startswith("min"):
+                seconds = value * 60
+            else:
+                seconds = value
+            return {"type": "periodic", "interval_seconds": seconds}
+
+        # Parse event-based triggers — broad pattern matching
         event_match = re.search(
             r"when\s+(?:a\s+)?task\s+(?:is\s+)?completed", text
         )
         if event_match:
             return {"type": "event", "event_type": "task.completed"}
 
-        event_match = re.search(r"when\s+(?:a\s+)?task\s+fails", text)
+        event_match = re.search(
+            r"when\s+(?:a\s+)?task\s+(?:is\s+)?(?:failed|fails)", text
+        )
         if event_match:
             return {"type": "event", "event_type": "task.failed"}
+
+        # Match "when error", "when agent crash", "error.X" event references
+        event_match = re.search(
+            r"when\s+(?:an?\s+)?(?:agent\s+)?(?:crash|error)", text
+        )
+        if event_match:
+            return {"type": "event", "event_type": "error.agent_crash"}
+
+        # Match explicit event type references like `error.agent_crash`
+        event_match = re.search(r"`?([\w]+\.[\w.]+)`?", text)
+        if event_match:
+            return {"type": "event", "event_type": event_match.group(1)}
+
+        # Parse cron expressions
+        cron_match = re.search(r"cron[:\s]+`?([*\d/,\-\s]{9,})`?", text)
+        if cron_match:
+            return {"type": "cron", "cron": cron_match.group(1).strip()}
 
         return None
 
@@ -749,8 +823,11 @@ class RuleManager:
 
                 content = "\n".join(body_parts)
 
-                # Derive a rule ID from the hook name/id
-                rule_id = self._id_from_title(title)
+                # Derive a rule ID from the hook name/id.
+                # Strip common prefixes like "Rule: " to avoid creating
+                # rule-rule-* IDs that duplicate existing rule-* rules.
+                clean_title = re.sub(r"^Rule:\s*", "", title)
+                rule_id = self._id_from_title(clean_title)
 
                 # Check if a rule already exists for this hook (idempotent)
                 if self.load_rule(rule_id):
@@ -848,6 +925,94 @@ class RuleManager:
         # Fallback for unknown trigger types
         return f"Trigger type: {trigger_type}."
 
+    async def _cleanup_duplicate_rules(self) -> int:
+        """Remove duplicate rule-rule-* files that mirror existing rule-* files.
+
+        Earlier versions of ``migrate_orphan_hooks`` would convert a hook
+        named "Rule: Restart Daemon When Idle" into a rule file called
+        ``rule-rule-restart-daemon-when-idle.md``, duplicating the
+        canonical ``rule-restart-daemon-when-idle.md``.  This method
+        detects such duplicates and removes them (plus their DB hooks).
+
+        Returns:
+            Number of duplicate rule files removed.
+        """
+        memory_root = os.path.join(self._storage_root, "memory")
+        if not os.path.isdir(memory_root):
+            return 0
+
+        removed = 0
+        for scope_dir in os.listdir(memory_root):
+            rules_dir = os.path.join(memory_root, scope_dir, "rules")
+            if not os.path.isdir(rules_dir):
+                continue
+
+            filenames = [f for f in os.listdir(rules_dir) if f.endswith(".md")]
+
+            for filename in filenames:
+                # Detect rule-rule-* pattern: the rule ID starts with
+                # "rule-rule-" and a canonical file without the extra
+                # "rule-" prefix exists.
+                rule_id = filename[:-3]  # strip .md
+
+                if not rule_id.startswith("rule-rule-"):
+                    continue
+
+                # Derive the canonical rule ID by stripping the extra "rule-"
+                canonical_id = rule_id[5:]  # "rule-rule-x" → "rule-x"
+                canonical_path = os.path.join(rules_dir, f"{canonical_id}.md")
+
+                if not os.path.isfile(canonical_path):
+                    continue  # No canonical rule — this isn't a duplicate
+
+                duplicate_path = os.path.join(rules_dir, filename)
+                logger.info(
+                    "Removing duplicate rule file %s (canonical: %s)",
+                    filename, f"{canonical_id}.md",
+                )
+
+                # Read duplicate's hook IDs before deleting
+                try:
+                    with open(duplicate_path) as f:
+                        meta, _ = self._split_frontmatter(f.read())
+                    hook_ids = meta.get("hooks", [])
+                except Exception:
+                    hook_ids = []
+
+                # Delete the duplicate file
+                try:
+                    os.remove(duplicate_path)
+                    removed += 1
+                except Exception as e:
+                    logger.warning(
+                        "Failed to remove duplicate rule %s: %s",
+                        duplicate_path, e,
+                    )
+                    continue
+
+                # Clean up hooks associated with the duplicate rule
+                if self._db:
+                    for hid in hook_ids:
+                        try:
+                            await self._db.delete_hook(hid)
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to delete hook %s from duplicate rule: %s",
+                                hid, e,
+                            )
+
+                    # Also delete any orphan hooks by prefix that weren't
+                    # listed in the frontmatter (e.g. from TOCTOU races)
+                    prefix = f"rule-{rule_id}-"
+                    try:
+                        await self._db.delete_hooks_by_id_prefix(prefix)
+                    except Exception as e:
+                        logger.debug(
+                            "Prefix cleanup for %s: %s", prefix, e,
+                        )
+
+        return removed
+
     async def reconcile(self) -> dict:
         """Startup reconciliation: regenerate hooks for all active rules.
 
@@ -879,6 +1044,15 @@ class RuleManager:
             logger.info(
                 "Pre-reconciliation migration: %d orphan hooks converted to rules",
                 migration_stats["migrated"],
+            )
+
+        # Clean up duplicate rule-rule-* files that were created by
+        # earlier versions of migrate_orphan_hooks
+        duplicates_removed = await self._cleanup_duplicate_rules()
+        if duplicates_removed:
+            logger.info(
+                "Pre-reconciliation cleanup: removed %d duplicate rule-rule-* files",
+                duplicates_removed,
             )
 
         stats = {
