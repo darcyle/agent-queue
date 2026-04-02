@@ -1,27 +1,19 @@
-"""MCP server for the agent-queue system.
+"""MCP tool, resource, and prompt registration for the agent-queue system.
 
-Exposes all CommandHandler commands as MCP tools (auto-registered from
-``_ALL_TOOL_DEFINITIONS`` in ``src.tool_registry``), plus read-only MCP
-resources and reusable prompt templates.
+Auto-registers all CommandHandler commands as MCP tools from
+``_ALL_TOOL_DEFINITIONS``, plus read-only MCP resources and reusable prompt
+templates.  Used by the embedded MCP server (``src/embedded_mcp.py``).
 
 Each MCP tool delegates execution to ``CommandHandler.execute(name, args)``,
-ensuring feature parity with both the Discord bot and the Supervisor LLM
+ensuring feature parity with the Discord bot and the Supervisor LLM
 tool-use loop — no business logic is reimplemented here.
-
-Usage:
-    python -m packages.mcp_server.mcp_server [--config PATH]
-
-Or via the ``agent-queue-mcp`` entry point defined in pyproject.toml.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import os
-import sys
-from contextlib import asynccontextmanager
 from typing import Any
 
 from mcp.server import FastMCP
@@ -29,22 +21,10 @@ from mcp.server.fastmcp.tools import Tool
 from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata, ArgModelBase
 from pydantic import ConfigDict
 
-# Add project root to path so we can import src modules
-_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
-
-from src.config import load_config
-from src.command_handler import CommandHandler
 from src.database import Database
-from src.event_bus import EventBus
-from src.models import (
-    AgentState,
-    TaskStatus,
-)
-from src.orchestrator import Orchestrator
+from src.models import AgentState, TaskStatus
 from src.tool_registry import _ALL_TOOL_DEFINITIONS
-from packages.mcp_server.mcp_interfaces import (  # noqa: E402
+from src.mcp_interfaces import (
     agent_to_dict,
     profile_to_dict,
     project_to_dict,
@@ -54,19 +34,6 @@ from packages.mcp_server.mcp_interfaces import (  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Default paths
-# ---------------------------------------------------------------------------
-
-DEFAULT_DB_PATH = os.environ.get(
-    "AGENT_QUEUE_DB",
-    os.path.expanduser("~/.agent-queue/agent_queue.db"),
-)
-
-DEFAULT_CONFIG_PATH = os.environ.get(
-    "AGENT_QUEUE_CONFIG",
-    os.path.expanduser("~/.agent-queue/config.yaml"),
-)
 
 # ---------------------------------------------------------------------------
 # Excluded commands — dangerous or irrelevant for MCP clients
@@ -131,11 +98,6 @@ def get_effective_exclusions(
     return excluded
 
 
-# The effective exclusion set used at module load time.  Updated during
-# lifespan initialization when the full AppConfig is available.
-_effective_exclusions: set[str] = set()
-
-
 # ---------------------------------------------------------------------------
 # Permissive argument model for dynamic tool registration
 # ---------------------------------------------------------------------------
@@ -157,60 +119,6 @@ class _AnyArgs(ArgModelBase):
 # Shared FuncMetadata instance — all dynamic tools use the same permissive
 # argument model (actual validation is done by CommandHandler).
 _ANY_ARGS_METADATA = FuncMetadata(arg_model=_AnyArgs, fn_is_coroutine=True)
-
-
-# ---------------------------------------------------------------------------
-# Lifespan — initialize Orchestrator + CommandHandler, tear down on exit
-# ---------------------------------------------------------------------------
-
-@asynccontextmanager
-async def server_lifespan(server: FastMCP):
-    """Initialize Orchestrator + CommandHandler on startup, shut down on exit.
-
-    Only the database is fully initialized — the MCP server needs the command
-    execution layer, not the scheduling loop, hook engine, rule manager, or
-    file watchers.  This keeps startup fast (~1s instead of ~5s) so MCP
-    clients don't time out during the connection handshake.
-    """
-    config_path = getattr(server, "_config_path", DEFAULT_CONFIG_PATH)
-    config = load_config(config_path)
-
-    orchestrator = Orchestrator(config)
-    # Minimal init: only the database, skip hooks/rules/watchers/recovery.
-    await orchestrator.db.initialize()
-
-    command_handler = CommandHandler(orchestrator, config)
-    orchestrator.set_command_handler(command_handler)
-
-    # Keep db/event_bus accessible for resources (read-only views)
-    db = orchestrator.db
-    event_bus = orchestrator.bus
-
-    try:
-        yield {
-            "db": db,
-            "event_bus": event_bus,
-            "orchestrator": orchestrator,
-            "command_handler": command_handler,
-        }
-    finally:
-        await orchestrator.shutdown()
-
-
-# ---------------------------------------------------------------------------
-# Create the FastMCP server
-# ---------------------------------------------------------------------------
-
-mcp = FastMCP(
-    name="agent-queue",
-    instructions=(
-        "Agent Queue MCP server. Provides access to all CommandHandler "
-        "operations (task management, project configuration, agent monitoring, "
-        "workspace operations, git, hooks, memory, and more) for the "
-        "agent-queue orchestrator system."
-    ),
-    lifespan=server_lifespan,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -292,44 +200,16 @@ def register_command_tools(
     return registered
 
 
-# Register all tools at module load time.
-# At import time we don't have the config path yet (it's set later via CLI),
-# so we merge defaults + env var only.  Config-file exclusions take effect
-# when the lifespan re-registers if needed.
-_effective_exclusions = get_effective_exclusions()
-_registered_tools = register_command_tools(mcp, _effective_exclusions)
-
-# Log exposed vs excluded at startup
-_all_tool_names = {td["name"] for td in _ALL_TOOL_DEFINITIONS}
-_excluded_from_registry = _effective_exclusions & _all_tool_names
-_extra_exclusions = _effective_exclusions - _all_tool_names
-logger.info(
-    "MCP tools: %d exposed, %d excluded%s",
-    len(_registered_tools),
-    len(_excluded_from_registry),
-    f" ({len(_extra_exclusions)} exclusion names not in registry)" if _extra_exclusions else "",
-)
-if _excluded_from_registry:
-    logger.info("Excluded commands: %s", ", ".join(sorted(_excluded_from_registry)))
-logger.info("Exposed commands: %s", ", ".join(sorted(_registered_tools)))
-
-
-# ===========================================================================
-# Reusable registration functions — used by both standalone and embedded modes
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# Resource registration
+# ---------------------------------------------------------------------------
 
 def register_resources(mcp_server: FastMCP) -> None:
-    """Register all read-only MCP resources on the given FastMCP instance.
-
-    Each resource resolves the Database from the server's lifespan context,
-    so the same functions work for both standalone and embedded modes.
-    """
+    """Register all read-only MCP resources on the given FastMCP instance."""
 
     async def _db(server: FastMCP) -> Database:
         ctx = server.get_context()
         return ctx.request_context.lifespan_context["db"]
-
-    # --- Tasks -------------------------------------------------------------
 
     @mcp_server.resource("agentqueue://tasks")
     async def list_all_tasks() -> str:
@@ -381,8 +261,6 @@ def register_resources(mcp_server: FastMCP) -> None:
         tasks = await db.list_tasks(status=task_status)
         return json.dumps([task_to_dict(t) for t in tasks], indent=2)
 
-    # --- Projects ----------------------------------------------------------
-
     @mcp_server.resource("agentqueue://projects")
     async def list_all_projects() -> str:
         """List all configured projects."""
@@ -399,8 +277,6 @@ def register_resources(mcp_server: FastMCP) -> None:
             return json.dumps({"error": f"Project not found: {project_id}"})
         return json.dumps(project_to_dict(project), indent=2)
 
-    # --- Agents ------------------------------------------------------------
-
     @mcp_server.resource("agentqueue://agents")
     async def list_all_agents() -> str:
         """List all registered agents and their current state."""
@@ -414,8 +290,6 @@ def register_resources(mcp_server: FastMCP) -> None:
         db = await _db(mcp_server)
         agents = await db.list_agents(state=AgentState.BUSY)
         return json.dumps([agent_to_dict(a) for a in agents], indent=2)
-
-    # --- Profiles ----------------------------------------------------------
 
     @mcp_server.resource("agentqueue://profiles")
     async def list_all_profiles() -> str:
@@ -433,16 +307,12 @@ def register_resources(mcp_server: FastMCP) -> None:
             return json.dumps({"error": f"Profile not found: {profile_id}"})
         return json.dumps(profile_to_dict(profile), indent=2)
 
-    # --- Events ------------------------------------------------------------
-
     @mcp_server.resource("agentqueue://events/recent")
     async def list_recent_events() -> str:
         """List recent system events (last 50)."""
         db = await _db(mcp_server)
         events = await db.get_recent_events(limit=50)
         return json.dumps(events, indent=2, default=str)
-
-    # --- Workspaces --------------------------------------------------------
 
     @mcp_server.resource("agentqueue://workspaces")
     async def list_all_workspaces() -> str:
@@ -462,6 +332,10 @@ def register_resources(mcp_server: FastMCP) -> None:
         workspaces = await db.list_workspaces(project_id)
         return json.dumps([workspace_to_dict(w) for w in workspaces], indent=2)
 
+
+# ---------------------------------------------------------------------------
+# Prompt registration
+# ---------------------------------------------------------------------------
 
 def register_prompts(mcp_server: FastMCP) -> None:
     """Register all MCP prompt templates on the given FastMCP instance."""
@@ -580,68 +454,3 @@ Based on this information, please provide:
 1. Current project health assessment
 2. Any bottlenecks or concerns
 3. Recommended next actions"""
-
-
-# Register resources and prompts on the standalone module-level instance.
-register_resources(mcp)
-register_prompts(mcp)
-
-
-# ===========================================================================
-# Entry point
-# ===========================================================================
-
-def main():
-    """Run the MCP server on stdio transport."""
-    parser = argparse.ArgumentParser(description="Agent Queue MCP Server")
-    parser.add_argument(
-        "--config",
-        default=DEFAULT_CONFIG_PATH,
-        help=f"Path to config YAML (default: {DEFAULT_CONFIG_PATH})",
-    )
-    parser.add_argument(
-        "--db",
-        default=None,
-        help="Path to SQLite database (overrides config; deprecated, use --config)",
-    )
-    parser.add_argument(
-        "--transport",
-        choices=["stdio", "sse", "streamable-http"],
-        default="stdio",
-        help="Transport mode (default: stdio)",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Port for SSE/HTTP transport (default: 8000)",
-    )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug logging",
-    )
-    args = parser.parse_args()
-
-    if args.debug:
-        logging.basicConfig(level=logging.DEBUG, stream=sys.stderr)
-    else:
-        logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-
-    # Store config path on the server instance for lifespan access
-    mcp._config_path = args.config
-
-    # Legacy --db flag: store for backward compat (lifespan will use config)
-    if args.db:
-        mcp._db_path = args.db
-
-    if args.transport == "sse":
-        mcp.settings.port = args.port
-    elif args.transport == "streamable-http":
-        mcp.settings.port = args.port
-
-    mcp.run(transport=args.transport)
-
-
-if __name__ == "__main__":
-    main()
