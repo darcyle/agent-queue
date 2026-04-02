@@ -1193,12 +1193,16 @@ class CommandHandler:
     # -----------------------------------------------------------------------
 
     async def _cmd_get_status(self, args: dict) -> dict:
+        filter_project = args.get("project_id")
         projects = await self.db.list_projects()
-        tasks = await self.db.list_tasks()
+        tasks = await self.db.list_tasks(project_id=filter_project)
 
-        # Build agent view from workspaces across all projects
+        # Build agent view from workspaces (scoped to project when provided)
         agent_details = []
-        for p in projects:
+        target_projects = projects
+        if filter_project:
+            target_projects = [p for p in projects if p.id == filter_project]
+        for p in target_projects:
             workspaces = await self.db.list_workspaces(project_id=p.id)
             for ws in workspaces:
                 if ws.locked_by_task_id:
@@ -1237,7 +1241,7 @@ class CommandHandler:
         ]
 
         return {
-            "projects": len(projects),
+            "projects": 1 if filter_project else len(projects),
             "agents": agent_details,
             "tasks": {
                 "total": len(tasks),

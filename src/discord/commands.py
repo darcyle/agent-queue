@@ -2588,8 +2588,14 @@ def setup_commands(bot: commands.Bot) -> None:
     async def status_command(interaction: discord.Interaction):
         await interaction.response.defer()
         try:
-            # Get agent/orchestrator status for the header
-            status_result = await handler.execute("get_status", {})
+            # Resolve project from channel context (like /tasks does)
+            project_id = await _resolve_project_from_context(interaction, None)
+
+            # Get agent/orchestrator status for the header (scoped to project)
+            status_args: dict = {}
+            if project_id:
+                status_args["project_id"] = project_id
+            status_result = await handler.execute("get_status", status_args)
 
             # Build header lines from status info
             header_lines: list[str] = []
@@ -2609,9 +2615,6 @@ def setup_commands(bot: commands.Bot) -> None:
                         )
                     else:
                         header_lines.append(f"• **{a['name']}** ({a['state']})")
-
-            # Resolve project from channel context (like /tasks does)
-            project_id = await _resolve_project_from_context(interaction, None)
 
             # Fetch tasks using the same backend as /tasks
             args: dict = {
