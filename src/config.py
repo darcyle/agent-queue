@@ -440,12 +440,37 @@ class McpServerConfig:
     MCP tools.  These are merged with ``DEFAULT_EXCLUDED_COMMANDS`` (hardcoded
     safe defaults) and the ``AGENT_QUEUE_MCP_EXCLUDED`` environment variable
     (comma-separated) to produce the final exclusion set.
+
+    When ``inject_into_tasks`` is True (default when ``enabled`` is True), the
+    daemon automatically adds the agent-queue MCP server as an HTTP MCP server
+    in every task's ``mcp_servers`` dict.  This gives agents access to all
+    agent-queue commands (task management, project operations, etc.) without
+    requiring manual ``.mcp.json`` files in each workspace.
     """
 
     enabled: bool = False
     host: str = "127.0.0.1"
     port: int = 8081
     excluded_commands: list[str] = field(default_factory=list)
+    inject_into_tasks: bool | None = None  # None = auto (True when enabled)
+
+    @property
+    def should_inject_into_tasks(self) -> bool:
+        """Whether to auto-inject the MCP server into task contexts."""
+        if self.inject_into_tasks is not None:
+            return self.inject_into_tasks
+        return self.enabled  # default: inject when enabled
+
+    def task_mcp_entry(self) -> dict[str, dict]:
+        """Return the MCP server config dict to merge into task contexts.
+
+        Returns an empty dict if injection is disabled or the server isn't
+        enabled. Otherwise returns ``{"agent-queue": {"type": "http", "url": ...}}``.
+        """
+        if not self.enabled or not self.should_inject_into_tasks:
+            return {}
+        url = f"http://{self.host}:{self.port}/mcp"
+        return {"agent-queue": {"type": "http", "url": url}}
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -1221,6 +1246,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             host=ms.get("host", "127.0.0.1"),
             port=ms.get("port", 8081),
             excluded_commands=ms.get("excluded_commands", []),
+            inject_into_tasks=ms.get("inject_into_tasks", None),
         )
 
     if "llm_logging" in raw:
