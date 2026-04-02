@@ -108,6 +108,14 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "git_log": "git",
     "git_diff": "git",
     "checkout_branch": "git",
+    "git_branch": "git",
+    "git_checkout": "git",
+    "create_branch": "git",
+    "commit_changes": "git",
+    "push_branch": "git",
+    "merge_branch": "git",
+    "create_github_repo": "git",
+    "generate_readme": "git",
     # project
     "list_projects": "project",
     "create_project": "project",
@@ -125,7 +133,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "remove_workspace": "project",
     "queue_sync_workspaces": "project",
     "set_active_project": "project",
-    # agent (workspace-as-agent model — CRUD commands removed)
+    "set_project_channel": "project",
+    "set_control_interface": "project",
+    # agent (workspace-as-agent model — deprecated CRUD still available)
     "list_agents": "agent",
     "get_agent_error": "agent",
     "list_profiles": "agent",
@@ -138,6 +148,11 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "install_profile": "agent",
     "export_profile": "agent",
     "import_profile": "agent",
+    "create_agent": "agent",
+    "edit_agent": "agent",
+    "delete_agent": "agent",
+    "pause_agent": "agent",
+    "resume_agent": "agent",
     # hooks (read-only / execution — all creation goes through rules)
     "list_hooks": "hooks",
     "list_hook_runs": "hooks",
@@ -147,6 +162,11 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "schedule_hook": "hooks",
     "list_scheduled": "hooks",
     "cancel_scheduled": "hooks",
+    "create_hook": "hooks",
+    "edit_hook": "hooks",
+    "delete_hook": "hooks",
+    "toggle_project_hooks": "hooks",
+    "browse_rules": "hooks",
     # memory
     "memory_stats": "memory",
     "memory_reindex": "memory",
@@ -201,6 +221,20 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_prompts": "system",
     "read_prompt": "system",
     "render_prompt": "system",
+    "reload_config": "system",
+    "claude_usage": "system",
+    "archive_settings": "system",
+    "provide_input": "system",
+    "set_task_status": "system",
+    "task_deps": "system",
+    # NOTE: send_message is intentionally NOT categorized — it is a "core"
+    # tool that must always be available to the supervisor LLM.
+    "shutdown": "system",
+    "update_and_restart": "system",
+    # NOTE: browse_tools / load_tools are intentionally NOT categorized —
+    # they are "core" meta-tools that must always be loaded in the supervisor
+    # LLM's context.  They are in _ALL_TOOL_DEFINITIONS for MCP completeness
+    # but excluded from MCP by default (DEFAULT_EXCLUDED_COMMANDS).
     # analyzer_status, analyzer_toggle, analyzer_history: deprecated (Phase 6)
 }
 
@@ -2313,6 +2347,497 @@ _ALL_TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {},
+        },
+    },
+    # ------------------------------------------------------------------
+    # Commands below were added to ensure ALL CommandHandler commands
+    # have explicit MCP tool definitions with rich schemas.
+    # ------------------------------------------------------------------
+    {
+        "name": "reload_config",
+        "description": (
+            "Manually trigger a config hot-reload from disk. Returns a summary "
+            "of which sections changed, which were applied, and which require "
+            "a daemon restart."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "claude_usage",
+        "description": (
+            "Get Claude Code usage stats from live session data. Computes real "
+            "token usage by scanning active session JSONL files in "
+            "~/.claude/projects/. Also reads subscription info from "
+            "~/.claude/.credentials.json."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "archive_settings",
+        "description": (
+            "Return the current auto-archive configuration. Shows archive "
+            "policy settings plus the count of currently archived tasks and "
+            "how many terminal tasks are eligible right now."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "provide_input",
+        "description": (
+            "Provide a human reply to an agent question (WAITING_INPUT → READY). "
+            "The agent's question is answered by appending the human's response "
+            "to the task description so the agent sees it on re-execution."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "ID of the task waiting for input",
+                },
+                "input": {
+                    "type": "string",
+                    "description": "The human's response text",
+                },
+            },
+            "required": ["task_id", "input"],
+        },
+    },
+    {
+        "name": "set_task_status",
+        "description": (
+            "Directly set a task's status. Administrative override — use with "
+            "care as it bypasses normal state machine transitions."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Task ID",
+                },
+                "status": {
+                    "type": "string",
+                    "description": (
+                        "New status value (e.g. READY, DEFINED, COMPLETED, "
+                        "FAILED, BLOCKED)"
+                    ),
+                },
+            },
+            "required": ["task_id", "status"],
+        },
+    },
+    {
+        "name": "task_deps",
+        "description": (
+            "Return upstream dependencies and downstream dependents for a task. "
+            "Shows a focused dependency view with visual status for each "
+            "related task."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Task ID to show dependencies for",
+                },
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "set_project_channel",
+        "description": (
+            "Link an existing Discord channel to a project. "
+            "Deprecated — prefer edit_project with discord_channel_id."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID",
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Discord channel ID to link",
+                },
+            },
+            "required": ["project_id", "channel_id"],
+        },
+    },
+    {
+        "name": "set_control_interface",
+        "description": (
+            "Set a project's channel by channel name (string lookup). "
+            "Resolves the channel name within the guild. "
+            "Deprecated — prefer edit_project with discord_channel_id."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID or project name",
+                },
+                "channel_name": {
+                    "type": "string",
+                    "description": "Discord channel name to look up",
+                },
+            },
+            "required": ["project_id", "channel_name"],
+        },
+    },
+    # --- Agent management (deprecated — workspace model) ---
+    {
+        "name": "create_agent",
+        "description": (
+            "Deprecated — agents are now derived from workspaces. "
+            "Use add_workspace to add agent capacity to a project."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Agent name"},
+                "project_id": {"type": "string", "description": "Project to assign to"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "edit_agent",
+        "description": (
+            "Deprecated — agents are now derived from workspaces. "
+            "Use edit_project or workspace commands instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID"},
+            },
+            "required": ["agent_id"],
+        },
+    },
+    {
+        "name": "delete_agent",
+        "description": (
+            "Deprecated — agents are now derived from workspaces. "
+            "Use remove_workspace instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID to delete"},
+            },
+            "required": ["agent_id"],
+        },
+    },
+    {
+        "name": "pause_agent",
+        "description": (
+            "Deprecated — agents are now derived from workspaces."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID to pause"},
+            },
+            "required": ["agent_id"],
+        },
+    },
+    {
+        "name": "resume_agent",
+        "description": (
+            "Deprecated — agents are now derived from workspaces."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID to resume"},
+            },
+            "required": ["agent_id"],
+        },
+    },
+    # --- GitHub operations ---
+    {
+        "name": "create_github_repo",
+        "description": (
+            "Create a new GitHub repository via the gh CLI. "
+            "Supports private/public repos, org or personal."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Repository name"},
+                "private": {
+                    "type": "boolean",
+                    "description": "Create private repo (default true)",
+                    "default": True,
+                },
+                "org": {
+                    "type": "string",
+                    "description": "GitHub org — omit for personal repo",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional repo description",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "generate_readme",
+        "description": (
+            "Generate a README.md from project metadata and commit it "
+            "to the project's repository."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "name": {"type": "string", "description": "Human-readable project name"},
+                "description": {"type": "string", "description": "Project description"},
+                "tech_stack": {
+                    "type": "string",
+                    "description": "Comma-separated technologies",
+                },
+            },
+            "required": ["project_id", "name"],
+        },
+    },
+    # --- Git convenience commands ---
+    {
+        "name": "git_branch",
+        "description": (
+            "List branches or create a new branch. If name is provided "
+            "a new branch is created and checked out; otherwise all local "
+            "branches are listed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "name": {
+                    "type": "string",
+                    "description": "Branch name to create (omit to list branches)",
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "git_checkout",
+        "description": "Switch to an existing branch in a project's repo.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "branch": {"type": "string", "description": "Branch name to switch to"},
+            },
+            "required": ["project_id", "branch"],
+        },
+    },
+    {
+        "name": "create_branch",
+        "description": "Create and switch to a new branch in a project's repo.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "branch_name": {"type": "string", "description": "New branch name"},
+            },
+            "required": ["project_id", "branch_name"],
+        },
+    },
+    {
+        "name": "commit_changes",
+        "description": "Stage all changes and commit with a message.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "message": {"type": "string", "description": "Commit message"},
+            },
+            "required": ["message"],
+        },
+    },
+    {
+        "name": "push_branch",
+        "description": "Push the current (or specified) branch to origin.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "branch_name": {
+                    "type": "string",
+                    "description": "Branch to push (default: current branch)",
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "merge_branch",
+        "description": "Merge a branch into the default branch in a project's repo.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "branch_name": {"type": "string", "description": "Branch to merge"},
+            },
+            "required": ["project_id", "branch_name"],
+        },
+    },
+    # --- Hook management (direct) ---
+    {
+        "name": "create_hook",
+        "description": (
+            "Deprecated — redirects to save_rule. Direct hook creation is no "
+            "longer supported; all automation must be created through rules."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "name": {"type": "string", "description": "Hook name"},
+                "trigger": {"type": "string", "description": "Trigger type"},
+                "prompt_template": {"type": "string", "description": "Prompt template"},
+                "cooldown_seconds": {
+                    "type": "integer",
+                    "description": "Cooldown between fires (seconds)",
+                },
+            },
+            "required": ["name", "trigger", "prompt_template"],
+        },
+    },
+    {
+        "name": "edit_hook",
+        "description": (
+            "Edit a hook. For rule-backed hooks (id starts with 'rule-'), "
+            "redirects to editing the source rule instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hook_id": {"type": "string", "description": "Hook ID to edit"},
+                "name": {"type": "string", "description": "New hook name"},
+                "enabled": {"type": "boolean", "description": "Enable/disable"},
+                "trigger": {"type": "string", "description": "New trigger type"},
+                "prompt_template": {"type": "string", "description": "New prompt template"},
+            },
+            "required": ["hook_id"],
+        },
+    },
+    {
+        "name": "delete_hook",
+        "description": (
+            "Delete a hook. Rule-backed hooks (id starts with 'rule-') must be "
+            "deleted via their source rule. Only orphan/legacy hooks can be "
+            "deleted directly."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hook_id": {"type": "string", "description": "Hook ID to delete"},
+            },
+            "required": ["hook_id"],
+        },
+    },
+    {
+        "name": "toggle_project_hooks",
+        "description": "Enable or disable all hooks in a project.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "enabled": {
+                    "type": "boolean",
+                    "description": "True to enable, false to disable",
+                },
+            },
+            "required": ["project_id", "enabled"],
+        },
+    },
+    # --- Rule aliases ---
+    {
+        "name": "browse_rules",
+        "description": (
+            "List rules for a project (plus globals). Alias for list_rules."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID (optional, defaults to active project)",
+                },
+            },
+        },
+    },
+    # --- Communication ---
+    {
+        "name": "send_message",
+        "description": (
+            "Post a message to a Discord channel. Use this to notify users, "
+            "post updates, or communicate outside the current conversation thread."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "channel_id": {
+                    "type": "string",
+                    "description": "Discord channel ID to post to",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Message content to post",
+                },
+            },
+            "required": ["channel_id", "content"],
+        },
+    },
+    # --- Commands that are intentionally excluded by default but still
+    #     need definitions so they can be un-excluded via config ---
+    {
+        "name": "shutdown",
+        "description": (
+            "Shut down the bot and all running agents. "
+            "Excluded from MCP by default for safety."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "update_and_restart",
+        "description": (
+            "Pull the latest source from git and restart the daemon. "
+            "Excluded from MCP by default for safety."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "browse_tools",
+        "description": (
+            "List available tool categories with metadata. "
+            "Meta-tool for LLM context management — excluded from MCP by default."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "load_tools",
+        "description": (
+            "Load a tool category's definitions for the current interaction. "
+            "Meta-tool for LLM context management — excluded from MCP by default."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "description": "Category name to load (e.g. 'git', 'project')",
+                },
+            },
+            "required": ["category"],
         },
     },
 ]

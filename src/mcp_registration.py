@@ -4,6 +4,14 @@ Auto-registers all CommandHandler commands as MCP tools from
 ``_ALL_TOOL_DEFINITIONS``, plus read-only MCP resources and reusable prompt
 templates.  Used by the embedded MCP server (``src/embedded_mcp.py``).
 
+**Auto-discovery safety net:** After registering explicit tool definitions,
+``register_command_tools`` scans ``CommandHandler`` for any ``_cmd_*``
+methods that lack a corresponding entry in ``_ALL_TOOL_DEFINITIONS`` and
+auto-registers them with a basic schema derived from the method docstring.
+This ensures that *every* command is available via MCP without manual
+registration — new commands added to ``CommandHandler`` are automatically
+exposed.
+
 Each MCP tool delegates execution to ``CommandHandler.execute(name, args)``,
 ensuring feature parity with the Discord bot and the Supervisor LLM
 tool-use loop — no business logic is reimplemented here.
@@ -11,6 +19,7 @@ tool-use loop — no business logic is reimplemented here.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -122,7 +131,50 @@ _ANY_ARGS_METADATA = FuncMetadata(arg_model=_AnyArgs, fn_is_coroutine=True)
 
 
 # ---------------------------------------------------------------------------
-# Dynamic tool registration from _ALL_TOOL_DEFINITIONS
+# Auto-discovery of CommandHandler commands
+# ---------------------------------------------------------------------------
+
+def _discover_all_commands() -> dict[str, dict]:
+    """Discover all commands from CommandHandler by introspecting ``_cmd_*`` methods.
+
+    Returns a dict mapping command name → basic tool definition dict for
+    every ``_cmd_*`` method on ``CommandHandler``.  The tool definitions
+    use a permissive schema (``type: object`` with no required properties)
+    and derive descriptions from the method docstring.
+
+    This is used as a safety net: any command present in ``CommandHandler``
+    but absent from ``_ALL_TOOL_DEFINITIONS`` will still be registered via
+    MCP with a basic (but functional) schema.
+    """
+    # Lazy import to avoid circular dependency at module level.
+    # CommandHandler imports tool_registry → tool_registry is imported here.
+    from src.command_handler import CommandHandler  # noqa: E402
+
+    discovered: dict[str, dict] = {}
+    for attr_name in dir(CommandHandler):
+        if not attr_name.startswith("_cmd_"):
+            continue
+        cmd_name = attr_name[5:]  # strip "_cmd_" prefix
+        method = getattr(CommandHandler, attr_name, None)
+        if method is None or not callable(method):
+            continue
+
+        # Extract first line of docstring as description
+        doc = inspect.getdoc(method) or ""
+        first_line = doc.split("\n")[0].strip() if doc else ""
+        description = first_line or f"Execute the {cmd_name} command."
+
+        discovered[cmd_name] = {
+            "name": cmd_name,
+            "description": description,
+            "input_schema": {"type": "object", "properties": {}},
+        }
+
+    return discovered
+
+
+# ---------------------------------------------------------------------------
+# Dynamic tool registration from _ALL_TOOL_DEFINITIONS + auto-discovery
 # ---------------------------------------------------------------------------
 
 def register_command_tools(
@@ -131,10 +183,18 @@ def register_command_tools(
 ) -> list[str]:
     """Auto-register all CommandHandler commands as MCP tools.
 
-    For each tool definition in ``_ALL_TOOL_DEFINITIONS`` that is not in the
-    exclusion set, creates a closure that calls
-    ``command_handler.execute(name, args)`` and returns the JSON result,
-    then registers it with FastMCP.
+    **Two-pass registration:**
+
+    1. **Explicit definitions** — iterates ``_ALL_TOOL_DEFINITIONS`` and
+       registers each tool with its rich JSON Schema (descriptions,
+       required fields, enums, etc.).
+    2. **Auto-discovered commands** — scans ``CommandHandler`` for any
+       ``_cmd_*`` methods that were *not* covered in pass 1 and registers
+       them with a basic schema derived from the method docstring.  This
+       safety net ensures that newly added commands are automatically
+       available via MCP without requiring manual tool-definition updates.
+
+    Commands in the *excluded* set are skipped in both passes.
 
     Args:
         mcp_server: The FastMCP instance to register tools on.
@@ -149,33 +209,29 @@ def register_command_tools(
 
     registered: list[str] = []
 
-    for tool_def in _ALL_TOOL_DEFINITIONS:
-        name = tool_def["name"]
+    # --- Pass 1: explicit tool definitions (rich schemas) -----------------
+
+    def _make_handler(cmd_name: str, server_ref: FastMCP):
+        """Create a closure that delegates to CommandHandler.execute()."""
+        async def handler(**kwargs):
+            ctx = server_ref.get_context()
+            ch = ctx.request_context.lifespan_context["command_handler"]
+            result = await ch.execute(cmd_name, kwargs)
+            return json.dumps(result, default=str)
+        handler.__name__ = cmd_name
+        handler.__qualname__ = cmd_name
+        return handler
+
+    def _register_tool(name: str, description: str, input_schema: dict) -> bool:
+        """Register a single tool on the MCP server. Returns True if registered."""
         if name in excluded:
             logger.debug("Excluding command from MCP: %s", name)
-            continue
-
-        description = tool_def.get("description", f"Execute the {name} command.")
-        input_schema = tool_def.get("input_schema", {"type": "object", "properties": {}})
-
-        # Create a closure that captures the command name and server ref.
-        # The handler receives **kwargs from the permissive _AnyArgs model
-        # and delegates to CommandHandler.execute().
-        def _make_handler(cmd_name: str, server_ref: FastMCP):
-            async def handler(**kwargs):
-                ctx = server_ref.get_context()
-                ch = ctx.request_context.lifespan_context["command_handler"]
-                result = await ch.execute(cmd_name, kwargs)
-                return json.dumps(result, default=str)
-            handler.__name__ = cmd_name
-            handler.__qualname__ = cmd_name
-            return handler
+            return False
+        if name in mcp_server._tool_manager._tools:
+            logger.debug("Duplicate tool definition skipped: %s", name)
+            return False
 
         handler_fn = _make_handler(name, mcp_server)
-
-        # Construct a Tool directly so we can use our custom input_schema
-        # (from tool_registry) instead of FastMCP's auto-generated schema
-        # from function introspection.
         tool = Tool(
             fn=handler_fn,
             name=name,
@@ -184,19 +240,53 @@ def register_command_tools(
             fn_metadata=_ANY_ARGS_METADATA,
             is_async=True,
         )
-
-        # Register directly on the tool manager (skip duplicates)
-        if name in mcp_server._tool_manager._tools:
-            logger.warning("Duplicate tool definition skipped: %s", name)
-            continue
         mcp_server._tool_manager._tools[name] = tool
-        registered.append(name)
+        return True
+
+    explicit_names: set[str] = set()
+    for tool_def in _ALL_TOOL_DEFINITIONS:
+        name = tool_def["name"]
+        explicit_names.add(name)
+        description = tool_def.get("description", f"Execute the {name} command.")
+        input_schema = tool_def.get("input_schema", {"type": "object", "properties": {}})
+        if _register_tool(name, description, input_schema):
+            registered.append(name)
+
+    # --- Pass 2: auto-discover any missing commands -----------------------
+
+    try:
+        all_commands = _discover_all_commands()
+    except Exception:
+        logger.warning(
+            "Could not auto-discover CommandHandler commands; "
+            "only explicit tool definitions will be available via MCP",
+            exc_info=True,
+        )
+        all_commands = {}
+
+    auto_registered: list[str] = []
+    for cmd_name, tool_def in sorted(all_commands.items()):
+        if cmd_name in explicit_names:
+            continue  # already handled in pass 1
+        description = tool_def.get("description", f"Execute the {cmd_name} command.")
+        input_schema = tool_def.get("input_schema", {"type": "object", "properties": {}})
+        if _register_tool(cmd_name, description, input_schema):
+            auto_registered.append(cmd_name)
+            registered.append(cmd_name)
 
     logger.info(
-        "Registered %d MCP tools from tool_registry (%d excluded)",
+        "Registered %d MCP tools (%d explicit, %d auto-discovered, %d excluded)",
         len(registered),
+        len(registered) - len(auto_registered),
+        len(auto_registered),
         len(excluded),
     )
+    if auto_registered:
+        logger.info(
+            "Auto-discovered commands (no explicit tool definition): %s",
+            ", ".join(auto_registered),
+        )
+
     return registered
 
 
