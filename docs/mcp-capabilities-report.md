@@ -1,294 +1,122 @@
 # Agent Queue MCP Server — Capabilities Report
 
-**Date:** 2026-04-02  
-**Task:** amber-summit (Workflow 3)  
-**Server Version:** 1.26.0  
-
-## Executive Summary
-
-The Agent Queue MCP server is **fully operational** and exposes **101 tools**, **8 resources**, and **3 prompt templates** via the Model Context Protocol. It runs as an embedded HTTP server on `localhost:8082/mcp` and provides complete feature parity with the Discord bot and Supervisor LLM interfaces. All tested tools returned successful responses with well-structured JSON data.
-
-**Key finding:** This workflow (Workflow 3) successfully connected to and exercised the MCP server, confirming that agents running via the agent-queue orchestrator have access to MCP capabilities.
-
----
+**Date:** 2026-04-02
+**Verified by:** Workflow 1 (fresh-dune), Workflow 3 (amber-summit)
+**Server Version:** 1.26.0 | **Protocol:** 2024-11-05
 
 ## Connection Details
 
 | Property | Value |
 |----------|-------|
-| **Endpoint** | `http://localhost:8082/mcp` |
-| **Transport** | Streamable HTTP (SSE responses) |
-| **Protocol Version** | `2025-03-26` |
-| **Server Name** | `agent-queue` |
-| **Configuration** | `.mcp.json` in project root |
+| **URL** | `http://localhost:8082/mcp` |
+| **Transport** | Streamable HTTP with SSE responses |
+| **Config** | `mcp_server.enabled: true` + `mcp_server.port: 8082` in `~/.agent-queue/config.yaml` |
+| **Session** | Via `Mcp-Session-Id` response header |
+| **Required Accept** | `application/json, text/event-stream` (both required) |
+| **Claude Code Config** | `.mcp.json` with `{"type": "http", "url": "http://localhost:8082/mcp"}` |
 
-### How It Works
+## Capability Summary
 
-The MCP server is embedded in the agent-queue daemon as a supervised asyncio task. It shares the daemon's `Orchestrator`, `Database`, `EventBus`, and `CommandHandler` instances. All tool calls delegate to `CommandHandler.execute(name, args)`, ensuring identical behavior across all interfaces (Discord, Supervisor LLM, MCP).
+| Type | Count | Description |
+|------|-------|-------------|
+| **Tools** | 101 | Full CommandHandler operations (6 excluded for safety) |
+| **Resources** | 8 static + 6 templates | Read-only views of system state |
+| **Prompts** | 3 | Task creation, review, and project overview templates |
 
-### Connection Flow
-1. Client sends `initialize` with protocol version and capabilities
-2. Server returns session ID via `Mcp-Session-Id` header
-3. All subsequent requests include this session header
-4. Requests use `Accept: application/json, text/event-stream` header
-5. Responses come as SSE `data:` lines containing JSON-RPC results
+## Tools (101 registered)
 
----
+All tools delegate to `CommandHandler.execute()` — the same entry point used by Discord and chat providers. **MCP has full parity** minus excluded commands.
 
-## Tools (101 total)
+**Excluded by default:** `shutdown`, `restart_daemon`, `update_and_restart`, `run_command`, `browse_tools`, `load_tools`
 
-### Project Management (8 tools)
-| Tool | Required Params | Optional Params | Tested |
-|------|----------------|-----------------|--------|
-| `list_projects` | — | — | ✅ |
-| `create_project` | name | credit_weight, max_concurrent_agents, repo_url, default_branch, auto_create_channels | — |
-| `pause_project` | project_id | — | — |
-| `resume_project` | project_id | — | — |
-| `edit_project` | project_id | name, credit_weight, max_concurrent_agents, budget_limit, discord_channel_id, default_profile_id, repo_default_branch | — |
-| `set_default_branch` | project_id, branch | — | — |
-| `get_project_channels` | project_id | — | — |
-| `get_project_for_channel` | channel_id | — | — |
-| `delete_project` | project_id | archive_channels | — |
+### By Category
 
-### Task Operations (30 tools)
-| Tool | Required Params | Optional Params | Tested |
-|------|----------------|-----------------|--------|
-| `list_tasks` | — | project_id, status, show_all, include_completed, completed_only, display_mode, show_dependencies | ✅ |
-| `list_active_tasks_all_projects` | — | include_completed | — |
-| `get_task_tree` | task_id | compact, max_depth | — |
-| `create_task` | project_id, title | description, priority, requires_approval, task_type, profile_id, preferred_workspace_id, attachments, auto_approve_plan | — |
-| `get_task` | task_id | — | ✅ |
-| `edit_task` | task_id | project_id, title, description, priority, task_type, status, max_retries, verification_type, profile_id, auto_approve_plan | — |
-| `stop_task` | task_id | — | — |
-| `restart_task` | task_id | — | — |
-| `reopen_with_feedback` | task_id, feedback | — | — |
-| `delete_task` | task_id | — | — |
-| `archive_tasks` | — | project_id, include_failed | — |
-| `archive_task` | task_id | — | — |
-| `list_archived` | — | project_id, limit | — |
-| `restore_task` | task_id | — | — |
-| `approve_task` | task_id | — | — |
-| `process_task_completion` | task_id, workspace_path | — | — |
-| `approve_plan` | task_id | — | — |
-| `reject_plan` | task_id, feedback | — | — |
-| `delete_plan` | task_id | — | — |
-| `process_plan` | — | project_id, task_id | — |
-| `skip_task` | task_id | — | — |
-| `get_task_dependencies` | task_id | — | — |
-| `add_dependency` | task_id, depends_on | — | — |
-| `remove_dependency` | task_id, depends_on | — | — |
-| `get_chain_health` | — | task_id, project_id | ✅ |
-| `get_task_result` | task_id | — | — |
-| `get_task_diff` | task_id | — | — |
-| `get_agent_error` | task_id | — | — |
+| Category | Count | Key Tools |
+|----------|-------|-----------|
+| **Task Management** | ~15 | `list_tasks`, `create_task`, `get_task`, `edit_task`, `stop_task`, `restart_task`, `delete_task`, `archive_task`, `archive_tasks`, `skip_task`, `reopen_with_feedback`, `get_task_result`, `get_task_diff` |
+| **Project Management** | ~17 | `list_projects`, `create_project`, `edit_project`, `pause_project`, `resume_project`, `delete_project`, `set_active_project`, `get_project_channels` |
+| **Git Operations** | 12 | `get_git_status`, `git_commit`, `git_pull`, `git_push`, `git_create_branch`, `git_merge`, `git_create_pr`, `git_diff`, `git_log`, `git_changed_files`, `checkout_branch`, `set_default_branch` |
+| **Agent/Workspace** | ~11 | `list_agents`, `list_workspaces`, `add_workspace`, `release_workspace`, `remove_workspace`, `queue_sync_workspaces`, `find_merge_conflict_workspaces` |
+| **Memory** | 12 | `memory_search`, `memory_stats`, `memory_reindex`, `compact_memory`, `view_profile`, `regenerate_profile` |
+| **Notes** | 7 | `list_notes`, `write_note`, `read_note`, `append_note`, `delete_note`, `promote_note`, `compare_specs_notes` |
+| **File Operations** | 7 | `read_file`, `write_file`, `edit_file`, `glob_files`, `grep`, `search_files`, `list_directory` |
+| **Hooks/Scheduling** | 8 | `list_hooks`, `list_hook_runs`, `fire_hook`, `schedule_hook`, `cancel_scheduled`, `hook_schedules`, `fire_all_scheduled_hooks`, `list_scheduled` |
+| **Profiles** | 8 | `list_profiles`, `create_profile`, `get_profile`, `edit_profile`, `delete_profile`, `export_profile`, `import_profile`, `install_profile`, `check_profile`, `list_available_tools` |
+| **Dependencies** | 4 | `add_dependency`, `remove_dependency`, `get_task_dependencies`, `get_chain_health` |
+| **Plan/Approval** | 5 | `approve_plan`, `reject_plan`, `delete_plan`, `process_plan`, `approve_task`, `process_task_completion` |
+| **System** | ~7 | `get_status`, `get_recent_events`, `get_token_usage`, `orchestrator_control`, `send_message`, `reply_to_user`, `list_prompts`, `read_prompt`, `render_prompt` |
 
-### Workspace Management (7 tools)
-| Tool | Required Params | Tested |
-|------|----------------|--------|
-| `add_workspace` | project_id, source | — |
-| `list_workspaces` | — (optional: project_id) | ✅ |
-| `find_merge_conflict_workspaces` | — (optional: project_id) | — |
-| `release_workspace` | workspace_id | — |
-| `remove_workspace` | workspace_id | — |
-| `queue_sync_workspaces` | — (optional: project_id) | — |
+## Resources
 
-### Agent Management (3 tools)
-| Tool | Required Params | Tested |
-|------|----------------|--------|
-| `list_agents` | — (optional: project_id) | ✅ |
-| `set_active_project` | — (optional: project_id) | — |
-| `list_available_tools` | — | ✅ |
+### Static (8)
 
-### Git Operations (12 tools)
-| Tool | Required Params | Tested |
-|------|----------------|--------|
-| `get_git_status` | — (optional: project_id) | ✅ |
-| `git_commit` | message | — |
-| `git_pull` | — | — |
-| `git_push` | — | — |
-| `git_create_branch` | branch_name | — |
-| `git_merge` | branch_name | — |
-| `git_create_pr` | title | — |
-| `git_changed_files` | — | — |
-| `git_log` | — (optional: project_id, count) | ✅ |
-| `git_diff` | — | — |
-| `checkout_branch` | project_id, branch_name | — |
+| URI | Description |
+|-----|-------------|
+| `agentqueue://tasks` | All active/recent tasks |
+| `agentqueue://tasks/active` | Currently active tasks only |
+| `agentqueue://projects` | All projects |
+| `agentqueue://agents` | All agents |
+| `agentqueue://agents/active` | Busy agents only |
+| `agentqueue://profiles` | All agent profiles |
+| `agentqueue://events/recent` | Last 50 events |
+| `agentqueue://workspaces` | All workspaces |
 
-### File Operations (7 tools)
-| Tool | Required Params | Tested |
-|------|----------------|--------|
-| `read_file` | path | — |
-| `write_file` | path, content | — |
-| `edit_file` | path, old_string, new_string | — |
-| `glob_files` | pattern, path | — |
-| `grep` | pattern, path | — |
-| `search_files` | pattern, path | — |
-| `list_directory` | project_id | — |
+### Templates (6)
 
-### Hooks (8 tools)
-| Tool | Required Params | Tested |
-|------|----------------|--------|
-| `list_hooks` | — (optional: project_id) | ✅ |
-| `list_hook_runs` | hook_id | — |
-| `fire_hook` | hook_id | — |
-| `hook_schedules` | — | — |
-| `fire_all_scheduled_hooks` | — | — |
-| `schedule_hook` | project_id, name (implied), prompt_template | — |
-| `list_scheduled` | — | — |
-| `cancel_scheduled` | hook_id | — |
+| URI Template | Description |
+|--------------|-------------|
+| `agentqueue://tasks/{task_id}` | Single task details |
+| `agentqueue://tasks/by-project/{project_id}` | Tasks by project |
+| `agentqueue://tasks/by-status/{status}` | Tasks by status |
+| `agentqueue://projects/{project_id}` | Single project |
+| `agentqueue://profiles/{profile_id}` | Single profile |
+| `agentqueue://workspaces/by-project/{project_id}` | Workspaces by project |
 
-### Memory & Knowledge (12 tools)
-| Tool | Required Params | Tested |
-|------|----------------|--------|
-| `memory_search` | project_id, query | ✅ |
-| `memory_stats` | project_id | ✅ |
-| `memory_reindex` | project_id | — |
-| `list_notes` | project_id | ✅ |
-| `write_note` | project_id, title, content | — |
-| `delete_note` | project_id, title | — |
-| `read_note` | project_id, title | ✅ |
-| `append_note` | project_id, title, content | — |
-| `promote_note` | project_id, title | — |
-| `compare_specs_notes` | project_id | — |
-| `view_profile` | project_id | ✅ |
-| `regenerate_profile` | project_id | — |
-| `compact_memory` | project_id | — |
+## Prompts (3)
 
-### Prompt Templates (3 tools)
-| Tool | Required Params | Tested |
-|------|----------------|--------|
-| `list_prompts` | project_id | ✅ |
-| `read_prompt` | project_id, name | — |
-| `render_prompt` | project_id, name | — |
+| Name | Parameters | Description |
+|------|-----------|-------------|
+| `create_task_prompt` | `project_id` (req), `task_type`, `context` | Structured task creation guidance |
+| `review_task_prompt` | `task_id` (req) | Task review and approval guidance |
+| `project_overview_prompt` | `project_id` (req) | Comprehensive project overview |
 
-### Agent Profiles (9 tools)
-| Tool | Required Params | Tested |
-|------|----------------|--------|
-| `list_profiles` | — | ✅ |
-| `create_profile` | id, name | — |
-| `get_profile` | profile_id | — |
-| `edit_profile` | profile_id | — |
-| `delete_profile` | profile_id | — |
-| `check_profile` | profile_id | — |
-| `install_profile` | profile_id | — |
-| `export_profile` | profile_id | — |
-| `import_profile` | source | — |
+## Verified Interactions
 
-### System (4 tools)
-| Tool | Required Params | Tested |
-|------|----------------|--------|
-| `get_status` | — | ✅ |
-| `get_recent_events` | — (optional: limit) | ✅ |
-| `get_token_usage` | — (optional: project_id, task_id) | ✅ |
-| `orchestrator_control` | action | — |
+All operations tested successfully via `curl` with JSON-RPC 2.0:
 
-### Excluded Commands (not exposed via MCP)
-- `shutdown` — Dangerous: terminates daemon
-- `restart_daemon` — Dangerous: restarts daemon
-- `update_and_restart` — Dangerous: updates + restarts
-- `run_command` — Dangerous: arbitrary shell execution
-- `browse_tools` — LLM context meta-tool
-- `load_tools` — LLM context meta-tool
+- ✅ `initialize` — Session created, capabilities returned
+- ✅ `tools/list` — 101 tools enumerated
+- ✅ `tools/call` → `get_status` — 4 projects, 14 agents, 26 tasks
+- ✅ `tools/call` → `list_projects` — All 4 projects with metadata
+- ✅ `tools/call` → `list_tasks` — Filtered by project with limit
+- ✅ `tools/call` → `memory_search` — Semantic search returned relevant results
+- ✅ `tools/call` → `get_token_usage` — Token breakdown by task/agent
+- ✅ `tools/call` → `get_git_status` — Branch info returned
+- ✅ `resources/list` — 8 resources
+- ✅ `resources/templates/list` — 6 templates
+- ✅ `resources/read` → `agentqueue://agents/active` — Active agent state
+- ✅ `prompts/list` — 3 prompts
+- ✅ `prompts/get` → `project_overview_prompt` — Rendered template
 
----
+## Architecture
 
-## Resources (8 read-only views)
-
-| URI | Description | Tested |
-|-----|-------------|--------|
-| `agentqueue://tasks` | All active/recent tasks | — |
-| `agentqueue://tasks/active` | Tasks with IN_PROGRESS/ASSIGNED/READY status | ✅ |
-| `agentqueue://projects` | All projects | — |
-| `agentqueue://agents` | All agents | — |
-| `agentqueue://agents/active` | Busy agents | — |
-| `agentqueue://profiles` | All profiles | — |
-| `agentqueue://events/recent` | Last 50 events | — |
-| `agentqueue://workspaces` | All workspaces | — |
-
-Resources provide a lightweight way to read system state without calling tools. They're useful for MCP clients that support resource browsing.
-
----
-
-## Prompt Templates (3)
-
-| Prompt | Args | Description | Tested |
-|--------|------|-------------|--------|
-| `create_task_prompt` | project_id (required), task_type, context | Generates structured task creation prompt | — |
-| `review_task_prompt` | task_id (required) | Generates task review prompt | — |
-| `project_overview_prompt` | project_id (required) | Generates project overview with health assessment | ✅ |
-
-Prompts return structured `messages` arrays that can be fed into LLM conversations. The `project_overview_prompt` was tested and returned a well-formatted overview including task counts, workspace count, and suggested analysis areas.
-
----
-
-## Test Results Summary
-
-**22 tools tested** — all returned successful JSON responses with `isError: false`.
-
-| Category | Tools Tested | Result |
-|----------|-------------|--------|
-| Project Management | `list_projects` | ✅ All pass |
-| Task Operations | `list_tasks`, `get_task`, `get_chain_health` | ✅ All pass |
-| Agents | `list_agents`, `list_available_tools` | ✅ All pass |
-| Workspaces | `list_workspaces` | ✅ All pass |
-| Git | `get_git_status`, `git_log` | ✅ All pass |
-| Hooks | `list_hooks` | ✅ All pass |
-| Memory | `memory_search`, `memory_stats`, `list_notes`, `read_note`, `view_profile` | ✅ All pass |
-| Profiles | `list_profiles`, `list_prompts` | ✅ All pass |
-| System | `get_status`, `get_recent_events`, `get_token_usage` | ✅ All pass |
-| Resources | `agentqueue://tasks/active` | ✅ Pass |
-| Prompts | `project_overview_prompt` | ✅ Pass |
-
----
-
-## Limitations & Notes
-
-1. **No direct MCP tool access from Claude Code agent sessions** — Despite `.mcp.json` being configured, the MCP tools did not appear as native tools in the Claude Code tool list. Tools were accessed successfully via raw HTTP/JSON-RPC calls using `curl`. This is likely because the agent session doesn't auto-load project-level MCP servers, or the server needs to be configured at the user level (`~/.claude/.mcp.json`).
-
-2. **Session management** — Each `initialize` call creates a new session with a unique `Mcp-Session-Id`. Sessions must be maintained across calls.
-
-3. **SSE response format** — Responses come as Server-Sent Events (`event: message\ndata: {...}`), requiring parsing of the `data:` line to extract JSON.
-
-4. **Dangerous commands properly excluded** — `shutdown`, `restart_daemon`, `update_and_restart`, `run_command`, `browse_tools`, and `load_tools` are correctly excluded from MCP exposure.
-
-5. **304 task memories indexed** — The memory search system has extensive historical context available via the MCP `memory_search` tool.
-
----
+1. **Auto-registration:** `_ALL_TOOL_DEFINITIONS` (124 entries) in `tool_registry.py` → MCP tools registered dynamically at startup
+2. **Shared CommandHandler:** Same execution path as Discord bot — consistent behavior guaranteed
+3. **Embedded daemon mode:** Lazy-loaded, supervised async task with auto-restart and exponential backoff
+4. **Three-layer exclusion:** Hardcoded defaults + `config.yaml` + `AGENT_QUEUE_MCP_EXCLUDED` env var
+5. **Serialization:** `mcp_interfaces.py` handles model → dict conversion for resources
 
 ## Recommendations
 
-### 1. Enable MCP Tools as Native Agent Tools
-Configure the MCP server at the user level (`~/.claude/.mcp.json`) or ensure the project-level config is loaded by agent sessions. This would allow agents to call agent-queue tools directly as native MCP tools rather than via raw HTTP.
+1. **Agent self-awareness:** Agents can query `get_task` for their own task, `memory_search` for project context
+2. **Cross-project coordination:** `get_status` and `list_active_tasks_all_projects` provide system-wide visibility
+3. **Dependency management:** `add_dependency`, `get_chain_health`, `skip_task` for programmatic chain control
+4. **Memory-augmented work:** `memory_search` before starting enables agents to leverage past decisions
+5. **Note collaboration:** Agents can write notes (`write_note`) for other agents to read — lightweight inter-agent communication
 
-### 2. Cross-Agent Coordination
-The MCP server enables powerful cross-agent patterns:
-- An agent can query `list_tasks` and `get_task` to understand what other agents are working on
-- `memory_search` allows agents to find relevant context from past tasks
-- `get_chain_health` can detect stuck dependency chains
-- `get_recent_events` provides real-time awareness of system activity
+## Limitations
 
-### 3. Self-Service Task Management
-Agents with MCP access could:
-- Create follow-up tasks via `create_task`
-- Add task dependencies via `add_dependency`
-- Write notes for other agents via `write_note`
-- Search project memory for relevant past decisions
-
-### 4. Monitoring & Observability
-The MCP server is ideal for building dashboards or monitoring tools:
-- `get_status` provides a complete system snapshot
-- `get_token_usage` tracks costs per project/task
-- `get_recent_events` enables event-driven monitoring
-- Resources provide read-only browsable views
-
-### 5. Hook Integration
-MCP tools can be used within hook prompt templates to create sophisticated automation:
-- Check conditions via `list_tasks` or `get_chain_health`
-- Take action via `create_task`, `restart_task`, or `fire_hook`
-- Report via `write_note` or `append_note`
-
----
-
-## Conclusion
-
-The Agent Queue MCP server is a comprehensive, well-architected integration point that exposes the full power of the agent-queue system via standard MCP protocol. All 101 tools, 8 resources, and 3 prompts are functional and return well-structured data. The server successfully enables programmatic access to project management, task operations, git workflows, memory search, and system monitoring — making it a valuable capability for agent workflows and external integrations.
+- No subscription/change notifications (`subscribe: false`, `listChanged: false`)
+- Session-based with no persistent recovery
+- Some git operations may need explicit workspace_id for multi-workspace projects
+- Dangerous commands (shutdown, run_command) properly blocked
