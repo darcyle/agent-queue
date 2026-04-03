@@ -1,0 +1,481 @@
+"""Unit tests for the AgentQueue CLI.
+
+Tests CLI commands, adapters, auto-generated commands, and formatters.
+The REST client is mocked via httpx so no daemon is needed.
+"""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from click.testing import CliRunner
+
+from src.cli.adapters import (
+    DictProxy,
+    agent_proxy,
+    hook_proxy,
+    hook_run_proxy,
+    project_proxy,
+    task_proxy,
+)
+from src.cli.auto_commands import EXCLUDED, HANDCRAFTED_COVERAGE, register_auto_commands
+from src.cli.client import CLIClient
+from src.cli.exceptions import CommandError, DaemonNotRunningError
+from src.cli.formatters import (
+    format_agent_table,
+    format_hook_run_table,
+    format_hook_table,
+    format_project_table,
+    format_status_overview,
+    format_task_detail,
+    format_task_table,
+)
+from src.cli.styles import STATUS_ICONS, STATUS_STYLES, priority_style
+from src.models import AgentState, ProjectStatus, TaskStatus, TaskType
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def runner():
+    return CliRunner()
+
+
+# Mock response helpers
+
+def _mock_response(data, status_code=200):
+    """Create a mock httpx response."""
+    mock = AsyncMock()
+    mock.status_code = status_code
+    mock.json.return_value = data
+    mock.raise_for_status = lambda: None
+    return mock
+
+
+def _ok(result):
+    """Wrap a result dict in the API success envelope."""
+    return {"ok": True, "result": result}
+
+
+def _err(msg):
+    """Wrap an error in the API error envelope."""
+    return {"ok": False, "error": msg}
+
+
+# ---------------------------------------------------------------------------
+# DictProxy tests
+# ---------------------------------------------------------------------------
+
+
+class TestDictProxy:
+    def test_attribute_access(self):
+        p = DictProxy({"name": "Alice", "age": 30})
+        assert p.name == "Alice"
+        assert p.age == 30
+
+    def test_missing_returns_none(self):
+        p = DictProxy({"name": "Alice"})
+        assert p.missing_key is None
+
+    def test_aliases(self):
+        p = DictProxy({"assigned_agent": "ws-1"}, aliases={"assigned_agent_id": "assigned_agent"})
+        assert p.assigned_agent_id == "ws-1"
+        assert p.assigned_agent == "ws-1"
+
+    def test_get_method(self):
+        p = DictProxy({"key": "value"})
+        assert p.get("key") == "value"
+        assert p.get("missing", "default") == "default"
+
+    def test_repr(self):
+        p = DictProxy({"x": 1})
+        assert "DictProxy" in repr(p)
+
+
+# ---------------------------------------------------------------------------
+# Typed proxy tests
+# ---------------------------------------------------------------------------
+
+
+class TestTaskProxy:
+    def test_status_conversion(self):
+        t = task_proxy({"status": "IN_PROGRESS", "title": "Test"})
+        assert t.status == TaskStatus.IN_PROGRESS
+        assert t.status.value == "IN_PROGRESS"
+
+    def test_task_type_conversion(self):
+        t = task_proxy({"status": "READY", "task_type": "feature"})
+        assert t.task_type == TaskType.FEATURE
+        assert t.task_type.value == "feature"
+
+    def test_task_type_none(self):
+        t = task_proxy({"status": "READY", "task_type": None})
+        assert t.task_type is None
+
+    def test_assigned_agent_alias(self):
+        t = task_proxy({"status": "READY", "assigned_agent": "ws-1"})
+        assert t.assigned_agent_id == "ws-1"
+
+    def test_optional_fields_default_none(self):
+        t = task_proxy({"status": "READY"})
+        assert t.branch_name is None
+        assert t.pr_url is None
+        assert t.parent_task_id is None
+
+
+class TestProjectProxy:
+    def test_status_conversion(self):
+        p = project_proxy({"status": "ACTIVE", "name": "Test"})
+        assert p.status == ProjectStatus.ACTIVE
+
+    def test_defaults(self):
+        p = project_proxy({"status": "ACTIVE"})
+        assert p.total_tokens_used == 0
+        assert p.discord_channel_id is None
+
+    def test_equality_comparison(self):
+        """Formatters compare project.status == ProjectStatus.ACTIVE."""
+        p = project_proxy({"status": "ACTIVE"})
+        assert p.status == ProjectStatus.ACTIVE
+
+
+class TestAgentProxy:
+    def test_state_conversion_lowercase(self):
+        """CommandHandler returns lowercase 'busy'/'idle'."""
+        a = agent_proxy({"state": "busy", "workspace_id": "ws-1", "name": "Agent 1"})
+        assert a.state == AgentState.BUSY
+        assert a.state.value == "BUSY"
+
+    def test_id_alias(self):
+        a = agent_proxy({"workspace_id": "ws-1", "state": "idle"})
+        assert a.id == "ws-1"
+
+    def test_defaults(self):
+        a = agent_proxy({"state": "idle"})
+        assert a.session_tokens_used == 0
+        assert a.agent_type == "claude"
+
+
+class TestHookProxy:
+    def test_trigger_dict_to_string(self):
+        """Formatters check isinstance(hook.trigger, str)."""
+        h = hook_proxy({"trigger": {"type": "cron", "cron": "0 8 * * *"}})
+        assert isinstance(h.trigger, str)
+        parsed = json.loads(h.trigger)
+        assert parsed["type"] == "cron"
+
+    def test_trigger_already_string(self):
+        h = hook_proxy({"trigger": '{"type": "cron"}'})
+        assert isinstance(h.trigger, str)
+
+    def test_defaults(self):
+        h = hook_proxy({})
+        assert h.last_triggered_at is None
+
+
+# ---------------------------------------------------------------------------
+# Formatter compatibility tests (proxied dicts through real formatters)
+# ---------------------------------------------------------------------------
+
+
+class TestFormatterCompatibility:
+    """Verify that proxied dicts work with the existing formatters."""
+
+    def test_format_task_table(self):
+        tasks = [
+            task_proxy({
+                "id": "task-1", "project_id": "proj", "status": "IN_PROGRESS",
+                "priority": 100, "task_type": "feature", "title": "Test task",
+                "assigned_agent": "ws-1",
+            }),
+        ]
+        table = format_task_table(tasks, title="Test")
+        assert table is not None
+
+    def test_format_task_detail(self):
+        t = task_proxy({
+            "id": "task-1", "project_id": "proj", "status": "IN_PROGRESS",
+            "priority": 100, "task_type": "bugfix", "title": "Fix bug",
+            "assigned_agent": None, "description": "A bug fix",
+            "requires_approval": False,
+        })
+        panel = format_task_detail(t, deps_on=["dep-1"], dependents=["block-1"])
+        assert panel is not None
+
+    def test_format_task_detail_with_subtask_stats(self):
+        t = task_proxy({
+            "id": "task-1", "project_id": "proj", "status": "IN_PROGRESS",
+            "priority": 100, "title": "Parent task",
+            "description": "Has subtasks",
+        })
+        panel = format_task_detail(t, subtask_stats=(3, 5))
+        assert panel is not None
+
+    def test_format_agent_table(self):
+        agents = [
+            agent_proxy({
+                "workspace_id": "ws-1", "name": "Agent 1", "state": "busy",
+                "current_task_id": "task-1",
+            }),
+            agent_proxy({
+                "workspace_id": "ws-2", "name": "Agent 2", "state": "idle",
+                "current_task_id": None,
+            }),
+        ]
+        table = format_agent_table(agents)
+        assert table is not None
+
+    def test_format_hook_table(self):
+        hooks = [
+            hook_proxy({
+                "id": "hook-abc123def456", "name": "Test Hook",
+                "project_id": "proj", "enabled": True,
+                "trigger": {"type": "event", "event": "task_completed"},
+                "cooldown_seconds": 300,
+            }),
+        ]
+        table = format_hook_table(hooks)
+        assert table is not None
+
+    def test_format_hook_run_table(self):
+        runs = [
+            hook_run_proxy({
+                "id": "run-abcdef123456", "status": "completed",
+                "trigger_reason": "Manual trigger",
+                "tokens_used": 1234, "started_at": 1700000000.0,
+            }),
+        ]
+        table = format_hook_run_table(runs)
+        assert table is not None
+
+    def test_format_project_table(self):
+        projects = [
+            project_proxy({
+                "id": "proj", "name": "Test Project", "status": "ACTIVE",
+                "discord_channel_id": "123456", "max_concurrent_agents": 2,
+            }),
+        ]
+        table = format_project_table(projects)
+        assert table is not None
+
+    def test_format_status_overview(self):
+        projects = [project_proxy({"id": "p", "name": "P", "status": "ACTIVE"})]
+        agents = [
+            agent_proxy({"workspace_id": "ws-1", "state": "busy"}),
+            agent_proxy({"workspace_id": "ws-2", "state": "idle"}),
+        ]
+        task_counts = {"IN_PROGRESS": 2, "READY": 5, "COMPLETED": 10}
+        panel = format_status_overview(projects, agents, task_counts)
+        assert panel is not None
+
+
+# ---------------------------------------------------------------------------
+# CLIClient tests
+# ---------------------------------------------------------------------------
+
+
+class TestCLIClient:
+    @pytest.mark.asyncio
+    async def test_execute_success(self):
+        import httpx
+
+        mock_http = AsyncMock(spec=httpx.AsyncClient)
+        # Use non-async returns for .json() since httpx Response.json() is sync
+        health_resp = AsyncMock()
+        health_resp.json = lambda: {"status": "ok"}
+        health_resp.raise_for_status = lambda: None
+
+        exec_resp = AsyncMock()
+        exec_resp.json = lambda: _ok({"tasks": [], "total": 0})
+
+        mock_http.get.return_value = health_resp
+        mock_http.post.return_value = exec_resp
+        mock_http.aclose = AsyncMock()
+
+        with patch("src.cli.client.httpx.AsyncClient", return_value=mock_http):
+            client = CLIClient(base_url="http://localhost:8081")
+            await client.connect()
+            result = await client.execute("list_tasks", {"project_id": "test"})
+            assert result["tasks"] == []
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_execute_command_error(self):
+        import httpx
+
+        mock_http = AsyncMock(spec=httpx.AsyncClient)
+        health_resp = AsyncMock()
+        health_resp.json = lambda: {"status": "ok"}
+        health_resp.raise_for_status = lambda: None
+
+        error_resp = AsyncMock()
+        error_resp.json = lambda: _err("Task not found")
+
+        mock_http.get.return_value = health_resp
+        mock_http.post.return_value = error_resp
+        mock_http.aclose = AsyncMock()
+
+        with patch("src.cli.client.httpx.AsyncClient", return_value=mock_http):
+            client = CLIClient(base_url="http://localhost:8081")
+            await client.connect()
+            with pytest.raises(CommandError, match="Task not found"):
+                await client.execute("get_task", {"task_id": "nope"})
+            await client.close()
+
+
+# ---------------------------------------------------------------------------
+# Styles tests (unchanged from original)
+# ---------------------------------------------------------------------------
+
+
+class TestStyles:
+    def test_status_icons_complete(self):
+        expected = {
+            "DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT",
+            "PAUSED", "VERIFYING", "AWAITING_APPROVAL", "AWAITING_PLAN_APPROVAL",
+            "COMPLETED", "FAILED", "BLOCKED",
+        }
+        assert expected.issubset(set(STATUS_ICONS.keys()))
+
+    def test_status_styles_complete(self):
+        assert set(STATUS_ICONS.keys()) == set(STATUS_STYLES.keys())
+
+    def test_priority_style_tiers(self):
+        assert priority_style(200) == "bold red"
+        assert priority_style(150) == "bold yellow"
+        assert priority_style(100) == "white"
+        assert priority_style(10) == "dim white"
+
+
+# ---------------------------------------------------------------------------
+# Auto-generated commands tests
+# ---------------------------------------------------------------------------
+
+
+class TestAutoCommands:
+    def test_auto_commands_register(self):
+        """Auto-generated commands should register under 'cmd' group."""
+        from src.cli.app import cli
+        cmd_group = cli.commands.get("cmd")
+        assert cmd_group is not None
+        # Should have many commands
+        assert len(cmd_group.commands) > 20
+
+    def test_handcrafted_not_duplicated(self):
+        """Commands in HANDCRAFTED_COVERAGE should not appear in auto-generated."""
+        from src.cli.app import cli
+        cmd_group = cli.commands.get("cmd")
+        auto_names = set(cmd_group.commands.keys())
+        for hc in HANDCRAFTED_COVERAGE:
+            assert hc.replace("_", "-") not in auto_names, f"{hc} should not be auto-generated"
+
+    def test_excluded_not_present(self):
+        """Dangerous commands should be excluded from auto-generation."""
+        from src.cli.app import cli
+        cmd_group = cli.commands.get("cmd")
+        auto_names = set(cmd_group.commands.keys())
+        for ex in EXCLUDED:
+            assert ex.replace("_", "-") not in auto_names, f"{ex} should be excluded"
+
+    def test_auto_command_help(self, runner):
+        """Auto-generated command should have --help from JSON Schema."""
+        from src.cli.app import cli
+        result = runner.invoke(cli, ["cmd", "memory-search", "--help"])
+        assert result.exit_code == 0
+        assert "--project-id" in result.output
+        assert "--query" in result.output
+
+
+# ---------------------------------------------------------------------------
+# CLI command integration tests (mocked HTTP)
+# ---------------------------------------------------------------------------
+
+
+class TestCLICommands:
+    """Test CLI commands with mocked REST API responses."""
+
+    def _mock_client(self, execute_results: dict):
+        """Create a mock CLIClient context manager."""
+        mock_client = AsyncMock()
+        mock_client.connect = AsyncMock()
+        mock_client.close = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        async def mock_execute(command, args=None):
+            if command in execute_results:
+                result = execute_results[command]
+                if isinstance(result, Exception):
+                    raise result
+                return result
+            return {}
+
+        mock_client.execute = AsyncMock(side_effect=mock_execute)
+        return mock_client
+
+    def test_task_list(self, runner):
+        from src.cli.app import cli
+
+        mock = self._mock_client({
+            "list_tasks": {
+                "display_mode": "flat",
+                "tasks": [
+                    {
+                        "id": "task-1", "project_id": "proj",
+                        "title": "Test task", "status": "IN_PROGRESS",
+                        "priority": 100, "task_type": "feature",
+                        "assigned_agent": "ws-1",
+                    },
+                ],
+                "total": 1,
+                "hidden_completed": 0,
+                "filtered": True,
+            },
+        })
+
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(cli, ["task", "list"])
+            assert result.exit_code == 0
+            assert "Test task" in result.output
+
+    def test_task_details(self, runner):
+        from src.cli.app import cli
+
+        mock = self._mock_client({
+            "get_task": {
+                "id": "task-1", "project_id": "proj",
+                "title": "Test task", "status": "IN_PROGRESS",
+                "priority": 100, "description": "A test task",
+                "assigned_agent": None, "task_type": "feature",
+                "requires_approval": False,
+                "depends_on": [{"id": "dep-1", "title": "Dep", "status": "COMPLETED"}],
+                "blocks": [],
+            },
+        })
+
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(cli, ["task", "details", "task-1"])
+            assert result.exit_code == 0
+            assert "Test task" in result.output
+
+    def test_project_list(self, runner):
+        from src.cli.app import cli
+
+        mock = self._mock_client({
+            "list_projects": {
+                "projects": [
+                    {"id": "proj", "name": "Test", "status": "ACTIVE",
+                     "max_concurrent_agents": 2},
+                ],
+            },
+        })
+
+        with patch("src.cli.projects._get_client", return_value=mock):
+            result = runner.invoke(cli, ["project", "list"])
+            assert result.exit_code == 0
+            assert "Test" in result.output
