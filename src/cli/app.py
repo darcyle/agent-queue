@@ -57,7 +57,10 @@ def _get_client(api_url: str | None = None):
 
 
 def _handle_errors(func):
-    """Decorator that catches CLI client errors and prints them nicely."""
+    """Decorator that catches CLI client errors and prints them nicely.
+
+    When the daemon is not running, offers to start it and retry.
+    """
     import functools
     from .exceptions import CommandError, DaemonNotRunningError
 
@@ -65,9 +68,26 @@ def _handle_errors(func):
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
-        except DaemonNotRunningError as e:
-            console.print(f"[bold red]Error:[/] {e}")
-            raise SystemExit(1)
+        except DaemonNotRunningError:
+            console.print("[bold red]Daemon is not running.[/]")
+            if console.input("[bold]Start the daemon? [Y/n] [/]").strip().lower() in ("", "y", "yes"):
+                from .daemon import start_daemon
+                if start_daemon():
+                    console.print()
+                    # Retry the original command
+                    try:
+                        return func(*args, **kwargs)
+                    except DaemonNotRunningError:
+                        console.print("[bold red]Error:[/] Still cannot connect to daemon.")
+                        raise SystemExit(1)
+                    except CommandError as e:
+                        console.print(f"[bold red]Error:[/] {e}")
+                        raise SystemExit(1)
+                else:
+                    raise SystemExit(1)
+            else:
+                console.print("[dim]Run 'aq start' to start the daemon.[/]")
+                raise SystemExit(1)
         except CommandError as e:
             console.print(f"[bold red]Error:[/] {e}")
             raise SystemExit(1)
@@ -145,6 +165,7 @@ def status(ctx: click.Context) -> None:
 # Register command modules — importing them triggers @cli.group() decorators
 # ---------------------------------------------------------------------------
 
+from . import daemon   # noqa: E402, F401
 from . import tasks    # noqa: E402, F401
 from . import agents   # noqa: E402, F401
 from . import hooks    # noqa: E402, F401

@@ -7,7 +7,8 @@ The REST client is mocked via httpx so no daemon is needed.
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch
+import os
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -479,3 +480,124 @@ class TestCLICommands:
             result = runner.invoke(cli, ["project", "list"])
             assert result.exit_code == 0
             assert "Test" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Daemon command tests
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonCommands:
+    def test_start_help(self, runner):
+        from src.cli.app import cli
+        result = runner.invoke(cli, ["start", "--help"])
+        assert result.exit_code == 0
+        assert "Start the agent-queue daemon" in result.output
+
+    def test_stop_help(self, runner):
+        from src.cli.app import cli
+        result = runner.invoke(cli, ["stop", "--help"])
+        assert result.exit_code == 0
+        assert "Stop the agent-queue daemon" in result.output
+
+    def test_restart_help(self, runner):
+        from src.cli.app import cli
+        result = runner.invoke(cli, ["restart", "--help"])
+        assert result.exit_code == 0
+        assert "Restart the agent-queue daemon" in result.output
+
+    def test_logs_help(self, runner):
+        from src.cli.app import cli
+        result = runner.invoke(cli, ["logs", "--help"])
+        assert result.exit_code == 0
+        assert "View daemon logs" in result.output
+
+    def test_read_pid_no_file(self, tmp_path):
+        from src.cli.daemon import _read_pid
+        with patch("src.cli.daemon.PID_FILE", str(tmp_path / "nonexistent.pid")):
+            assert _read_pid() is None
+
+    def test_read_pid_stale(self, tmp_path):
+        """Stale PID file (process not running) should return None and clean up."""
+        from src.cli.daemon import _read_pid
+        pid_file = tmp_path / "daemon.pid"
+        pid_file.write_text("999999999")  # PID that almost certainly doesn't exist
+        with patch("src.cli.daemon.PID_FILE", str(pid_file)):
+            assert _read_pid() is None
+            assert not pid_file.exists()  # Should have been cleaned up
+
+    def test_is_daemon_running_false(self):
+        from src.cli.daemon import is_daemon_running
+        with patch("src.cli.daemon._find_daemon_pid", return_value=None):
+            assert is_daemon_running() is False
+
+    def test_is_daemon_running_true(self):
+        from src.cli.daemon import is_daemon_running
+        with patch("src.cli.daemon._find_daemon_pid", return_value=12345):
+            assert is_daemon_running() is True
+
+    def test_stop_not_running(self, runner):
+        from src.cli.app import cli
+        with patch("src.cli.daemon._find_daemon_pid", return_value=None):
+            result = runner.invoke(cli, ["stop"])
+            assert result.exit_code == 0
+            assert "not running" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Error handling with daemon-start prompt tests
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonNotRunningPrompt:
+    """Test that _handle_errors offers to start the daemon."""
+
+    def test_offers_to_start_on_connection_error(self, runner):
+        """When daemon is down and user says 'n', should exit cleanly."""
+        from src.cli.app import cli
+        from src.cli.exceptions import DaemonNotRunningError
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(
+            side_effect=DaemonNotRunningError("http://localhost:8081")
+        )
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("src.cli.tasks._get_client", return_value=mock_client):
+            result = runner.invoke(cli, ["task", "list"], input="n\n")
+            assert result.exit_code == 1
+            assert "not running" in result.output.lower()
+            assert "aq start" in result.output
+
+    def test_starts_daemon_on_yes(self, runner):
+        """When user says 'y', should attempt to start and retry."""
+        from src.cli.app import cli
+        from src.cli.exceptions import DaemonNotRunningError
+
+        call_count = 0
+
+        # First call raises, second call succeeds (after daemon start)
+        async def mock_aenter():
+            nonlocal call_count, mock_client
+            call_count += 1
+            if call_count == 1:
+                raise DaemonNotRunningError("http://localhost:8081")
+            return mock_client
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(side_effect=mock_aenter)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.execute = AsyncMock(return_value={
+            "display_mode": "flat",
+            "tasks": [],
+            "total": 0,
+            "hidden_completed": 0,
+            "filtered": True,
+        })
+
+        with (
+            patch("src.cli.tasks._get_client", return_value=mock_client),
+            patch("src.cli.daemon.start_daemon", return_value=True),
+        ):
+            result = runner.invoke(cli, ["task", "list"], input="y\n")
+            assert result.exit_code == 0
