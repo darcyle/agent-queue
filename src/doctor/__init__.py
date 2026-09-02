@@ -24,6 +24,7 @@ from src.doctor.pool_checks import pool_checks
 from src.doctor.profile_checks import profile_checks
 from src.doctor.resource_checks import resource_checks
 from src.doctor.runner import DoctorRegistry, exit_code_for, run_doctor
+from src.doctor.session_checks import session_checks
 from src.doctor.workspace_checks import workspace_checks
 
 __all__ = [
@@ -42,6 +43,7 @@ __all__ = [
     "resource_checks",
     "integration_checks",
     "run_doctor",
+    "session_checks",
     "workspace_checks",
 ]
 
@@ -66,5 +68,7 @@ def default_registry() -> DoctorRegistry:
     for check in workspace_checks():
         registry.register(check)
     for check in profile_checks():
+        registry.register(check)
+    for check in session_checks():
         registry.register(check)
     return registry

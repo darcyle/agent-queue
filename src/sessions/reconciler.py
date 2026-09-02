@@ -1452,8 +1452,28 @@ class SessionReconciler:
         except NudgeDeferred:
             logger.debug("Nudge to session %s deferred; terminal input untouched", row.id)
             return None
-        except NotSubmitted:
-            logger.info("Nudge to session %s pasted but not submitted — will retry", row.id)
+        except NotSubmitted as exc:
+            # WARNING, not info: text left in a composer blocks every later
+            # nudge on the empty-composer guard, so "will retry" can mean
+            # "never" — the operator has to be able to see it in the log.
+            dirty = bool(getattr(exc, "composer_dirty", False))
+            logger.warning(
+                "Nudge to session %s (%s) on task %s pasted but not submitted: %s%s",
+                row.id,
+                row.name,
+                row.task_id,
+                exc,
+                " — text is stuck in the composer" if dirty else " — will retry",
+            )
+            await self._emit(
+                "session.nudge_unsubmitted",
+                session_id=row.id,
+                name=row.name,
+                task_id=row.task_id,
+                project_id=row.project_id,
+                composer_dirty=dirty,
+                reason=str(exc),
+            )
             return False
         except CapabilityUnsupported:
             return False

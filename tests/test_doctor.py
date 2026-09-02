@@ -79,6 +79,7 @@ class TestRegistry:
         from src.doctor.pool_checks import pool_checks
         from src.doctor.profile_checks import profile_checks
         from src.doctor.resource_checks import resource_checks
+        from src.doctor.session_checks import session_checks
         from src.doctor.workspace_checks import workspace_checks
 
         reg = default_registry()
@@ -92,6 +93,7 @@ class TestRegistry:
             | {c.id for c in capability_checks()}
             | {c.id for c in workspace_checks()}
             | {c.id for c in profile_checks()}
+            | {c.id for c in session_checks()}
         )
         assert set(reg.ids()) == expected
 

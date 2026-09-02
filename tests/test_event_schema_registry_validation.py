@@ -734,6 +734,14 @@ _CANONICAL_PAYLOADS.update(
             "name": "s-t-1",
             "reason": "rapid_crash",
         },
+        "session.nudge_unsubmitted": {
+            "session_id": "sess-1",
+            "name": "s-t-1",
+            "task_id": "t-1",
+            "project_id": "proj-1",
+            "composer_dirty": True,
+            "reason": "submit unconfirmed for 's-t-1' after 4 attempts",
+        },
         "session.transcript_missing": {
             "session_id": "sess-1",
             "task_id": "t-1",

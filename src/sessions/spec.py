@@ -485,6 +485,7 @@ class SessionSpecBuilder:
             lifecycle=lifecycle,
             dialogs=harness.dialogs,
             skip_escape_before_enter=harness.skip_escape_before_enter,
+            composer_clear_keys=harness.composer_clear_keys,
             files=tuple(files),
             instance_token=instance_token,
             hooks_provisioned=hooks_provisioned,
